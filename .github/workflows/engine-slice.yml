@@ -1,0 +1,51 @@
+name: engine-slice
+on:
+  push:
+    branches: ['ci/t/**']
+permissions:
+  contents: read
+concurrency:
+  group: public-engine-slice
+  cancel-in-progress: false
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Run isolated engine unit tests
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import contextlib
+          import io
+          import json
+          import os
+          import unittest
+          from pathlib import Path
+          capture = io.StringIO()
+          try:
+              with contextlib.redirect_stdout(capture), contextlib.redirect_stderr(capture):
+                  tests = unittest.defaultTestLoader.discover("tests", pattern="test_pcm_trim.py")
+                  result = unittest.TextTestRunner(stream=capture).run(tests)
+              data = {"tests": result.testsRun, "failures": len(result.failures),
+                      "errors": len(result.errors), "skipped": len(result.skipped)}
+              ok = result.wasSuccessful() and result.testsRun > len(result.skipped)
+          except Exception:
+              data = {"tests": 0, "failures": 0, "errors": 1, "skipped": 0}
+              ok = False
+          data.update(sha=os.environ["GITHUB_SHA"], passed=ok)
+          summary = json.dumps(data, sort_keys=True)
+          Path("engine-summary.json").write_text(summary + chr(10), encoding="utf-8")
+          print(summary)
+          raise SystemExit(0 if ok else 1)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: engine-summary
+          path: engine-summary.json
+          retention-days: 3
+          if-no-files-found: error
