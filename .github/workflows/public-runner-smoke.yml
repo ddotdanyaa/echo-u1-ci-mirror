@@ -1,0 +1,10 @@
+name: public-runner-smoke
+on: push
+permissions:
+  contents: read
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - run: echo ok
