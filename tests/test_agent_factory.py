@@ -396,7 +396,7 @@ def test_worker_default_permissions_are_deny_first(tmp_path):
     rules=config["permission"]
     assert rules["*"]=="deny" and rules["bash"]=="deny"
     assert rules["external_directory"]=="deny"
-    assert config["provider"]["google"]["options"]["apiKey"]=="{env:GOOGLE_GENERATIVE_AI_API_KEY}"
+    assert "provider" not in config, "project-level env references are intentionally ignored by Kilo"
     assert "synthetic-google-placeholder" not in config_path.read_text(encoding="utf-8")
     assert rules["agent_manager"]=="deny" and rules["task"]=="deny"
     assert rules["edit"]["*"]=="deny"
@@ -423,6 +423,9 @@ def test_model_child_env_does_not_inherit_parent_provider_secrets(tmp_path, monk
     env=calls[0][1]["env"]
     assert "GITHUB_TOKEN" not in env and "OPENAI_API_KEY" not in env and "CLAUDE_TOKEN" not in env
     assert env.get("GOOGLE_GENERATIVE_AI_API_KEY")=="synthetic-google-placeholder"
+    trusted=json.loads(env["KILO_CONFIG_CONTENT"])
+    assert trusted["provider"]["google"]["options"]["apiKey"]=="{env:GOOGLE_GENERATIVE_AI_API_KEY}"
+    assert "synthetic-google-placeholder" not in env["KILO_CONFIG_CONTENT"]
     assert env["PYTHONUTF8"]=="1"
     assert "kilo" in str(calls[0][0]).lower()
 
