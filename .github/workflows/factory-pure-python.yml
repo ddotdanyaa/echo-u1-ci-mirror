@@ -36,3 +36,37 @@ jobs:
             factory-test.log
             factory-junit.xml
           retention-days: 3
+  kilo-config-canary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install real Kilo CLI (no model credentials)
+        run: |
+          npm install --global --no-fund --no-audit @kilocode/cli
+          kilo --version
+      - name: Test generated restrictive config with real kilo config check
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          from tools.agent_factory import read_plan
+          from tools.agent_factory_runner import worker_policy
+          task = read_plan([{"id":"Canary","title":"Synthetic policy check","touch_files":["src/synthetic.py"],"tests":["tests/test_synthetic.py"],"privacy_safe":True}])["Canary"]
+          root=Path(os.environ["RUNNER_TEMP"])/"factory-kilo-sample"
+          root.mkdir()
+          (root/"kilo.jsonc").write_text(json.dumps(worker_policy(task)),encoding="utf-8")
+          PY
+          cd "$RUNNER_TEMP/factory-kilo-sample"
+          export KILO_CONFIG_CONTENT='{"provider":{"google":{"options":{"apiKey":"{env:GOOGLE_GENERATIVE_AI_API_KEY}"}}}}'
+          kilo config check
