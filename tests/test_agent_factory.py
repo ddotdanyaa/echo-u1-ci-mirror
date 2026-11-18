@@ -349,3 +349,75 @@ def test_cli_max_tasks_is_bounded_and_dry_run_runs_only_once(tmp_path,monkeypatc
     assert json.loads(capsys.readouterr().out)["status"]=="DRY_RUN"
     with pytest.raises(SystemExit):
         W.main(args[:-1]+["11"])
+
+
+
+def test_gate_rejects_passing_suite_that_only_skips(tmp_path):
+    root=tmp_path/"repo";root.mkdir()
+    (root/"src").mkdir();(root/"tests").mkdir()
+    (root/"src"/"logic.py").write_text("def value():return 1\n")
+    (root/"tests"/"test_safe.py").write_text(
+        "import pytest\n@pytest.mark.skip(reason='synthetic')\ndef test_synthetic():assert True\n")
+    task=plan(item(scope=["src/logic.py"]))["T1"]
+    stage=tmp_path/"stage";original=W.prepare(root,task,stage)
+    (stage/"src"/"logic.py").write_text("def value():return 2\n")
+    ok,proof,changed=W.gates(task,stage,original)
+    assert not ok, "all-skipped pytest exits 0 but provides no passing acceptance evidence"
+
+
+def test_gate_rejects_test_that_mutates_immutable_fixture_during_pytest(tmp_path):
+    root=tmp_path/"repo";root.mkdir()
+    (root/"src").mkdir();(root/"tests").mkdir()
+    (root/"src"/"logic.py").write_text("def value():return 1\n")
+    (root/"tests"/"test_safe.py").write_text(
+        "from pathlib import Path\n"
+        "def test_mutates():\n"
+        "    Path(__file__).write_text('def test_mutates(): assert True\\n')\n"
+        "    assert True\n")
+    task=plan(item(scope=["src/logic.py"]))["T1"]
+    stage=tmp_path/"stage";original=W.prepare(root,task,stage)
+    (stage/"src"/"logic.py").write_text("def value():return 2\n")
+    ok,proof,changed=W.gates(task,stage,original)
+    assert not ok, "pytest itself can mutate frozen tests after the pre-flight guard"
+
+
+def test_worker_default_permissions_are_deny_first(tmp_path):
+    root=tmp_path/"repo";root.mkdir()
+    (root/"src").mkdir();(root/"tests").mkdir()
+    (root/"src"/"logic.py").write_text("def value():return 1\n")
+    (root/"tests"/"test_safe.py").write_text("def test_ok():assert True\n")
+    task=plan(item(scope=["src/logic.py"]))["T1"]
+    stage=tmp_path/"stage";baseline=W.prepare(root,task,stage)
+    config_path=stage/"kilo.jsonc"
+    assert config_path.is_file(), "unrestricted CLI permissions are unsafe for --auto"
+    config=json.loads(config_path.read_text(encoding="utf-8"))
+    rules=config["permission"]
+    assert rules["*"]=="deny" and rules["bash"]=="deny"
+    assert rules["external_directory"]=="deny"
+    assert rules["agent_manager"]=="deny" and rules["task"]=="deny"
+    assert rules["edit"]["*"]=="deny"
+    assert rules["edit"]["src/logic.py"]=="allow"
+    assert "kilo.jsonc" in baseline, "the permission file must itself be immutable"
+    config_path.write_text('{"permission":"allow"}', encoding="utf-8")
+    with pytest.raises(F.InvalidPlan):
+        W.inspect_changes(task,stage,baseline)
+
+
+def test_model_child_env_does_not_inherit_parent_provider_secrets(tmp_path, monkeypatch):
+    monkeypatch.setenv("GITHUB_TOKEN", "synthetic-not-a-real-token")
+    monkeypatch.setenv("OPENAI_API_KEY", "synthetic-not-a-real-key")
+    monkeypatch.setenv("CLAUDE_TOKEN", "synthetic-not-a-real-token")
+    monkeypatch.setenv("GOOGLE_GENERATIVE_AI_API_KEY", "synthetic-google-placeholder")
+    calls=[]
+    def fake_run(args, **kwargs):
+        calls.append((args,kwargs))
+        return type("Result",(),{"returncode":0,"stdout":b"done","stderr":b""})()
+    monkeypatch.setattr(W.subprocess,"run",fake_run)
+    task=plan(item())["T1"]
+    W.model_attempt(task,tmp_path,"google/gemma",timeout=10)
+    assert calls
+    env=calls[0][1]["env"]
+    assert "GITHUB_TOKEN" not in env and "OPENAI_API_KEY" not in env and "CLAUDE_TOKEN" not in env
+    assert env.get("GOOGLE_GENERATIVE_AI_API_KEY")=="synthetic-google-placeholder"
+    assert env["PYTHONUTF8"]=="1"
+    assert "kilo" in str(calls[0][0]).lower()
