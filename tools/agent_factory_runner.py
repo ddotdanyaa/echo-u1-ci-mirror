@@ -112,8 +112,8 @@ def gates(task: Task, workdir: Path, staged: dict[str, bytes],
             raise InvalidPlan("no approved output produced")
         for name in changed:
             if name.endswith(".py"):
-                import ast
-                ast.parse(workdir.joinpath(*name.split("/")).read_text(encoding="utf-8"))
+                source = workdir.joinpath(*name.split("/")).read_text(encoding="utf-8")
+                compile(source, name, "exec")  # syntax + illegal return/yield, no user code executed
         if not task.tests:
             raise InvalidPlan("no immutable acceptance tests supplied")
         args = [sys.executable, "-m", "pytest", "-q", "--tb=short", *task.tests]
@@ -148,6 +148,10 @@ def once(*, root: Path, plan: Path, checkpoint: Path, staging: Path,
          small_model: str, large_model: str, execute: bool = False,
          acknowledge: bool = False) -> dict:
     tasks = read_plan(json.loads(plan.read_text(encoding="utf-8")))
+    if staging.resolve().is_relative_to(root.resolve()):
+        raise InvalidPlan("staging inside source project is forbidden")
+    if checkpoint.resolve().is_relative_to(root.resolve()):
+        raise InvalidPlan("checkpoint inside source project is forbidden")
     # The checkpoint is local. Exclusive directory creation is an atomic
     # single controller lock on supported filesystems, with no stale stealing.
     lock = checkpoint.with_suffix(checkpoint.suffix + ".lockdir")
