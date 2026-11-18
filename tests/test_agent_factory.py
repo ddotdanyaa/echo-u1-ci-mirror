@@ -296,3 +296,35 @@ def test_429_fallback_starts_from_clean_allowlisted_copy(tmp_path,monkeypatch):
     state=json.loads((tmp_path/"state.json").read_text())
     assert state["model_calls"]==2
     assert state["tasks"]["T1"]["status"]=="REVIEW"
+
+
+
+@pytest.mark.parametrize("name", ["CON", "nul.txt", "COM1.py", "a/LPT3.txt",
+                                    "dir/aux", "readme.", "readme "])
+def test_windows_reserved_names_never_enter_sandbox_even_on_linux(name):
+    with pytest.raises(F.InvalidPlan):
+        F.safe_path(name)
+
+
+def test_compile_gate_rejects_illegal_top_level_return(tmp_path):
+    root=tmp_path/"repo";root.mkdir();(root/"src").mkdir();(root/"tests").mkdir()
+    (root/"src"/"x.py").write_text("def ok():return 1\n")
+    (root/"tests"/"test_safe.py").write_text("def test_ok():assert True\n")
+    t=plan(item(scope=["src/x.py"]))["T1"]
+    stage=tmp_path/"work"
+    previous=W.prepare(root,t,stage)
+    (stage/"src"/"x.py").write_text("return 5\n")
+    ok,proof,changes=W.gates(t,stage,previous)
+    assert not ok and changes==()
+    assert len(proof)==64
+
+
+def test_executor_never_creates_checkpoint_inside_source_tree(tmp_path):
+    root=tmp_path/"repo";root.mkdir()
+    planpath=tmp_path/"p.json";planpath.write_text(json.dumps([item()]))
+    with pytest.raises(F.InvalidPlan):
+        W.once(root=root,plan=planpath,checkpoint=root/"state.json",
+               staging=tmp_path/"work",small_model="google/a",large_model="google/b")
+    with pytest.raises(F.InvalidPlan):
+        W.once(root=root,plan=planpath,checkpoint=tmp_path/"state.json",
+               staging=root/"stage",small_model="google/a",large_model="google/b")
