@@ -7,8 +7,12 @@ permissions:
   contents: read
 jobs:
   tests:
-    runs-on: ubuntu-latest
-    timeout-minutes: 8
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 12
     steps:
       - uses: actions/checkout@v4
         with:
@@ -27,7 +31,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: factory-evidence
+          name: factory-evidence-${{ matrix.os }}
           path: |
             factory-test.log
             factory-junit.xml
