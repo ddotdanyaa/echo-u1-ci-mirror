@@ -20,7 +20,7 @@ import xml.etree.ElementTree as ET
 STATES = frozenset(("READY", "RUNNING", "REVIEW", "DONE", "FAILED", "BLOCKED"))
 DENY_PARTS = frozenset((".env", ".git", ".kilo", ".ssh", "secrets", "private",
                         "transcripts", "credentials", "tokens", "recordings",
-                        "__pycache__", "node_modules", "materials"))
+                        "__pycache__", "node_modules", "materials", "kilo.jsonc", "kilo.json", "opencode.jsonc", "opencode.json"))
 SECRET = re.compile(
     r"(?:AIza[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|"
     r"-----BEGIN [A-Z ]*PRIVATE KEY-----|"
