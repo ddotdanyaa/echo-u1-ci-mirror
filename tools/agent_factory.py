@@ -15,6 +15,7 @@ import re
 import tempfile
 import time
 import uuid
+import unicodedata
 import xml.etree.ElementTree as ET
 
 STATES = frozenset(("READY", "RUNNING", "REVIEW", "DONE", "FAILED", "BLOCKED"))
@@ -39,6 +40,9 @@ def safe_path(value: str) -> str:
     """Fail closed on traversal, hidden/system secrets, odd Windows filenames."""
     if not isinstance(value, str) or not value or "\\" in value or ":" in value:
         raise InvalidPlan("unsafe path")
+    if any(ord(ch) < 32 or ord(ch) == 127 or unicodedata.category(ch) == "Cf"
+           for ch in value):
+        raise InvalidPlan("control or bidi formatting in filename")
     path = PurePosixPath(value)
     if path.is_absolute() or not path.parts or value != path.as_posix():
         raise InvalidPlan("noncanonical path")
@@ -62,7 +66,7 @@ class Task:
 
     @property
     def scope(self) -> frozenset[str]:
-        return frozenset(self.touch_files)
+        return frozenset(p.casefold() for p in self.touch_files)
 
 
 def read_plan(plan: object) -> dict[str, Task]:
@@ -88,8 +92,8 @@ def read_plan(plan: object) -> dict[str, Task]:
             val = row.get(k, [])
             if not isinstance(val, list) or not all(isinstance(v, str) for v in val):
                 raise InvalidPlan("invalid " + k)
-            if len(val) != len(set(val)):
-                raise InvalidPlan("duplicated " + k)
+            if len(val) != len({p.casefold() for p in val}):
+                raise InvalidPlan("duplicated or case-aliased " + k)
             fields[k] = tuple(val)
         files = {k: tuple(safe_path(p) for p in fields[k])
                  for k in ("touch_files", "read_files", "tests")}
@@ -162,12 +166,12 @@ def ready(tasks: dict[str, Task], state: dict, *, google: bool = True,
     """Sorted tasks ready to execute, excluding all concurrent writers."""
     validate_state(tasks, state)
     read_in_use = set()
-    write_in_use = set(occupied)
+    write_in_use = {p.casefold() for p in occupied}
     for tid, row in state["tasks"].items():
         if row["status"] == "RUNNING":
-            write_in_use.update(tasks[tid].touch_files)
-            read_in_use.update(tasks[tid].read_files)
-            read_in_use.update(tasks[tid].tests)
+            write_in_use.update(p.casefold() for p in tasks[tid].touch_files)
+            read_in_use.update(p.casefold() for p in tasks[tid].read_files)
+            read_in_use.update(p.casefold() for p in tasks[tid].tests)
     found = []
     for tid in sorted(tasks):
         task = tasks[tid]
@@ -175,8 +179,8 @@ def ready(tasks: dict[str, Task], state: dict, *, google: bool = True,
             continue
         if google and not task.privacy_safe:
             continue
-        reads = set(task.read_files) | set(task.tests)
-        writes = set(task.touch_files)
+        reads = {p.casefold() for p in task.read_files + task.tests}
+        writes = {p.casefold() for p in task.touch_files}
         if (writes & (write_in_use | read_in_use)) or (reads & write_in_use):
             continue
         if all(state["tasks"][dep]["status"] == "DONE" for dep in task.depends_on):
