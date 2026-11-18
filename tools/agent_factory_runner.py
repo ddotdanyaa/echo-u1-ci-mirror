@@ -21,10 +21,13 @@ import time
 import xml.etree.ElementTree as ET
 
 from .agent_factory import (InvalidPlan, Task, acquire, backoff, load_state,
-                            read_plan, ready, receipt_digest, route,
+                            read_plan, ready, receipt_digest, route, quarantine,
                             safe_path, safe_source, save_atomic, settle)
 
 RATE_LIMIT = re.compile(r"\b429\b|resource[_ -]?exhausted|rate.?limit", re.I)
+AUTH_FAILURE = re.compile(r"\b(?:401|403)\b|permission[_ -]?denied|invalid authentication|"
+                          r"location is not supported", re.I)
+SERVER_FAILURE = re.compile(r"\b50[0-9]\b|internal server error|service unavailable", re.I)
 ENV_ALLOW = ("PATH", "PATHEXT", "SystemRoot", "WINDIR", "COMSPEC", "LANG")
 POLICY_FILE = "kilo.jsonc"
 
@@ -260,6 +263,8 @@ def once(*, root: Path, plan: Path, checkpoint: Path, staging: Path,
             raise InvalidPlan("autonomous Kilo is not OS isolated: explicit opt-in required")
         if not shutil.which("kilo"):
             raise InvalidPlan("kilo command unavailable")
+        if not os.environ.get("GOOGLE_GENERATIVE_AI_API_KEY"):
+            raise InvalidPlan("Google API auth key must be set in the caller environment")
         token = acquire(tasks, state, tid)
         save_atomic(checkpoint, state)
         prefix = "task-" + tid + "-" + token[:8]
@@ -269,27 +274,50 @@ def once(*, root: Path, plan: Path, checkpoint: Path, staging: Path,
         rc = 1
         try:
             baseline = prepare(root, task, workdir)
+            stopped = None
             for attempt in range(2):  # at most two invocations, including a 429 fallback
                 chosen = route(task, small_model=small_model, large_model=large_model,
                                fallback=bool(attempt))
                 if attempt:
                     if state["model_calls"] >= state["max_model_calls"]:
+                        stopped = "all_channels_throttled"
                         break
                     state["model_calls"] += 1
                     save_atomic(checkpoint, state)
                     time.sleep(backoff(attempt - 1))
-                    # Do NOT let a throttled model's incomplete or unauthorized
-                    # edits contaminate the next model's input.
+                    # A failed worker may have written new files; never reuse it.
                     workdir = staging / (prefix + "-retry-" + str(attempt))
                     baseline = prepare(root, task, workdir)
                 rc, logs, error = model_attempt(task, workdir, chosen, timeout=240)
                 if rc == 0:
                     break
-                if not RATE_LIMIT.search((logs + error).decode("utf-8", errors="replace")):
+                detail = (logs + b"\n" + error)[:15000].decode("utf-8", errors="replace")
+                if rc == 124:
+                    stopped = "worker_timeout"
                     break
-            ok, receipt, changed = gates(task, workdir, baseline)
-            if rc != 0:
-                ok = False
+                if rc == 125:
+                    stopped = "unsafe_windows_launcher"
+                    break
+                if AUTH_FAILURE.search(detail):
+                    stopped = "provider_auth"
+                    break
+                is_throttled = bool(RATE_LIMIT.search(detail))
+                retryable = is_throttled or bool(SERVER_FAILURE.search(detail))
+                if not retryable:
+                    break
+                if attempt == 1:
+                    stopped = "all_channels_throttled" if is_throttled else "provider_unavailable"
+                    break
+            if stopped:
+                quarantine(state, tid, token, reason=stopped)
+                save_atomic(checkpoint, state)
+                return {"status": "BLOCKED", "task": tid,
+                        "blocked_reason": stopped,
+                        "deploy_blocked": state["deploy_blocked"]}
+            if rc == 0:
+                ok, receipt, changed = gates(task, workdir, baseline)
+            else:
+                ok, changed = False, ()
                 receipt = receipt_digest(logs, error, rc)
             if ok:
                 # A verified candidate is for external human review. Never
@@ -307,10 +335,15 @@ def once(*, root: Path, plan: Path, checkpoint: Path, staging: Path,
             return {"status": status, "task": tid, "changed": len(changed),
                     "receipt_sha256": receipt, "deploy_blocked": state["deploy_blocked"]}
         except Exception as error_obj:
-            status = settle(state, tid, token, tests_ok=False,
-                            evidence=sha256(type(error_obj).__name__.encode()).hexdigest())
+            # A failed policy/IO check may mean the model still has a live
+            # descendant. Do not automatically dispatch the same task again.
+            quarantine(state, tid, token,
+                       reason="scope_violation" if isinstance(error_obj, InvalidPlan)
+                       else "worker_exception")
             save_atomic(checkpoint, state)
-            return {"status": status, "task": tid, "error_type": type(error_obj).__name__}
+            return {"status": "BLOCKED", "task": tid,
+                    "error_type": type(error_obj).__name__,
+                    "blocked_reason": state["tasks"][tid]["blocked_reason"]}
     finally:
         lock.rmdir()
 
