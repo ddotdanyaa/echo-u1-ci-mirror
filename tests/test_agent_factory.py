@@ -422,3 +422,50 @@ def test_model_child_env_does_not_inherit_parent_provider_secrets(tmp_path, monk
     assert env.get("GOOGLE_GENERATIVE_AI_API_KEY")=="synthetic-google-placeholder"
     assert env["PYTHONUTF8"]=="1"
     assert "kilo" in str(calls[0][0]).lower()
+
+
+
+@pytest.mark.parametrize("code,log,expected_reason,calls_expected", [
+    (124,b"worker timeout","worker_timeout",1),
+    (1,b"HTTP 403 forbidden","provider_auth",1),
+    (1,b"429 RESOURCE_EXHAUSTED","all_channels_throttled",2),
+])
+def test_nonrecoverable_provider_failures_quarantine_task(
+        tmp_path,monkeypatch,code,log,expected_reason,calls_expected):
+    root=tmp_path/"repo";root.mkdir()
+    (root/"src").mkdir();(root/"tests").mkdir()
+    (root/"src"/"logic.py").write_text("def value():return 1\n")
+    (root/"tests"/"test_safe.py").write_text("def test_ok():assert True\n")
+    p=tmp_path/"plan.json";p.write_text(json.dumps([item(scope=["src/logic.py"])]))
+    monkeypatch.setenv("GOOGLE_GENERATIVE_AI_API_KEY","synthetic-placeholder")
+    monkeypatch.setattr(W.shutil,"which",lambda _: "kilo")
+    monkeypatch.setattr(W.time,"sleep",lambda _: None)
+    calls=[]
+    def failing_model(task, workdir, model, timeout):
+        calls.append(model)
+        return code,b"",log
+    monkeypatch.setattr(W,"model_attempt",failing_model)
+    statepath=tmp_path/"state.json"
+    result=W.once(root=root,plan=p,checkpoint=statepath,
+                  staging=tmp_path/"stage",small_model="google/gemma",
+                  large_model="google/flash",execute=True,acknowledge=True)
+    assert result["status"]=="BLOCKED", result
+    assert result.get("blocked_reason")==expected_reason
+    assert len(calls)==calls_expected
+    state=json.loads(statepath.read_text())
+    assert state["tasks"]["T1"]["status"]=="BLOCKED"
+    assert F.ready(plan(item(scope=["src/logic.py"])),state)==[]
+
+
+def test_no_google_credential_causes_no_worker_invocation(tmp_path,monkeypatch):
+    monkeypatch.delenv("GOOGLE_GENERATIVE_AI_API_KEY",raising=False)
+    monkeypatch.setattr(W.shutil,"which",lambda _: "kilo")
+    monkeypatch.setattr(W,"model_attempt",lambda *a,**kw:
+                        (_ for _ in ()).throw(AssertionError("model invoked without auth")))
+    p=tmp_path/"p.json";p.write_text(json.dumps([item()]))
+    root=tmp_path/"repo";root.mkdir()
+    with pytest.raises(F.InvalidPlan,match="Google"):
+        W.once(root=root,plan=p,checkpoint=tmp_path/"s.json",
+               staging=tmp_path/"stage",small_model="google/gemma",
+               large_model="google/flash",execute=True,acknowledge=True)
+    assert not (tmp_path/"s.json").exists()
