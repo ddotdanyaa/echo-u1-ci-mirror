@@ -42,7 +42,6 @@ def worker_policy(task: Task) -> dict:
     return {
         "$schema": "https://app.kilo.ai/config.json",
         "enabled_providers": ["google"],
-        "provider": {"google": {"options": {"apiKey": "{env:GOOGLE_GENERATIVE_AI_API_KEY}"}}},
         "mcp": {},
         "formatter": False,
         "lsp": False,
@@ -221,6 +220,14 @@ def model_attempt(task: Task, workdir: Path, model: str, timeout: int) -> tuple[
         google = os.environ.get("GOOGLE_GENERATIVE_AI_API_KEY", "")
         if google:
             env["GOOGLE_GENERATIVE_AI_API_KEY"] = google
+        # Kilo deliberately ignores {env:VAR} in untrusted project configs.
+        # Supply the reference in a trusted PROCESS-OWNED config, while the
+        # project kilo.jsonc remains the immutable deny-first permissions file.
+        env["KILO_CONFIG_CONTENT"] = json.dumps({
+            "provider": {"google": {
+                "options": {"apiKey": "{env:GOOGLE_GENERATIVE_AI_API_KEY}"}
+            }}
+        })
         args = [binary, "run", "--auto", "--model", model, prompt]
         try:
             p = subprocess.run(args, cwd=workdir, env=env,
