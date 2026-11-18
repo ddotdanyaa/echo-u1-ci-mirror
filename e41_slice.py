@@ -35,20 +35,34 @@ def _last_sentence(text):
     return parts[-1] if parts else text
 
 def public_address_allowed(text):
-    """E41: public *recipient* check for each spoken act, not a model-job verdict.
+    """Whether an untrusted ASR utterance may be disclosed to public search.
 
-    Any unambiguous third-person vocative makes the entire untrusted ASR
-    utterance unsuitable for publication, including its extracted question.
-    This deliberately does not silence local answers.  A model-job admission
-    or an UNKNOWN classification is not itself consent to public lookup.
+    This is a recipient-specific restriction, not the permission to search.
+    A speaker/recipient ambiguity must not be overcome by extracting an
+    apparently harmless question from the original speech.
     """
     text=str(text or '').strip()
     if not text:return False
-    if any(_vocative(part) for part in _SENT.split(text)):
-        return False
-    # ASR often omits the comma: 'Лена сколько ...'. Treat this as ambiguous
-    # for public disclosure only; avoid converting it into a silent TALK.
-    m=re.match(r'^([А-ЯЁ][а-яё]{2,})\s+(?:а\s+)?(?:сколько|когда|почему|зачем|где|куда|какой|какая|какие|что)\b',text,re.I)
-    if m and _vocative(m.group(1).capitalize()+','):
-        return False
+    parts=[part.strip() for part in _SENT.split(text) if part.strip()]
+    # A name without a comma is common in ASR. Only treat it as a recipient
+    # when it precedes a question form or direct request, not an arbitrary
+    # noun phrase. A later speech act has the very same protection.
+    question_head=re.compile(
+        r'^([А-ЯЁ][а-яё]{2,})\s+(?:а\s+)?'
+        r'(?:сколько|когда|почему|зачем|где|куда|какой|какая|какие|что|'
+        r'объясни|подскажи|расскажи|напомни|скажи|назови|проверь|покажи)\b',
+        re.I)
+    standalone_name=re.compile(r'^([А-ЯЁ][а-яё]{2,})[?!.…]$',re.I)
+    for i,part in enumerate(parts):
+        if _vocative(part):
+            return False
+        head=question_head.match(part)
+        if head and _vocative(head.group(1).capitalize()+','):
+            return False
+        # "Лена? Сколько будет..." is a named handoff even though
+        # punctuation separated the bare name from the factual question.
+        bare=standalone_name.match(part)
+        if bare and i+1<len(parts) and _vocative(bare.group(1).capitalize()+','):
+            return False
     return True
+
