@@ -42,7 +42,7 @@ def worker_policy(task: Task) -> dict:
     return {
         "$schema": "https://app.kilo.ai/config.json",
         "enabled_providers": ["google"],
-        "provider": {"google": {"env": ["GOOGLE_GENERATIVE_AI_API_KEY"]}},
+        "provider": {"google": {"options": {"apiKey": "{env:GOOGLE_GENERATIVE_AI_API_KEY}"}}},
         "mcp": {},
         "formatter": False,
         "lsp": False,
