@@ -264,3 +264,35 @@ def test_a_reader_must_not_overlap_concurrent_writer():
     s=F.initial_state(tasks)
     F.acquire(tasks,s,"A",now=0)
     assert F.ready(tasks,s)==[]
+
+
+
+def test_429_fallback_starts_from_clean_allowlisted_copy(tmp_path,monkeypatch):
+    root=tmp_path/"project";root.mkdir()
+    (root/"src").mkdir()
+    (root/"src"/"logic.py").write_text("def value():return 1")
+    (root/"tests").mkdir()
+    (root/"tests"/"test_safe.py").write_text("from src.logic import value\ndef test_value():assert value()==2\n")
+    path=tmp_path/"plan.json"
+    path.write_text(json.dumps([item(scope=["src/logic.py"])]))
+    monkeypatch.setattr(W.shutil,"which",lambda _: "kilo")
+    monkeypatch.setattr(W.time,"sleep",lambda _: None)
+    called=[]
+    def fake_kilo(task, workdir, model, timeout):
+        called.append((model,workdir))
+        if len(called)==1:
+            (workdir/"forbidden.py").write_text("unapproved=1")
+            return 1,b"",b"rate limit 429"
+        assert not (workdir/"forbidden.py").exists(), "429 retry contaminated with earlier incomplete work"
+        (workdir/"src"/"logic.py").write_text("def value():return 2\n")
+        return 0,b"synthetic success",b""
+    monkeypatch.setattr(W,"model_attempt",fake_kilo)
+    result=W.once(root=root,plan=path,checkpoint=tmp_path/"state.json",
+                  staging=tmp_path/"stage",small_model="google/gemma",
+                  large_model="google/flash",execute=True,acknowledge=True)
+    assert result["status"]=="REVIEW"
+    assert len(called)==2 and called[0][1]!=called[1][1]
+    assert (tmp_path/"stage"/"for-review"/"T1"/"src"/"logic.py").exists()
+    state=json.loads((tmp_path/"state.json").read_text())
+    assert state["model_calls"]==2
+    assert state["tasks"]["T1"]["status"]=="REVIEW"
