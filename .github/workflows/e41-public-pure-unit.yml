@@ -1,0 +1,35 @@
+name: e41-public-pure-unit
+on:
+  push:
+    branches:
+      - ci/chatgpt-e41-20261118
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install pytest
+        run: python -m pip install --disable-pip-version-check pytest==8.4.2
+      - name: Test isolated E41 source slice
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m pytest -q --tb=short tests/test_e41_slice.py --junitxml=e41-junit.xml 2>&1 | tee e41-run.log
+      - name: Upload test evidence
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e41-test-evidence
+          path: |
+            e41-junit.xml
+            e41-run.log
+          retention-days: 3
