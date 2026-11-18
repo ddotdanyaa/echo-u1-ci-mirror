@@ -23,7 +23,7 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          python -m pytest -q --tb=short tests/test_e41_slice.py tests/test_e41_real_judge.py tests/test_lookup_ticket_slice.py tests/test_public_sink_policy.py tests/test_near_voice_synthetic.py --junitxml=e41-junit.xml 2>&1 | tee e41-run.log
+          python -m pytest -q --tb=short tests/test_e41_slice.py tests/test_e41_real_judge.py tests/test_lookup_ticket_slice.py tests/test_public_sink_policy.py tests/test_near_voice_synthetic.py tests/test_playback_frames.py --junitxml=e41-junit.xml 2>&1 | tee e41-run.log
       - name: Upload test evidence
         uses: actions/upload-artifact@v4
         if: always()
