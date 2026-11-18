@@ -24,7 +24,7 @@ DENY_PARTS = frozenset((".env", ".git", ".kilo", ".ssh", "secrets", "private",
 SECRET = re.compile(
     r"(?:AIza[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|"
     r"-----BEGIN [A-Z ]*PRIVATE KEY-----|"
-    r"(?i:password|api[_-]?key|client_secret)\s*[:=]\s*['\x22][^\x22']{8,}['\x22])"
+    r"(?i:password|api[_-]?key|client_secret)\s*[:=]\s*(?:['\x22][^\x22']{8,}['\x22]|[A-Za-z0-9_.-]{8,})(?:\s|$))"
 )
 TASK_ID = re.compile(r"^[a-zA-Z][a-zA-Z0-9_-]{0,63}$")
 MODEL_ID = re.compile(r"^[a-zA-Z0-9._-]+/[a-zA-Z0-9._:-]+$")
@@ -149,10 +149,13 @@ def ready(tasks: dict[str, Task], state: dict, *, google: bool = True,
           occupied: tuple[str, ...] = ()) -> list[str]:
     """Sorted tasks ready to execute, excluding all concurrent writers."""
     validate_state(tasks, state)
-    busy = set(occupied)
+    read_in_use = set()
+    write_in_use = set(occupied)
     for tid, row in state["tasks"].items():
         if row["status"] == "RUNNING":
-            busy.update(tasks[tid].touch_files)
+            write_in_use.update(tasks[tid].touch_files)
+            read_in_use.update(tasks[tid].read_files)
+            read_in_use.update(tasks[tid].tests)
     found = []
     for tid in sorted(tasks):
         task = tasks[tid]
@@ -160,11 +163,14 @@ def ready(tasks: dict[str, Task], state: dict, *, google: bool = True,
             continue
         if google and not task.privacy_safe:
             continue
-        if busy.intersection(task.scope):
+        reads = set(task.read_files) | set(task.tests)
+        writes = set(task.touch_files)
+        if (writes & (write_in_use | read_in_use)) or (reads & write_in_use):
             continue
         if all(state["tasks"][dep]["status"] == "DONE" for dep in task.depends_on):
             found.append(tid)
-            busy.update(task.scope)
+            write_in_use.update(writes)
+            read_in_use.update(reads)
     return found
 
 
