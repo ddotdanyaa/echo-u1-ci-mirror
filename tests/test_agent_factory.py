@@ -173,7 +173,8 @@ def test_prepare_is_explicit_allowlist_not_full_git_worktree(tmp_path):
     t=plan(item(scope=["src/logic.py"]))["T1"]
     out=tmp_path/"sandbox"
     original=W.prepare(root,t,out)
-    assert set(original)=={"src/logic.py","tests/test_safe.py"}
+    assert set(original)=={"src/logic.py","tests/test_safe.py","kilo.jsonc"}
+    assert (out/"kilo.jsonc").is_file(), "Kilo policy is part of the immutable staging snapshot"
     assert not (out/".env").exists()
     assert W.inspect_changes(t,out,original)==()
     (out/"src"/"logic.py").write_text("x=2")
