@@ -239,15 +239,26 @@ def main(argv=None):
     p.add_argument("--large-model", required=True)
     p.add_argument("--execute", action="store_true")
     p.add_argument("--ack-host-access-risk", action="store_true")
+    p.add_argument("--max-tasks", type=int, default=1,
+                   help="execute at most N sequential tasks; no implicit daemon")
     args = p.parse_args(argv)
+    if not 1 <= args.max_tasks <= 10:
+        p.error("--max-tasks must be in 1..10")
     if args.execute and args.staging.resolve().is_relative_to(args.root.resolve()):
         p.error("staging must not be within original repository")
-    result = once(root=args.root, plan=args.plan, checkpoint=args.checkpoint,
-                  staging=args.staging, small_model=args.small_model,
-                  large_model=args.large_model, execute=args.execute,
-                  acknowledge=args.ack_host_access_risk)
-    print(json.dumps(result, ensure_ascii=False, sort_keys=True))
-    return 0 if result["status"] in ("DRY_RUN", "REVIEW", "IDLE") else 2
+    outcomes = []
+    for _ in range(args.max_tasks if args.execute else 1):
+        result = once(root=args.root, plan=args.plan, checkpoint=args.checkpoint,
+                      staging=args.staging, small_model=args.small_model,
+                      large_model=args.large_model, execute=args.execute,
+                      acknowledge=args.ack_host_access_risk)
+        outcomes.append(result)
+        if result["status"] not in ("REVIEW", "READY"):
+            break
+    for result in outcomes:
+        print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+    return 0 if all(x["status"] in ("DRY_RUN", "REVIEW", "IDLE")
+                    for x in outcomes) else 2
 
 
 if __name__ == "__main__":
