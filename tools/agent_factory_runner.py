@@ -18,14 +18,48 @@ import subprocess
 import sys
 import tempfile
 import time
+import xml.etree.ElementTree as ET
 
 from .agent_factory import (InvalidPlan, Task, acquire, backoff, load_state,
                             read_plan, ready, receipt_digest, route,
                             safe_path, safe_source, save_atomic, settle)
 
 RATE_LIMIT = re.compile(r"\b429\b|resource[_ -]?exhausted|rate.?limit", re.I)
-ENV_ALLOW = ("PATH", "SystemRoot", "WINDIR", "TEMP", "TMP", "HOME",
-             "USERPROFILE", "LOCALAPPDATA", "APPDATA", "LANG", "PYTHONUTF8")
+ENV_ALLOW = ("PATH", "PATHEXT", "SystemRoot", "WINDIR", "COMSPEC", "LANG")
+POLICY_FILE = "kilo.jsonc"
+
+
+def worker_policy(task: Task) -> dict:
+    """Kilo 1.0 project permission syntax; policy is frozen in the staging snapshot.
+
+    This is application-level enforcement, NOT an OS sandbox.
+    """
+    edit = {"*": "deny"}
+    edit.update({name: "allow" for name in sorted(task.touch_files)})
+    return {
+        "$schema": "https://app.kilo.ai/config.json",
+        "enabled_providers": ["google"],
+        "provider": {"google": {"env": ["GOOGLE_GENERATIVE_AI_API_KEY"]}},
+        "mcp": {},
+        "formatter": False,
+        "lsp": False,
+        "permission": {
+            "*": "deny",
+            "read": {"*": "allow", "*.env": "deny", "**/*.env": "deny",
+                     "*.env.*": "deny", "**/*.env.*": "deny"},
+            "edit": edit,
+            "glob": "allow",
+            "grep": "allow",
+            "external_directory": "deny",
+            "bash": "deny",
+            "task": "deny",
+            "agent_manager": "deny",
+            "websearch": "deny",
+            "webfetch": "deny",
+            "doom_loop": "deny",
+            "skill": "deny",
+        },
+    }
 
 
 def source_path(root: Path, name: str) -> Path:
@@ -74,13 +108,19 @@ def prepare(root: Path, task: Task, workdir: Path) -> dict[str, bytes]:
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(data)
         staged[name] = data
+    # The model may not create/replace its own permissions. The file is also
+    # compared byte-for-byte after coding and after pytest.
+    conf = (json.dumps(worker_policy(task), sort_keys=True, ensure_ascii=False,
+                       indent=2) + "\n").encode("utf-8")
+    (workdir / POLICY_FILE).write_bytes(conf)
+    staged[POLICY_FILE] = conf
     return staged
 
 
 def inspect_changes(task: Task, workdir: Path, staged: dict[str, bytes]) -> tuple[str, ...]:
     """Reject changed tests, other files, deletion and generated test weakening."""
     allowed = set(task.touch_files)
-    unchanged = (set(task.read_files) | set(task.tests)) - allowed
+    unchanged = ((set(task.read_files) | set(task.tests)) - allowed) | {POLICY_FILE}
     found: dict[str, bytes] = {}
     for p in workdir.rglob("*"):
         if p.is_symlink():
@@ -88,7 +128,8 @@ def inspect_changes(task: Task, workdir: Path, staged: dict[str, bytes]) -> tupl
         if not p.is_file():
             continue
         rel = p.relative_to(workdir).as_posix()
-        safe_path(rel)
+        if rel != POLICY_FILE:
+            safe_path(rel)
         if rel not in allowed | unchanged:
             raise InvalidPlan("unapproved file created")
         found[rel] = safe_source(p)
@@ -105,7 +146,10 @@ def inspect_changes(task: Task, workdir: Path, staged: dict[str, bytes]) -> tupl
 
 def gates(task: Task, workdir: Path, staged: dict[str, bytes],
           *, timeout: int = 120) -> tuple[bool, str, tuple[str, ...]]:
-    """Real Python compilation and exact named pytest: no auto-merge."""
+    """Compile, execute real pytest, validate JUnit and recheck immutable files.
+
+    A zero-exit test suite with every case skipped is NOT passing evidence.
+    """
     try:
         changed = inspect_changes(task, workdir, staged)
         if not changed:
@@ -113,35 +157,77 @@ def gates(task: Task, workdir: Path, staged: dict[str, bytes],
         for name in changed:
             if name.endswith(".py"):
                 source = workdir.joinpath(*name.split("/")).read_text(encoding="utf-8")
-                compile(source, name, "exec")  # syntax + illegal return/yield, no user code executed
+                compile(source, name, "exec")
         if not task.tests:
             raise InvalidPlan("no immutable acceptance tests supplied")
-        args = [sys.executable, "-m", "pytest", "-q", "--tb=short", *task.tests]
         env = {k: v for k, v in os.environ.items() if k in ENV_ALLOW}
-        env.update(PYTHONUTF8="1", PYTHONIOENCODING="utf-8")
-        run = subprocess.run(args, cwd=workdir, env=env, capture_output=True, timeout=timeout)
-        return run.returncode == 0, receipt_digest(run.stdout, run.stderr, run.returncode), changed
-    except (InvalidPlan, OSError, SyntaxError, UnicodeError, subprocess.TimeoutExpired) as error:
+        env.update(PYTHONUTF8="1", PYTHONIOENCODING="utf-8",
+                   PYTHONDONTWRITEBYTECODE="1")
+        with tempfile.TemporaryDirectory(prefix="factory-junit-") as d:
+            xml = Path(d) / "result.xml"
+            args = [sys.executable, "-m", "pytest", "-q", "--tb=short",
+                    "-p", "no:cacheprovider", "--junitxml=" + str(xml), *task.tests]
+            run = subprocess.run(args, cwd=workdir, env=env,
+                                 capture_output=True, timeout=timeout)
+            cases = list(ET.parse(xml).getroot().iter("testcase")) if xml.is_file() else []
+            passed = sum(1 for case in cases
+                         if not any(child.tag in ("skipped", "error", "failure")
+                                    for child in case))
+        # pytest executes untrusted code. A successful return cannot grant
+        # permission to alter test files or the project policy during the run.
+        same_changes = inspect_changes(task, workdir, staged) == changed
+        accepted = run.returncode == 0 and passed > 0 and same_changes
+        return accepted, receipt_digest(run.stdout, run.stderr, run.returncode), changed
+    except (InvalidPlan, OSError, SyntaxError, UnicodeError,
+            subprocess.TimeoutExpired, ET.ParseError) as error:
         return False, sha256(type(error).__name__.encode()).hexdigest(), ()
 
 
 def model_attempt(task: Task, workdir: Path, model: str, timeout: int) -> tuple[int, bytes, bytes]:
-    """The real command is documented by kilo run --auto --model, without shell."""
+    """Invoke Kilo with a frozen project policy and a temporary clean profile.
+
+    The explicitly selected Google auth key is the only provider credential
+    forwarded. No secret is placed in argv, model prompt or kilo.jsonc.
+    """
     prompt = ("Implement ONLY task " + task.id + ": " + task.title +
               ". Change only: " + ", ".join(task.touch_files) +
               ". Read-only tests: " + ", ".join(task.tests) +
               ". Do not modify tests, execute deployment, read parent folders, "
               "or use network tools other than the configured model.")
-    env = {k: v for k, v in os.environ.items() if k in ENV_ALLOW}
-    # Auth is delegated to the locally configured Kilo credential store.
-    # No Google key is transmitted via argv or checkpoint.
-    env.update(PYTHONUTF8="1", PYTHONIOENCODING="utf-8")
-    args = ["kilo", "run", "--auto", "--model", model, prompt]
-    try:
-        p = subprocess.run(args, cwd=workdir, env=env, capture_output=True, timeout=timeout)
-        return p.returncode, p.stdout, p.stderr
-    except subprocess.TimeoutExpired:
-        return 124, b"", b"timeout"
+    binary = shutil.which("kilo") or "kilo"
+    if os.name == "nt" and binary.lower().endswith((".cmd", ".bat")):
+        # Windows npm command shims are batch scripts and can receive shell
+        # metacharacters in user-provided prompts. Require native kilo.exe.
+        return 125, b"", b"native-kilo-exe-required"
+    with tempfile.TemporaryDirectory(prefix="factory-kilo-home-") as home:
+        base = Path(home)
+        dirs = {name: base / name for name in
+                ("config", "cache", "data", "appdata", "localappdata", "npm-cache")}
+        for dest in dirs.values():
+            dest.mkdir(parents=True, exist_ok=True)
+        env = {k: v for k, v in os.environ.items() if k in ENV_ALLOW}
+        env.update(HOME=home, USERPROFILE=home,
+                   XDG_CONFIG_HOME=str(dirs["config"]),
+                   XDG_CACHE_HOME=str(dirs["cache"]),
+                   XDG_DATA_HOME=str(dirs["data"]),
+                   APPDATA=str(dirs["appdata"]),
+                   LOCALAPPDATA=str(dirs["localappdata"]),
+                   NPM_CONFIG_CACHE=str(dirs["npm-cache"]),
+                   TEMP=home, TMP=home, PYTHONUTF8="1",
+                   PYTHONIOENCODING="utf-8")
+        google = os.environ.get("GOOGLE_GENERATIVE_AI_API_KEY", "")
+        if google:
+            env["GOOGLE_GENERATIVE_AI_API_KEY"] = google
+        args = [binary, "run", "--auto", "--model", model, prompt]
+        try:
+            p = subprocess.run(args, cwd=workdir, env=env,
+                               capture_output=True, timeout=timeout, shell=False)
+            return p.returncode, p.stdout, p.stderr
+        except subprocess.TimeoutExpired:
+            # Python stops the direct process; it cannot prove all descendants
+            # terminated on Windows. The caller must quarantine the task.
+            return 124, b"", b"timeout-worker-descendants-unknown"
+
 
 
 def once(*, root: Path, plan: Path, checkpoint: Path, staging: Path,
