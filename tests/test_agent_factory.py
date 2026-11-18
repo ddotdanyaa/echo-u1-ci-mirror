@@ -328,3 +328,24 @@ def test_executor_never_creates_checkpoint_inside_source_tree(tmp_path):
     with pytest.raises(F.InvalidPlan):
         W.once(root=root,plan=planpath,checkpoint=tmp_path/"state.json",
                staging=root/"stage",small_model="google/a",large_model="google/b")
+
+
+
+def test_cli_max_tasks_is_bounded_and_dry_run_runs_only_once(tmp_path,monkeypatch,capsys):
+    root=tmp_path/"repo";root.mkdir()
+    planpath=tmp_path/"plan.json"
+    planpath.write_text(json.dumps([item()]))
+    args=["--root",str(root),"--plan",str(planpath),
+          "--checkpoint",str(tmp_path/"state.json"),"--staging",str(tmp_path/"stage"),
+          "--small-model","google/a","--large-model","google/b","--max-tasks","10"]
+    count=[]
+    previous=W.once
+    def once_count(**kw):
+        count.append(1)
+        return previous(**kw)
+    monkeypatch.setattr(W,"once",once_count)
+    assert W.main(args)==0
+    assert len(count)==1
+    assert json.loads(capsys.readouterr().out)["status"]=="DRY_RUN"
+    with pytest.raises(SystemExit):
+        W.main(args[:-1]+["11"])
