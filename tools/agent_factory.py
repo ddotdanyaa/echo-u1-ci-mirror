@@ -206,6 +206,24 @@ def settle(state: dict, tid: str, token: str, *,
     return next_status
 
 
+def quarantine(state: dict, tid: str, token: str, *, reason: str) -> None:
+    """Fail closed after unknown descendant, invalid auth, repeated 429, or unsafe worker.
+
+    Never retry an uncertain process or a locked provider in the next batch.
+    """
+    allowed = {"worker_timeout", "provider_auth", "all_channels_throttled",
+               "provider_unavailable", "unsafe_windows_launcher",
+               "worker_exception", "scope_violation"}
+    if reason not in allowed:
+        raise InvalidPlan("unknown quarantine reason")
+    row = state["tasks"][tid]
+    if row["status"] != "RUNNING" or row["lease"] != token:
+        raise InvalidPlan("stale/foreign lease")
+    row.update(status="BLOCKED", lease=None, deadline=None,
+               blocked_reason=reason,
+               evidence=sha256(reason.encode("utf-8")).hexdigest())
+
+
 def accept(state: dict, tid: str, *, reviewer: str) -> None:
     """Human or separately configured trusted reviewer must acknowledge."""
     row = state["tasks"][tid]
