@@ -141,6 +141,16 @@ def validate_state(tasks: dict[str, Task], state: dict) -> None:
     for row in state["tasks"].values():
         if row.get("status") not in STATES or type(row.get("attempts")) is not int:
             raise InvalidPlan("invalid state")
+        if row["attempts"] < 0:
+            raise InvalidPlan("negative attempts")
+        if row["status"] == "RUNNING":
+            if (not isinstance(row.get("lease"), str) or
+                not re.fullmatch(r"[a-f0-9]{32}", row["lease"]) or
+                type(row.get("deadline")) not in (int, float) or
+                row["deadline"] <= 0 or row["attempts"] == 0):
+                raise InvalidPlan("RUNNING task has no verifiable lease/deadline")
+        elif row.get("lease") is not None or row.get("deadline") is not None:
+            raise InvalidPlan("inactive task still holds lease")
     if type(state.get("max_model_calls")) is not int or type(state.get("model_calls")) is not int:
         raise InvalidPlan("invalid budget")
     if state["max_model_calls"] < 0 or state["model_calls"] < 0:
@@ -238,7 +248,8 @@ def pause_expired(state: dict, now: float) -> list[str]:
     suspect = []
     for tid, row in state["tasks"].items():
         if row["status"] == "RUNNING" and row.get("deadline") is not None and row["deadline"] <= now:
-            row["status"] = "BLOCKED"
+            row.update(status="BLOCKED", lease=None, deadline=None,
+                       blocked_reason="lease_expired")
             suspect.append(tid)
     return suspect
 
@@ -306,16 +317,35 @@ def grouped_failures(xml_text: str) -> list[dict]:
 
 
 def save_atomic(path: Path, state: dict) -> None:
-    """Write then replace, so interruption never yields a half checkpoint."""
+    """Fsync then atomic replace; bounded retry for transient Windows WinError 5.
+
+    Never truncate an old checkpoint; remove abandoned temp files on failure.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8",
-                                     dir=path.parent, prefix=".agent-state-",
-                                     delete=False) as f:
-        tmp = Path(f.name)
-        json.dump(state, f, ensure_ascii=False, sort_keys=True, indent=2)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp, path)
+    tmp = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8",
+                                         dir=path.parent, prefix=".agent-state-",
+                                         delete=False) as f:
+            tmp = Path(f.name)
+            json.dump(state, f, ensure_ascii=False, sort_keys=True, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        for attempt in range(4):
+            try:
+                os.replace(tmp, path)
+                tmp = None
+                break
+            except PermissionError:
+                if attempt == 3:
+                    raise
+                time.sleep(0.04 * (2 ** attempt))
+    finally:
+        if tmp is not None:
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 def load_state(path: Path, tasks: dict[str, Task]) -> dict:
