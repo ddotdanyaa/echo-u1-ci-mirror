@@ -70,3 +70,15 @@ def test_empty_material_is_never_authorized(spoken):
 ])
 def test_mixed_speech_act_never_leaks_original(spoken):
     assert not public_address_allowed(spoken)
+
+
+@pytest.mark.parametrize("spoken", [
+    "Закончим с первой темой. Миша сколько будет три плюс четыре",
+    "Теперь о второй задаче! Лена где находится река",
+    "Лена объясни почему небо голубое",
+    "Миша подскажи что такое гравитация",
+    "Саша расскажи в каком году была битва",
+    "Лена? Сколько будет два плюс два?",
+])
+def test_asr_missing_comma_or_sentence_split_stays_private(spoken):
+    assert not public_address_allowed(spoken), spoken
