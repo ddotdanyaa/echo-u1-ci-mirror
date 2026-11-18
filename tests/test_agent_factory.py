@@ -277,6 +277,7 @@ def test_429_fallback_starts_from_clean_allowlisted_copy(tmp_path,monkeypatch):
     path=tmp_path/"plan.json"
     path.write_text(json.dumps([item(scope=["src/logic.py"])]))
     monkeypatch.setattr(W.shutil,"which",lambda _: "kilo")
+    monkeypatch.setenv("GOOGLE_GENERATIVE_AI_API_KEY","synthetic-placeholder")
     monkeypatch.setattr(W.time,"sleep",lambda _: None)
     called=[]
     def fake_kilo(task, workdir, model, timeout):
