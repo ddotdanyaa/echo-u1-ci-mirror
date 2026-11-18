@@ -6,7 +6,7 @@ from __future__ import annotations
 import re
 import unicodedata
 
-_WORDS=re.compile(r"[^\\W_]+(?:[-’'][^\\W_]+)*",re.UNICODE)
+_WORDS=re.compile(r"[^\W_]+(?:[-’'][^\W_]+)*",re.UNICODE)
 def normalize(text):
     return ' '.join(_WORDS.findall(unicodedata.normalize('NFKC',str(text or '')).casefold().replace('ё','е')))
 def _set(words):return frozenset(normalize(words).split())
