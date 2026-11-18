@@ -1,0 +1,32 @@
+name: factory-pure-python
+on:
+  push:
+    branches: ['ci/chatgpt-factory-20261118']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install pytest only
+        run: python -m pip install --disable-pip-version-check pytest==8.4.2
+      - name: Factory syntax and deterministic queue/privacy/runner tests
+        run: |
+          python -m compileall -q tools/agent_factory.py tools/agent_factory_runner.py tests/test_agent_factory.py
+          python -m pytest -q --tb=short tests/test_agent_factory.py --junitxml=factory-junit.xml 2>&1 | tee factory-test.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: factory-evidence
+          path: |
+            factory-test.log
+            factory-junit.xml
+          retention-days: 3
