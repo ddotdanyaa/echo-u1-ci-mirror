@@ -26,6 +26,7 @@ SECRET = re.compile(
     r"-----BEGIN [A-Z ]*PRIVATE KEY-----|"
     r"(?i:password|api[_-]?key|client_secret)\s*[:=]\s*(?:['\x22][^\x22']{8,}['\x22]|[A-Za-z0-9_.-]{8,})(?:\s|$))"
 )
+WINDOWS_DEVICE = re.compile(r"^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?$", re.I)
 TASK_ID = re.compile(r"^[a-zA-Z][a-zA-Z0-9_-]{0,63}$")
 MODEL_ID = re.compile(r"^[a-zA-Z0-9._-]+/[a-zA-Z0-9._:-]+$")
 
@@ -42,6 +43,7 @@ def safe_path(value: str) -> str:
     if path.is_absolute() or not path.parts or value != path.as_posix():
         raise InvalidPlan("noncanonical path")
     if any(part in ("", ".", "..") or part.startswith(".") or part.lower() in DENY_PARTS
+           or part.rstrip(" .") != part or WINDOWS_DEVICE.fullmatch(part)
            or any(c in part for c in '<>|?*"\x00') for part in path.parts):
         raise InvalidPlan("excluded path")
     return value
