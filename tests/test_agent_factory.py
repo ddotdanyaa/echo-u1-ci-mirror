@@ -234,3 +234,33 @@ def test_existing_register_import_never_auto_authorizes_tasks():
     assert result["tasks"][0]["proposed_touch_files"]==["echo_sync/logic.py"]
     with pytest.raises(ValueError):
         suggestions([rows[0],rows[0]])
+
+
+
+def test_unquoted_secret_assignment_is_not_safe_to_stage(tmp_path):
+    src=tmp_path/"logic.py"
+    src.write_text("api_key = " + "syntheticKey_123456789",encoding="utf-8")
+    with pytest.raises(F.InvalidPlan):
+        F.safe_source(src)
+
+
+def test_symlink_parent_cannot_expose_hidden_private_sources(tmp_path):
+    root=tmp_path/"repo";root.mkdir()
+    hidden=root/"secrets";hidden.mkdir()
+    (hidden/"hidden.py").write_text("unclassified_private_data=1")
+    alias=root/"public_alias"
+    try:alias.symlink_to(hidden,target_is_directory=True)
+    except OSError:pytest.skip("OS does not allow symlinks")
+    with pytest.raises(F.InvalidPlan):
+        W.source_path(root,"public_alias/hidden.py")
+
+
+def test_a_reader_must_not_overlap_concurrent_writer():
+    a=item("A",scope=["src/ledger.py"])
+    b=item("B",scope=["src/report.py"])
+    b["read_files"]=["src/ledger.py"]
+    tasks=plan(a,b)
+    assert F.ready(tasks,F.initial_state(tasks))==["A"]
+    s=F.initial_state(tasks)
+    F.acquire(tasks,s,"A",now=0)
+    assert F.ready(tasks,s)==[]
