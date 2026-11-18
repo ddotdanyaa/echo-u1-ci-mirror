@@ -31,7 +31,12 @@ ENV_ALLOW = ("PATH", "SystemRoot", "WINDIR", "TEMP", "TMP", "HOME",
 def source_path(root: Path, name: str) -> Path:
     safe_path(name)
     parent = root.resolve()
-    path = root.joinpath(*name.split("/"))
+    parts = name.split("/")
+    # A harmless-looking alias to a hidden directory is still a privacy leak.
+    for depth in range(1, len(parts) + 1):
+        if root.joinpath(*parts[:depth]).is_symlink():
+            raise InvalidPlan("symlink component in source path")
+    path = root.joinpath(*parts)
     if not path.resolve().is_relative_to(parent):
         raise InvalidPlan("path escapes source root")
     return path
