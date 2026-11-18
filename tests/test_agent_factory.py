@@ -512,3 +512,46 @@ def test_malformed_running_checkpoint_without_lease_is_never_accepted():
     state["tasks"]["T1"]["status"]="RUNNING"
     with pytest.raises(F.InvalidPlan):
         F.validate_state(tasks,state)
+
+
+
+def test_authoritative_markdown_backlog_import_is_deduplicated_review_only():
+    from tools.agent_factory_import import active_backlog_review
+    synthetic="""# Synthetic task index
+## 3. History
+| E01 | historical only |
+## 4. Queue
+### 4.1 Critical
+| ID | title | state |
+| E88 | external private matter | закрыто! not trusted |
+| E07 | depends on E24 | open |
+| E24 | depends on E07 | open |
+### 4.6 N01–N200
+| N01 | existing proof register owns this |
+### 4.7 New
+| U123 | privacy-sensitive case | status from owner |
+| E88 | mentions old item again | duplicated |
+| U243 | latest request | only review |
+## 5. History
+| U244 | history cannot reopen as a task |
+"""
+    r=active_backlog_review(synthetic)
+    assert r["not_executable"] and r["schema"]=="factory-review-v1"
+    assert [x["id"] for x in r["tasks"]]==["E07","E24","E88","U123","U243"]
+    assert r["missing_referenced_ids"]==["U244"]
+    assert r["tasks"][2]["locations"][0]["section"]=="4.1"
+    assert len(r["tasks"][2]["locations"])==2
+    assert all(not t["accepted"] and not t["privacy_safe"] and
+               t["status"]=="NEEDS_TRIAGE" and not t["touch_files"]
+               for t in r["tasks"])
+    assert "private matter" not in repr(r["tasks"])
+    assert "E01" not in repr(r["tasks"])
+    assert len(r["sha256"])==64
+
+
+def test_markdown_parser_refuses_missing_bounded_source_section():
+    from tools.agent_factory_import import active_backlog_review
+    with pytest.raises(ValueError):
+        active_backlog_review("## 4. Queue\n| E21 | unfinished |")
+    with pytest.raises(ValueError):
+        active_backlog_review("## 5. Historical\n| E21 | item |\n")
