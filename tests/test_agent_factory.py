@@ -470,3 +470,45 @@ def test_no_google_credential_causes_no_worker_invocation(tmp_path,monkeypatch):
                staging=tmp_path/"stage",small_model="google/gemma",
                large_model="google/flash",execute=True,acknowledge=True)
     assert not (tmp_path/"s.json").exists()
+
+
+
+def test_checkpoint_atomic_replace_retries_transient_windows_sharing_violation(
+        tmp_path,monkeypatch):
+    tasks=plan(item())
+    state=F.initial_state(tasks)
+    path=tmp_path/"checkpoint.json"
+    original=F.os.replace
+    calls=[]
+    def transient_replace(src,dst):
+        calls.append(1)
+        if len(calls)==1:
+            raise PermissionError("synthetic WinError 5 sharing violation")
+        return original(src,dst)
+    monkeypatch.setattr(F.os,"replace",transient_replace)
+    monkeypatch.setattr(F.time,"sleep",lambda _:None)
+    F.save_atomic(path,state)
+    assert len(calls)==2
+    assert F.load_state(path,tasks)==state
+
+
+def test_checkpoint_failed_replace_preserves_old_state_and_cleans_temporary_file(
+        tmp_path,monkeypatch):
+    tasks=plan(item());path=tmp_path/"checkpoint.json"
+    F.save_atomic(path,F.initial_state(tasks))
+    previous=path.read_bytes()
+    monkeypatch.setattr(F.os,"replace",lambda *args:
+                        (_ for _ in ()).throw(PermissionError("WinError 5")))
+    monkeypatch.setattr(F.time,"sleep",lambda _:None)
+    with pytest.raises(PermissionError):
+        F.save_atomic(path,F.initial_state(tasks))
+    assert path.read_bytes()==previous
+    assert not list(tmp_path.glob(".agent-state-*"))
+
+
+def test_malformed_running_checkpoint_without_lease_is_never_accepted():
+    tasks=plan(item())
+    state=F.initial_state(tasks)
+    state["tasks"]["T1"]["status"]="RUNNING"
+    with pytest.raises(F.InvalidPlan):
+        F.validate_state(tasks,state)
