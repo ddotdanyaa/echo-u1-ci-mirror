@@ -555,3 +555,53 @@ def test_markdown_parser_refuses_missing_bounded_source_section():
         active_backlog_review("## 4. Queue\n| E21 | unfinished |")
     with pytest.raises(ValueError):
         active_backlog_review("## 5. Historical\n| E21 | item |\n")
+
+
+
+@pytest.mark.parametrize("path", [
+    "src/a\nb.py", "src/a\rb.py", "src/a\tb.py", "src/a\u202eb.py",
+    "src/a\u200bb.py", "src/a\u202db.py",
+])
+def test_control_or_directional_unicode_cannot_hide_paths(path):
+    with pytest.raises(F.InvalidPlan):
+        F.safe_path(path)
+
+
+def test_windows_case_insensitive_writer_collision_blocks_second_worker():
+    tasks=plan(item("A",scope=["src/Result.py"]),
+               item("B",scope=["src/result.py"]))
+    state=F.initial_state(tasks)
+    assert F.ready(tasks,state)==["A"]
+    token=F.acquire(tasks,state,"A",now=0)
+    assert F.ready(tasks,state)==[]
+    F.settle(state,"A",token,tests_ok=True,evidence="0"*64)
+
+
+def test_windows_case_alias_within_one_task_is_invalid_plan():
+    with pytest.raises(F.InvalidPlan):
+        plan(item("A",scope=["src/Report.py","src/report.py"]))
+
+
+def test_dependency_scheduler_never_picks_racing_scopes_under_many_synthetic_plans():
+    import random
+    for seed in range(100):
+        rng=random.Random(seed)
+        filenames=["src/File"+str(i)+".py" for i in range(8)]
+        rows=[]
+        for n in range(24):
+            reads=[rng.choice(filenames)]
+            rows.append({"id":"T"+str(n),"title":"Synthetic "+str(n),
+                         "depends_on":[],"touch_files":[rng.choice(filenames)],
+                         "read_files":reads,"tests":["tests/test_safe.py"],
+                         "privacy_safe":True,"estimated_tokens":300})
+        tasks=plan(*rows)
+        chosen=F.ready(tasks,F.initial_state(tasks))
+        readers=set()
+        writers=set()
+        for tid in chosen:
+            task=tasks[tid]
+            read={p.casefold() for p in task.read_files + task.tests}
+            write={p.casefold() for p in task.touch_files}
+            assert not (write & readers) and not (write & writers)
+            assert not (read & writers)
+            readers.update(read);writers.update(write)
