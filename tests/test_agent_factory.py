@@ -214,3 +214,23 @@ def test_real_local_pytest_gate_on_synthetic_sources(tmp_path):
     (stage/"src"/"logic.py").write_text("def value(): return 2\n")
     ok,receipt,changes=W.gates(t,stage,original)
     assert ok and len(receipt)==64 and changes==("src/logic.py",)
+
+
+
+def test_existing_register_import_never_auto_authorizes_tasks():
+    from tools.agent_factory_import import suggestions
+    rows=[
+        {"id":"N001","class":"DONE","accepted":False,"what":"Synthetic implemented item",
+         "files":["echo_sync/logic.py","tests/test_logic.py"]},
+        {"id":"N002","class":"OWNER","accepted":False,"what":"Needs phone","files":[]},
+        {"id":"N003","class":"DONE","accepted":True,"what":"Accepted","files":[]},
+    ]
+    result=suggestions(rows)
+    assert result["not_executable"] is True
+    assert [t["id"] for t in result["tasks"]]==["N001","N002"]
+    assert all(not t["privacy_safe"] for t in result["tasks"])
+    assert result["tasks"][0]["status"]=="NEEDS_SCOPE_REVIEW"
+    assert result["tasks"][1]["status"]=="NEEDS_OWNER"
+    assert result["tasks"][0]["proposed_touch_files"]==["echo_sync/logic.py"]
+    with pytest.raises(ValueError):
+        suggestions([rows[0],rows[0]])
