@@ -172,9 +172,11 @@ def once(*, root: Path, plan: Path, checkpoint: Path, staging: Path,
             raise InvalidPlan("kilo command unavailable")
         token = acquire(tasks, state, tid)
         save_atomic(checkpoint, state)
-        workdir = staging / ("task-" + tid + "-" + token[:8])
+        prefix = "task-" + tid + "-" + token[:8]
+        workdir = staging / prefix
         logs = b""
         error = b""
+        rc = 1
         try:
             baseline = prepare(root, task, workdir)
             for attempt in range(2):  # at most two invocations, including a 429 fallback
@@ -186,6 +188,10 @@ def once(*, root: Path, plan: Path, checkpoint: Path, staging: Path,
                     state["model_calls"] += 1
                     save_atomic(checkpoint, state)
                     time.sleep(backoff(attempt - 1))
+                    # Do NOT let a throttled model's incomplete or unauthorized
+                    # edits contaminate the next model's input.
+                    workdir = staging / (prefix + "-retry-" + str(attempt))
+                    baseline = prepare(root, task, workdir)
                 rc, logs, error = model_attempt(task, workdir, chosen, timeout=240)
                 if rc == 0:
                     break
