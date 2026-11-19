@@ -1204,21 +1204,18 @@ class Loop:
         except Exception as e:
             self.err("selffix", e)
 
-    # -- <id>/<id>: the free head answers the mechanical holds (which file to change) while the loop is idle
+    # -- <id>/<id>: the free head answers the mechanical holds (which file to change), idle or busy
     HOLDS_EVERY_S = 1200
-    _last_out = None
 
     def _head_holds(self) -> None:
-        """At most once per HOLDS_EVERY_S and only after an idle step (HOLD, an empty TRIAGE, DONE): up to three holds
-        of the kinds 'ambiguous localisation' and 'which module' go to a free head model; a valid pick becomes an
-        answer file (backlog_id, touch_files, tests, note) that apply_answers turns into a task. A private or unclean
-        row is never sent. A fault never stops the loop."""
+        """At most once per HOLDS_EVERY_S, whether the loop is idle or busy (live 20.11 01:33-02:17: requeued tasks
+        kept the loop busy, it never went idle, 68 holds waited and the head never ran): up to three holds of the
+        kinds 'ambiguous localisation' and 'which module' go to a free head model; a valid pick becomes an answer file
+        (backlog_id, touch_files, tests, note) that apply_answers turns into a task. A private or unclean row is never
+        sent. A fault never stops the loop."""
         from tools import factory_context as X
         from tools import factory_holds as H
         from tools import factory_requeue
-        out = self._last_out
-        if out is None or not (out.action in ("HOLD", "DONE") or (out.action == "TRIAGE" and out.status == "empty")):
-            return
         try:
             ls = self.ls()
             if self.clock() - float(ls.get("holds_at") or 0) < self.HOLDS_EVERY_S:
@@ -2641,9 +2638,8 @@ class Loop:
                     self.event("loop", action="EXIT", status="deadline", reason="deadline")
                     return EXIT_OK
                 self._selffix()                     # at most once an hour (<id>)
-                self._head_holds()                  # idle: the free head answers mechanical holds (<id>/<id>)
+                self._head_holds()                  # every 20 min: the free head answers mechanical holds (<id>/<id>)
                 out = self.step()
-                self._last_out = out
                 if out.code is not None:
                     return out.code
                 if cfg.once:

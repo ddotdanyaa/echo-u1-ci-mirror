@@ -1,9 +1,11 @@
 # Factory status (generated, structured data only)
 
-Generated: 2026-11-19T23:12:59Z
-Source commit: shaf62b74c7e0d6
+Generated: 2026-11-19T23:27:23Z
+Source commit: shaec9dc6b0f578
 
 ## Commits (sha, time)
+- shaec9dc6b0 2026-11-20T02:25:49+03:00
+- sha6a4485a7 2026-11-20T02:18:15+03:00
 - shaf62b74c7 2026-11-20T02:12:08+03:00
 - sha1ab9fc21 2026-11-20T02:11:21+03:00
 - sha736ef691 2026-11-20T02:06:55+03:00
@@ -22,35 +24,33 @@ Source commit: shaf62b74c7e0d6
 - shaf040d37a 2026-11-20T01:03:51+03:00
 - shad9e63993 2026-11-20T01:01:59+03:00
 - shab8ed74b6 2026-11-20T01:00:20+03:00
-- shac7405f39 2026-11-20T00:54:37+03:00
-- shad4961407 2026-11-20T00:52:10+03:00
 
 ## Funnel
 | step | count |
 |---|---|
 | accepted | 0 |
-| claimed | 39 |
+| claimed | 42 |
 | coded | 22 |
 | found_in_backlog | unknown |
-| gate_pass | 12 |
+| gate_pass | 13 |
 | known_to_loop | 366 |
-| promoted | 12 |
-| ready | 8 |
-| reviewed | 14 |
-| triaged | 29 |
+| promoted | 13 |
+| ready | 3 |
+| reviewed | 15 |
+| triaged | 31 |
 
-Side counters: blocked=8, parked=0, requeued=0
-Tasks now: BLOCKED=8, DONE=8, FAILED=12, PROMOTED=8, READY=8, RUNNING=1
+Side counters: blocked=9, parked=0, requeued=0
+Tasks now: BLOCKED=9, DONE=8, FAILED=17, PROMOTED=9, READY=3, RUNNING=1
 Accepted: 0
-Promoted: 12
-Free RAM, GB: 3.18
-Telemetry rows: 2395 recognised, 0 unrecognised
+Promoted: 13
+Free RAM, GB: 3.35
+Telemetry rows: 2513 recognised, 0 unrecognised
 
 ## Spend per model
 | model | calls | tokens_in | tokens_out | usage_unknown | http_429 | errors |
 |---|---|---|---|---|---|---|
-| google/gemini-3.1-flash-lite | 89 | 351311 | 28243 | 8 | 0 | 8 |
-| google/gemini-3.5-flash-lite | 218 | 1129854 | 49550 | 12 | 0 | 12 |
+| google/gemini-3.1-flash-lite | 97 | 383457 | 32221 | 8 | 0 | 8 |
+| google/gemini-3.5-flash-lite | 232 | 1468520 | 55224 | 12 | 0 | 12 |
 | google/gemini-3.6-flash | 24 | 69915 | 3702 | 6 | 1 | 6 |
 | google/gemma-4-26b-a4b-it | 35 | 84889 | 28677 | 13 | 0 | 13 |
 | google/gemma-4-31b-it | 51 | 41512 | 2040 | 33 | 0 | 33 |
@@ -60,14 +60,14 @@ Telemetry rows: 2395 recognised, 0 unrecognised
 ## Spans
 | span | rows | calls |
 |---|---|---|
-| answer | 113 | 0 |
-| gate | 493 | 0 |
-| infra | 67 | 0 |
-| loop | 499 | 0 |
-| other | 94 | 0 |
-| promote | 15 | 0 |
-| review | 149 | 80 |
-| run | 942 | 360 |
+| answer | 115 | 0 |
+| gate | 517 | 0 |
+| infra | 70 | 0 |
+| loop | 519 | 0 |
+| other | 109 | 0 |
+| promote | 16 | 0 |
+| review | 152 | 81 |
+| run | 992 | 381 |
 | triage | 23 | 0 |
 
 ## Channels (model ids)

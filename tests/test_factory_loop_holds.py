@@ -1,4 +1,4 @@
-"""<id>/<id> wiring: an idle loop lets a free head model answer mechanical holds; private rows are never sent;
+"""<id>/<id> wiring: every 20 minutes, idle or busy, a free head model answers mechanical holds; private rows are never sent;
 a 20 minute gate; a fault goes to infra. The model call and the backlog text are faked."""
 import json
 
@@ -29,7 +29,6 @@ def setup(tmp_path, monkeypatch, answer=PY, status="ok", private=False, bids=("B
         return status, "google/x", answer if status == "ok" else "", 7
     monkeypatch.setattr(loop, "_light_ask", ask)
     monkeypatch.setattr(loop, "_backlog_text", lambda bid: ("", True, False) if private else ("speed it up", False, False))
-    loop._last_out = L.Outcome(action="HOLD")
     return env, loop, calls
 
 
@@ -50,11 +49,14 @@ def test_idle_loop_answers_an_ambiguous_hold(tmp_path, monkeypatch):
     assert AMB not in json.dumps(ev, ensure_ascii=False)
 
 
-def test_not_idle_does_nothing(tmp_path, monkeypatch):
+def test_a_busy_loop_answers_too(tmp_path, monkeypatch):
+    """Live 20.11 01:33-02:17: requeued tasks kept the loop busy, it never went idle, 68 holds waited and the head
+    never ran. The 20 minute gate is the only pace."""
     env, loop, calls = setup(tmp_path, monkeypatch)
-    loop._last_out = L.Outcome(action="RUN")
+    env.runner_says({"status": "NO_RESULT"})
+    loop.step()                                       # a RUN step: the loop is busy
     loop._head_holds()
-    assert not calls and not answers(env)
+    assert len(calls) == 1 and answers(env)[0]["backlog_id"] == "B9"
 
 
 def test_private_row_is_never_sent(tmp_path, monkeypatch):
