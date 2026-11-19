@@ -1250,8 +1250,10 @@ class Loop:
             except OSError:
                 pass
         ls = self.ls()
+        # attempt 1: the main tier first. Picking files among candidates is light work; the escalation tier (3.6 Flash,
+        # 20 a day per key) stays for the coder's hard attempts and the hourly self-fix design (<id>)
         status, model, answer, tokens = self._light_ask(
-            H.prompt(bid, goal, question, files, tests, outlines), attempt=2, section="loop-holds",
+            H.prompt(bid, goal, question, files, tests, outlines), attempt=1, section="loop-holds",
             quotas=ls.setdefault("holds_quotas", {}), max_tokens=800)
         self.save_ls(ls)
         if status != "ok":

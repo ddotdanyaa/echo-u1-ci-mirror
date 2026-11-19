@@ -32,6 +32,13 @@ def test_a_joined_signature_matches_the_wrapped_lines_once():
     assert P.collapsed_match(FILE, JOINED) == (3, 4)      # 0-based first and last line of the place
 
 
+def test_a_reflow_keeps_the_indent_of_every_line_both_start():
+    text = 'def f():\n    x = g(a,\n          b)\n    return x\n'
+    assert P.collapsed_match(text, 'def f():\n    x = g(a, b)\n    return x') == (0, 3)
+    assert P.collapsed_match(text, 'def f():\nx = g(a, b)\n    return x') is None      # 'x = ...' re-indented
+    assert P.repair(text, 'def f():\nx = g(a, b)\n    return x', 'z') is None
+
+
 def test_a_collapsed_match_needs_exactly_one_place():
     text = 'x = 1\ny = 2\nx = 1\ny = 2\n'
     assert P.collapsed_match(text, 'x = 1 y = 2') is None

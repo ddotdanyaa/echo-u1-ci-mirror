@@ -43,7 +43,7 @@ def test_idle_loop_answers_an_ambiguous_hold(tmp_path, monkeypatch):
     loop._head_holds()
     assert answers(env) == [{"backlog_id": "B9", "touch_files": ["echo_sync/b.py"],
                              "tests": ["tests/verify/kind_a/test_v_b9.py"], "note": "Change g1 in b"}]
-    assert calls[0][1]["section"] == "loop-holds" and calls[0][1]["attempt"] == 2
+    assert calls[0][1]["section"] == "loop-holds" and calls[0][1]["attempt"] == 1   # light work: the main tier first
     assert loop.ls()["head_holds"]["B9"]["status"] == "answered"
     ev = [e for e in env.events() if e.get("span") == "head"][-1]
     assert ev["backlog_id"] == "B9" and ev["status"] == "answered" and ev["tokens"] == 7
