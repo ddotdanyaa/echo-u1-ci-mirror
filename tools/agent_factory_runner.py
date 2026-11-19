@@ -1445,6 +1445,14 @@ def _pass_inner(tasks, task: Task, state: dict, *, checkpoint: Path, root: Path,
             ctx['roots'].append(tree)
             cand = timed('gate_s', lambda: gate_run(tree, task.tests))
             ctx['counts'] = cand
+            if (cand.env_reason.split(':', 1)[0].strip() in ('ModuleNotFoundError', 'ImportError')
+                    and not base.env_reason):
+                # the base collected without it (a new test has no base at all), so the candidate's own change made the
+                # import fail: its defect, with a strike and a hint. Live 19.11 18:06-18:08: written tests imported
+                # modules that do not exist and went round as 'environment' with no strike and no feedback.
+                return reject('gate', 'gate: import error',
+                              'the candidate imports a module that is not available (use only the project modules '
+                              'and the standard library): ' + cand.diag, changed)
             if cand.env_reason:
                 return env_release(cand.env_reason)
             factory_env(state)['shortages'].pop(tid, None)   # measured: both environment series are over
