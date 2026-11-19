@@ -296,7 +296,7 @@ class Config:
     review_model: str = "google/gemini-3.1-flash-lite"
     env_file: Path | None = None
     max_attempts: int = 3
-    max_model_calls: int = 400
+    max_model_calls: int = 0        # 0: the day's capacity of the channel registry (Loop._call_budget)
     max_infra: int = 5
     triage_limit: int = 5
     hold_sleep: int = 300
@@ -1124,8 +1124,8 @@ class Loop:
         C.reserve(quotas, channel, tokens, now=self.clock())
         publish()
         provider, _, model_id = model.partition("/")
-        body = {"model": model_id, "temperature": 0, "max_tokens": max_tokens,
-                "messages": [{"role": "user", "content": text}]}
+        body = {"model": model_id, "temperature": 0, "max_tokens": max_tokens,       # ERROR_PATTERNS inline-thought
+                "messages": [{"role": "user", "content": R.NO_THOUGHT + "\n\n" + text}]}
         code_http, raw = _light_post(R.LIGHT_ENDPOINTS[provider], env[channel["key_env"]], body, 120)
         if code_http != 200:
             if code_http in (429, 500, 503):      # the next call takes another channel for a while
@@ -1942,6 +1942,25 @@ class Loop:
             self.questions.write_text(text, encoding="utf-8")
 
     # -- RUN
+    def _call_budget(self) -> int:
+        """<id>/<id>, no self-imposed brake (live 20.11 02:35: 259 of a hand-set 400 model calls were spent by 02:30; the
+        loop would have stood from about 04:00 to midnight while every channel still had quota): the day's call budget
+        is the daily capacity of the verified channels whose key is set (the sum of their rpd), never a hand number;
+        each channel's own rpd stays its limit. An explicit cfg.max_model_calls wins; an unreadable registry gives
+        the old 400."""
+        from tools import agent_factory_runner as R
+        if self.cfg.max_model_calls:
+            return self.cfg.max_model_calls
+        env = {**os.environ, **self.extra_env}
+        try:
+            rows = json.loads(Path(self.cfg.channels).read_text(encoding="utf-8"))["channels"]
+            total = sum(int(r.get("rpd") or 0) for r in rows
+                        if isinstance(r, dict) and r.get("verified") is not False and env.get(r.get("key_env") or ""))
+        except Exception as e:
+            self.err("call budget", e)
+            return 400
+        return max(1, min(R.MAX_MODEL_CALLS, total)) if total else 400
+
     def _run(self, tasks, state, ls, hint: str = "") -> Outcome:
         cfg = self.cfg
         if self.free_ram_fn() < MIN_FREE_RAM:
@@ -1967,7 +1986,7 @@ class Loop:
             "--small-model", small, "--large-model", large,
             "--review-model", review, "--channels", str(cfg.channels),
             "--max-tasks", "1", "--max-attempts", str(cfg.max_attempts),
-            "--max-model-calls", str(cfg.max_model_calls), "--base-sha", self.base_sha,
+            "--max-model-calls", str(self._call_budget()), "--base-sha", self.base_sha,
             "--execute", "--ack-host-access-risk"]
         if (self._run_exps or {}).get("small_follow_up") in EXPERIMENTS["small_follow_up"]:
             cmd += ["--small-follow-up", self._run_exps["small_follow_up"]]

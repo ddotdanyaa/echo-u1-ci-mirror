@@ -69,6 +69,16 @@ def test_hints_name_an_elided_search_and_say_what_to_do():
     assert P.hints([('a.py', 'y = "…"', 'y = 1')])          # the one-character ellipsis too
 
 
+def test_every_light_call_asks_for_no_inline_thought():
+    """inline-thought (live 20.11): Gemma 4 ran its <thought> section to the 8192 cap in ~175 s on coder calls."""
+    from tools import agent_factory_runner as W
+    from tools.agent_factory import read_plan
+    task = read_plan([dict(id='T1', title='t', touch_files=['calc.py'], read_files=[], tests=['tests/test_c.py'],
+                           privacy_safe=True, estimated_tokens=100)])['T1']
+    assert W.LIGHT_REVIEW_RULES.startswith(W.NO_THOUGHT) and W.light_rules(task).startswith(W.NO_THOUGHT)
+    assert 'inline-thought' in {row[0] for row in P.PATTERNS}
+
+
 def test_every_pattern_has_an_id_a_kind_and_a_description():
     assert {row[1] for row in P.PATTERNS} <= {'repair', 'note'}
     assert {'view-line', 'reflow', 'elided'} <= {row[0] for row in P.PATTERNS}

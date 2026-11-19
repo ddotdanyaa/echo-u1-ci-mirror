@@ -756,8 +756,16 @@ LIGHT_MAX_OUTPUT = 8192
 LIGHT_REASONING_TOKENS = 2048
 LIGHT_ENDPOINTS = {'google': 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions',
                    'openrouter': 'https://openrouter.ai/api/v1/chat/completions'}
+# The bound of an explicit day budget of model calls: above the capacity of every free key (~60 000 a day, 20.11);
+# the loop passes the registry's capacity (factory_loop.Loop._call_budget), each channel's rpd stays its limit.
+MAX_MODEL_CALLS = 100_000
+# ERROR_PATTERNS 'inline-thought' (live 20.11): Gemma 4 writes its reasoning into the answer (<thought>...), cannot be
+# told so by the API ('Thinking budget is not supported for this model', 400) and ran to the 8192 cap in ~175 s on
+# coder calls; with this line its answers came without the section (probe 2 of 2, 3 of 3 with it before). Every light
+# call starts with it; a leading block that still comes is stripped (_LIGHT_THOUGHT).
+NO_THOUGHT = "Answer at once: do not think aloud, write no <thought> or <think> section. "
 LIGHT_EDIT_RULES = (
-    "You are a precise code editor. This call has NO tools: everything you may use is in the message. Change "
+    NO_THOUGHT + "You are a precise code editor. This call has NO tools: everything you may use is in the message. Change "
     "only the allowed files. Answer ONLY with edit blocks, no analysis before them. A block is: the file path on "
     "its own line; a line <<<<<<< SEARCH; lines copied EXACTLY from the shown file (enough to be unique, never "
     "line numbers or omission markers); a line =======; the new lines; a line >>>>>>> REPLACE. An empty SEARCH "
@@ -770,8 +778,8 @@ LIGHT_EDIT_RULES = (
 LIGHT_HINT = ("The file is large: only its outline and the parts below are shown. Copy SEARCH lines from the "
               "shown parts; if the code to change is not shown, answer CANNOT: and the function name. REPLACE FUNCTION "
               "only for a function shown whole.")
-LIGHT_REVIEW_RULES = ("You review a code patch. This call has NO tools: everything you may use is in the message. "
-                      "Answer with the JSON verdict only.")
+LIGHT_REVIEW_RULES = (NO_THOUGHT + "You review a code patch. This call has NO tools: everything you may use is in "
+                      "the message. Answer with the JSON verdict only.")
 _LIGHT_NAME = re.compile(r'[\w./\\-]+\.[A-Za-z0-9]+')
 # Gemma 4 on the OpenAI-compatible endpoint puts its reasoning before the answer (<thought>...</thought>, live 19.11);
 # other free models use <think>. A draft edit inside it must never be applied, and the verdict JSON follows it.
@@ -2217,8 +2225,8 @@ def main(argv=None):
         p.error("--max-tasks must be in 1..10")
     if not 1 <= args.max_attempts <= 5:
         p.error("--max-attempts must be in 1..5")
-    if args.max_model_calls is not None and not 1 <= args.max_model_calls <= 2000:
-        p.error("--max-model-calls must be in 1..2000")
+    if args.max_model_calls is not None and not 1 <= args.max_model_calls <= MAX_MODEL_CALLS:
+        p.error("--max-model-calls must be in 1..%d" % MAX_MODEL_CALLS)
     if args.execute and args.staging.resolve().is_relative_to(args.root.resolve()):
         p.error("staging must not be within original repository")
     outcomes = []

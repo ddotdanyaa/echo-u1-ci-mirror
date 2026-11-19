@@ -13,6 +13,8 @@ PATTERNS = (
     ('indent-shift', 'repair', 'one uniform indent added or removed: agent_factory_runner._replace_shifted'),
     ('elided', 'note', "SEARCH shortened with '...': the next attempt is told to copy whole lines"),
     ('guessed-line', 'note', 'a SEARCH line that is nowhere in the file: the note names it'),
+    ('inline-thought', 'repair', 'reasoning written into the answer (<thought>, Gemma 4): every light call asks for '
+                                 'none (agent_factory_runner.NO_THOUGHT), a leading block is stripped'),
 )
 
 
