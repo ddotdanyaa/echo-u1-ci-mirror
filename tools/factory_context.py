@@ -166,25 +166,45 @@ def _fragments(source: str, keywords: set, room: int, priority: frozenset = froz
     candidates = [node for depth, node in _definitions(tree) if node.name in keywords]
     # names from the task title / goal / feedback first, names only the test mentions after them;
     # a method the title names is taken BEFORE the class the test names (no nesting loss)
-    candidates.sort(key=lambda n: (0 if n.name in priority else 1, n.lineno))
-    picked, taken, used = [], [], 0
+    candidates.sort(key=lambda n: (0 if n.name in priority else 1, n.end_lineno - n.lineno, n.lineno))
+    picked, taken, used = [], set(), 0
     for node in candidates:
-        span = (node.lineno, node.end_lineno)
-        if any(span[0] <= b and a <= span[1] for a, b in taken):
-            continue
         start = min([node.lineno] + [d.lineno for d in node.decorator_list])
-        body = '\n'.join(lines[start - 1:node.end_lineno])
-        cut = ''
-        if len(body) > FRAGMENT_MAX_CHARS:
-            body = body[:FRAGMENT_MAX_CHARS]
-            cut = ('\n# ... cut: read lines %d-%d with the read tool' if tools else
-                   '\n# ... cut: lines %d-%d are not shown') % (start, node.end_lineno)
-        piece = '# %s, lines %d-%d\n%s%s' % (node.name, start, node.end_lineno, body, cut)
-        if used + len(piece) + 2 > room:
-            continue          # does not fit: NOT marked as taken, so a smaller overlapping one may still be shown
-        taken.append(span)
-        picked.append((start, piece))
-        used += len(piece) + 2
+        node_lines = list(range(start, node.end_lineno + 1))
+        if any(ln in taken for ln in node_lines):   # a container of a shown part is not pulled in on top of it
+            continue
+        full_body = '\n'.join(lines[start - 1:node.end_lineno])
+        if len(full_body) <= FRAGMENT_MAX_CHARS:
+            piece = '# %s, lines %d-%d\n%s' % (node.name, start, node.end_lineno, full_body)
+            if used + len(piece) + 2 <= room:
+                picked.append((start, piece))
+                used += len(piece) + 2
+                taken.update(node_lines)
+        else:
+            targets = [i for i, l in enumerate(lines[start - 1:node.end_lineno], start)
+                       if any(k in l for k in keywords) and i not in taken]
+            if not targets:
+                continue
+            windows = []
+            for t in targets:
+                w_start, w_end = max(start, t - 12), min(node.end_lineno, t + 12)
+                if windows and w_start <= windows[-1][1] + 1:
+                    windows[-1] = (windows[-1][0], max(windows[-1][1], w_end))
+                else:
+                    windows.append((w_start, w_end))
+            piece, piece_len = '', 0
+            for w_start, w_end in windows:
+                w_body = '\n'.join(lines[w_start - 1:w_end])
+                w_piece = '# %s, lines %d-%d (part)\n%s' % (node.name, w_start, w_end, w_body)
+                if (used + piece_len + len(w_piece) + (2 if piece else 0) > room
+                        or piece_len + len(w_piece) > FRAGMENT_MAX_CHARS):   # one big definition never eats the room
+                    break
+                piece += ('\n\n' if piece else '') + w_piece
+                piece_len += len(w_piece) + (2 if piece else 0)
+                taken.update(range(w_start, w_end + 1))
+            if piece:
+                picked.append((start, piece))
+                used += piece_len
     return '\n\n'.join(p for _, p in sorted(picked))
 
 

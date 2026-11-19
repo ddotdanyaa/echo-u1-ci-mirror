@@ -80,6 +80,7 @@ class GateResult:
     env_reason: str = ''
     missing: tuple = ()
     failed_ids: tuple = ()   # sorted 'classname::name' of red testcases (set comparison against the base)
+    crashed: tuple = ()
 
 
 # --- laptop rule: at most 2 pytest machine-wide, and only while free RAM > 2 GB ---------------------
@@ -289,11 +290,18 @@ def run_tests(root, tests, timeout_s, workdir=None, wait_s=None) -> GateResult:
     skipped = sum(1 for c in cases if c.find('skipped') is not None)
     passed = len(cases) - failed - errors - skipped
     notes = []
+    crashed = []
     for case in cases:
-        for child in case:
-            if child.tag in ('failure', 'error'):
-                notes.append('%s %s::%s: %s' % (child.tag, case.get('classname', ''), case.get('name', ''),
-                                                (child.get('message') or '')[:300]))
+        fail = case.find('failure')
+        if fail is not None:
+            msg = fail.get('message') or ''
+            if not (msg.startswith('assert') or msg.startswith('AssertionError') or msg.startswith('Failed:')):
+                crashed.append('%s::%s: %s' % (case.get('classname', ''), case.get('name', ''),
+                                               (msg.splitlines() or [''])[0][:120]))   # an empty message too
+            notes.append('failure %s::%s: %s' % (case.get('classname', ''), case.get('name', ''), msg[:300]))
+        err = case.find('error')
+        if err is not None:
+            notes.append('error %s::%s: %s' % (case.get('classname', ''), case.get('name', ''), (err.get('message') or '')[:300]))
     missing = [t for t in tests if not _covered(cases, t)]
     if missing:
         notes.append('no testcase for: ' + ', '.join(missing))
@@ -311,7 +319,8 @@ def run_tests(root, tests, timeout_s, workdir=None, wait_s=None) -> GateResult:
                       redact('\n'.join(notes[:6]))[:DIAG_LIMIT], env_reason,
                       tuple(missing),
                       tuple(sorted('%s::%s' % (c.get('classname', ''), c.get('name', '')) for c in cases
-                                   if c.find('failure') is not None or c.find('error') is not None)))
+                                   if c.find('failure') is not None or c.find('error') is not None)),
+                      tuple(sorted(crashed)))
 
 
 def _exception_text(node) -> str:
@@ -628,6 +637,8 @@ def accept_unit_test(cand_on_base: GateResult, test_text=None, backlog_id=None):
         return False, 'тест не собирается: ни одного testcase'
     if cand_on_base.failed < 1:
         return False, 'тест не ловит дефект: на старом коде зелёный'
+    if cand_on_base.crashed:
+        return False, 'the test crashes before its assertion on the current code: ' + cand_on_base.crashed[0] + ' - call the code the way its signature says and assert the wrong behaviour; if the defect itself is this exception, catch it and call pytest.fail with the reason'
     return True, 'ok'
 
 
