@@ -1,9 +1,10 @@
 # Factory status (generated, structured data only)
 
-Generated: 2026-11-19T16:36:36Z
-Source commit: sha8154f9788bc0
+Generated: 2026-11-19T16:37:33Z
+Source commit: shab94523640055
 
 ## Commits (sha, time)
+- shab9452364 2026-11-19T19:37:20+03:00
 - sha8154f978 2026-11-19T19:35:20+03:00
 - shaafd002ad 2026-11-19T18:56:02+03:00
 - sha864eaf9a 2026-11-19T18:38:54+03:00
@@ -23,7 +24,6 @@ Source commit: sha8154f9788bc0
 - sha8a637b2c 2026-11-19T16:56:56+03:00
 - shad1b3557d 2026-11-19T15:05:56+03:00
 - sha1e41f026 2026-11-19T14:55:25+03:00
-- sha9f47f5fe 2026-11-19T14:36:43+03:00
 
 ## Funnel
 | step | count |
@@ -43,7 +43,7 @@ Side counters: blocked=8, parked=0, requeued=0
 Tasks now: BLOCKED=8, FAILED=16, PROMOTED=1, READY=2
 Accepted: 0
 Promoted: 1
-Free RAM, GB: 2.47
+Free RAM, GB: 2.43
 Telemetry rows: 544 recognised, 0 unrecognised
 
 ## Spend per model
@@ -88,8 +88,8 @@ Telemetry rows: 544 recognised, 0 unrecognised
 
 ## Published files
 Modules: 10
-Tests in the cloud: 13
-Tests not in the cloud: 31
+Tests in the cloud: 14
+Tests not in the cloud: 30
 - tests/test_agent_factory.py (backlog-id, email, env-path, key, long-run, owner-name, path, user-path)
 - tests/test_factory_channels.py (long-run)
 - tests/test_factory_context.py (env-path, key, long-run, owner-name, path, short-name, user-path)
@@ -98,7 +98,6 @@ Tests not in the cloud: 31
 - tests/test_factory_gate_marker.py (backlog-id)
 - tests/test_factory_gate_more.py (email)
 - tests/test_factory_gate_slots.py (long-run)
-- tests/test_factory_light.py (key, url)
 - tests/test_factory_loop_answers.py (backlog-id, call-word, long-run)
 - tests/test_factory_loop_answers2.py (backlog-id, call-word, env-path, path, phone, user-path)
 - tests/test_factory_loop_answers3.py (backlog-id)
