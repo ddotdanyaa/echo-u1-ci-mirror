@@ -64,6 +64,7 @@ def packet(files: dict[str, bytes], targets: dict[str, str], *, max_tokens: int)
 LARGE_FILE_CHARS = 12000     # a touch/read file above this is shown as outline + fragments, never whole
 OUTLINE_MAX_CHARS = 7000
 FRAGMENT_MAX_CHARS = 6000
+WINDOW_MAX_LINES = 40        # one window of a large definition (merged hits); more hits make more windows
 MIN_VIEW_CHARS = 1500
 READ_HINT = ("The file is large: read the places you need with the read tool by line numbers (offset/limit) "
              "from the outline; edit only the files listed in touch_files.")
@@ -181,27 +182,47 @@ def _fragments(source: str, keywords: set, room: int, priority: frozenset = froz
                 used += len(piece) + 2
                 taken.update(node_lines)
         else:
-            targets = [i for i, l in enumerate(lines[start - 1:node.end_lineno], start)
-                       if any(k in l for k in keywords) and i not in taken]
+            ident_keywords = identifier_tokens(' '.join(sorted(keywords)))
+            active_keywords = ident_keywords if ident_keywords else keywords
+            def_lines_sub = lines[start - 1:node.end_lineno]
+            targets = []
+            for i, l in enumerate(def_lines_sub, start):
+                if i in taken:
+                    continue
+                if any(re.search(r'\b' + re.escape(k) + r'\b', l) for k in active_keywords):
+                    targets.append(i)
             if not targets:
                 continue
-            windows = []
+            raw_windows = []
             for t in targets:
                 w_start, w_end = max(start, t - 12), min(node.end_lineno, t + 12)
-                if windows and w_start <= windows[-1][1] + 1:
-                    windows[-1] = (windows[-1][0], max(windows[-1][1], w_end))
-                else:
-                    windows.append((w_start, w_end))
-            piece, piece_len = '', 0
-            for w_start, w_end in windows:
-                w_body = '\n'.join(lines[w_start - 1:w_end])
-                w_piece = '# %s, lines %d-%d (part)\n%s' % (node.name, w_start, w_end, w_body)
-                if (used + piece_len + len(w_piece) + (2 if piece else 0) > room
-                        or piece_len + len(w_piece) > FRAGMENT_MAX_CHARS):   # one big definition never eats the room
-                    break
-                piece += ('\n\n' if piece else '') + w_piece
-                piece_len += len(w_piece) + (2 if piece else 0)
+                if raw_windows and w_start <= raw_windows[-1][1] + 1:
+                    if w_end - raw_windows[-1][0] < WINDOW_MAX_LINES:     # dense hits: several windows, not one giant
+                        raw_windows[-1] = (raw_windows[-1][0], max(raw_windows[-1][1], w_end))
+                        continue
+                    w_start = raw_windows[-1][1] + 1                       # the next window starts where it ends
+                    if w_start > w_end:
+                        continue
+                raw_windows.append((w_start, w_end))
+            scored_windows = []
+            for w_s, w_e in raw_windows:
+                w_lines = range(w_s, w_e + 1)
+                p_count = sum(1 for ln in w_lines for p_name in priority if re.search(r'\b' + re.escape(p_name) + r'\b', lines[ln - 1]))
+                t_count = sum(1 for ln in w_lines if ln in targets)
+                score = (p_count, t_count)   # a named part first, however many plain hits a big block has
+                scored_windows.append((score, w_s, w_e))
+            scored_windows.sort(key=lambda item: item[0], reverse=True)   # stable: ties keep the earlier window
+            chosen, piece_len = [], 0
+            for _, w_start, w_end in scored_windows:            # chosen by score, shown in line order
+                w_piece = '# %s, lines %d-%d (part)\n%s' % (node.name, w_start, w_end,
+                                                           '\n'.join(lines[w_start - 1:w_end]))
+                extra = len(w_piece) + (2 if chosen else 0)
+                if used + piece_len + extra > room or piece_len + extra > FRAGMENT_MAX_CHARS:
+                    continue                                    # one big definition never eats the room
+                chosen.append((w_start, w_piece))
+                piece_len += extra
                 taken.update(range(w_start, w_end + 1))
+            piece = '\n\n'.join(p for _, p in sorted(chosen))
             if piece:
                 picked.append((start, piece))
                 used += piece_len

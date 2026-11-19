@@ -48,6 +48,46 @@ def test_the_windows_of_one_large_definition_stay_within_one_fragment():
     assert 'gate_run' in view and len(view) <= C.FRAGMENT_MAX_CHARS + 200
 
 
+def test_windows_follow_the_named_identifiers_not_common_words():
+    """fac-context-priority (live 20:40): plain words of the task title ('the', 'task', 'not', 'note') matched almost
+    every line, so the windows of a large definition filled up from its top and the named part at its end was cut."""
+    top = '\n'.join('    note%d = "the task is not done"  # the error of the task' % i for i in range(300))
+    src = ('def _pass_inner(task):\n' + top + '\n'
+           '    def neighbours():\n'
+           '        mine = gate_run(tree, near)\n'
+           '        return mine\n'
+           '    return neighbours()\n')
+    words = {'the', 'task', 'not', 'note', 'error', '_pass_inner', 'neighbours', 'gate_run'}
+    view = C._fragments(src, words, 20000, frozenset(words), tools=False)
+    assert 'mine = gate_run(tree, near)' in view
+
+
+def test_the_window_with_the_named_part_wins_when_not_all_windows_fit():
+    """Coordinator's acceptance: the factory's version computed the scores and then chose the windows in line order,
+    so two early windows of an unnamed helper filled the fragment and the named closure at the end was cut."""
+    def block(tag):
+        return '\n'.join('    r%s%d = other_call(%d)' % (tag, i, i) for i in range(103))
+    src = ('def _pass_inner(task):\n' + block('a') + '\n' + _filler('    ', 60) + '\n' + block('b') + '\n'
+           + _filler('    ', 60) + '\n'
+           '    def neighbours():\n'
+           '        return gate_run(tree, near)\n'
+           '    return neighbours()\n')
+    view = C._fragments(src, {'_pass_inner', 'other_call', 'neighbours', 'gate_run'}, 20000,
+                        frozenset({'neighbours'}), tools=False)
+    assert 'return gate_run(tree, near)' in view
+
+
+def test_a_definition_dense_with_hits_still_shows_its_named_part():
+    """Coordinator's acceptance: hits on almost every line merged into one window larger than a fragment, and that
+    window was dropped whole (live: _apply_one and answer_main of factory_loop were never shown)."""
+    body = ['    r%d = other_call(%d)' % (i, i) for i in range(300)]
+    body[150] = '    picked = neighbours_marker(150)'
+    view = C._fragments('def _pass_inner(task):\n' + '\n'.join(body) + '\n',
+                        {'_pass_inner', 'other_call', 'neighbours_marker'}, 20000,
+                        frozenset({'neighbours_marker'}), tools=False)
+    assert 'picked = neighbours_marker(150)' in view
+
+
 def test_every_shown_code_line_is_a_whole_line_of_the_file():
     source = _big_module()
     view = C._fragments(source, {'Loop', '_apply_one', 'neighbours', 'gate_run'}, 20000, frozenset(), tools=False)

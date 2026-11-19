@@ -1,9 +1,10 @@
 # Factory status (generated, structured data only)
 
-Generated: 2026-11-19T17:37:39Z
-Source commit: sha65ed18994e3a
+Generated: 2026-11-19T17:49:23Z
+Source commit: shacbf45709e69d
 
 ## Commits (sha, time)
+- shacbf45709 2026-11-19T20:46:38+03:00
 - sha65ed1899 2026-11-19T20:33:51+03:00
 - sha7de68f72 2026-11-19T20:33:45+03:00
 - sha48d06dd2 2026-11-19T20:19:37+03:00
@@ -23,28 +24,27 @@ Source commit: sha65ed18994e3a
 - shab743f20f 2026-11-19T17:57:28+03:00
 - sha6c8b15dc 2026-11-19T17:54:24+03:00
 - sha29685b39 2026-11-19T17:49:54+03:00
-- sha8201c28c 2026-11-19T17:47:08+03:00
 
 ## Funnel
 | step | count |
 |---|---|
 | accepted | 0 |
-| claimed | 30 |
+| claimed | 31 |
 | coded | 20 |
 | found_in_backlog | unknown |
 | gate_pass | 3 |
 | known_to_loop | 328 |
 | promoted | 3 |
-| ready | 5 |
-| reviewed | 9 |
+| ready | 6 |
+| reviewed | 10 |
 | triaged | 29 |
 
 Side counters: blocked=10, parked=0, requeued=0
-Tasks now: BLOCKED=10, FAILED=26, PROMOTED=3, READY=5, RUNNING=1
+Tasks now: BLOCKED=10, FAILED=26, PROMOTED=3, READY=6
 Accepted: 0
 Promoted: 3
-Free RAM, GB: 2.8
-Telemetry rows: 755 recognised, 0 unrecognised
+Free RAM, GB: 1.46
+Telemetry rows: 781 recognised, 0 unrecognised
 
 ## Spend per model
 | model | calls | tokens_in | tokens_out | usage_unknown | http_429 | errors |
@@ -52,8 +52,8 @@ Telemetry rows: 755 recognised, 0 unrecognised
 | google/gemini-3.1-flash-lite | 14 | 39536 | 5979 | 5 | 0 | 5 |
 | google/gemini-3.5-flash-lite | 53 | 431627 | 9563 | 9 | 0 | 9 |
 | google/gemini-3.6-flash | 4 | 6680 | 325 | 3 | 0 | 3 |
-| google/gemma-4-26b-a4b-it | 6 | 3720 | 0 | 4 | 0 | 4 |
-| google/gemma-4-31b-it | 27 | 19821 | 1214 | 16 | 0 | 16 |
+| google/gemma-4-26b-a4b-it | 8 | 3720 | 0 | 6 | 0 | 6 |
+| google/gemma-4-31b-it | 28 | 19821 | 1214 | 17 | 0 | 17 |
 | openrouter/cohere/north-mini-code:free | 1 | 1603 | 8192 | 0 | 0 | 0 |
 | openrouter/nvidia/nemotron-3-ultra-550b-a55b:free | 22 | 76445 | 94977 | 1 | 1 | 1 |
 
@@ -61,13 +61,13 @@ Telemetry rows: 755 recognised, 0 unrecognised
 | span | rows | calls |
 |---|---|---|
 | answer | 15 | 0 |
-| gate | 147 | 0 |
+| gate | 153 | 0 |
 | infra | 38 | 0 |
-| loop | 186 | 0 |
+| loop | 197 | 0 |
 | other | 7 | 0 |
 | promote | 3 | 0 |
-| review | 64 | 36 |
-| run | 285 | 91 |
+| review | 70 | 39 |
+| run | 288 | 91 |
 | triage | 10 | 0 |
 
 ## Channels (model ids)
