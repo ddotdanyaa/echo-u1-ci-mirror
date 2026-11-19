@@ -1,0 +1,521 @@
+"""Free-model channels: token reservation, structural error classes, cooling.
+
+Quotas are grouped by provider project (never by key text) and live in the checkpoint.
+Error classes come from the STRUCTURE of Kilo's JSON events (``type == "error"``,
+``error.name``, ``error.data.statusCode/message/responseBody``). Regular expressions touch only the
+text of an error (event message, response body, stderr); the stdout of a call that did not fail
+is never grepped, because it carries the model's answer and other people's files.
+
+Gemini error semantics: https://ai.google.dev/gemini-api/docs/troubleshooting (400 invalid key,
+403 permission/region, 429 ``QuotaFailure.violations[].quotaId`` PerMinute/PerDay and
+``RetryInfo.retryDelay``); free-tier limits and the daily reset (midnight Pacific time):
+https://ai.google.dev/gemini-api/docs/rate-limits (see W7/reports/DAY19_RESEARCH_R1_AGENTS_APIS.md).
+
+TPM counts INPUT tokens (checked 19.11.2026 on https://ai.google.dev/gemini-api/docs/rate-limits, which now
+redirects to aistudio.google.com/docs/rate-limits: the column is "Tokens per minute (input) (TPM)"). That page
+lists no Gemma free tier; Gemma limits come from the channel file.
+"""
+from __future__ import annotations
+
+import datetime
+import hashlib
+import json
+import math
+import re
+import time
+
+from .agent_factory import InvalidPlan, MODEL_ID
+
+CHARS_PER_TOKEN = 3.5
+# Measured by the canary (U1/05_WORK/W7/reports/DAY19_CHANNEL_CANARY.md, "Токены на запрос"): the input of the
+# first Kilo step is 6 026 on Gemini, 4 377 on Gemma 26B, 5 045 on OpenRouter; the old guess was 13 000.
+KILO_OVERHEAD_TOKENS = 7300    # 6 026 (the largest first step) + 20 %
+SMALL_OVERHEAD_TOKENS = 5300   # 4 377 (Gemma, the small tier) + 20 %
+# Steps of a small-tier run that land in one minute: canary, gemma-4-31b, 3 steps in 151 s = about 50 s a step,
+# so 60 / 50 rounds up to 2 (and never more than the channel's rpm). The input GROWS with every step (the
+# canary: first step 4 377, second 5 129 = +17.2 %, rounded up to 0.18).
+SMALL_STEP_SECONDS = 50
+STEP_GROWTH = 0.18
+PROMPT_LIMIT_CHARS = 28000     # a longer prompt is never sent: the triage splits the task
+REGION_COOL_S = 3600           # a proxy exit may change: probe again in an hour
+MODEL_MISSING_TTL_S = 6 * 3600
+BALANCE_COOL_S = 6 * 3600      # 402: negative balance does not fix itself within minutes
+TRANSIENT_RETRY_S = 20
+DEFAULT_COOL_S = 60
+RATE_SUSPECT_COOL_S = 900      # Kilo slept inside the call (its own 429 retries): cool the channel, not the task
+TIERS = ('small', 'main', 'escalation')
+
+
+class ChannelUnavailable(InvalidPlan):
+    """Temporary quota exhaustion, not a bad task or scope violation."""
+
+    def __init__(self, message='no channels currently available', reason='unavailable', wait_s=60.0):
+        super().__init__(message)
+        self.reason = reason
+        self.wait_s = float(wait_s)
+
+
+def estimate_tokens(prompt_chars: int, read_chars: int = 0, overhead: int | None = None) -> int:
+    """INPUT tokens of ONE request: the prompt + the files the model will read with its tool (chars / 3.5) +
+    the engine overhead: Kilo's system prompt and tool schemas by default, ``overhead`` for the light engine
+    (one REST request, no tools). TPM counts input tokens only (see the module docstring), so the answer is not
+    booked."""
+    return (math.ceil(max(0, prompt_chars) / CHARS_PER_TOKEN) + math.ceil(max(0, read_chars) / CHARS_PER_TOKEN)
+            + (KILO_OVERHEAD_TOKENS if overhead is None else max(0, overhead)))
+
+
+def validate(channels):
+    seen = set()
+    for channel in channels:
+        if channel['id'] in seen or not MODEL_ID.fullmatch(channel['model']):
+            raise InvalidPlan('duplicate channel or invalid model')
+        seen.add(channel['id'])
+        if not channel.get('group') or not channel.get('key_env'):
+            raise InvalidPlan('channel requires quota group and key_env')
+        if not all(type(channel.get(k)) is int and channel[k] > 0 for k in ('tpm', 'rpd')):
+            raise InvalidPlan('actual positive channel quotas required')
+        if 'rpm' in channel and not (type(channel['rpm']) is int and channel['rpm'] > 0):
+            raise InvalidPlan('rpm must be a positive integer')
+        if 'tier' in channel and channel['tier'] not in TIERS:
+            raise InvalidPlan('tier must be small, main or escalation')
+        if channel['model'].split('/')[0] not in ('google', 'openrouter'):
+            raise InvalidPlan('unsupported provider')
+    groups = {}
+    for c in channels:
+        limits = (c['tpm'], c['rpd'], c.get('rpm'))
+        if c['group'] in groups and groups[c['group']] != limits:
+            raise InvalidPlan('shared quota group has inconsistent limits')
+        groups[c['group']] = limits
+
+
+def tier_of(channel) -> str:
+    return channel.get('tier', 'main')
+
+
+_ROLE_TIERS = {   # candidate order of tiers for a call; a tier that is not listed is not used for that role
+    ('code', 1): ('main', 'small', 'escalation'),
+    ('code', 2): ('escalation', 'main'),
+    'review': ('small', 'main', 'escalation'),
+    'cross_review': ('main', 'small', 'escalation'),
+}
+
+
+def minute_steps(channel) -> int:
+    """Requests of one run that fit one minute on ``channel``: 60 s / the measured step time, at most its rpm."""
+    steps = -(-60 // SMALL_STEP_SECONDS)
+    rpm = channel.get('rpm') if isinstance(channel, dict) else None
+    return min(steps, rpm) if isinstance(rpm, int) and rpm > 0 else steps
+
+
+def small_minute_need(tokens: int, channel=None) -> int:
+    """Input per MINUTE of a run on the small tier: the Gemma-size first request, then each further step of the
+    minute carrying the measured context growth: base * (k + growth * k * (k - 1) / 2) for k steps."""
+    base = max(0, tokens - KILO_OVERHEAD_TOKENS + SMALL_OVERHEAD_TOKENS)
+    k = minute_steps(channel)
+    return int(base * (k + STEP_GROWTH * k * (k - 1) / 2))
+
+
+def route_order(channels, role, attempt, tokens, *, preferred=None, exclude_model=None):
+    """Channels in the order a call tries them. Coder, attempt 1: main, small (only when ``tokens`` fit its tpm),
+    escalation; attempt 2 and later: escalation, main. Reviewer: small first; cross-review: main first.
+    ``exclude_model`` (the coder's model) never reviews its own work. ``preferred`` breaks ties inside a tier."""
+    key = ('code', 1 if attempt <= 1 else 2) if role == 'code' else role
+    ranks = _ROLE_TIERS[key]
+    picked = []
+    for channel in channels:
+        tier = tier_of(channel)
+        if tier not in ranks or channel['model'] == exclude_model:
+            continue
+        if tier == 'small' and small_minute_need(tokens, channel) > channel['tpm']:    # Gemma only when a minute of it fits
+            continue
+        picked.append(channel)
+    return sorted(picked, key=lambda c: (ranks.index(tier_of(c)), c['model'] != preferred))
+
+
+def _fingerprint(env, channel) -> str:
+    return hashlib.sha256((env.get(channel['key_env']) or '').encode('utf-8')).hexdigest()[:12]
+
+
+def _dead_until(dead: dict):
+    """When a dead mark ends (None = never, until the key changes). A numeric ``until`` is the answer; a
+    non-numeric one is garbage and expires at once; ``model_missing`` without ``until`` ends at since + 6 h
+    (garbage ``since``: at once); anything else (key_invalid, an old mark without a reason) never expires."""
+    if dead.get('until') is not None:      # until=None means "until the key changes": the reason decides
+        until = dead['until']
+        return float(until) if isinstance(until, (int, float)) and not isinstance(until, bool) else 0.0
+    if dead.get('reason') == 'model_missing':
+        since = dead.get('since')
+        if isinstance(since, (int, float)) and not isinstance(since, bool):
+            return float(since) + MODEL_MISSING_TTL_S
+        return 0.0
+    return None
+
+
+def usable(channels, state, env, *, now=None):
+    """The channels that can ever take a call now: a key is set and no dead mark for that key is in force."""
+    now = time.time() if now is None else now
+    live = []
+    for channel in channels:
+        dead = state.get('dead', {}).get(channel['id'])
+        if dead and dead.get('key') == _fingerprint(env, channel):
+            until = _dead_until(dead)
+            if until is None or until > now:
+                continue
+        if env.get(channel['key_env']):
+            live.append(channel)
+    return live
+
+
+def _numbers(value):
+    """A list of plain numbers; anything else (old or corrupted state) reads as empty."""
+    if not isinstance(value, list):
+        return []
+    return [v for v in value if isinstance(v, (int, float)) and not isinstance(v, bool)]
+
+
+def _model_cool(state, channel) -> float:
+    table = state.get('model_cool')
+    value = table.get(channel['model']) if isinstance(table, dict) else None
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else 0.0
+
+
+def choose(channels, state, tokens, env, *, now=None, requests=1):
+    """First channel that can take ``tokens`` and ``requests`` now, else ChannelUnavailable(reason, wait_s)."""
+    now = time.time() if now is None else now
+    validate(channels)
+    reasons = []  # (reason, wait_s)
+    for channel in channels:
+        group = state.get(channel['group'], {})
+        dead = state.get('dead', {}).get(channel['id'])
+        if dead and dead.get('key') == _fingerprint(env, channel):
+            until = _dead_until(dead)       # None = until the key changes; a TTL entry expires (the retry probe)
+            if until is None or until > now:
+                reasons.append(('dead', 3600.0 if until is None else max(1.0, min(3600.0, until - now))))
+                continue
+        if not env.get(channel['key_env']):
+            reasons.append(('no_key', 3600.0))
+            continue
+        if tokens > channel['tpm']:
+            reasons.append(('reservation_exceeds_tpm', 3600.0))
+            continue
+        cool = max(group.get('cool_until', 0), _model_cool(state, channel))
+        if cool > now:
+            reasons.append(('cool', cool - now))
+            continue
+        used = [t for t in group.get('request_times', []) if now - t < 86400]
+        # exactly what reserve() books: the day window the whole run (at most rpd), the minute window at most rpm
+        need = min(requests, channel['rpd'])
+        if len(used) + need > channel['rpd']:
+            oldest = min(used) if used else now
+            reasons.append(('rpd', max(1.0, 86400 - (now - oldest))))
+            continue
+        if channel.get('rpm'):
+            lately = sorted(t for t in _numbers(group.get('rpm_times')) if now - t < 60)
+            if len(lately) + min(requests, channel['rpm']) > channel['rpm']:
+                reasons.append(('rpm', max(1.0, 60 - (now - lately[0])) if lately else 1.0))
+                continue
+        recent = sorted((t, n) for t, n in group.get('minute', []) if now - t < 60)
+        if sum(n for _, n in recent) + tokens > channel['tpm']:
+            wait = 60 - (now - recent[0][0]) if recent else 60
+            reasons.append(('tpm_window', max(1.0, wait)))
+            continue
+        return channel
+    if not reasons:
+        raise ChannelUnavailable('no channels configured', 'no_channels', 3600)
+    # a channel the request fits but that is busy/dead explains the wait; "too big" only when NO channel fits
+    fitting = [r for r in reasons if r[0] != 'reservation_exceeds_tpm'] or reasons
+    reason, wait = min(fitting, key=lambda r: r[1])
+    raise ChannelUnavailable('no channels currently available: ' + reason, reason, wait)
+
+
+def next_wait(channel_list, state, tokens, env, *, now=None, requests=1):
+    """Seconds until the SOONEST of ``channel_list`` can take the next call (0 when one can now);
+    None when there are no channels at all."""
+    if not channel_list:
+        return None
+    waits = []
+    for channel in channel_list:
+        try:
+            choose([channel], state, tokens, env, now=now, requests=requests)
+            return 0.0
+        except ChannelUnavailable as error:
+            waits.append(error.wait_s)
+    return min(waits)
+
+
+def reserve(state, channel, tokens, *, now=None, requests=1):
+    """Book ``tokens`` and ``requests``; returns the booking timestamp for reconcile().
+
+    The contract with choose(): the day window gets the whole run (at most rpd), the minute window only what
+    fits one minute (at most rpm). reconcile() later replaces both with the fact."""
+    now = time.time() if now is None else now
+    group = state.setdefault(channel['group'], {})
+    day = int(now // 86400)
+    if group.get('day') != day:
+        group.update(day=day, requests=0)
+    times = [t for t in group.get('request_times', []) if now - t < 86400]
+    minute_times = [t for t in _numbers(group.get('rpm_times')) if now - t < 60]
+    while now in times or now in minute_times or any(t == now for t, _ in group.get('minute', [])):
+        now += 1e-6                                  # a booking is identified by its timestamp: keep it unique
+    per_day = max(0, min(requests, channel['rpd']))
+    per_minute = max(0, min(requests, channel['rpm'])) if channel.get('rpm') else per_day
+    group['requests'] = group.get('requests', 0) + per_day
+    group['request_times'] = times + [now] * per_day
+    group['rpm_times'] = minute_times + [now] * per_minute
+    group['minute'] = [(t, n) for t, n in group.get('minute', []) if now - t < 60] + [(now, tokens)]
+    return now
+
+
+def reconcile(state, channel, at, reserved, actual, *, requests=1, actual_requests=None):
+    """Replace the booking made at ``at`` with the fact of the call.
+
+    ``actual`` = input tokens the provider counted (sum over steps); ``actual_requests`` = real requests (steps,
+    retries included). Less than booked returns the surplus; MORE than booked is added (an overrun is counted)."""
+    group = state.get(channel['group'])
+    if not group:
+        return
+    minute = group.get('minute', [])
+    for i, (t, n) in enumerate(minute):
+        if t == at and n == reserved:
+            minute[i] = (t, max(0, int(actual)))
+            break
+    if actual_requests is None:
+        return
+    fact = max(0, int(actual_requests))
+    for key in ('request_times', 'rpm_times'):
+        times = group.setdefault(key, [])
+        booked = times.count(at)
+        if fact < booked:
+            for _ in range(booked - fact):
+                times.remove(at)
+        else:
+            times.extend([at] * (fact - booked))
+        if key == 'request_times':
+            group['requests'] = max(0, group.get('requests', 0) + fact - booked)
+
+
+def cool(state, channel, *, now=None, seconds=DEFAULT_COOL_S):
+    """Cool the whole quota group; never shortens a longer cooling."""
+    now = time.time() if now is None else now
+    group = state.setdefault(channel['group'], {})
+    group['cool_until'] = max(group.get('cool_until', 0), now + max(1, seconds))
+
+
+# ---- error classification ---------------------------------------------------------------------
+
+_KEY_TEXT = re.compile(r'api[_ ]?key[_ ]?(?:is )?(?:not )?invalid|api key not valid|invalid api key', re.I)
+_REGION_TEXT = re.compile(r'location is not supported|not available in your (?:country|region)', re.I)
+_PERDAY = re.compile(r'PerDay|per day|daily', re.I)
+_PERMIN = re.compile(r'PerMinute|per minute', re.I)
+_RETRY = re.compile(r'retryDelay"?\s*[:=]\s*"?(\d+(?:\.\d+)?)s', re.I)
+_STATUS_TEXT = re.compile(r'\b(?:HTTP(?:/\d(?:\.\d)?)?|status(?:Code)?|code)\D{0,3}([45]\d\d)\b(?!:\d)', re.I)  # never bare numbers: stack lines are file.js:429:15
+
+
+def _nth_sunday(year: int, month: int, n: int) -> datetime.date:
+    day = datetime.date(year, month, 1)
+    day += datetime.timedelta(days=(6 - day.weekday()) % 7)  # first Sunday
+    return day + datetime.timedelta(weeks=n - 1)
+
+
+def pacific_offset_hours(utc: datetime.datetime) -> int:
+    """UTC-7 during US daylight time (2nd Sunday of March 02:00 local .. 1st Sunday of November
+    02:00 local), UTC-8 otherwise. No tzdata needed (it is absent from the factory venv)."""
+    start = datetime.datetime.combine(_nth_sunday(utc.year, 3, 2), datetime.time(10, 0))  # 02:00 PST = 10:00 UTC
+    end = datetime.datetime.combine(_nth_sunday(utc.year, 11, 1), datetime.time(9, 0))    # 02:00 PDT = 09:00 UTC
+    return -7 if start <= utc.replace(tzinfo=None) < end else -8
+
+
+def seconds_to_daily_reset(now=None) -> int:
+    """Seconds until midnight Pacific time: the Gemini daily quota reset
+    (https://ai.google.dev/gemini-api/docs/rate-limits)."""
+    now = time.time() if now is None else now
+    utc = datetime.datetime.fromtimestamp(now, datetime.timezone.utc).replace(tzinfo=None)
+    local = utc + datetime.timedelta(hours=pacific_offset_hours(utc))
+    midnight = datetime.datetime.combine(local.date() + datetime.timedelta(days=1), datetime.time(0, 0))
+    return max(60, int((midnight - local).total_seconds()))
+
+
+def _walk_details(body):
+    quota, retry = [], None
+    error = body.get('error') if isinstance(body, dict) else None
+    for item in (error or {}).get('details', []) or []:
+        if not isinstance(item, dict):
+            continue
+        for violation in item.get('violations', []) or []:
+            if isinstance(violation, dict) and violation.get('quotaId'):
+                quota.append(str(violation['quotaId']))
+        if item.get('retryDelay'):
+            m = re.match(r'(\d+(?:\.\d+)?)s', str(item['retryDelay']))
+            if m:
+                retry = float(m.group(1))
+    return quota, retry
+
+
+def _find(obj, key, depth=0):
+    """First value of ``key`` anywhere inside a parsed event (nested dicts/lists), else None."""
+    if depth > 6:
+        return None
+    if isinstance(obj, dict):
+        if key in obj:
+            return obj[key]
+        children = obj.values()
+    elif isinstance(obj, list):
+        children = obj
+    else:
+        return None
+    for child in children:
+        found = _find(child, key, depth + 1)
+        if found is not None:
+            return found
+    return None
+
+
+def _info(kind, status=None, name='', message='', retry=None, quota=''):
+    return {'kind': kind, 'status': status, 'name': str(name)[:80], 'message': str(message)[:300],
+            'retry_after_s': retry, 'quota': quota[:120]}
+
+
+def _classify_error_event(error: dict):
+    data = error.get('data') if isinstance(error.get('data'), dict) else {}
+    name = str(error.get('name', ''))
+    status = data.get('statusCode') if type(data.get('statusCode')) is int else None
+    message = str(data.get('message', '') or error.get('message', ''))
+    raw_body = data.get('responseBody')
+    body = None
+    if isinstance(raw_body, str):
+        try:
+            body = json.loads(raw_body)
+        except ValueError:
+            body = None
+    elif isinstance(raw_body, dict):
+        body = raw_body
+    text = ' '.join(str(x) for x in (message, raw_body if isinstance(raw_body, str) else json.dumps(body or {})))
+    if status is None and isinstance(body, dict) and type(body.get('error', {}).get('code')) is int:
+        status = body['error']['code']
+    quota, retry = _walk_details(body)
+    quota_text = ' '.join(quota) or text
+    if _REGION_TEXT.search(text) or status == 403:
+        return _info('region', status, name, message)
+    if status == 401 or _KEY_TEXT.search(text) or 'API_KEY_INVALID' in text:
+        return _info('key_invalid', status, name, message)
+    if status == 402:
+        # OpenRouter says which budget: in-flight (wait and retry), weight (this task is too big), or the balance
+        source = str(_find(body, 'limit_source') or '').lower()
+        if 'in_flight' in source:
+            return _info('rate_minute', status, name, message, math.ceil(retry) if retry else DEFAULT_COOL_S)
+        if 'weight_exceeds' in source:
+            return _info('too_big', status, name, message)
+        return _info('balance', status, name, message)
+    if status == 404:
+        return _info('model_missing', status, name, message)
+    if status == 408:
+        return _info('transient', status, name, message)
+    if status == 429:
+        if _PERDAY.search(quota_text):
+            return _info('rate_day', status, name, message, seconds_to_daily_reset(), quota_text)
+        wait = math.ceil(retry) if retry else DEFAULT_COOL_S
+        info = _info('rate_minute', status, name, message, wait, quota_text)
+        if _find(body, 'provider_code') is not None:       # the UPSTREAM provider of one model, not the account
+            info['scope'] = 'model'
+        return info
+    if (status is not None and status >= 500) or (status is None and name == 'APIError'):
+        return _info('transient', status, name, message)
+    return _info('other', status, name, message)
+
+
+def classify(stdout: bytes, stderr: bytes, rc: int, idle: bool = False) -> dict:
+    """Class of a finished call: ok | key_invalid | region | rate_minute | rate_day | transient | too_big
+    | timeout | launcher | other | unknown. ``retry_after_s`` is the cooling the provider asked for.
+    ``idle``: the worker did nothing visible (no step, no tool). Kilo retries a 429 by itself and sleeps by
+    retry-after (R3-01), so a timeout of an idle worker is a rate limit in disguise, not a worker fault."""
+    if rc == 124:
+        if idle:
+            info = _info('rate_minute', None, 'RetryStall', 'Kilo slept inside the call: rate limited?',
+                         RATE_SUSPECT_COOL_S)
+            info['suspect'] = True
+            return info
+        return _info('timeout', message='worker-timeout')
+    if rc == 125:
+        return _info('launcher', message=stderr.decode('utf-8', 'replace')[:200])
+    for line in stdout.decode('utf-8', errors='replace').splitlines():
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(event, dict) and event.get('type') == 'error' and isinstance(event.get('error'), dict):
+            return _classify_error_event(event['error'])
+    last = None                 # an error AFTER the stream started (HTTP 200) counts only when it is the LAST step
+    for line in stdout.decode('utf-8', errors='replace').splitlines():
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(event, dict) and event.get('type') == 'step_finish' and isinstance(event.get('part'), dict):
+            last = event['part']
+    if last is not None and last.get('reason') == 'error':
+        err = last.get('error') if isinstance(last.get('error'), dict) else {}     # the provider's error object only
+        meta = err.get('metadata') if isinstance(err.get('metadata'), dict) else {}
+        code = err.get('code') if type(err.get('code')) is int else None
+        if meta.get('provider_code') is not None or code == 429:
+            info = _info('rate_minute', 429, 'StreamError', 'error after the stream started', DEFAULT_COOL_S)
+            if meta.get('provider_code') is not None:
+                info['scope'] = 'model'
+            return info
+        return _info('transient', code, 'StreamError', 'error after the stream started')
+    if rc == 0:
+        return _info('ok')
+    # No structured error: only stderr (never stdout) may be read as error text.
+    text = stderr.decode('utf-8', errors='replace')[-2000:]
+    if _REGION_TEXT.search(text):
+        return _info('region', message=text)
+    if _KEY_TEXT.search(text):
+        return _info('key_invalid', message=text)
+    m = _STATUS_TEXT.search(text)
+    status = int(m.group(1)) if m else None
+    if status == 429 or re.search(r'rate.?limit|resource[_ ]exhausted', text, re.I):
+        return _info('rate_day' if _PERDAY.search(text) else 'rate_minute', 429, message=text,
+                     retry=seconds_to_daily_reset() if _PERDAY.search(text) else DEFAULT_COOL_S)
+    if status in (401, 403):
+        return _info('region' if status == 403 else 'key_invalid', status, message=text)
+    if status == 402:
+        return _info('balance', status, message=text)
+    if status == 404:
+        return _info('model_missing', status, message=text)
+    if status == 408:
+        return _info('transient', status, message=text)
+    if status is not None and status >= 500:
+        return _info('transient', status, message=text)
+    return _info('unknown', message=text)
+
+
+def apply_failure(state, channel, info, *, env=None, now=None) -> dict:
+    """Record a channel/provider failure in the checkpoint quota state. Returns what was done."""
+    now = time.time() if now is None else now
+    env = env or {}
+    kind = info.get('kind')
+    if kind == 'key_invalid':
+        state.setdefault('dead', {})[channel['id']] = {'key': _fingerprint(env, channel), 'since': now,
+                                                       'reason': 'key_invalid'}
+        return {'action': 'dead', 'cool_s': 0}
+    if kind == 'model_missing':   # one 404 must not kill the channel for good: dead for 6 h, then probed again
+        state.setdefault('dead', {})[channel['id']] = {'key': _fingerprint(env, channel), 'since': now,
+                                                       'reason': 'model_missing',
+                                                       'until': now + MODEL_MISSING_TTL_S}
+        return {'action': 'dead', 'cool_s': 0}
+    if kind == 'balance':
+        cool(state, channel, now=now, seconds=BALANCE_COOL_S)
+        return {'action': 'cool', 'cool_s': BALANCE_COOL_S}
+    if kind == 'region':
+        cool(state, channel, now=now, seconds=REGION_COOL_S)
+        return {'action': 'cool', 'cool_s': REGION_COOL_S}
+    if kind in ('rate_minute', 'rate_day'):
+        seconds = int(info.get('retry_after_s') or DEFAULT_COOL_S)
+        if info.get('scope') == 'model':     # an upstream provider of ONE model: the rest of the account is fine
+            if not isinstance(state.get('model_cool'), dict):
+                state['model_cool'] = {}
+            models = state['model_cool']
+            models[channel['model']] = max(models.get(channel['model'], 0), now + max(1, seconds))
+            return {'action': 'cool_model', 'cool_s': seconds}
+        cool(state, channel, now=now, seconds=seconds)
+        return {'action': 'cool', 'cool_s': seconds}
+    return {'action': 'none', 'cool_s': 0}

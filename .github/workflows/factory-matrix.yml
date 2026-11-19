@@ -1,0 +1,39 @@
+name: factory-matrix
+on:
+  push:
+    branches: ['factory-sync']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  tests:
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        include:
+          - shard: 1
+            files: 'tests/test_factory_light.py tests/test_factory_lock_owner.py tests/test_factory_loop_d8a.py tests/test_factory_loop_d8b.py'
+          - shard: 2
+            files: 'tests/test_factory_loop_d8c.py tests/test_factory_loop_git.py tests/test_factory_loop_git2.py tests/test_factory_loop_git3.py'
+          - shard: 3
+            files: 'tests/test_factory_loop_git4.py tests/test_factory_loop_git5.py tests/test_factory_loop_parents.py tests/test_factory_loop_r7b.py'
+          - shard: 4
+            files: 'tests/test_factory_loop_report2.py tests/test_factory_loop_report3.py tests/test_factory_loop_report4.py tests/test_factory_loop_report6.py'
+          - shard: 5
+            files: 'tests/test_factory_loop_report7.py'
+    name: shard ${{ matrix.shard }}
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install pytest
+        run: python -m pip install --disable-pip-version-check pytest==8.4.2
+      - name: Run shard
+        shell: bash
+        run: python -m pytest ${{ matrix.files }} -q -p no:cacheprovider --tb=short

@@ -1,0 +1,2533 @@
+"""The single continuous factory loop (pack D, DAY19_FACTORY_BUILD_PLAN K-D).
+
+One iteration: refresh base -> release_expired -> next_action -> PROMOTE | RUN | WAIT | TRIAGE |
+HOLD | DONE. Exits only on STOP (code 0), the deadline (0), the emergency brake (3: five
+infrastructure failures in a row, file BRAKE, separate from the manual STOP) or when another
+instance is alive (4). Every iteration writes one `span=loop` event: no silent sleeping.
+
+Run:  python -m tools.factory_loop [--state-dir DIR] [--until "YYYY-MM-DD HH:MM"] [--once]
+State dir (default C:\\agent-factory\\echo on Windows, outside the user profile: Kilo
+puts its working directory into the model prompt, so the path must not carry the user name): plan.json, state.json (runner
+checkpoint), telemetry.jsonl, stats.json, opus_questions.md, loop_state.json, STOP, BRAKE, loop.pid.
+Provider keys must be in the environment (or --env-file; only key_env names of the channels are
+read, values are never printed).
+"""
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import errno
+import hashlib
+import inspect
+import json
+import os
+import random
+import re
+import shutil
+import subprocess
+import sys
+import tarfile
+import tempfile
+import time
+import uuid
+from dataclasses import dataclass
+from pathlib import Path
+
+_ROOT = Path(__file__).resolve().parents[1]
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
+from tools import agent_factory as F  # noqa: <id>
+from tools import factory_process  # noqa: <id>
+
+RUNNER_TIMEOUT_S = int(F.LEASE_LIFETIME_S)  # one runner pass = one lease; not a switch
+MIN_FREE_RAM = 2 * 2 ** 30
+STALE_INDEX_LOCK_S = 120
+ES_CONTINUOUS = 0x80000000
+ES_SYSTEM_REQUIRED = 0x00000001
+# Channel-wide reasons stop every task; everything else is the task's own not_before.
+from tools.agent_factory_runner import ESCALATE_AFTER, INFRA_CHANNEL_REASONS, INFRA_DEFERS  # noqa: <id>
+
+DEAD_CHANNEL = INFRA_DEFERS | INFRA_CHANNEL_REASONS   # real infrastructure faults: the runner's sets
+CHANNEL_REASONS = DEAD_CHANNEL | frozenset(("rate_minute", "rate_day", "region", "budget_exhausted",
+                                            "channel_wait"))
+# Temporary faults: they postpone only their own channel (channel_until) or their own task (not_before) with
+# an exponential, jittered pause. They never grow the brake series. A permanent break (a dead channel, a dead
+# runner, "infra" without such a reason) still does.
+TEMPORARY_CHANNEL = frozenset(("rate_limited_suspect", "rate_limited", "429", "channel_timeout"))
+TEMPORARY_TASK = frozenset(("transient", "env_shortage"))
+BACKOFF_FIRST_S, BACKOFF_MAX_S = 60, 1800
+BRAKE_SPAN_S, BRAKE_MAX_S = 1800, 7200          # the brake has a term; a failed trial doubles it up to 2 h
+TIER_ORDER = ("small", "main", "escalation")
+ERROR_MEMORY_MAX = 200
+BEFORE_MODEL = frozenset(("already_green", "context_too_large", "scope_violation", "no_diff"))
+CLEANUP_EVENTS = ("stale_baseline_kept", "pending_copy_kept")
+TELEMETRY_MAX_BYTES = 20 * 1024 * 1024
+REJECT_PREFIXES = ("gate:", "weakening:", "review:")  # a real rejection, not a deferral
+EXIT_OK, EXIT_BRAKE, EXIT_RUNNING, EXIT_LOCK_ERROR = 0, 3, 4, 5
+LOCALAPPDATA = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local")
+# Windows: a neutral directory on the system drive, never under C:\Users\<name>; elsewhere as before.
+DEFAULT_STATE_DIR = (Path(os.environ.get("SystemDrive", "C:") + "\\") / "agent-factory" / "echo"
+                     if os.name == "nt" else LOCALAPPDATA / "agent-factory" / "echo")
+WORK = Path(r"<project-root>")
+
+
+# ---- OS helpers -------------------------------------------------------------------------
+
+def pid_alive(pid: int) -> bool:
+    """Liveness without touching the process. os.kill(pid, 0) is NOT used on Windows."""
+    if pid == os.getpid():
+        return True
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes as W
+        k = ctypes.WinDLL("kernel32", use_last_error=True)
+        k.OpenProcess.restype = W.HANDLE
+        k.OpenProcess.argtypes = [W.DWORD, W.BOOL, W.DWORD]
+        k.GetExitCodeProcess.argtypes = [W.HANDLE, ctypes.POINTER(W.DWORD)]
+        k.CloseHandle.argtypes = [W.HANDLE]
+        handle = k.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return ctypes.get_last_error() == 5  # access denied: it exists
+        code = W.DWORD()
+        ok = k.GetExitCodeProcess(handle, ctypes.byref(code))
+        k.CloseHandle(handle)
+        return bool(ok) and code.value == 259  # STILL_ACTIVE
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def set_execution_state(flags: int) -> None:
+    """Keep the system awake while the loop works (process API; no system settings change)."""
+    if os.name != "nt":
+        return
+    import ctypes
+    ctypes.windll.kernel32.SetThreadExecutionState(ctypes.c_uint(flags))
+
+
+def free_ram_bytes() -> int:
+    if os.name != "nt":
+        return 2 ** 62
+    import ctypes
+
+    class Mem(ctypes.Structure):
+        _fields_ = [("length", ctypes.c_ulong), ("load", ctypes.c_ulong),
+                    ("total_phys", ctypes.c_ulonglong), ("avail_phys", ctypes.c_ulonglong),
+                    ("total_page", ctypes.c_ulonglong), ("avail_page", ctypes.c_ulonglong),
+                    ("total_virt", ctypes.c_ulonglong), ("avail_virt", ctypes.c_ulonglong),
+                    ("avail_ext", ctypes.c_ulonglong)]
+
+    mem = Mem()
+    mem.length = ctypes.sizeof(Mem)
+    if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(mem)):
+        return 2 ** 62  # unknown: do not block the loop
+    return int(mem.avail_phys)
+
+
+def git_running() -> bool:
+    """Is any git process alive? (tasklist cannot show cwd, so any live git is 'busy')."""
+    try:
+        if os.name == "nt":
+            out = subprocess.run(["tasklist", "/FI", "IMAGENAME eq git.exe", "/NH"],
+                                 capture_output=True, text=True, errors="replace",
+                                 timeout=20).stdout
+            return "git.exe" in out.lower()
+        return subprocess.run(["pgrep", "-x", "git"], capture_output=True).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return True  # unknown: assume busy, do not delete the lock
+
+
+# ---- git --------------------------------------------------------------------------------
+
+LOCK_NOTES: list[str] = []  # drained into telemetry by the loop
+
+
+def git_run(cwd: Path, *args: str, retry_lock: bool = True) -> str:
+    cmd = ["git", "-c", "core.quotepath=off", "-C", str(cwd), *args]
+    for attempt in (0, 1):
+        proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
+                              errors="replace")
+        if proc.returncode == 0:
+            return proc.stdout
+        if attempt == 0 and retry_lock and "index.lock" in proc.stderr and _drop_stale_lock(cwd):
+            continue
+        raise subprocess.CalledProcessError(proc.returncode, cmd, proc.stdout,
+                                            F.redact(proc.stderr[-400:]))
+    raise AssertionError("unreachable")
+
+
+def _drop_stale_lock(cwd: Path) -> bool:
+    """Remove a stuck index.lock older than 120 s when no git process is alive."""
+    try:
+        rel = subprocess.run(["git", "-C", str(cwd), "rev-parse", "--git-path", "index.lock"],
+                             capture_output=True, text=True, check=True).stdout.strip()
+        lock = Path(rel) if Path(rel).is_absolute() else Path(cwd) / rel
+        if not lock.exists() or time.time() - lock.stat().st_mtime < STALE_INDEX_LOCK_S:
+            return False
+        if git_running():
+            return False
+        lock.unlink()
+        return True
+    except (OSError, subprocess.SubprocessError) as e:
+        LOCK_NOTES.append("lock_check_failed: " + F.redact(str(e))[:200])
+        return False
+
+
+def refresh_mirror(repo: Path, ref: str, mirror: Path) -> str:
+    """Read-only mirror of the branch HEAD via git archive. The swap is atomic-ish: unpack into
+    <mirror>.new, then old -> .old, new -> mirror; a kill mid-unpack never breaks the mirror."""
+    head = git_run(repo, "rev-parse", ref).strip()
+    marker = mirror / ".factory_mirror"
+    if marker.exists() and marker.read_text(encoding="utf-8").strip() == head:
+        return head
+    if mirror.exists() and not marker.exists():
+        raise RuntimeError("mirror dir is not ours: " + str(mirror))
+    new, old = (mirror.with_name(mirror.name + s) for s in (".new", ".old"))
+    shutil.rmtree(new, ignore_errors=True)
+    shutil.rmtree(old, ignore_errors=True)
+    new.mkdir(parents=True)
+    archive = mirror.with_name(mirror.name + ".tar")
+    try:
+        with archive.open("wb") as fh:
+            subprocess.run(["git", "-C", str(repo), "archive", ref], stdout=fh,
+                           stderr=subprocess.PIPE, check=True)
+        with tarfile.open(archive) as tar:
+            tar.extractall(new, filter="data")
+    finally:
+        archive.unlink(missing_ok=True)
+    (new / ".factory_mirror").write_text(head, encoding="utf-8")
+    if mirror.exists():
+        os.replace(mirror, old)
+    os.replace(new, mirror)
+    shutil.rmtree(old, ignore_errors=True)
+    return head
+
+
+# ---- config / telemetry -----------------------------------------------------------------
+
+def retry_fs(fn, *args, tries: int = 5, delay: float = 0.1, sleep=None):
+    """Run ``fn(*args)``; a Windows sharing violation (antivirus, indexer: winerror 5 or 32, EBUSY) is retried
+    ``tries`` times in all with a pause growing from ``delay`` to 2 s.  Any other error is raised at once."""
+    pause = delay
+    for n in range(tries):
+        try:
+            return fn(*args)
+        except OSError as e:
+            busy = getattr(e, "winerror", None) in (5, 32) or e.errno == errno.EBUSY
+            if not busy or n == tries - 1:
+                raise
+            (sleep or time.sleep)(pause)
+            pause = min(2.0, pause * 4)
+
+
+@dataclass
+class Config:
+    state_dir: Path
+    repo: Path = WORK / "CLOUD_REPO"
+    branch: str = "factory/night-20261119"
+    worktree: Path = WORK / "W7" / "stage" / "factory_night_wt"
+    backlog: Path = WORK / "BACKLOG_ECHO.md"
+    channels: Path = WORK / "W7" / "factory" / "channels.json"
+    until: dt.datetime | None = None
+    once: bool = False
+    clear_brake: bool = False
+    small_model: str = "google/gemini-3.5-flash-lite"   # verified pair, loop.log 19.11
+    large_model: str = "google/gemini-3.5-flash-lite"
+    review_model: str = "google/gemini-3.1-flash-lite"
+    env_file: Path | None = None
+    max_attempts: int = 3
+    max_model_calls: int = 400
+    max_infra: int = 5
+    triage_limit: int = 5
+    hold_sleep: int = 300
+    done_sleep: int = 900
+    chunk: int = 60
+    triage_retry_s: int = 1800
+    triage_idle_sleep: int = 120
+
+
+class _Later(Exception):
+    """A temporary obstacle: the answer file stays in answers/ for the next iteration."""
+
+
+@dataclass
+class Outcome:
+    code: int | None = None
+    sleep: float = 0
+    action: str = ""
+    reason: str = ""
+    status: str = "ok"
+    proof: bool = False   # evidence that the pipeline works: the only thing that resets the series
+
+
+def load_keys(env_file: Path, channels: Path, missing: list | None = None) -> dict:
+    """Only the channels' key_env names; returned for the runner subprocess, never set in
+    os.environ. A channel without a key is skipped (names go to `missing`); no key at all: refuse."""
+    names = {c["key_env"] for c in json.loads(channels.read_text(encoding="utf-8"))["channels"]}
+    found = {}
+    for line in env_file.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = line.strip()
+        if line.startswith("export "):
+            line = line[7:].strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        if key.strip() in names:
+            found[key.strip()] = value.strip().strip('"').strip("'")
+    result = {k: found[k] for k in names if found.get(k) and not os.environ.get(k)}
+    absent = sorted(k for k in names if not os.environ.get(k) and k not in result)
+    if len(absent) == len(names):
+        raise SystemExit("no channel key available (names only): " + ", ".join(absent))
+    if missing is not None:
+        missing.extend(absent)
+    return result
+
+
+class Loop:
+    def __init__(self, cfg: Config, *, triage_fn=None, runner_cmd=None, clock=time.time,
+                 sleep=time.sleep, power_fn=set_execution_state, free_ram_fn=free_ram_bytes,
+                 extra_env=None, startup_notes=None, rng=None):
+        if cfg.review_model in (cfg.small_model, cfg.large_model):
+            raise ValueError("review model must differ from the code model: " + cfg.review_model)
+        self.cfg = cfg
+        self.rng = rng or random.Random()
+        self.extra_env = dict(extra_env or {})
+        self.startup_notes = list(startup_notes or [])
+        self.triage_fn = triage_fn
+        self.runner_cmd = list(runner_cmd or [sys.executable, "-B", "-m",
+                                              "tools.agent_factory_runner"])
+        self.clock, self.sleep_fn = clock, sleep
+        self.power_fn, self.free_ram_fn = power_fn, free_ram_fn
+        d = Path(cfg.state_dir)
+        self.dir = d
+        self.plan_path, self.ckpt = d / "plan.json", d / "state.json"
+        self.tel_path, self.stats_path = d / "telemetry.jsonl", d / "stats.json"
+        self.questions, self.ls_path = d / "opus_questions.md", d / "loop_state.json"
+        self.stop, self.brake, self.pidfile = d / "STOP", d / "BRAKE", d / "loop.pid"
+        self.stage, self.mirror = d / "stage", d / "src_mirror"
+        self.run_id = uuid.uuid4().hex[:12]
+        self.base_sha = ""
+        self._mem_infra = 0
+        self._rotating = self._rotate_failed = False
+        self._rotate_note = None
+        self._known_names: set = set()
+        self._wt_lock = None
+        self._lock_error = False
+        self._key_names = None
+        self._key_names_logged = False
+        self._since_mem: dict = {}
+        self._tries_mem: dict = {}
+        self.iterations = 0
+
+    def err(self, where: str, e: BaseException) -> None:
+        """A swallowed error is still an event (never a silent pass)."""
+        try:
+            self.event("infra", status="error", reason="%s: %s: %s" % (
+                where, type(e).__name__, F.redact(str(e))[:200]))
+        except OSError:
+            pass
+
+    def rs(self, value, limit: int = 200):
+        return F.redact(value)[:limit] if isinstance(value, str) else value
+
+    # -- telemetry
+    def ts(self) -> str:
+        return dt.datetime.fromtimestamp(self.clock()).astimezone().isoformat(timespec="seconds")
+
+    def _secret_values(self) -> list:
+        """Env-file values plus the values already in os.environ under the channels' key_env."""
+        values = list(self.extra_env.values())
+        names = self._key_names
+        if names is None:
+            try:
+                data = json.loads(Path(self.cfg.channels).read_text(encoding="utf-8"))
+                names = self._key_names = [c["key_env"] for c in data.get("channels", [])
+                                           if c.get("key_env")]
+            except (OSError, ValueError, KeyError, TypeError) as e:
+                names = []   # NOT cached: read again next time; say so once
+                if not self._key_names_logged:
+                    self._key_names_logged = True
+                    self.err("channels.json unreadable, env keys unknown", e)
+        values += [os.environ.get(n, "") for n in names]
+        return [v for v in values if isinstance(v, str) and len(v) >= 6]
+
+    def _scrub(self, text: str) -> str:
+        """Every secret value out of any text we write to disk (raw and JSON-escaped forms)."""
+        for secret in self._secret_values():
+            for form in {secret, json.dumps(secret)[1:-1]}:
+                text = text.replace(form, "[REDACTED]")
+        return text
+
+    def _rotate_telemetry(self) -> None:
+        """telemetry.jsonl -> .1 -> .2 when over the limit; a failure is reported once."""
+        if self._rotating:
+            return
+        self._rotating = True
+        try:
+            if self.tel_path.exists() and self.tel_path.stat().st_size > TELEMETRY_MAX_BYTES:
+                one = self.tel_path.with_name(self.tel_path.name + ".1")
+                two = self.tel_path.with_name(self.tel_path.name + ".2")
+                if one.exists():
+                    retry_fs(os.replace, one, two)
+                retry_fs(os.replace, self.tel_path, one)
+        except OSError as e:
+            if not self._rotate_failed:
+                self._rotate_failed = True
+                self._rotate_note = "%s: %s" % (type(e).__name__, F.redact(str(e))[:150])
+        finally:
+            self._rotating = False
+
+    def event(self, span: str, **fields) -> None:
+        row = {"ts": self.ts(), "run_id": self.run_id, "span": span}
+        row.update({k: v for k, v in fields.items() if v is not None})
+        line = self._scrub(json.dumps(row, ensure_ascii=False))
+        self._rotate_telemetry()
+        with self.tel_path.open("a", encoding="utf-8") as fh:
+            fh.write(line + "\n")
+        if self._rotate_note:
+            note, self._rotate_note = self._rotate_note, None
+            self.event("infra", status="rotate_failed", reason=note)
+
+    # -- loop_state.json
+    def ls(self) -> dict:
+        data = {}
+        try:
+            data = json.loads(self.ls_path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            pass
+        except (OSError, ValueError) as e:
+            self.err("loop_state.json unreadable, starting empty", e)
+        if not isinstance(data, dict):
+            self.event("infra", status="error", reason="loop_state.json is not an object, starting empty")
+            data = {}
+        for k, v in (("bases", {}), ("holds", {}), ("totals", {}), ("seen", {}), ("closed", {}), ("hold_hash", {})):
+            data.setdefault(k, v)
+        return data
+
+    def save_ls(self, ls: dict) -> None:
+        F.save_atomic(self.ls_path, ls)
+
+    # -- instance lock
+    def acquire(self) -> bool:
+        self.dir.mkdir(parents=True, exist_ok=True)
+        for _ in range(2):
+            try:
+                fd = os.open(self.pidfile, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            except OSError as e:
+                if not isinstance(e, FileExistsError):
+                    self._pid_trouble(e)
+                    return False
+                try:
+                    other = int(self.pidfile.read_text(encoding="utf-8").strip())
+                except ValueError:
+                    other = 0                                 # an empty or torn file: stale
+                except OSError as e2:
+                    self._pid_trouble(e2)                    # unreadable (antivirus): not "already running"
+                    return False
+                if other and pid_alive(other):
+                    self.event("infra", status="refused", reason="already_running", pid=other)
+                    return False
+                self.event("infra", status="cleared", reason="stale_pid", pid=other)
+                try:
+                    self.pidfile.unlink()
+                except OSError as e2:
+                    self._pid_trouble(e2)
+                    return False
+                continue
+            try:
+                with os.fdopen(fd, "w") as fh:
+                    fh.write(str(os.getpid()))
+            except OSError as e:
+                self._pid_trouble(e)
+                try:
+                    self.pidfile.unlink(missing_ok=True)
+                except OSError as e3:
+                    self.err("loop.pid cleanup", e3)
+                return False
+            if not self._lock_worktree():
+                try:
+                    self.pidfile.unlink(missing_ok=True)
+                except OSError as e3:
+                    self.err("loop.pid cleanup", e3)
+                return False
+            self._warn_old_state_dir()
+            return True
+        return False
+
+    def _pid_trouble(self, e: OSError) -> None:
+        """loop.pid cannot be opened or removed (antivirus, read-only disk): not 'already running'."""
+        self._lock_error = True
+        self.event("infra", status="lock_error", reason="cannot use loop.pid: %s: %s"
+                   % (type(e).__name__, F.redact(str(e))[:150]))
+
+    def _worktree_lock_dir(self) -> Path | None:
+        last = None
+        for _ in range(3):                          # one try and two retries
+            try:
+                out = subprocess.run(["git", "-C", str(self.cfg.worktree), "rev-parse",
+                                      "--absolute-git-dir"], capture_output=True, text=True,
+                                     encoding="utf-8", errors="replace", check=True,
+                                     timeout=30).stdout.strip()
+                return Path(out) / "factory_loop.lockdir"
+            except (OSError, subprocess.SubprocessError) as e:
+                last = e
+        self.event("infra", status="warning", reason="lock_disabled: git rev-parse failed 3 times: %s"
+                   % F.redact(str(last))[:150])
+        return None
+
+    def _make_lock(self, lock: Path) -> bool:
+        """Atomic: the owner file is written in a private directory which is then renamed."""
+        tmp = lock.with_name("%s.%d.tmp" % (lock.name, os.getpid()))
+        shutil.rmtree(tmp, ignore_errors=True)
+        tmp.mkdir()
+        (tmp / "owner").write_text("%d|%s" % (os.getpid(), self.dir), encoding="utf-8")
+        try:
+            os.rename(tmp, lock)
+        except OSError:
+            shutil.rmtree(tmp, ignore_errors=True)
+            return False
+        self._wt_lock = lock
+        return True
+
+    @staticmethod
+    def _owner_alive(pid: int, where: str) -> bool:
+        """A pid is the owner only if it is alive AND its state dir's loop.pid says so (a reused
+        pid of an unrelated process must not hold the worktree for ever)."""
+        if pid < 0:
+            return True                              # a lock being created right now
+        if not pid_alive(pid):
+            return False
+        try:
+            return int((Path(where) / "loop.pid").read_text(encoding="utf-8").strip()) == pid
+        except (OSError, ValueError):
+            return pid == os.getpid()               # cannot verify: only ourselves are certainly alive
+
+    def _lock_worktree(self) -> bool:
+        """Two loops (different --state-dir) must never commit into the same worktree.
+        True only when the lock is really ours."""
+        lock = self._worktree_lock_dir()
+        if lock is None:
+            return True  # cannot tell (a warning event was written): do not block the loop
+        for attempt in range(3):
+            try:
+                if self._make_lock(lock):
+                    return True
+            except OSError as e:
+                self._lock_error = True
+                self.event("infra", status="lock_error", reason="cannot create the worktree lock: %s: %s"
+                           % (type(e).__name__, F.redact(str(e))[:150]))
+                return False
+            try:
+                pid_s, _, where = (lock / "owner").read_text(encoding="utf-8").partition("|")
+                pid = int(pid_s)
+            except (OSError, ValueError):
+                pid, where = 0, ""
+                try:  # no readable owner: a lock still being created is alive, an old one is dead
+                    if time.time() - lock.stat().st_mtime < 10:
+                        pid, where = -1, "?"
+                except OSError:
+                    pass
+            if pid and where != str(self.dir) and self._owner_alive(pid, where):
+                self.event("infra", status="refused", reason="worktree %s is held by pid %d "
+                           "(state dir %s)" % (self.cfg.worktree, pid, self._scrub(where)))
+                return False
+            # stale: move it aside under a unique name first, re-read the owner, only then delete
+            aside = lock.with_name("%s.stale.%d.%d" % (lock.name, os.getpid(), attempt))
+            try:
+                os.rename(lock, aside)
+            except OSError:
+                continue                             # somebody else just replaced/removed it: look again
+            try:
+                _, _, where2 = (aside / "owner").read_text(encoding="utf-8").partition("|")
+                pid2 = int(_)
+            except (OSError, ValueError):
+                pid2, where2 = 0, ""
+            if pid2 and pid2 != pid and where2 != str(self.dir) and self._owner_alive(pid2, where2):
+                try:
+                    os.rename(aside, lock)           # a live owner took it meanwhile: give it back
+                except OSError:
+                    pass
+                self.event("infra", status="refused", reason="worktree lock was re-taken by pid %d" % pid2)
+                return False
+            shutil.rmtree(aside, ignore_errors=True)
+        self.event("infra", status="refused", reason="could not take the worktree lock")
+        return False
+
+    def _warn_old_state_dir(self) -> None:
+        old = LOCALAPPDATA / "agent-factory" / "echo"
+        try:
+            if old != self.dir:
+                left = [n for n in ("loop.pid", "plan.json", "state.json") if (old / n).exists()]
+                if left:
+                    self.event("infra", status="warning", reason="the old state dir %s still has "
+                               "%s: stop that loop / move the plan" % (old.name, ", ".join(left)))
+        except OSError:
+            pass
+
+    def release(self) -> None:
+        lock = getattr(self, "_wt_lock", None)
+        if lock is not None:
+            try:
+                if (lock / "owner").read_text(encoding="utf-8").startswith("%d|" % os.getpid()):
+                    shutil.rmtree(lock, ignore_errors=True)
+            except OSError:
+                pass
+            self._wt_lock = None
+        try:
+            if self.pidfile.read_text(encoding="utf-8").strip() == str(os.getpid()):
+                self.pidfile.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as e:
+            self.err("release pid", e)
+
+    def release_orphan_leases(self) -> None:
+        """At START no runner of this state can be alive (one loop instance by loop.pid; its runners die with
+        their job object), so every RUNNING lease is an orphan of a killed pass: back to READY now, not after
+        LEASE_LIFETIME_S. F.release_expired counts it, and a task that keeps killing its pass is blocked at the
+        third (restart check 19.11 17:54: two kills left three tasks RUNNING for 30 minutes)."""
+        try:
+            _, state = self.load()
+            freed = F.release_expired(state, float("inf"))
+            if freed:
+                self.save(state)
+                self.event("infra", status="released", reason="orphan_leases", tasks=len(freed))
+        except Exception as e:                       # an aid: the loop starts anyway, leases expire by time
+            self.err("orphan leases", e)
+
+    def clear_stale_lockdir(self) -> None:
+        """The runner's state lock is stale when its holder (the pid in <lock>/owner) is dead, or, for an
+        anonymous lock, when it is older than LOCK_STALE_S. Called at start AND before every runner pass: the loop
+        is the only parent of runners (one instance by loop.pid) and runs them one at a time, so a lock found
+        there is never its own live runner. Restart check 19.11 17:42: a loop killed mid-pass left a seconds-old
+        anonymous lock, the age rule ran only at start, and the new loop's runner refused every pass."""
+        lock = self.ckpt.with_suffix(self.ckpt.suffix + ".lockdir")
+        try:
+            if not lock.exists():
+                return
+            owner = lock / F.LOCK_OWNER
+            try:
+                pid = int(owner.read_text(encoding="ascii").strip())
+            except FileNotFoundError:
+                pid = None                  # anonymous: an older runner, or the instant between mkdir and write
+            except (OSError, ValueError):
+                pid = 0                     # an unreadable holder is no live holder
+            if pid is None:
+                stale = time.time() - lock.stat().st_mtime > F.LOCK_STALE_S
+            else:
+                stale = not pid_alive(pid)
+            if stale:
+                owner.unlink(missing_ok=True)
+                lock.rmdir()
+                self.event("infra", status="cleared", reason="stale_lockdir",
+                           holder="anonymous" if pid is None else "dead")
+        except OSError as e:
+            self.event("infra", status="error", reason="lockdir: " + F.redact(str(e))[:200])
+
+    # -- state
+    def load(self):
+        if not self.plan_path.exists():
+            F.save_atomic(self.plan_path, {"tasks": []})
+        tasks = F.read_plan(json.loads(self.plan_path.read_text(encoding="utf-8")))
+        return tasks, F.load_state(self.ckpt, tasks)
+
+    def save(self, state: dict) -> None:
+        F.save_atomic(self.ckpt, state)
+
+    def note_infra(self, state: dict | None) -> int:
+        if state is None:
+            try:
+                state = self.load()[1]
+            except Exception as e:  # broken plan/checkpoint: fall back to memory
+                self.err("note_infra load", e)
+                try:
+                    state = json.loads(self.ckpt.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    self._mem_infra += 1
+                    return self._mem_infra
+        streak = F.note_infra(state, False)
+        try:
+            self.save(state)
+        except OSError as e:
+            self.err("note_infra save", e)
+        return max(streak, 0)
+
+    def _series_ok(self) -> None:
+        """A successful RUN, PROMOTE or TRIAGE ends the infrastructure series."""
+        self._mem_infra = 0
+        try:
+            _, state = self.load()
+            if state.get("infra_streak"):
+                F.note_infra(state, True)
+                self.save(state)
+        except Exception as e:
+            self.err("series reset", e)
+
+    def clear_brake(self) -> None:
+        self.dir.mkdir(parents=True, exist_ok=True)
+        self.brake.unlink(missing_ok=True)
+        self._mem_infra = 0
+        try:
+            _, state = self.load()
+            F.note_infra(state, True)
+            self.save(state)
+        except Exception as e:
+            self.err("clear-brake reset", e)
+        try:
+            ls = self.ls()
+            ls["no_proof"] = {}
+            ls["brake"] = None
+            self.save_ls(ls)
+        except OSError as e:
+            self.err("clear-brake spread", e)
+        self.event("infra", status="brake_cleared", reason="--clear-brake")
+
+    # -- one iteration
+    def step(self) -> Outcome:
+        self.iterations += 1
+        t0 = self.clock()
+        try:
+            out = self._step()
+        except Exception as e:  # a. one error never kills the loop
+            reason = "%s: %s" % (type(e).__name__, F.redact(str(e))[:300])
+            streak = self.note_infra(None)
+            self.event("infra", status="error", reason=reason, infra_streak=streak,
+                       base_sha=self.base_sha or None)
+            out = Outcome(sleep=60, action="CRASH", reason=reason, status="infra")
+            if streak >= self.cfg.max_infra:
+                out = self._brake(streak, out)
+        # ONE rule for the brake series. It grows on: NO_RESULT, infra=True, DEAD_CHANNEL reasons.
+        # It is reset ONLY by proof that the pipeline works (a model answered without a provider
+        # error, the gates/reviewer ran, a real merge). Everything else is neutral: any TRIAGE,
+        # WAIT, HOLD, DONE, IDLE, a channel wait, a requeue, a parked task.
+        if out.proof and out.status not in ("infra", "brake"):
+            self._series_ok()
+            self._brake_close()
+        while LOCK_NOTES:
+            self.event("infra", status="lock_check_failed", reason=LOCK_NOTES.pop(0))
+        self.event("loop", action=out.action, reason=out.reason, status=out.status,
+                   sleep_s=out.sleep, dur_s=round(self.clock() - t0, 3),
+                   base_sha=self.base_sha or None, iteration=self.iterations)
+        self._stats()
+        return out
+
+    def _brake(self, streak: int, out: Outcome) -> Outcome:
+        """The brake has a term (30 min). After it ONE trial pass runs (half-open): a proof closes the brake, an
+        infrastructure failure brakes again for twice as long (at most 2 h)."""
+        now = self.clock()
+        ls = self.ls()
+        old = ls.get("brake") if isinstance(ls.get("brake"), dict) else {}
+        span = BRAKE_SPAN_S
+        if old.get("half_open"):
+            span = min(BRAKE_MAX_S, max(BRAKE_SPAN_S, int(old.get("span") or BRAKE_SPAN_S)) * 2)
+        ls["brake"] = {"until": now + span, "span": span, "half_open": False, "since": now}
+        self.save_ls(ls)
+        text = self._scrub("brake: %d infrastructure failures in a row at %s (%s); retry after %d s\n" % (
+            streak, self.ts(), out.reason, span))
+        self.brake.write_text(text, encoding="utf-8")
+        self.event("infra", status="brake", reason=text.strip()[:300], infra_streak=streak,
+                   span_s=span, retry_at=self._iso(now + span), doubled=bool(old.get("half_open")) or None)
+        out.code, out.status = EXIT_BRAKE, "brake"
+        return out
+
+    def _iso(self, t: float) -> str:
+        return dt.datetime.fromtimestamp(t).astimezone().isoformat(timespec="seconds")
+
+    def _brake_gate(self) -> bool:
+        """True = stay stopped. A BRAKE file with no recorded term (manual or old) gets 30 min from now."""
+        if not self.brake.exists():
+            return False
+        now = self.clock()
+        ls = self.ls()
+        b = ls.get("brake") if isinstance(ls.get("brake"), dict) else None
+        if b is None:
+            b = {"until": now + BRAKE_SPAN_S, "span": BRAKE_SPAN_S, "half_open": False, "since": now}
+            ls["brake"] = b
+            self.save_ls(ls)
+        if now < float(b.get("until", 0)) and not b.get("half_open"):
+            self.event("loop", action="EXIT", status="brake", reason="brake_active",
+                       retry_at=self._iso(float(b["until"])))
+            return True
+        if not b.get("half_open"):
+            b["half_open"] = True
+            self.save_ls(ls)
+            self.event("infra", status="brake_half_open", reason="the term is over: one trial pass",
+                       span_s=b.get("span"))
+        return False
+
+    def _brake_close(self) -> None:
+        """A proof of work during the trial pass: the brake file goes, the series starts from zero."""
+        try:
+            ls = self.ls()
+            if not (isinstance(ls.get("brake"), dict) and ls["brake"].get("half_open")):
+                return
+            ls["brake"] = None
+            self.save_ls(ls)
+            self.brake.unlink(missing_ok=True)
+            self.event("infra", status="brake_closed", reason="the trial pass proved the pipeline works")
+        except OSError as e:
+            self.err("brake close", e)
+
+    # -- temporary faults: a pause for their own channel or task only
+    def _temporary(self, rkey: str, ckey: str, res: dict, no_result: bool) -> str:
+        if no_result or rkey in DEAD_CHANNEL or ckey in DEAD_CHANNEL:
+            return ""
+        for k in (rkey, ckey):
+            if k in TEMPORARY_CHANNEL or k in TEMPORARY_TASK:
+                return k
+        return "429" if res.get("http_status") == 429 else ""
+
+    def _defer_temporary(self, reason: str, res: dict, calls: list, tid: str, ls: dict, out: Outcome,
+                         wait_s) -> Outcome:
+        """60, 120, 240 ... 1800 s (+-10 % jitter) for the key (a channel or a task); never the brake series."""
+        now = self.clock()
+        channel = reason in TEMPORARY_CHANNEL or reason == "429"
+        name = next((str(c.get("channel")) for c in calls if c.get("channel")), "") or str(
+            res.get("channel") or "") or "*"
+        key = ("ch:" + name[:40]) if channel else ("task:" + (tid or "?")[:60])
+        book = ls.get("backoff")
+        if not isinstance(book, dict):
+            book = ls["backoff"] = {}
+        rec = book.get(key) if isinstance(book.get(key), dict) else {}
+        fresh = now - float(rec.get("at", 0) or 0) <= 2 * BACKOFF_MAX_S
+        n = int(rec.get("n", 0) or 0) + 1 if fresh else 1
+        base = min(BACKOFF_MAX_S, BACKOFF_FIRST_S * 2 ** min(n - 1, 10))
+        if isinstance(wait_s, (int, float)) and not isinstance(wait_s, bool):
+            base = max(base, float(wait_s))
+        delay = min(float(BACKOFF_MAX_S), max(1.0, base * (1 + self.rng.uniform(-0.1, 0.1))))
+        until = now + delay
+        book[key] = {"n": n, "at": now, "until": until}
+        for old in sorted(book, key=lambda k: float((book[k] or {}).get("at", 0)))[:-64]:
+            book.pop(old, None)
+        if channel:
+            ls["channel_until"] = max(float(ls.get("channel_until", 0)), until)
+        self.save_ls(ls)
+        if not channel and tid:
+            state = self.load()[1]
+            row = state["tasks"].get(tid)
+            if row is not None and row.get("status") in ("READY", "BLOCKED") or (row and row.get("status") == "READY"):
+                row["not_before"] = max(float(row.get("not_before") or 0), until)
+                self.save(state)
+        self.event("infra", task_id=tid or None, status="deferred", reason=self.rs(reason, 60),
+                   scope="channel" if channel else "task", key=self.rs(key, 80), delay_s=round(delay, 1),
+                   backoff_n=n, retry_at=self._iso(until))
+        out.status, out.reason, out.sleep = "deferred", reason, (5 if channel else 1)
+        return out
+
+    def _step(self) -> Outcome:
+        cfg, now = self.cfg, self.clock()
+        self.base_sha = refresh_mirror(cfg.repo, cfg.branch, self.mirror)
+        self.apply_answers()  # Opus answers first: before anything else touches the state
+        tasks, state = self.load()
+        freed = F.release_expired(state, now)
+        if freed:
+            self.save(state)
+            self.event("infra", status="released", reason="lease_expired:" + ",".join(freed))
+        ls = self.ls()
+        ls = self._close_parents(tasks, state, ls)
+        if now - float(ls.get("tmp_clean_at", 0)) > 86400 and not any(
+                r["status"] == "RUNNING" for r in state["tasks"].values()):
+            ls["tmp_clean_at"] = now          # once a day, only while nothing runs
+            self.save_ls(ls)
+            self._clean_state_tmp()
+        wait_s = max(0.0, float(ls.get("channel_until", 0)) - now)
+        act = F.next_action(state, now, wait_s, self._has_more(ls, now), tasks)
+        name, why = act["action"], act.get("reason", "")
+        if name == "PROMOTE":
+            return self._promote(act["task_id"], tasks, state, ls)
+        if name == "RUN":
+            return self._run(tasks, state, ls, act.get("task_id") or "")
+        if (name == "WAIT" and why == "channel_cooldown" and float(act.get("wait_s") or 0) >= 300
+                and now - float(ls.get("wait_triage_at", 0)) >= cfg.triage_retry_s
+                and self._has_more(ls, now)
+                and not any(r["status"] == "RUNNING" for r in state["tasks"].values())):
+            ls["wait_triage_at"] = now  # a long channel wait: triage the next portion meanwhile
+            self.save_ls(ls)
+            return self._triage(state, tasks, ls, now)
+        if name == "WAIT":
+            return Outcome(sleep=min(max(float(act.get("wait_s") or 0), 5), 60),
+                           action="WAIT", reason=why)
+        if name == "TRIAGE":
+            return self._triage(state, tasks, ls, now)
+        if name == "HOLD":
+            self._write_questions(tasks, state, ls)
+            return Outcome(sleep=cfg.hold_sleep, action="HOLD", reason=why)
+        return Outcome(sleep=cfg.done_sleep, action="DONE", reason=why)
+
+    # -- Opus answer box
+    ANSWER_MAX_BYTES = 64 * 1024
+    ANSWER_KEEP = 200
+    ANSWER_MAX_AGE_S = 2 * F.LEASE_LIFETIME_S   # an answer to an orphaned RUNNING task outlives its lease
+    NO_RESULT_PARK = ESCALATE_AFTER   # the runner's own 'N times in a row' (no second constant)
+    REQUEUE_PARK = ESCALATE_AFTER
+
+    def apply_answers(self) -> int:
+        box = self.dir / "answers"
+        if not box.is_dir():
+            self._known_names = set()
+            return 0
+        done = 0
+        names0 = {f.name for f in box.glob("*.json")}   # the list BEFORE we touch anything
+        ls = self.ls()
+        applied = list(ls.get("answers_applied") or [])
+        since = dict(ls.get("answer_since") or {})
+        for k, v in self._since_mem.items():
+            since[k] = min(v, since.get(k, v))
+        since = {k: v for k, v in since.items() if (box / k).exists()}
+        merged = dict(ls.get("answer_tries") or {})
+        for k, v in self._tries_mem.items():  # memory keeps the limit when the save fails
+            merged[k] = max(v, merged.get(k, 0))
+        tries = {k: v for k, v in merged.items() if (box / k).exists()}
+        for f in sorted(box.glob("*.json")):
+            if f.name in applied:  # applied before, only the move failed
+                self._answer_move(f, "done")
+                continue
+            try:
+                if f.stat().st_size > self.ANSWER_MAX_BYTES:
+                    raise F.InvalidPlan("answer file is larger than 64 KB")
+                ans = json.loads(f.read_text(encoding="utf-8"))
+                if not isinstance(ans, dict):
+                    raise ValueError("answer is not an object")
+                info = self._apply_one(ans)
+            except (_Later, OSError) as e:
+                tries[f.name] = tries.get(f.name, 0) + 1
+                since.setdefault(f.name, self.clock())
+                if self.clock() - since[f.name] > self.ANSWER_MAX_AGE_S:  # only age rejects
+                    tries.pop(f.name, None)
+                    since.pop(f.name, None)
+                    self._answer_move(f, "rejected", "deferred too long: " + F.redact(str(e))[:200])
+                    self.event("answer", status="rejected", reason="deferred too long: "
+                               + F.redact(str(e))[:200], file=f.name)
+                else:
+                    self.event("answer", status="deferred", reason=F.redact(str(e))[:200],
+                               file=f.name, attempt=tries[f.name])
+            except Exception as e:
+                why = "%s: %s" % (type(e).__name__, F.redact(str(e))[:300])
+                tries.pop(f.name, None)
+                self._answer_move(f, "rejected", why)
+                self.event("answer", status="rejected", reason=why, file=f.name)
+            else:
+                tries.pop(f.name, None)
+                applied = (applied + [f.name])[-50:]
+                try:
+                    ls = self.ls()
+                    ls["answers_applied"], ls["answer_tries"] = applied, tries
+                    self.save_ls(ls)
+                except OSError as e:
+                    self.err("answers_applied save", e)
+                self._answer_move(f, "done")
+                self.event("answer", status="applied", file=f.name, **info)
+                done += 1
+        self._tries_mem = dict(tries)
+        self._since_mem = dict(since)
+        try:
+            ls = self.ls()
+            ls["answers_applied"], ls["answer_tries"], ls["answer_since"] = applied, tries, since
+            self.save_ls(ls)
+        except OSError as e:
+            self.err("answer counters save", e)
+        for sub in ("done", "rejected"):
+            self._rotate(box / sub)
+        self._known_names = names0  # files that appeared meanwhile are not known: they wake us
+        if done:
+            try:
+                tasks, state = self.load()
+                self._write_questions(tasks, state, self.ls())
+            except Exception as e:
+                self.err("questions after answers", e)
+        return done
+
+    def _rotate(self, d: Path) -> None:
+        try:
+            files = sorted(p for p in d.glob("*.json")) if d.is_dir() else []
+            for old in files[:-self.ANSWER_KEEP] if len(files) > self.ANSWER_KEEP else []:
+                old.unlink(missing_ok=True)
+                old.with_name(old.name + ".reason.txt").unlink(missing_ok=True)
+        except OSError as e:
+            self.err("answer rotate", e)
+
+    def _answer_move(self, f: Path, sub: str, reason: str | None = None) -> None:
+        try:
+            dest = f.parent / sub
+            dest.mkdir(exist_ok=True)
+            target = dest / f.name
+            retry_fs(os.replace, f, target)
+            if reason:
+                target.with_name(f.name + ".reason.txt").write_text(self._scrub(reason) + "\n", encoding="utf-8")
+        except OSError as e:
+            self.err("answer move", e)
+
+    def _apply_one(self, ans: dict) -> dict:
+        from tools import factory_gate
+        try:
+            tasks, state = self.load()
+        except Exception as e:
+            raise _Later("state unreadable: %s" % type(e).__name__) from e
+        tid, bid = ans.get("task_id") or "", ans.get("backlog_id") or ""
+        raw_note = str(ans.get("note") or "")             # the privacy check sees the RAW note
+        note = F.redact(raw_note).strip()
+        new_subtask = ans.get("kind") == "unit_test" and not tid
+        if not tid and bid and not new_subtask:  # a new unit_test sub-task never rewrites the main one
+            cands = [t for t, r in state["tasks"].items() if r.get("backlog_id") == bid]
+            if ans.get("close") and len(cands) > 1:
+                raise F.InvalidPlan("several tasks share %s (%s): give --task-id" % (
+                    bid, ", ".join(cands[:5])))
+            want_unit = any(str(x).startswith("tests/") for x in (ans.get("touch_files") or []))
+            cands.sort(key=lambda t: (getattr(tasks.get(t), "kind", "code") == "unit_test") != want_unit)
+            tid = cands[0] if cands else ""
+        fields = {k: ans.get(k) for k in ("touch_files", "tests", "read_files",
+                                           "context_targets", "depends_on")
+                  if ans.get(k) is not None}
+        kind = tasks[tid].kind if tid in tasks else (ans.get("kind") or "code")
+        if ans.get("accept"):
+            return self._accept_answer(tid, bid, state, note)
+        if ans.get("close"):
+            return self._close_answer(ans, tid, bid, tasks, state, note)
+        for path in fields.get("touch_files") or []:  # the one rule, here and in the CLI
+            why = factory_gate.is_forbidden(path, kind)
+            if why:
+                raise F.InvalidPlan("%s: %s" % (path, why))
+        if tid and tid in tasks and note and tasks[tid].privacy_safe and not tasks[tid].only_opus:
+            self._check_note(raw_note)  # a public task's note goes into the external prompt
+        if tid:
+            if tid not in tasks:
+                raise F.InvalidPlan("unknown task " + tid)
+            status = state["tasks"][tid]["status"]
+            if status in ("RUNNING", "REVIEW"):
+                raise _Later("task is %s" % status)
+            if status in ("DONE", "PROMOTED"):
+                raise F.InvalidPlan("task is already %s: nothing to answer" % status)
+            if ans.get("goal"):
+                fields["goal"] = self._public_goal(ans["goal"])
+            if not fields and not note:
+                raise F.InvalidPlan("empty answer: nothing to change")
+            if fields:
+                try:
+                    F.amend_task(self.plan_path, tid, **fields)
+                except F.InvalidPlan as e:
+                    if "locked" in str(e) or "RUNNING" in str(e) or "REVIEW" in str(e):
+                        raise _Later(str(e)) from e
+                    raise
+            tasks, state = self.load()
+            row = state["tasks"][tid]
+            if row["status"] in ("BLOCKED", "FAILED"):
+                F.unblock(state, tid, note or "Opus: повторить попытку")
+                action = "unblocked"
+            else:  # unblock writes the note itself; any other status keeps it as feedback
+                self._drop_pending(row)  # a fresh instruction invalidates the parked review
+                if note:
+                    F.add_feedback(state, tid, "opus", note)
+                action = "amended" if fields else "feedback"
+            self.save(state)
+            ls = self.ls()
+            if bid and ls["holds"].pop(bid, None) is not None:
+                self.save_ls(ls)
+            return {"task_id": tid, "backlog_id": bid or row.get("backlog_id"), "reason": action}
+        if not bid or not ans.get("touch_files") or not ans.get("tests"):
+            raise F.InvalidPlan("no such task: backlog_id with touch_files and tests is needed")
+        from tools import agent_factory_import as imp
+        base = imp._task_id(bid)[:56]
+        new_id, n = base, 1
+        while new_id in tasks:
+            n += 1
+            new_id = "%s_o%d" % (base, n)
+        row = {"id": new_id, "title": ("Opus: " + bid)[:200],
+               "touch_files": list(ans["touch_files"]), "tests": list(ans["tests"]),
+               "read_files": list(ans.get("read_files") or []),
+               "context_targets": dict(ans.get("context_targets") or {}),
+               "depends_on": list(ans.get("depends_on") or []), "backlog_id": bid,
+               "estimated_tokens": 4000, "priority": 1}
+        if ans.get("kind") == "unit_test":
+            row["kind"] = "unit_test"
+        goal, private, unclean = self._backlog_text(bid)
+        released_row = False
+        internal = private or unclean
+        if ans.get("goal"):
+            if private and not ans.get("release_private"):  # private or unknown row: explicit release
+                raise F.InvalidPlan("row %s is private or unknown: a public --goal needs "
+                                    "--release-private" % bid)
+            # Opus' own technical wording (checked: no owner words/quotes/times/secrets) replaces a
+            # row that left residue (or, released explicitly, a private one): THIS text only goes out
+            goal, internal = self._public_goal(ans["goal"]), False
+            if private:
+                released_row = True
+        # same rule as the triage otherwise: a private row, or a row with residue and no clean
+        # goal, stays internal (only_opus, never sent to an external model)
+        row["privacy_safe"], row["only_opus"] = not internal, internal
+        if goal and not internal:
+            row["goal"] = goal
+        if note and not internal:
+            self._check_note(raw_note)          # BEFORE the task exists: a refused answer creates nothing
+        added = F.append_tasks(self.plan_path, [row])
+        if not added:
+            raise F.InvalidPlan("not added: " + str((getattr(added, "skipped", None) or [{}])[0].get("reason")))
+        if note:
+            tasks, state = self.load()
+            F.add_feedback(state, new_id, "opus", note)
+            self.save(state)
+        ls = self.ls()
+        ls["holds"].pop(bid, None)
+        self.save_ls(ls)
+        info = {"task_id": new_id, "backlog_id": bid, "reason": "created"}
+        if ans.get("goal") and ans.get("release_private"):
+            info["release_private"] = True
+        return info
+
+    def _park(self, tid: str, reason: str, note: str) -> None:
+        """BLOCKED with a whitelisted reason (agent_factory.park): Opus sees it in opus_questions.md."""
+        try:
+            tasks, state = self.load()
+            if state["tasks"][tid]["status"] in ("READY", "RUNNING", "REVIEW"):
+                self._drop_pending(state["tasks"][tid])   # its work copy stays in staging otherwise
+                F.park(state, tid, reason, note)
+                self.save(state)
+                self.event("infra", task_id=tid, status="parked", reason=reason)
+        except Exception as e:
+            self.err("park " + tid, e)
+
+    @staticmethod
+    def _clear_requeues(ls: dict, tid: str) -> None:
+        ls.get("requeues", {}).pop(tid, None)
+
+    def _drop_pending(self, row: dict) -> None:
+        """Forget a parked review; delete its work copy only when it is STRICTLY inside staging
+        (the runner's own check: staging itself, '', '.', outside paths and non-dicts are ignored)."""
+        pend = row.pop("pending_review", None)
+        if not isinstance(pend, dict):
+            return
+        work = pend.get("workdir")
+        if not isinstance(work, str) or not work.strip():
+            return
+        try:
+            from tools.agent_factory_runner import inside_staging
+            if inside_staging(work, self.stage):
+                shutil.rmtree(Path(work), ignore_errors=True)
+        except Exception as e:
+            self.err("pending copy cleanup", e)
+
+    def _accept_answer(self, tid, bid, state, note) -> dict:
+        """ACCEPTED = taken by the coordinator (an explicit answer). PROMOTED only says the candidate is merged."""
+        if not tid or tid not in state["tasks"]:
+            raise F.InvalidPlan("accept needs a known task (--task-id)")
+        status = state["tasks"][tid]["status"]
+        if status != "PROMOTED":
+            raise F.InvalidPlan("only a PROMOTED task can be accepted (it is %s)" % status)
+        ls = self.ls()
+        if not isinstance(ls.get("accepted"), dict):
+            ls["accepted"] = {}
+        if tid in ls["accepted"]:
+            raise F.InvalidPlan("task %s is already accepted" % tid)
+        ls["accepted"][tid] = {"at": self.ts(), "note": self._scrub(F.redact(note))[:200]}
+        self.save_ls(ls)
+        bid = bid or state["tasks"][tid].get("backlog_id")
+        self.event("accept", task_id=tid, backlog_id=bid, status="accepted", reason="accepted_by_coordinator")
+        return {"task_id": tid, "backlog_id": bid, "reason": "accepted"}
+
+    def _close_answer(self, ans, tid, bid, tasks, state, note) -> dict:
+        """Opus closes the row: the task becomes DONE, or the hold is dropped and remembered.
+        The row is fingerprinted FIRST: if that fails nothing has been changed yet."""
+        ls = self.ls()
+        if bid:  # durable across backlog edits; forgotten when the row's text changes
+            try:
+                fingerprint = self._row_hashes("text").get(bid)
+                if not fingerprint:
+                    if not tid:
+                        raise F.InvalidPlan("row %s is not in the backlog: nothing to close" % bid)
+                    fingerprint = ""        # a task of a row we cannot see: close the task only
+                if fingerprint:
+                    ls["closed"][bid] = fingerprint
+            except F.InvalidPlan:
+                raise
+            except Exception as e:  # no sentinel without a hash: the answer waits and is retried
+                raise _Later("backlog unreadable, cannot fingerprint the row: %s" % type(e).__name__) from e
+        if tid:
+            if tid not in tasks:
+                raise F.InvalidPlan("unknown task " + tid)
+            row = state["tasks"][tid]
+            if row["status"] in ("RUNNING", "REVIEW"):
+                raise _Later("task is %s" % row["status"])
+            if row["status"] in ("DONE", "PROMOTED"):
+                raise F.InvalidPlan("task is already %s" % row["status"])
+            row.update(status="DONE", lease=None, deadline=None, blocked_reason=None,
+                       reason="closed_by_opus")
+            self._drop_pending(row)
+            row.pop("not_before", None)
+            F.add_feedback(state, tid, "opus", note or "closed by Opus")
+            self.save(state)
+        elif not bid:
+            raise F.InvalidPlan("close needs a task or a backlog id")
+        ls["holds"].pop(bid or "", None)
+        if tid:
+            self._clear_requeues(ls, tid)
+        self.save_ls(ls)
+        info = {"task_id": tid or None, "backlog_id": bid or None, "reason": "closed"}
+        if tid:
+            deps = [t for t, tk in tasks.items() if tid in tk.depends_on]
+            if deps:
+                info["dependents"] = ",".join(deps[:10])  # they are released by this DONE
+        return info
+
+    def _backlog_text(self, bid: str) -> tuple[str, bool, bool]:
+        """(public goal, private, unclean) through the existing parser. The row text goes through
+        public_goal + residue: the owner's quotes/times/speech never reach an external model.
+        private: a private row. unclean: the text did not pass the public check (goal is empty)."""
+        try:
+            from tools import agent_factory_import as imp
+            for r in imp.parse_open_rows(self.cfg.backlog, self.cfg.worktree, include_closed=True):
+                if r.get("backlog_id") != bid:
+                    continue
+                text = str(r.get("text") or "")
+                if r.get("private") or not text:
+                    return "", bool(r.get("private")), False
+                goal, _classes = imp.screen(text, imp.MIN_PUBLIC_CHARS)
+                if goal is None:
+                    return "", False, True
+                return F.redact(goal)[:1500], False, False
+        except Exception as e:
+            raise _Later("backlog parser failed: %s: %s" % (type(e).__name__, F.redact(str(e))[:200])) from e
+        return "", True, False  # not in the parse (or unparsable as open): fail closed, private
+
+    PHONE = re.compile(r"(?<![\w.])(?:\+\d[\d\s().-]{8,}\d|\(\d{3,4}\)[\s.-]?\d[\d\s.-]{5,}\d|"
+                       r"\d{3}[\s.-]\d{3}[\s.-]\d{2}[\s.-]\d{2}|[78][3489]\d{9})(?![\w.])")
+
+    @staticmethod
+    def _flat(text: str) -> str:
+        """Only the layout is ignored (spaces, ** and the backticks/asterisks at the ends), never the words."""
+        return " ".join(text.replace("**", "").strip("`* ").split())
+
+    @classmethod
+    def _check_note(cls, note: str) -> None:
+        """The note is written to the coder's prompt AS IS: it must survive the public cut unchanged
+        (a quote, a time or a line reference means the owner's words, whatever the rest says)."""
+        from tools import agent_factory_import as imp
+        clean, bad = imp.screen(note, 0)
+        hit = cls._privacy_hit(note)
+        changed = clean is not None and cls._flat(clean) != cls._flat(note)
+        if clean is None or bad or hit or changed:
+            raise F.InvalidPlan("the note of a public task goes to an external model but it holds "
+                                "%s" % (hit or "owner words, quotes or times (%s)"
+                                        % (",".join(bad) or "cut by the public check")))
+
+    @classmethod
+    def _privacy_hit(cls, text: str) -> str:
+        """Keys, secrets, phones, e-mail, profile paths, call recordings, personal data: the import's
+        PRIVATE detector plus what redact() knows. '' when nothing matched."""
+        from tools import agent_factory_import as imp
+        if imp.PRIVATE.search(text):
+            return "private material (owner's private markers, recordings, keys, personal data)"
+        step = F.REDACT_INPUT_MAX - 200               # redact() looks at a prefix only: look window by window
+        for i in range(0, max(len(text), 1), step):
+            window = text[i:i + F.REDACT_INPUT_MAX]
+            if F.redact(window) != window:
+                return "a secret, an e-mail or a profile path"
+        m = cls.PHONE.search(text)
+        if m and sum(c.isdigit() for c in m.group(0)) >= 10:
+            return "a phone number"
+        return ""
+
+    @classmethod
+    def _public_goal(cls, text: str, *, released: bool = False) -> str:
+        """Opus' technical wording: it must pass the same check, or the answer is refused."""
+        from tools import agent_factory_import as imp
+        goal, bad = imp.screen(str(text), imp.MIN_PUBLIC_CHARS)
+        if goal is None:
+            raise F.InvalidPlan("goal fails the public check (%s): write a technical wording "
+                                "without the owner's words, quotes or times" % ",".join(bad))
+        hit = cls._privacy_hit(str(text))
+        if hit:
+            raise F.InvalidPlan("goal contains %s: it can never go to an external model" % hit)
+        return F.redact(goal)[:1500]
+
+    # -- backlog polling
+    def _has_more(self, ls: dict, now: float) -> bool:
+        try:
+            mtime = self.cfg.backlog.stat().st_mtime
+        except OSError:
+            return False
+        mark = ls.get("triage_empty")
+        return not (mark and mark.get("mtime") == mtime and now < mark.get("until", 0))
+
+    def _triage(self, state, tasks, ls, now) -> Outcome:
+        cfg = self.cfg
+        fn = self.triage_fn
+        if fn is None:
+            from tools.agent_factory_import import triage_portion as fn
+        known = {r.get("backlog_id") for r in state["tasks"].values() if r.get("backlog_id")}
+        known |= {t.backlog_id for t in tasks.values() if t.backlog_id}
+        mtime = cfg.backlog.stat().st_mtime
+        if ls.get("seen_mtime") != mtime:  # backlog edited: stale/skipped rows get a fresh look
+            ls["seen"], ls["seen_mtime"] = {}, mtime
+            self._refresh_profile_attempts(ls)
+        known |= set(ls["holds"]) | set(ls["seen"]) | set(ls["closed"])
+        known |= {b for b, rec in (ls.get("parents") or {}).items()
+                  if rec.get("children") and all(c in known for c in rec["children"])}   # all parts exist: no re-import
+        t0 = self.clock()
+        kwargs = dict(backlog_path=cfg.backlog, head_root=cfg.worktree,
+                      known_backlog_ids=known, limit=cfg.triage_limit)
+        if _accepts(fn, "profile_attempts"):
+            kwargs["profile_attempts"] = dict(ls.get("profile_attempts") or {})
+        if _accepts(fn, "known_parts"):
+            kwargs["known_parts"] = self._known_parts()
+        try:
+            res = fn(**kwargs)
+        except ValueError as e:  # the backlog cannot be parsed: not infrastructure, try after an edit
+            ls["triage_empty"] = {"mtime": mtime, "until": now + cfg.triage_retry_s}
+            self.save_ls(ls)
+            self.event("triage", status="empty", reason="backlog_unparsable: " + F.redact(str(e))[:120])
+            return Outcome(action="TRIAGE", reason="backlog_unparsable", status="empty",
+                           sleep=cfg.triage_idle_sleep)
+        except NotImplementedError as e:
+            ls["triage_empty"] = {"mtime": mtime, "until": now + cfg.triage_retry_s}
+            self.save_ls(ls)
+            self.event("triage", status="empty",
+                       reason="triage_not_implemented: " + F.redact(str(e))[:120])
+            return Outcome(action="TRIAGE", reason="triage_not_implemented", status="empty")
+        for key in ("stale", "skipped"):
+            for item in res.get(key) or []:
+                bid = item if isinstance(item, str) else (
+                    item.get("backlog_id") if isinstance(item, dict) else None)
+                if bid:
+                    ls["seen"][bid] = key
+        portion = list(res.get("tasks") or [])
+        new_holds = []
+        added = []
+        skipped_by_append = []
+        try:
+            added = F.append_tasks(self.plan_path, portion)
+            skipped_by_append = [
+                {k: self.rs(v) for k, v in x.items() if k in ("id", "backlog_id", "reason")}
+                for x in (getattr(added, "skipped", None) or [])][:10]
+        except F.InvalidPlan as e:  # one bad task must not repeat forever or trip the brake
+            why = self._scrub("invalid plan portion: " + F.redact(str(e))[:200])
+            for t in portion:
+                bid = (t.get("backlog_id") or t.get("id")) if isinstance(t, dict) else None
+                if bid and bid not in ls["holds"]:
+                    ls["holds"][bid] = why
+                    new_holds.append(bid)
+        for h in res.get("holds") or []:
+            bid = h.get("backlog_id")
+            if bid and bid not in ls["holds"]:
+                ls["holds"][bid] = self._scrub(F.redact(str(h.get("question", ""))))[:500]
+                new_holds.append(bid)
+        self._take_parents(res.get("parents"), ls)
+        if isinstance(res.get("profile_attempts"), dict):
+            ls.setdefault("profile_attempts", {}).update(res["profile_attempts"])
+        for bid in new_holds:
+            ls.get("profile_attempts", {}).pop(bid, None)
+        deferred = list(res.get("deferred") or [])  # postponed by the portion deadline: not seen
+        events = [self.rs(str(x)) for x in (res.get("events") or [])[:10]]
+        if new_holds:
+            try:
+                texts = self._row_hashes("text")
+                for b in new_holds:
+                    if b in texts:
+                        ls["hold_hash"][b] = texts[b]
+            except Exception as e:
+                self.err("hold fingerprint", e)
+        progress = bool(added) or bool(new_holds)
+        ls["triage_empty"] = None if (progress or deferred) else {"mtime": mtime,
+                                                                   "until": now + cfg.triage_retry_s}
+        self.save_ls(ls)
+        if new_holds:
+            tasks2, state2 = self.load()
+            self._write_questions(tasks2, state2, ls)
+        self.event("triage", status="added" if progress else "empty", dur_s=round(
+            self.clock() - t0, 3), reason="added=%d holds=%d skipped=%d stale=%d" % (
+            len(added), len(new_holds), len(res.get("skipped") or ()), len(res.get("stale") or ())),
+            append_skipped=skipped_by_append or None, deferred=len(deferred) or None,
+            events=events or None)
+        status = "added" if added else ("holds" if new_holds else "empty")
+        return Outcome(action="TRIAGE", reason="added=%d holds=%d" % (len(added), len(new_holds)),
+                       status=status,
+                       sleep=0 if (added or new_holds) else cfg.triage_idle_sleep)
+
+    PARENTS_MAX = 100
+
+    def _known_parts(self) -> dict:
+        """{child backlog id: [files of that part]} of the parts that are already tasks (fields parent/part of the
+        plan rows; ids are never parsed): lets the triage see a changed file layout of a known part."""
+        try:
+            rows = json.loads(self.plan_path.read_text(encoding="utf-8")).get("tasks") or []
+        except (OSError, ValueError, AttributeError) as e:
+            self.err("known_parts: plan unreadable", e)
+            return {}
+        out = {}
+        for r in rows:
+            if (isinstance(r, dict) and r.get("parent") and r.get("part") and r.get("backlog_id")
+                    and r.get("kind", "code") != "unit_test" and isinstance(r.get("touch_files"), list)):
+                out[str(r["backlog_id"])] = [str(x) for x in r["touch_files"]][:20]
+        return out
+
+    def _take_parents(self, records, ls: dict) -> None:
+        """Remember the cut rows (E's ``parents`` records) until every code part is DONE/PROMOTED."""
+        if not isinstance(records, list):
+            return
+        if not isinstance(ls.get("parents"), dict):
+            ls["parents"] = {}
+        book = ls["parents"]
+        for rec in records:
+            try:
+                bid = str(rec["backlog_id"])
+                code = [str(x) for x in rec["code_tasks"]]
+                kids = [str(x) for x in rec["children"]]
+                tests = [str(x) for x in rec.get("test_tasks") or []]
+            except (KeyError, TypeError):
+                continue
+            if bid in ls["closed"]:
+                continue
+            if (not bid or not code or len(bid) > 64 or len(code) > 20 or len(kids) > 20
+                    or (bid not in book and len(book) >= self.PARENTS_MAX)):
+                self.event("triage", status="parent_dropped", reason="cut row %s is not remembered (%s)" % (
+                    self.rs(bid, 64), "table full" if len(book) >= self.PARENTS_MAX else "bad record"))
+                continue
+            book[bid] = {"backlog_id": bid, "parts": len(code), "children": kids,
+                         "code_tasks": code, "test_tasks": tests[:20]}      # idempotent merge by backlog id
+            files = rec.get("files")
+            if isinstance(files, (list, dict)) and len(files) <= 20:
+                book[bid]["files"] = files
+
+    def _close_parents(self, tasks, state, ls: dict) -> dict:
+        """A cut row is closed (the durable close path) once ALL its code tasks are DONE or PROMOTED."""
+        if not isinstance(ls.get("parents"), dict):
+            ls["parents"] = {}
+        book = ls["parents"]
+        for bid, rec in list(book.items()):
+            if bid in ls["closed"]:
+                book.pop(bid, None)
+                self.save_ls(ls)
+                continue
+            rows = [state["tasks"].get(t) for t in rec.get("code_tasks") or []]
+            if not rows or any(r is None or r.get("status") not in ("DONE", "PROMOTED") for r in rows):
+                continue
+            try:
+                self._close_answer({}, "", bid, tasks, state, "all %d parts of the row are done" % len(rows))
+            except _Later as e:
+                self.event("answer", status="deferred", reason="parent %s: %s" % (
+                    self.rs(bid, 64), F.redact(str(e))[:150]))
+                continue                      # the backlog is unreadable now: the next step tries again
+            except F.InvalidPlan as e:
+                self.event("answer", status="error", reason="parent %s not closed: %s" % (
+                    bid, F.redact(str(e))[:150]))
+                book.pop(bid, None)           # the row is not in the backlog (any more): nothing to close
+                self.save_ls(ls)
+                continue
+            ls = self.ls()                    # _close_answer saved its own copy of the loop state
+            ls.get("parents", {}).pop(bid, None)
+            self.save_ls(ls)
+            book = ls.get("parents") or {}
+            self.event("answer", status="applied", reason="parent %s closed: all parts done" % bid)
+        return ls                             # the freshest copy: _close_answer saved its own
+
+    def _answer_cmd(self, bid, tid="", touch="<файлы>", tests="<тесты>") -> str:
+        return ('python -m tools.factory_loop answer --state-dir "%s" --backlog-id %s%s '
+                '--touch %s --tests %s --note "<указание кодеру>"' % (
+                    self.dir, bid or "<ID>", " --task-id " + tid if tid else "", touch, tests))
+
+    def _row_hashes(self, field: str = "row") -> dict:
+        """{backlog_id: hash}. field='text' hashes the wording only (evidence/state updates of the
+        coordinator must not reopen a closed row); 'row' hashes the whole line."""
+        from hashlib import sha256
+        from tools import agent_factory_import as imp
+        md = Path(self.cfg.backlog).read_bytes().decode("utf-8-sig")
+        return {r["backlog_id"]: sha256(r[field].encode("utf-8")).hexdigest()[:16]
+                for r in imp.parse_section4(md)}
+
+    def _refresh_profile_attempts(self, ls: dict) -> None:
+        """A counter lives while its row is unchanged: only rows that vanished or changed lose it."""
+        attempts = ls.get("profile_attempts") or {}
+        try:
+            now = self._row_hashes()
+        except Exception as e:  # unreadable backlog: keep the counters, say why
+            self.err("profile attempts refresh", e)
+            return
+        old = ls.get("profile_hash") or {}
+        ls["profile_attempts"] = {b: n for b, n in attempts.items()
+                                  if b in now and old.get(b, now[b]) == now[b]}
+        ls["profile_hash"] = now
+        try:
+            texts = self._row_hashes("text")
+            for b, h in list(ls.get("hold_hash", {}).items()):  # rewritten row: back to triage
+                if b not in ls["holds"]:
+                    ls["hold_hash"].pop(b, None)
+                elif b in texts and texts[b] != h:
+                    ls["holds"].pop(b, None)
+                    ls["hold_hash"].pop(b, None)
+                    self.event("triage", status="hold_dropped", reason="row %s was rewritten" % b)
+            ls["closed"] = {b: h for b, h in (ls.get("closed") or {}).items()
+                            if h == "closed" or (b in texts and texts[b] == h)}
+        except Exception as e:
+            self.err("closed rows refresh", e)
+
+    def _write_questions(self, tasks, state, ls) -> None:
+        lines = ["# Вопросы к Opus (обновлено %s)\n" % self.ts(), "## Задачи BLOCKED / FAILED"]
+        for tid, row in state["tasks"].items():
+            if row["status"] not in ("BLOCKED", "FAILED"):
+                continue
+            t = tasks.get(tid)
+            bid = row.get("backlog_id") or (t.backlog_id if t else "")
+            reason = row.get("blocked_reason") or row.get("reason") or "?"
+            fb_all = (F.last_feedback(state, tid) or "").replace("\n", " ")
+            fb = fb_all[-400:]  # the tail: the newest remark is what Opus needs
+            touch = " ".join(t.touch_files) if t else "<файлы>"
+            tests = " ".join(t.tests) if t else "<тесты>"
+            head = "- %s [%s] %s: %s" % (tid, bid, row["status"], reason)
+            if reason in ("already_green", "no_diff"):
+                q = ("тест(ы) %s зелёные на базе %s. Закрыть строку %s или дать тест/область?"
+                     % (tests, self.base_sha[:12] or "?", bid))
+            elif reason in ("scope_violation", "context_too_large") or "no_changes" in fb_all \
+                    or "no change" in fb_all.lower():
+                cand = ", ".join(sorted(set((t.touch_files + t.read_files) if t else ())))
+                q = "область задачи не подошла. Кандидаты (touch/read): %s. Какие файлы менять?" % cand
+            else:
+                q = "последнее замечание: " + (fb or "нет")
+            lines += [head, "  вопрос: " + q,
+                      "  ответ: " + self._answer_cmd(bid, tid, touch, tests)]
+        for tid, t in tasks.items():
+            if t.only_opus or not t.privacy_safe:
+                lines.append("- %s [%s] only_opus/private: делает Opus сам" % (tid, t.backlog_id))
+        lines.append("\n## Вопросы триажа")
+        for b, q in ls["holds"].items():
+            lines += ["- %s: %s" % (b, q), "  ответ: " + self._answer_cmd(b)]
+        text = self._scrub("\n".join(lines) + "\n")
+        old = self.questions.read_text(encoding="utf-8") if self.questions.exists() else ""
+        if text.split("\n", 1)[1] != old.split("\n", 1)[-1]:
+            self.questions.write_text(text, encoding="utf-8")
+
+    # -- RUN
+    def _run(self, tasks, state, ls, hint: str = "") -> Outcome:
+        cfg = self.cfg
+        if self.free_ram_fn() < MIN_FREE_RAM:
+            return Outcome(sleep=60, action="WAIT", reason="low_ram")
+        self.clear_stale_lockdir()      # a dead runner's lock must not refuse this pass (restart check 19.11)
+        cmd = self.runner_cmd + [
+            "--root", str(self.mirror), "--plan", str(self.plan_path),
+            "--checkpoint", str(self.ckpt), "--staging", str(self.stage),
+            "--small-model", cfg.small_model, "--large-model", cfg.large_model,
+            "--review-model", cfg.review_model, "--channels", str(cfg.channels),
+            "--max-tasks", "1", "--max-attempts", str(cfg.max_attempts),
+            "--max-model-calls", str(cfg.max_model_calls), "--base-sha", self.base_sha,
+            "--execute", "--ack-host-access-risk"]
+        t0 = self.clock()
+        wall0 = time.time()
+        try:
+            proc = factory_process.run_owned(cmd, cwd=str(_ROOT), env={**os.environ, **self.extra_env},
+                                             timeout=RUNNER_TIMEOUT_S)
+            res = self._parse(proc)
+        except subprocess.TimeoutExpired:
+            res = {"status": "NO_RESULT", "error": "runner timeout"}
+            lock = self.ckpt.with_suffix(self.ckpt.suffix + ".lockdir")
+            try:
+                (lock / F.LOCK_OWNER).unlink(missing_ok=True)
+                lock.rmdir()  # the runner tree was killed by the job object
+            except FileNotFoundError:
+                pass
+            except OSError as e:
+                self.err("runner lockdir", e)
+        dur = res.get("dur_s") if isinstance(res.get("dur_s"), (int, float)) else max(
+            round(self.clock() - t0, 3), round(time.time() - wall0, 3))
+        st = res.get("status")
+        tid = res.get("task_id") or res.get("task") or ""
+        calls = [c for c in (res.get("calls") or []) if isinstance(c, dict)]
+        tin = self._sum_known(calls, "input_tokens", "input")
+        tout = self._sum_known(calls, "output_tokens", "output")
+        model = next((c.get("model") for c in calls if c.get("model")), None)
+        reason = res.get("reason") or res.get("blocked_reason") or res.get("error")
+        bid = self._bid(state, tasks, tid)
+        self.event("run", task_id=tid or None, backlog_id=bid, dur_s=dur, status=st,
+                   model=self.rs(model), base_sha=self.base_sha, calls=len(calls) or None,
+                   reason=F.redact(str(reason))[:200] if reason else None,
+                   attempt=res.get("attempt"), kind=self.rs(res.get("kind")),
+                   wait_s=res.get("wait_s"),
+                   changed=res.get("changed"), receipt_sha256=res.get("receipt_sha256"),
+                   model_note=self.rs(res.get("model_note"), 300),
+                   events=self._events(res.get("events")) or None,
+                   reason_detail=self.rs(res.get("reason_detail"), 300),
+                   error_type=self.rs(res.get("error_type")),
+                   channel_reason=self.rs(res.get("channel_reason")))
+        for c in calls:  # one event per model call: run (code/repair) or review
+            self.event("review" if c.get("role") == "review" else "run",
+                       task_id=tid or None, backlog_id=bid, role=self.rs(c.get("role")),
+                       attempt=c.get("attempt"), channel=self.rs(c.get("channel")),
+                       model=self.rs(c.get("model")),
+                       reserved_tokens=self._num(c, "reserved_tokens", "reserved"),
+                       actual_tokens=self._num(c, "actual_tokens", "actual"),
+                       tokens_in=self._num(c, "input_tokens", "input"),
+                       tokens_out=self._num(c, "output_tokens", "output"),
+                       tokens_reasoning=self._num(c, "reasoning_tokens", "reasoning"),
+                       tokens_cache_read=self._num(c, "cache_read_tokens", "cache_read"),
+                       tokens_cache_write=self._num(c, "cache_write_tokens", "cache_write"),
+                       http_status=self._num(c, "http_status"), dur_s=c.get("dur_s"),
+                       tool_events=c.get("tool_events"), steps=self._num(c, "steps"),
+                       finish_reason=self.rs(c.get("finish_reason")),
+                       files_read=[self.rs(str(x)) for x in (c.get("files_read") or [])[:10]] or None,
+                       error_class=self.rs(c.get("error_class")), status="error" if c.get(
+                           "error_class") else "ok", base_sha=self.base_sha)
+        for name, secs in (res.get("stages") or {}).items():
+            span = "gate" if str(name).startswith(("gate", "red_before", "neighbors")) else (
+                "review" if str(name).startswith("review") else "run")
+            self.event(span, task_id=tid or None, backlog_id=bid, stage=str(name), dur_s=secs,
+                       status="ok", base_sha=self.base_sha)
+        if res.get("cross_review") is not None:
+            self.event("review", task_id=tid or None, status="approved" if res["cross_review"]
+                       else "rejected", model=self.rs(model), base_sha=self.base_sha)
+        tot = ls["totals"]
+        tot["tokens_in"] = tot.get("tokens_in", 0) + (tin or 0)     # unknown usage adds nothing, it is not a zero
+        tot["tokens_out"] = tot.get("tokens_out", 0) + (tout or 0)
+        tot["seconds"] = round(tot.get("seconds", 0) + (dur or 0), 3)
+        if tid:
+            ls["bases"][tid] = self.base_sha
+        if str(reason or "").startswith(REJECT_PREFIXES):
+            tot["rejected"] = tot.get("rejected", 0) + 1
+        wait_s = res.get("wait_s")
+        rkey, ckey = str(res.get("reason") or ""), str(res.get("channel_reason") or "")
+        channel_wide = st == "WAITING_CHANNEL" or rkey in CHANNEL_REASONS or ckey in CHANNEL_REASONS
+        if st == "WAITING_CHANNEL":
+            wait_s = wait_s or 75
+        if channel_wide and isinstance(wait_s, (int, float)) and wait_s > 0:
+            ls["channel_until"] = max(float(ls.get("channel_until", 0)), self.clock() + wait_s)
+        self.save_ls(ls)
+        out = Outcome(action="RUN", reason=str(reason or st), status=str(st))
+        # Infra = no result / timeout of the process, the runner's own honest flag (dead channel,
+        # Kilo launcher, OSError of the pass) or a dead channel named in the reason. gate_unknown,
+        # reviewer_failed, provider_error are properties of the task or model: not infra.
+        no_result = st == "NO_RESULT"
+        temp = self._temporary(rkey, ckey, res, no_result) if st != "REVIEW" else ""
+        if temp:                                        # a temporary fault: its own pause, no brake series
+            self._learn_from_run(tid, tasks, rkey, res)
+            return self._defer_temporary(temp, res, calls, tid, ls, out, wait_s)
+        infra = no_result or res.get("infra") is True or rkey in DEAD_CHANNEL or ckey in DEAD_CHANNEL
+        key = tid or hint
+        counters = ls.setdefault("no_result", {})
+        if infra:
+            if no_result and key:
+                rec = counters.setdefault(key, {"n": 0, "epoch": ls.get("proof_epoch", 0)})
+                if isinstance(rec, int):  # an old counter format
+                    rec = counters[key] = {"n": rec, "epoch": ls.get("proof_epoch", 0)}
+                rec["n"] += 1
+                # parked only when ANOTHER task proved the pipeline alive between its failures:
+                # otherwise it is the environment (dead runner) and the failures go to the series
+                if rec["n"] >= self.NO_RESULT_PARK and ls.get("proof_epoch", 0) > rec["epoch"]:
+                    counters.pop(key, None)
+                    self._park(key, "runner_no_result", "the runner gave no result %d times in a row"
+                               % self.NO_RESULT_PARK)
+                    self.save_ls(ls)
+                    out.status, out.reason = "blocked", "runner_no_result"
+                    return out                     # neutral: neither a failure nor a proof
+            self.save_ls(ls)
+            fresh = self.load()[1]
+            streak = F.note_infra(fresh, False)
+            self.save(fresh)
+            out.sleep, out.status = 60, "infra"
+            self.event("infra", task_id=tid or None, status="run_failed", infra_streak=streak,
+                       reason=F.redact(str(reason or st))[:200])
+            if streak >= cfg.max_infra:
+                return self._brake(streak, out)
+        else:
+            self._learn_from_run(tid, tasks, rkey, res)
+            out.proof = self._is_proof(res, calls, st, rkey)
+            if out.proof:
+                ls["proof_epoch"] = ls.get("proof_epoch", 0) + 1
+                counters.pop(key, None)
+                ls["no_proof"] = {}                       # proof of work empties the spread
+                ls["backoff"] = {}                        # and the pauses of temporary faults
+                self.save_ls(ls)
+            elif key and self._ran_model_or_gate(res, calls, st, rkey):
+                # A run that reached the model or the gates and proved nothing. The set of DIFFERENT
+                # tasks failing like that since the last proof is the second brake counter: one task
+                # with an eternal error does not grow it, a dying Kilo or broken gates do.
+                label = self._scrub(rkey or str(res.get("blocked_reason") or st))[:80]
+                ls.setdefault("no_proof", {})[key] = label
+                self.save_ls(ls)
+                if len(ls["no_proof"]) >= cfg.max_infra:
+                    return self._spread_brake(ls, out)
+            if st == "IDLE":
+                out.sleep = 60  # runner sees nothing to take although the checkpoint has READY
+        return out
+
+    # -- memory of typical errors: the same signature twice = "do not repeat" in the brief + a higher channel tier
+    def _mem_path(self) -> Path:
+        return self.dir / "error_memory.json"
+
+    @staticmethod
+    def _reason_class(rkey: str) -> str:
+        """The class of a rejection key WITHOUT its free text. In the runner a key is 'gate:no_changes' (a fixed
+        word) or 'review: <the reviewer's remarks>' / 'gate: <why>' / 'weakening: <text>' (free text that may be
+        private): a fixed word stays, any other text becomes a short hash, so a repeat still matches and no
+        remark reaches the brief, error_memory.json or the telemetry (D8 critic, criterion 1)."""
+        head, _, rest = rkey.partition(":")
+        rest = rest.strip()
+        if not rest or re.fullmatch(r"[a-z_]{1,40}", rest):
+            return head + (":" + rest if rest else "")
+        return head + ":#" + hashlib.sha256(rest.encode("utf-8", "replace")).hexdigest()[:10]
+
+    def _signature(self, rkey: str, remark: str):
+        """(signature, words): the reason class plus the first normalised words of the critic's remark. The
+        remark goes through the public screen: a private text never reaches the memory (words stay empty)."""
+        from tools import agent_factory_import as imp
+        words = ""
+        if remark:
+            clean, classes = imp.screen(remark, 0)
+            if clean is not None and not classes and not self._privacy_hit(remark):
+                text = re.sub(r"\d+", "N", clean.lower())
+                words = " ".join(re.findall(r"[a-zа-яё_]{2,}", text)[:6])
+        return (self._reason_class(rkey) + "|" + words), words
+
+    def _learn_from_run(self, tid: str, tasks, rkey: str, res: dict) -> None:
+        """A rejection (gate:*, weakening:*, review:*) is remembered per task and per file; the second time the
+        same signature comes back the next brief says so and the task's channel tier goes one step up."""
+        if not tid or not rkey.startswith(REJECT_PREFIXES) or rkey == "gate:no_changes":
+            return
+        try:
+            tasks2, state = self.load()
+            remark = next((str(x.get("text") or "") for x in reversed(state["tasks"].get(tid, {}).get("feedback") or [])
+                           if x.get("source") in ("gate", "review") and not str(x.get("text") or "").startswith(
+                               ("не повторяй:", "[infra]"))), "")
+            sig, words = self._signature(rkey, remark)
+            mem = {}
+            try:
+                mem = json.loads(self._mem_path().read_text(encoding="utf-8"))
+            except FileNotFoundError:
+                pass
+            except (OSError, ValueError) as e:
+                self.err("error memory unreadable, starting empty", e)
+            if not isinstance(mem, dict):
+                mem = {}
+            per_task, per_file = mem.setdefault("tasks", {}), mem.setdefault("files", {})
+            if not isinstance(per_task, dict) or not isinstance(per_file, dict):
+                per_task, per_file = mem["tasks"], mem["files"] = {}, {}
+            seen = per_task.setdefault(tid, [])
+            repeat = sig in seen
+            if not repeat:
+                seen.append(sig)
+                del seen[:-5]
+            task = tasks2.get(tid)
+            for f in (task.touch_files if task else ())[:10]:
+                bucket = per_file.setdefault(f, {})
+                bucket[sig] = bucket.get(sig, 0) + 1
+                while len(bucket) > 5:
+                    bucket.pop(next(iter(bucket)))
+            for table in (per_task, per_file):          # rotation: the oldest entries go first
+                while len(table) > ERROR_MEMORY_MAX:
+                    table.pop(next(iter(table)))
+            F.save_atomic(self._mem_path(), mem)
+            if repeat and tid in state["tasks"]:
+                row = state["tasks"][tid]
+                note = "не повторяй: " + (words or self._reason_class(rkey))
+                F.add_feedback(state, tid, "gate", note)
+                cur = row.get("tier_floor") if row.get("tier_floor") in TIER_ORDER else TIER_ORDER[0]
+                new = TIER_ORDER[min(TIER_ORDER.index(cur) + 1, len(TIER_ORDER) - 1)]
+                row["tier_floor"] = new
+                self.save(state)
+                # the runner does not read tier_floor yet (backlog fac-tier-floor): "requested", never a false "raised"
+                self.event("route", task_id=tid, status="requested", reason="repeated_error",
+                           signature=self.rs(sig, 120), tier_from=cur, tier_to=new, applied=False)
+        except Exception as e:                           # memory is an aid: it must never stop the loop
+            self.err("error memory", e)
+
+    @staticmethod
+    def _num(c: dict, *names):
+        """A non-negative int usage field of one call, or None (unknown, never 0)."""
+        for n in names:
+            v = c.get(n)
+            if isinstance(v, int) and not isinstance(v, bool) and v >= 0:
+                return v
+        return None
+
+    @classmethod
+    def _sum_known(cls, calls, *names):
+        vals = [cls._num(c, *names) for c in calls]
+        vals = [v for v in vals if v is not None]
+        return sum(vals) if vals else None
+
+    @staticmethod
+    def _ran_model_or_gate(res: dict, calls: list, st, rkey: str) -> bool:
+        """The run reached the model or the gates (so a failure is about the pipeline), and it was
+        not a wait, a budget stop or a block BEFORE the model."""
+        blocked = str(res.get("blocked_reason") or "")
+        if (st in ("WAITING_CHANNEL", "IDLE", "NO_RESULT") or rkey in CHANNEL_REASONS
+                or rkey in BEFORE_MODEL or blocked in BEFORE_MODEL):
+            return False
+        return bool(calls) or rkey.startswith(REJECT_PREFIXES) or rkey in (
+            "gate_unknown", "reviewer_failed", "no_independent_reviewer", "provider_error")
+
+    def _spread_brake(self, ls: dict, out: Outcome) -> Outcome:
+        """K different tasks failed without any proof of work: the same BRAKE path, with the causes."""
+        hist: dict = {}
+        for label in ls["no_proof"].values():
+            hist[label] = hist.get(label, 0) + 1
+        fresh = self.load()[1]
+        fresh["infra_streak"] = max(int(fresh.get("infra_streak", 0)), self.cfg.max_infra)
+        self.save(fresh)
+        out.reason = "%d different tasks failed without any proof of work: %s" % (
+            len(ls["no_proof"]), ", ".join("%s x%d" % kv for kv in sorted(hist.items())))
+        out.status = "infra"
+        return self._brake(self.cfg.max_infra, out)
+
+    @staticmethod
+    def _gate_collected(res: dict) -> bool:
+        """The gates really ran only if tests were collected (0 collected / a timeout say nothing)."""
+        for key in ("tests", "counts"):
+            t = res.get(key)
+            if isinstance(t, dict) and isinstance(t.get("collected"), int) and t["collected"] > 0:
+                return True
+        return False
+
+    @staticmethod
+    def _is_proof(res: dict, calls: list, st, rkey: str) -> bool:
+        """Evidence that the pipeline works: a model call that really answered (rc 0, no error,
+        some output) AND a real candidate went through the gates/reviewer. NOT proof: an empty
+        answer (gate:no_changes), a dead Kilo (rc != 0 / unknown kind), BLOCKED worker_exception or
+        os_error (even after good calls), no calls at all."""
+        if res.get("blocked_reason") in ("worker_exception", "os_error") or rkey in (
+                "worker_exception", "os_error"):
+            return False
+        real_call = any(
+            c.get("returncode") == 0 and not c.get("error_class") and not c.get("provider_error")
+            and ((c.get("output_tokens") or 0) > 0 or (c.get("steps") or 0) > 0
+                 or (c.get("tool_events") or 0) > 0) for c in calls)
+        candidate = (st == "REVIEW" or res.get("cross_review") is not None
+                     or rkey.startswith(("review:", "weakening:"))
+                     or (rkey.startswith("gate:") and rkey != "gate:no_changes"
+                         and "timeout" not in rkey and Loop._gate_collected(res)))
+        return real_call and candidate
+
+    def _events(self, raw) -> list:
+        """<= 5 distinct runner events; housekeeping ones go last so they never crowd out the rest."""
+        seen, main, tail = set(), [], []
+        for x in raw or []:
+            x = str(x)
+            if x in seen:
+                continue
+            seen.add(x)
+            (tail if x in CLEANUP_EVENTS else main).append(x)
+        return [self.rs(x) for x in (main + tail)[:5]]
+
+    @staticmethod
+    def _parse(proc) -> dict:
+        text = (proc.stdout or b"").decode("utf-8", "replace") if isinstance(
+            proc.stdout, bytes) else (proc.stdout or "")
+        for line in reversed(text.strip().splitlines()):
+            try:
+                obj = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(obj, dict) and obj.get("status"):
+                return obj
+        err = proc.stderr.decode("utf-8", "replace") if isinstance(proc.stderr, bytes) else (
+            proc.stderr or "")
+        return {"status": "NO_RESULT", "rc": proc.returncode,
+                "error": "no result: " + F.redact(err[-200:])}
+
+    @staticmethod
+    def _bid(state, tasks, tid) -> str | None:
+        if not tid:
+            return None
+        row = state["tasks"].get(tid) or {}
+        return row.get("backlog_id") or (tasks[tid].backlog_id if tid in tasks else None) or None
+
+    # -- PROMOTE
+    def _promote(self, tid, tasks, state, ls) -> Outcome:
+        cfg, wt = self.cfg, Path(self.cfg.worktree)
+        t0 = self.clock()
+        src = self.stage / "for-review" / tid
+        files = sorted(p for p in src.rglob("*") if p.is_file()) if src.exists() else []
+        if not files:  # REVIEW without a package can never be merged: back to the queue
+            n = ls.setdefault("requeues", {}).get(tid, 0) + 1
+            if n >= self.REQUEUE_PARK:  # a third time: stop the circle, ask Opus
+                ls["requeues"].pop(tid, None)
+                F.requeue(state, tid, "нет пакета for-review")
+                self.save(state)
+                self.save_ls(ls)
+                self._park(tid, "no_package", "REVIEW without a package %d times" % n)
+                self.event("promote", task_id=tid, status="requeued", reason="no_package_parked")
+                return Outcome(action="PROMOTE", reason="no_package_parked", status="requeued")
+            ls["requeues"][tid] = n
+            F.requeue(state, tid, "нет пакета for-review")
+            self.save(state)
+            ls["bases"].pop(tid, None)
+            self.save_ls(ls)
+            self.event("promote", task_id=tid, backlog_id=self._bid(state, tasks, tid),
+                       status="requeued", reason="no_package", dur_s=round(self.clock() - t0, 3))
+            return Outcome(action="PROMOTE", reason="no_package", status="requeued")
+        rel = [p.relative_to(src).as_posix() for p in files]
+        cur = git_run(cfg.repo, "rev-parse", cfg.branch).strip()
+        base = ls["bases"].get(tid)
+        fields = dict(task_id=tid, backlog_id=self._bid(state, tasks, tid), base_sha=base or cur)
+
+        def finish(status, reason, outcome_status=None, proof=False, **kw):
+            self.event("promote", status=status, reason=reason, head=cur,
+                       dur_s=round(self.clock() - t0, 3), **fields, **kw)
+            return Outcome(action="PROMOTE", reason=reason, status=outcome_status or status,
+                           proof=proof)
+
+        def package_done():
+            done = self.stage / "promoted"
+            done.mkdir(parents=True, exist_ok=True)
+            shutil.rmtree(done / tid, ignore_errors=True)
+            shutil.move(str(src), str(done / tid))
+            ls["bases"].pop(tid, None)
+            self.save_ls(ls)
+
+        # idempotency: the commit may exist although the state was not written
+        done_sha = ""
+        prefix = "factory(%s):" % tid
+        for line in git_run(cfg.repo, "log", "--format=%H %s", "-F", "--grep=" + prefix,
+                            cfg.branch).splitlines():
+            sha_, _, subject = line.partition(" ")
+            if subject.startswith(prefix):
+                done_sha = sha_
+                break
+        if done_sha:
+            F.mark_promoted(state, tid, done_sha)
+            self.save(state)
+            package_done()
+            return finish("promoted", "already_merged", commit=done_sha)
+        try:
+            why = self._refuse_reason(rel, src, tasks.get(tid))
+        except Exception as e:  # a package we cannot even read is a package failure
+            return self._promote_failed(tid, tasks, state, ls, e, finish)
+        if why:
+            row = state["tasks"][tid]
+            row.update(status="BLOCKED", blocked_reason="scope_violation", lease=None,
+                       deadline=None)
+            F.add_feedback(state, tid, "gate", "promote refused: " + why)
+            self.save(state)
+            shutil.rmtree(src, ignore_errors=True)
+            ls["bases"].pop(tid, None)
+            self.save_ls(ls)
+            return finish("refused", F.redact(why)[:200])
+        moved = ""
+        if not base:
+            moved = "база не записана"
+        elif base != cur:
+            changed = set(git_run(cfg.repo, "diff", "--name-only", base, cur).split("\n"))
+            mine = {x.casefold() for x in (rel + list(tasks[tid].touch_files)
+                                           + list(tasks[tid].tests))}
+            hit = sorted(c for c in changed if c.casefold() in mine)
+            if hit:
+                moved = "база сдвинулась: " + ", ".join(hit[:5])
+        if moved:
+            F.requeue(state, tid, moved)
+            self.save(state)
+            shutil.rmtree(src, ignore_errors=True)  # runner refuses an existing package
+            ls["bases"].pop(tid, None)
+            self.save_ls(ls)
+            return finish("requeued", "base_moved" if base else "base_unknown")
+        if git_run(wt, "rev-parse", "--abbrev-ref", "HEAD").strip() != cfg.branch:
+            raise RuntimeError("merge worktree is not on " + cfg.branch)
+        self._restore(wt, rel)  # leftovers of an interrupted promote
+        outside = [p for p in self._dirty_paths(wt) if p not in set(rel)]
+        if outside:
+            raise RuntimeError("merge worktree is dirty outside the package: " + ", ".join(outside[:5]))
+        no_diff = False
+        try:
+            for path, name in zip(files, rel):
+                dst = wt.joinpath(*name.split("/"))
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(path, dst)
+            git_run(wt, "add", "--", *rel)
+            if subprocess.run(["git", "-C", str(wt), "diff", "--cached", "--quiet"]).returncode == 0:
+                no_diff = True
+            else:
+                title = F.redact((tasks[tid].title if tid in tasks else tid).splitlines()[0])[:72]
+                git_run(wt, "-c", "user.name=agent-factory", "-c",
+                        "user.email=agent-factory@localhost", "commit", "-q", "-m",
+                        "factory(%s): %s\n\nCandidate from free models, NOT accepted (review by "
+                        "Opus/owner).\nbase=%s files=%s\n" % (tid, title, base, ",".join(rel)))
+        except Exception as e:
+            try:
+                self._restore(wt, rel)
+            except Exception as e2:
+                self.event("infra", status="error", reason="restore: " + F.redact(str(e2))[:200])
+            lock_trouble = isinstance(e, subprocess.CalledProcessError) and "index.lock" in str(
+                getattr(e, "stderr", "") or "")
+            err_text = str(getattr(e, "stderr", "") or "") + str(getattr(e, "output", "") or "")
+            machine = (isinstance(e, PermissionError) or getattr(e, "errno", None) in (errno.ENOSPC, errno.EACCES)
+                       or getattr(e, "winerror", None) in (5, 32, 112)
+                       or (isinstance(e, subprocess.CalledProcessError)
+                           and ("No space left on device" in err_text or "Permission denied" in err_text)))
+            if lock_trouble or machine or not isinstance(e, (OSError, subprocess.CalledProcessError)):
+                raise    # the environment (antivirus, a full disk, a held lock, dying git) is not the package's fault
+            return self._promote_failed(tid, tasks, state, ls, e, finish)
+        except BaseException:
+            try:
+                self._restore(wt, rel)
+            except Exception as e2:
+                self.event("infra", status="error", reason="restore: " + F.redact(str(e2))[:200])
+            raise
+        if no_diff:  # the candidate equals HEAD: nothing to merge, never record a foreign sha
+            row = state["tasks"][tid]
+            row.update(status="BLOCKED", blocked_reason="no_diff", lease=None, deadline=None)
+            F.add_feedback(state, tid, "gate", "promote: candidate equals branch HEAD (no diff)")
+            self.save(state)
+            shutil.rmtree(src, ignore_errors=True)
+            ls["bases"].pop(tid, None)
+            self.save_ls(ls)
+            return finish("no_diff", "no_diff", "no_diff")
+        sha = git_run(wt, "rev-parse", "HEAD").strip()
+        F.mark_promoted(state, tid, sha)
+        self.save(state)
+        self._clear_requeues(ls, tid)
+        ls.get("promote_fail", {}).pop(tid, None)
+        package_done()
+        return finish("promoted", "promoted", proof=True, commit=sha)
+
+    def _promote_failed(self, tid, tasks, state, ls, e, finish) -> Outcome:
+        """A deterministic failure caused by the package (copy, git add, scope): count per task, park
+        at ESCALATE_AFTER; never a CRASH, never the brake."""
+        n = ls.setdefault("promote_fail", {}).get(tid, 0) + 1
+        why = "%s: %s" % (type(e).__name__, F.redact(str(getattr(e, "stderr", "") or e))[:200])
+        if n >= ESCALATE_AFTER:
+            ls["promote_fail"].pop(tid, None)
+            self.save_ls(ls)
+            shutil.rmtree(self.stage / "for-review" / tid, ignore_errors=True)
+            self._park(tid, "promote_failed", "merging the package failed %d times: %s" % (n, why))
+            return finish("parked", "promote_failed")
+        ls["promote_fail"][tid] = n
+        self.save_ls(ls)
+        self.event("promote", task_id=tid, status="failed", reason=why, attempt=n)
+        return Outcome(action="PROMOTE", reason="promote_failed", status="promote_failed", sleep=60)
+
+    def _refuse_reason(self, rel, src, task) -> str:
+        """Last line before git: scope and the gate's own forbidden paths (imported, not copied)."""
+        from tools import factory_gate
+        allowed = {x.casefold() for x in (task.touch_files + task.tests)} if task else set()
+        for r in rel:
+            parts = r.split("/")
+            if ".." in parts or ".git" in parts or Path(r).is_absolute():
+                return "bad path " + r
+        extra = [r for r in rel if r.casefold() not in allowed]
+        if extra:
+            return "outside task scope: " + ", ".join(extra[:5])
+        texts = {r: (src.joinpath(*r.split("/"))).read_text(encoding="utf-8", errors="replace")
+                 for r in rel}
+        bad = factory_gate.weakening_violations(self.mirror, texts, task.kind)
+        return "; ".join(bad[:3]) if bad else ""
+
+    @staticmethod
+    def _dirty_paths(wt: Path) -> list[str]:
+        out = git_run(wt, "status", "--porcelain", "--untracked-files=all", retry_lock=False)
+        paths = []
+        for line in out.splitlines():
+            p = line[3:].split(" -> ")[-1].strip().strip('"')
+            if p:
+                paths.append(p)
+        return paths
+
+    def _restore(self, wt: Path, rel: list[str]) -> None:
+        """Put the package paths back to HEAD: index, tracked files, new untracked files."""
+        for r in rel:
+            tracked = subprocess.run(["git", "-C", str(wt), "ls-files", "--error-unmatch", "--", r],
+                                     capture_output=True).returncode == 0
+            subprocess.run(["git", "-C", str(wt), "reset", "-q", "--", r], capture_output=True)
+            if tracked:  # content from HEAD written directly: works while index.lock is held
+                blob = subprocess.run(["git", "-C", str(wt), "cat-file", "--filters", "HEAD:" + r],
+                                      capture_output=True)
+                if blob.returncode == 0:
+                    wt.joinpath(*r.split("/")).write_bytes(blob.stdout)
+            else:
+                wt.joinpath(*r.split("/")).unlink(missing_ok=True)
+        left = [p for p in self._dirty_paths(wt) if p in set(rel)]
+        if left:
+            raise RuntimeError("could not restore: " + ", ".join(left[:5]))
+
+    # -- stats
+    def _stats(self) -> None:
+        try:
+            tasks, state = self.load()
+            ls = self.ls()
+            rows = state["tasks"].values()
+            tot = ls["totals"]
+            blocked: dict = {}
+            for r in rows:
+                if r["status"] == "BLOCKED":
+                    key = str(r.get("blocked_reason") or "unknown")
+                    blocked[key] = blocked.get(key, 0) + 1
+            stats = {
+                "promoted": sum(r["status"] == "PROMOTED" for r in rows),     # merged into the factory branch
+                "accepted": len(ls["accepted"]) if isinstance(ls.get("accepted"), dict) else 0,   # taken by the coordinator
+                "rejected": tot.get("rejected", 0),
+                "quarantine": sum(r["status"] == "FAILED" and r.get("reason") == "quarantine"
+                                  for r in rows),
+                "blocked": sum(r["status"] == "BLOCKED" for r in rows),
+                "blocked_by_reason": blocked,
+                "opus_questions": len(ls["holds"]) + sum(
+                    r["status"] in ("BLOCKED", "FAILED") for r in rows) + sum(
+                    t.only_opus or not t.privacy_safe for t in tasks.values()),
+                "tokens_in": tot.get("tokens_in", 0), "tokens_out": tot.get("tokens_out", 0),
+                "seconds": tot.get("seconds", 0), "infra_streak": state.get("infra_streak", 0),
+                "last_iteration": self.ts(), "run_id": self.run_id,
+                "iterations": self.iterations}
+            F.save_atomic(self.stats_path, stats)
+            if blocked or stats["quarantine"] or ls["holds"] or any(
+                    t.only_opus or not t.privacy_safe for t in tasks.values()):
+                self._write_questions(tasks, state, ls)
+        except Exception as e:  # stats must never stop the loop
+            self.event("infra", status="error", reason="stats: " + F.redact(str(e))[:200])
+
+    # -- main loop
+    def _snapshot_answers(self) -> None:
+        try:
+            self._known_names = {f.name for f in (self.dir / "answers").glob("*.json")}
+        except OSError:
+            self._known_names = set()
+
+    def _answer_waiting(self, since: float = 0) -> bool:
+        """A name we have not seen wakes the sleeping loop once (then it is known)."""
+        try:
+            new = {f.name for f in (self.dir / "answers").glob("*.json")} - self._known_names
+        except OSError:
+            return False
+        self._known_names |= new
+        return bool(new)
+
+    def _sleep(self, total: float) -> None:
+        start = time.time()
+        left = total
+        while left > 0 and not self.stop.exists():
+            if self.cfg.until and dt.datetime.fromtimestamp(self.clock()) >= self.cfg.until:
+                return
+            if self._answer_waiting(start):  # an Opus answer arrived while we slept
+                return
+            d = min(self.cfg.chunk, left)
+            self.sleep_fn(d)
+            left -= d
+
+    def _clean_state_tmp(self) -> None:
+        """Files in <state-dir>/tmp older than a day are leftovers of earlier runs."""
+        cutoff = time.time() - 86400
+        try:
+            for item in (self.dir / "tmp").iterdir():
+                try:
+                    if item.stat().st_mtime < cutoff:
+                        shutil.rmtree(item, ignore_errors=True) if item.is_dir() else item.unlink()
+                except OSError as e:
+                    self.err("tmp cleanup", e)
+        except OSError:
+            pass
+
+    def _use_state_tmp(self):
+        """Temp files (gate mkdtemp, triage profile, pytest basetemp) live in <state-dir>/tmp: their
+        paths end up in test output and model remarks, so they must not carry the user's name."""
+        saved = (tempfile.tempdir, os.environ.get("TEMP"), os.environ.get("TMP"))
+        try:
+            tmp = self.dir / "tmp"
+            tmp.mkdir(exist_ok=True)
+            tempfile.tempdir = str(tmp)
+            os.environ["TEMP"] = os.environ["TMP"] = str(tmp)
+        except OSError as e:
+            self.err("state tmp", e)
+        return saved
+
+    @staticmethod
+    def _restore_tmp(saved) -> None:
+        tempfile.tempdir = saved[0]
+        for name, value in (("TEMP", saved[1]), ("TMP", saved[2])):
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+    def run(self) -> int:
+        cfg = self.cfg
+        if not self.acquire():
+            return EXIT_LOCK_ERROR if self._lock_error else EXIT_RUNNING
+        self.power_fn(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)
+        saved_tmp = self._use_state_tmp()
+        try:
+            if cfg.clear_brake:  # only the instance that owns loop.pid may touch the state
+                self.clear_brake()
+            if self._brake_gate():
+                return EXIT_BRAKE
+            self.clear_stale_lockdir()
+            self.release_orphan_leases()
+            self._snapshot_answers()   # before the first step: a failing step must still sleep
+            self._clean_state_tmp()
+            for note in self.startup_notes:
+                self.event("infra", status="skipped_channel", reason=note)
+            self.event("loop", action="START", status="ok", reason="start", pid=os.getpid(),
+                       branch=cfg.branch, until=str(cfg.until) if cfg.until else None)
+            while True:
+                if self.stop.exists():
+                    self.event("loop", action="EXIT", status="stop", reason="STOP")
+                    return EXIT_OK
+                if cfg.until and dt.datetime.fromtimestamp(self.clock()) >= cfg.until:
+                    self.event("loop", action="EXIT", status="deadline", reason="deadline")
+                    return EXIT_OK
+                out = self.step()
+                if out.code is not None:
+                    return out.code
+                if cfg.once:
+                    return EXIT_OK
+                self._sleep(out.sleep)
+        finally:
+            self._restore_tmp(saved_tmp)
+            self.power_fn(ES_CONTINUOUS)
+            self.release()
+
+
+# ---- summary: the ONE reader of the telemetry format ------------------------------------------------
+
+TEL_FILES = ("telemetry.jsonl", "telemetry.jsonl.1", "telemetry.jsonl.2")
+SUMMARY_SCHEMA = 3
+
+
+def _label(value) -> str:
+    value = value if isinstance(value, str) else "unknown"
+    return value if re.fullmatch(r"[A-Za-z0-9._:/-]{1,60}", value) else "other"
+
+
+def _count(value):
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+
+def _tally() -> dict:
+    return {"rows": 0, "calls": 0, "tokens_in": 0, "tokens_out": 0, "errors": {}, "status": {},
+            "calls_usage_unknown": 0, "http_429": 0}
+
+
+def summary(state_dir, backlog=None, free_ram_fn=free_ram_bytes) -> dict:
+    """Numbers only: no task text, no ids, no paths, no keys (it goes to the public mirror).
+    Keys of the per-model/per-span tallies are the mirror's (rows, calls, tokens_in, tokens_out, errors, status) plus
+    calls_usage_unknown and http_429; ``funnel`` runs found -> triaged -> ready -> claimed -> coded -> gate_pass ->
+    reviewed -> promoted -> accepted and is followed by blocked / requeued / parked.  Unknown usage is never a 0."""
+    root = Path(state_dir)
+    spans: dict = {}
+    models: dict = {}
+    status_all: dict = {}
+    rows = bad = skipped = 0
+    claimed, coded, gated, reviewed, promoted_ev, accepted_ev = set(), set(), set(), set(), set(), set()
+    requeued = parked_ev = 0
+    for fname in TEL_FILES:
+        path = root / fname
+        try:
+            if not path.is_file():
+                continue
+            if path.stat().st_size > 200_000_000:
+                skipped += 1
+                continue
+            with path.open(encoding="utf-8", errors="replace") as fh:
+                for line in fh:
+                    if not line.strip():
+                        continue
+                    try:
+                        row = json.loads(line)
+                    except (ValueError, RecursionError):
+                        bad += 1
+                        continue
+                    if not isinstance(row, dict) or not isinstance(row.get("span"), str) or not (
+                            "ts" in row or "run_id" in row):
+                        bad += 1
+                        continue
+                    rows += 1
+                    span = _label(row["span"])
+                    span_t = spans.setdefault(span, _tally())
+                    span_t["rows"] += 1
+                    st = row.get("status") if isinstance(row.get("status"), str) else None
+                    if st:
+                        lab = _label(st)
+                        span_t["status"][lab] = span_t["status"].get(lab, 0) + 1
+                        status_all[lab] = status_all.get(lab, 0) + 1
+                    tid = row.get("task_id") if isinstance(row.get("task_id"), str) else None
+                    role = row.get("role") if isinstance(row.get("role"), str) else None
+                    if role:
+                        model_t = models.setdefault(_label(row.get("model")), _tally())
+                        for t in (span_t, model_t):
+                            t["calls"] += 1
+                            tin, tout = _count(row.get("tokens_in")), _count(row.get("tokens_out"))
+                            if tin is None and tout is None:
+                                t["calls_usage_unknown"] += 1
+                            t["tokens_in"] += tin or 0
+                            t["tokens_out"] += tout or 0
+                            if row.get("http_status") == 429:
+                                t["http_429"] += 1
+                            if row.get("error_class"):
+                                cls = _label(row["error_class"])
+                                t["errors"][cls] = t["errors"].get(cls, 0) + 1
+                        if tid and role == "code" and not row.get("error_class"):
+                            coded.add(tid)
+                    if tid and span == "run" and not role and st not in (None, "WAITING_CHANNEL", "IDLE", "NO_RESULT"):
+                        claimed.add(tid)
+                        if st == "REVIEW":
+                            gated.add(tid)
+                    if tid and span == "review":
+                        reviewed.add(tid)
+                    if span == "promote":
+                        if tid and st == "promoted":
+                            promoted_ev.add(tid)
+                        if st == "requeued":
+                            requeued += 1
+                        if st == "parked":
+                            parked_ev += 1
+                    if span == "accept" and tid and st == "accepted":
+                        accepted_ev.add(tid)
+        except OSError:
+            skipped += 1
+    for t in models.values():
+        del t["rows"], t["status"]
+    # the state: counts by status, never the rows themselves
+    by_status: dict = {}
+    triaged = set()
+    state_promoted = set()
+    try:
+        plan = json.loads((root / "plan.json").read_text(encoding="utf-8"))
+        for r in (plan.get("tasks") if isinstance(plan, dict) else plan) or []:
+            if isinstance(r, dict) and isinstance(r.get("backlog_id"), str):
+                triaged.add(r["backlog_id"])
+    except (OSError, ValueError):
+        pass
+    try:
+        st_rows = json.loads((root / "state.json").read_text(encoding="utf-8")).get("tasks") or {}
+        for tid, r in st_rows.items():
+            if isinstance(r, dict):
+                lab = _label(r.get("status"))
+                by_status[lab] = by_status.get(lab, 0) + 1
+                if r.get("status") == "PROMOTED":
+                    state_promoted.add(tid)
+    except (OSError, ValueError, AttributeError):
+        pass
+    ls = {}
+    try:
+        ls = json.loads((root / "loop_state.json").read_text(encoding="utf-8"))
+        if not isinstance(ls, dict):
+            ls = {}
+    except (OSError, ValueError):
+        pass
+    accepted = set(ls["accepted"]) if isinstance(ls.get("accepted"), dict) else set()
+    known_rows = triaged | set(ls.get("holds") or {}) | set(ls.get("seen") or {}) | set(ls.get("closed") or {})
+    found = None
+    if backlog is not None:
+        try:
+            from tools import agent_factory_import as imp
+            found = len(imp.parse_open_rows(Path(backlog), root, include_closed=False))
+        except Exception:
+            found = None
+    blocked = by_status.get("BLOCKED", 0)
+    promoted = promoted_ev | state_promoted
+    funnel = {"found_in_backlog": found if found is not None else "unknown",
+              "known_to_loop": len(known_rows), "triaged": len(triaged), "ready": by_status.get("READY", 0),
+              "claimed": len(claimed), "coded": len(coded), "gate_pass": len(gated), "reviewed": len(reviewed),
+              "promoted": len(promoted), "accepted": len(accepted | accepted_ev)}
+    try:
+        ram = round(free_ram_fn() / 2 ** 30, 2)
+        ram = ram if ram < 10 ** 6 else "unknown"
+    except Exception:
+        ram = "unknown"
+    return {"schema": SUMMARY_SCHEMA, "funnel": funnel,
+            "side": {"blocked": blocked, "requeued": requeued, "parked": parked_ev},
+            "tasks_now": by_status, "span": spans, "model": models, "status": status_all,
+            "accepted": len(accepted | accepted_ev), "promoted": len(promoted),
+            "rows_recognized": rows, "unrecognized_rows": bad, "skipped_files": skipped,
+            "free_ram_gb": ram}
+
+
+def summary_main(argv) -> int:
+    p = argparse.ArgumentParser(prog="factory_loop summary", description="funnel, spend per model, free RAM")
+    p.add_argument("--state-dir", type=Path, default=DEFAULT_STATE_DIR)
+    p.add_argument("--backlog", type=Path, help="counts the open rows for the first funnel step")
+    a = p.parse_args(argv)
+    print(json.dumps(summary(a.state_dir, a.backlog), ensure_ascii=False, indent=2, sort_keys=True))
+    return 0
+
+
+# ---- CLI --------------------------------------------------------------------------------
+
+def _accepts(fn, name: str) -> bool:
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
+    return name in params or any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
+
+
+def _dt(value: str) -> dt.datetime:
+    return dt.datetime.fromisoformat(value.strip())
+
+
+def parse_args(argv=None):
+    p = argparse.ArgumentParser(description="autonomous factory loop (single instance)")
+    p.add_argument("--state-dir", type=Path, default=DEFAULT_STATE_DIR)
+    p.add_argument("--repo", type=Path, default=WORK / "CLOUD_REPO")
+    p.add_argument("--branch", default="factory/night-20261119")
+    p.add_argument("--worktree", type=Path, default=WORK / "W7" / "stage" / "factory_night_wt")
+    p.add_argument("--backlog", type=Path, default=WORK / "BACKLOG_ECHO.md")
+    p.add_argument("--channels", type=Path, default=WORK / "W7" / "factory" / "channels.json")
+    p.add_argument("--until", type=_dt, help='"YYYY-MM-DD HH:MM" local time (may cross midnight)')
+    p.add_argument("--once", action="store_true", help="one iteration (debugging)")
+    p.add_argument("--clear-brake", action="store_true", help="remove BRAKE and start")
+    p.add_argument("--env-file", type=Path, help="read ONLY the channels' key_env names from it")
+    p.add_argument("--small-model", default=Config.small_model)
+    p.add_argument("--large-model", default=Config.large_model)
+    p.add_argument("--review-model", default=Config.review_model)
+    return p.parse_args(argv)
+
+
+def _known_kind(plan: Path, tid: str | None, bid: str | None, touch=()) -> str:
+    """kind of the answered task when the plan knows it (fast refusal only); a hold is 'code'.
+    A missing plan is a hold; a broken one is an error (ValueError), never a silent 'code'."""
+    if not plan.exists():
+        return "code"
+    try:
+        rows = F.read_plan(json.loads(plan.read_text(encoding="utf-8")))
+    except Exception as e:
+        raise ValueError("plan.json is unreadable: %s" % type(e).__name__) from e
+    found = [t for t in rows.values() if (tid and t.id == tid) or (not tid and bid and t.backlog_id == bid)]
+    want_unit = any(str(x).startswith("tests/") for x in touch)
+    found.sort(key=lambda t: (t.kind == "unit_test") != want_unit)
+    return found[0].kind if found else "code"
+
+
+def answer_main(argv) -> int:
+    """`answer` subcommand: validate Opus' answer and drop it into <state-dir>/answers/."""
+    from tools import factory_gate
+    p = argparse.ArgumentParser(prog="factory_loop answer",
+                                description="Opus answer to a factory question")
+    p.add_argument("--state-dir", type=Path, default=DEFAULT_STATE_DIR)
+    p.add_argument("--backlog-id")
+    p.add_argument("--task-id")
+    p.add_argument("--touch", nargs="+")
+    p.add_argument("--tests", nargs="+")
+    p.add_argument("--read", nargs="+")
+    p.add_argument("--target", nargs="+", help="path:selector")
+    p.add_argument("--depends-on", nargs="*", help="empty list clears the dependencies")
+    p.add_argument("--close", action="store_true", help="close the row/task (needs --note)")
+    p.add_argument("--accept", action="store_true",
+                   help="the coordinator accepts a PROMOTED task (PROMOTED = merged, ACCEPTED = taken)")
+    p.add_argument("--release-private", action="store_true",
+                   help="allow a public --goal for a private/unknown backlog row (explicit release)")
+    p.add_argument("--goal", help="technical wording for the coder (checked: no owner words)")
+    p.add_argument("--kind", choices=("code", "unit_test"), help="for a new task from a hold")
+    p.add_argument("--note", default="")
+    a = p.parse_args(argv)
+    if not a.backlog_id and not a.task_id:
+        p.error("--backlog-id or --task-id is required")
+    if not Path(a.state_dir).is_dir():
+        p.error("--state-dir does not exist: %s" % a.state_dir)
+    if len(a.note) > 2000:
+        p.error("--note is longer than 2000 characters")
+    if any(len(x or "") > 64 for x in (a.backlog_id, a.task_id)):
+        p.error("--backlog-id/--task-id are longer than 64 characters")
+    if a.goal:
+        from tools import agent_factory_import as imp
+        clean, bad = imp.screen(a.goal, imp.MIN_PUBLIC_CHARS)
+        if clean is None or bad or len(a.goal) > 1500:
+            p.error("--goal fails the public check (%s): give a technical wording without the "
+                    "owner's words, quotes or times (up to 1500 characters)" % ",".join(bad))
+        hit = Loop._privacy_hit(a.goal)
+        if hit:
+            p.error("--goal contains %s: it can never go to an external model" % hit)
+    if a.accept and (not a.task_id or a.close or any(x is not None for x in (
+            a.touch, a.tests, a.read, a.target, a.depends_on)) or a.goal):
+        p.error("--accept needs --task-id and nothing else but --note")
+    if a.close and not a.note.strip():
+        p.error("--close needs --note with the reason")
+    if a.close and any(x is not None for x in (a.touch, a.tests, a.read, a.target, a.depends_on)):
+        p.error("--close closes the row: do not combine it with --touch/--tests/--read/--target/--depends-on")
+    if a.close and not a.task_id:
+        try:
+            plan_rows = F.read_plan(json.loads((Path(a.state_dir) / "plan.json").read_text(encoding="utf-8")))
+        except (OSError, ValueError, F.InvalidPlan):
+            plan_rows = {}
+        same = [t for t, tk in plan_rows.items() if tk.backlog_id == a.backlog_id]
+        if len(same) > 1:
+            p.error("several tasks share %s (%s): give --task-id" % (a.backlog_id, ", ".join(same[:5])))
+    ans = {"backlog_id": a.backlog_id, "task_id": a.task_id, "note": F.redact(a.note),
+           "goal": a.goal}
+    if a.release_private:
+        ans["release_private"] = True
+    if a.close:
+        ans["close"] = True
+    if a.accept:
+        ans["accept"] = True
+    if a.kind == "unit_test":
+        if set(a.touch or []) != set(a.tests or []) or not a.touch:
+            p.error("a unit_test task touches exactly its tests: --touch must equal --tests")
+        ans["kind"] = "unit_test"
+    try:
+        for key, vals in (("touch_files", a.touch), ("tests", a.tests), ("read_files", a.read)):
+            if vals is not None:
+                ans[key] = [F.safe_path(v) for v in vals]
+        kind = "unit_test" if a.kind == "unit_test" else _known_kind(
+            Path(a.state_dir) / "plan.json", a.task_id, a.backlog_id, ans.get("touch_files", []))
+        for path in ans.get("touch_files", []):
+            why = factory_gate.is_forbidden(path, kind)
+            if why:
+                raise F.InvalidPlan("%s: %s" % (path, why))
+        if a.target:
+            targets = {}
+            for item in a.target:
+                path, sep, selector = item.partition(":")
+                if not sep or not selector:
+                    raise F.InvalidPlan("--target must be path:selector: " + item)
+                path = F.safe_path(path)
+                if path not in set(ans.get("touch_files", []) + ans.get("read_files", [])
+                                   + ans.get("tests", [])):
+                    raise F.InvalidPlan("--target file is not in --touch/--read/--tests: " + path)
+                targets[path] = selector
+            ans["context_targets"] = targets
+        if a.depends_on is not None:
+            ans["depends_on"] = list(a.depends_on)
+    except (F.InvalidPlan, ValueError) as e:
+        p.error(str(e))
+    if a.note.strip() and (a.task_id or a.backlog_id):
+        try:  # a note of a PUBLIC task goes into the external prompt: same check, fast refusal
+            plan = F.read_plan(json.loads((Path(a.state_dir) / "plan.json").read_text(encoding="utf-8")))
+            known = [t for t in plan.values()
+                     if (a.task_id and t.id == a.task_id) or (not a.task_id and t.backlog_id == a.backlog_id)]
+            if known and known[0].privacy_safe and not known[0].only_opus:
+                Loop._check_note(a.note)
+        except F.InvalidPlan as e:
+            p.error(str(e))
+        except (OSError, ValueError):
+            pass
+    ans = {k: v for k, v in ans.items() if v not in (None, "")}
+    if not any(k in ans for k in ("touch_files", "tests", "read_files", "context_targets",
+                                  "depends_on", "note", "close", "goal", "accept")):
+        p.error("empty answer: give fields or --note")
+    box = Path(a.state_dir) / "answers"
+    box.mkdir(parents=True, exist_ok=True)
+    name = "%d-%s.json" % (time.time_ns(), re.sub(r"[^A-Za-z0-9_-]", "_", a.backlog_id or a.task_id))
+    payload = json.dumps(ans, ensure_ascii=False, indent=2)
+    target = box / name
+    for n in range(1, 1000):
+        try:
+            with open(target, "x", encoding="utf-8") as fh:  # exclusive: never overwrite an answer
+                fh.write(payload)
+            break
+        except FileExistsError:
+            target = box / (name[:-5] + "-%d.json" % n)
+    else:
+        p.error("could not find a free file name in " + str(box))
+    print("answer saved:", target)
+    return 0
+
+
+def main(argv=None) -> int:
+    argv = sys.argv[1:] if argv is None else list(argv)
+    if argv and argv[0] == "answer":
+        return answer_main(argv[1:])
+    if argv and argv[0] == "summary":
+        return summary_main(argv[1:])
+    a = parse_args(argv)
+    absent: list = []
+    keys = load_keys(a.env_file, a.channels, absent) if a.env_file else {}
+    cfg = Config(state_dir=a.state_dir, repo=a.repo, branch=a.branch, worktree=a.worktree,
+                 backlog=a.backlog, channels=a.channels, until=a.until, once=a.once,
+                 small_model=a.small_model, large_model=a.large_model,
+                 review_model=a.review_model, env_file=a.env_file, clear_brake=a.clear_brake)
+    try:
+        loop = Loop(cfg, extra_env=keys, startup_notes=["no key for channel env " + n for n in absent])
+    except ValueError as e:
+        raise SystemExit(str(e))
+    return loop.run()
+
+
+if __name__ == "__main__":
+    sys.exit(main())
