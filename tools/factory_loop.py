@@ -591,11 +591,12 @@ class Loop:
     def release_orphan_leases(self) -> None:
         """At START no runner of this state can be alive (one loop instance by loop.pid; its runners die with
         their job object), so every RUNNING lease is an orphan of a killed pass: back to READY now, not after
-        LEASE_LIFETIME_S. F.release_expired counts it, and a task that keeps killing its pass is blocked at the
-        third (restart check 19.11 17:54: two kills left three tasks RUNNING for 30 minutes)."""
+        LEASE_LIFETIME_S (restart check 19.11 17:54: two kills left three tasks RUNNING for 30 minutes). A restart
+        is not the task's doing: no expiry is counted and the attempt comes back (orphan=True), so restarts of
+        the coordinator never block or fail a healthy task; a pass that hangs still expires by time."""
         try:
             _, state = self.load()
-            freed = F.release_expired(state, float("inf"))
+            freed = F.release_expired(state, float("inf"), orphan=True)
             if freed:
                 self.save(state)
                 self.event("infra", status="released", reason="orphan_leases", tasks=len(freed))

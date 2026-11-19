@@ -47,12 +47,23 @@ def test_a_live_holders_lock_is_kept(env):
     assert (lock / F.LOCK_OWNER).exists() and not _cleared(env)
 
 
-def test_orphan_leases_go_back_to_ready_at_start_and_are_counted(env):
-    env.set_row("T1", status="RUNNING", lease="a" * 32, deadline=time.time() + 9999, attempts=1)
-    env.loop().release_orphan_leases()
-    row = env.state()["tasks"]["T1"]
-    assert row["status"] == "READY" and row["lease"] is None and row["lease_expiries"] == 1
-    assert [x.get("tasks") for x in env.events() if x.get("reason") == "orphan_leases"] == [1]
+def test_orphan_leases_go_back_to_ready_at_start_neutrally(env):
+    """A restart is not the task's doing: three restarts during its passes never block or fail it."""
+    for _ in range(3):
+        env.set_row("T1", status="RUNNING", lease="a" * 32, deadline=time.time() + 9999, attempts=1)
+        env.loop().release_orphan_leases()
+        row = env.state()["tasks"]["T1"]
+        assert row["status"] == "READY" and row["lease"] is None and row["attempts"] == 0
+        assert not row.get("lease_expiries")
+    assert [x.get("tasks") for x in env.events() if x.get("reason") == "orphan_leases"] == [1, 1, 1]
+
+
+def test_a_lease_that_expires_by_time_still_counts_and_blocks_at_the_third():
+    state = {"tasks": {"T1": {"status": "RUNNING", "lease": "a" * 32, "deadline": 10.0, "attempts": 1}}}
+    for n in (1, 2, 3):
+        state["tasks"]["T1"].update(status="RUNNING", lease="a" * 32, deadline=10.0)
+        assert F.release_expired(state, 11.0) == ["T1"] and state["tasks"]["T1"]["lease_expiries"] == n
+    assert state["tasks"]["T1"]["status"] == "BLOCKED" and state["tasks"]["T1"]["blocked_reason"] == "lease_expired"
 
 
 def test_an_anonymous_lock_keeps_the_age_rule(env):

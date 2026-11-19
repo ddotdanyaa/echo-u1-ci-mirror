@@ -176,6 +176,16 @@ def test_the_light_prompt_has_no_tool_instructions_and_says_what_is_shown():
     assert 'read tool' in kilo and W.LIGHT_HINT not in kilo
 
 
+def test_an_overloaded_model_is_cooled_so_the_next_try_takes_another_channel():
+    """Live 19.11 18:18-18:20: a 503 'high demand' of one model deferred the task while other channels idled."""
+    channel = dict(id='c1', group='p', model='google/x', key_env='KEY', tpm=100000, rpd=100)
+    state = {}
+    done = C.apply_failure(state, channel, {'kind': 'transient', 'status': 503}, now=1000.0)
+    assert done == {'action': 'cool_model', 'cool_s': C.OVERLOAD_COOL_S}
+    assert state['model_cool']['google/x'] == 1000.0 + C.OVERLOAD_COOL_S
+    assert C.apply_failure({}, channel, {'kind': 'transient', 'status': None}, now=1000.0)['action'] == 'none'
+
+
 def test_light_tokens_book_the_light_overhead_not_kilos():
     assert C.estimate_tokens(3500, 0, overhead=W.LIGHT_OVERHEAD_TOKENS) == 1000 + W.LIGHT_OVERHEAD_TOKENS
     assert C.estimate_tokens(3500) == 1000 + C.KILO_OVERHEAD_TOKENS

@@ -845,6 +845,23 @@ def _split_text(text: str, n: int) -> list[str]:
     return buckets
 
 
+def _test_reads(files, extra=()) -> list[str]:
+    """What the author of a NEW test must see: the code the test is about (the code part's touch files, then its read
+    files). Live 19.11 18:06-18:14: unit_test tasks had read_files=[], the models saw no code at all, imported invented
+    modules ('factory') or wrote 'assert False' stubs, and every one of them failed."""
+    out: list[str] = []
+    for f in list(files) + list(extra):
+        if f.endswith(".py") and f not in out:
+            out.append(f)
+    return out[:MAX_TOUCH + 1]
+
+
+def _import_hint(files) -> str:
+    """' Проверяемый код: echo_sync.fast_text (импортируй из него).' for the goal of a new test, '' without code."""
+    mods = [f[:-3].replace("/", ".") for f in files if f.endswith(".py") and not f.startswith("tests/")]
+    return (" Проверяемый код: %s (импортируй из этих модулей, других не выдумывай)." % ", ".join(mods)) if mods else ""
+
+
 def _children(F, root: Path, bid: str, tid: str, priority, text: str, chunks: list[list[str]], known, named: list[str], known_parts=None):
     """Parts of a too big row: for every group of files a pair "unit_test -> code".
 
@@ -889,9 +906,9 @@ def _children(F, root: Path, bid: str, tid: str, priority, text: str, chunks: li
         else:
             test = dict(base, id=ctid + "_test", title=("Тест части %d/%d для %s" % (k, n, bid))[:120], depends_on=[],
                         goal=("Написать тест: он должен падать на текущем коде из-за дефекта части %d из %d строки и проходить после "
-                              "исправления. Первой строкой файла напиши комментарий «# factory-backlog-id: %s». Строка: %s"
-                              % (k, n, cb, goal))[:MAX_TEXT],
-                        touch_files=[tpath], tests=[tpath], kind="unit_test")
+                              "исправления. Первой строкой файла напиши комментарий «# factory-backlog-id: %s».%s Строка: %s"
+                              % (k, n, cb, _import_hint(files), goal))[:MAX_TEXT],
+                        touch_files=[tpath], tests=[tpath], kind="unit_test", read_files=_test_reads(files))
         code = dict(base, id=ctid, title=("%s часть %d/%d: %s" % (bid, k, n, piece))[:120], goal=goal,
                     depends_on=[ctid + "_test"] if test else [], touch_files=list(files), tests=[tpath], kind="code")
         pairs.append([t for t in (test, code) if t])
@@ -1198,11 +1215,12 @@ def triage_portion(backlog_path, head_root, known_backlog_ids, limit, profile_at
                 ordered.append(t)
         if not named:
             goal = ("Написать тест: он должен падать на текущем коде из-за дефекта строки и проходить после "
-                    "исправления. Первой строкой файла напиши комментарий «# factory-backlog-id: %s». "
-                    "Упомянутые тесты (не дублировать): %s. Строка: %s" % (bid, ", ".join(extra) or "нет", text))
+                    "исправления. Первой строкой файла напиши комментарий «# factory-backlog-id: %s».%s "
+                    "Упомянутые тесты (не дублировать): %s. Строка: %s" % (bid, _import_hint(touch), ", ".join(extra) or "нет", text))
             group.append(dict(base, id=tid + "_test", title=("Тест для %s" % bid)[:120],
                               goal=goal[:1500], depends_on=[],
-                              touch_files=[tpath], tests=[tpath], kind="unit_test"))
+                              touch_files=[tpath], tests=[tpath], kind="unit_test",
+                              read_files=_test_reads(touch, read_files)))
             ordered = [tpath]
             deps = [tid + "_test"]
         tail = suspects + ("" if not extra else " Проверь, что не ломаешь: " + ", ".join(extra))

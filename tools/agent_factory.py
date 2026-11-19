@@ -507,13 +507,19 @@ def accept(state: dict, tid: str, *, reviewer: str) -> None:
     row["reviewer"] = redact(reviewer)[:80]
 
 
-def release_expired(state: dict, now: float) -> list[str]:
+def release_expired(state: dict, now: float, *, orphan: bool = False) -> list[str]:
     """RUNNING with an expired lease goes back to READY: no strike, the attempt is
     NOT refunded. The third expiry of one task blocks it (blocked_reason
-    "lease_expired"), so a task that kills its worker cannot loop forever."""
+    "lease_expired"), so a task that kills its worker cannot loop forever.
+    ``orphan``: the lease of a pass the loop lost at a restart (no runner of the state can be alive): not the
+    task's doing, so no expiry is counted and the attempt acquire() took comes back."""
     freed = []
     for tid, row in state["tasks"].items():
         if row["status"] == "RUNNING" and row.get("deadline") is not None and row["deadline"] <= now:
+            if orphan:
+                row.update(status="READY", lease=None, deadline=None, attempts=max(0, row["attempts"] - 1))
+                freed.append(tid)
+                continue
             row["lease_expiries"] = row.get("lease_expiries", 0) + 1
             row.update(status="READY", lease=None, deadline=None)
             if row["lease_expiries"] >= 3:

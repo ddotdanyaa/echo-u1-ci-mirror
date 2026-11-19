@@ -1,9 +1,12 @@
 # Factory status (generated, structured data only)
 
-Generated: 2026-11-19T15:12:36Z
-Source commit: sha690fb967111d
+Generated: 2026-11-19T15:31:11Z
+Source commit: shad507b723387f
 
 ## Commits (sha, time)
+- shad507b723 2026-11-19T18:29:20+03:00
+- sha0bb551de 2026-11-19T18:20:11+03:00
+- sha33a1ab55 2026-11-19T18:17:00+03:00
 - sha690fb967 2026-11-19T18:11:35+03:00
 - sha5abb1b0c 2026-11-19T18:06:50+03:00
 - sha7dc45061 2026-11-19T18:01:12+03:00
@@ -21,9 +24,6 @@ Source commit: sha690fb967111d
 - sha8da7a784 2026-11-19T14:23:20+03:00
 - sha08be01f0 2026-11-19T12:39:46+03:00
 - shaa88a6343 2026-11-19T12:08:39+03:00
-- shaf9782ee0 2026-11-19T12:00:03+03:00
-- shad75e32c4 2026-11-19T11:54:57+03:00
-- sha366a4e53 2026-11-19T11:54:56+03:00
 
 ## Funnel
 | step | count |
@@ -35,34 +35,35 @@ Source commit: sha690fb967111d
 | gate_pass | 0 |
 | known_to_loop | 156 |
 | promoted | 0 |
-| ready | 4 |
+| ready | 3 |
 | reviewed | 3 |
 | triaged | 10 |
 
 Side counters: blocked=4, parked=0, requeued=0
-Tasks now: BLOCKED=4, FAILED=6, READY=4
+Tasks now: BLOCKED=4, FAILED=6, READY=3, RUNNING=1
 Accepted: 0
 Promoted: 0
-Free RAM, GB: 3.79
-Telemetry rows: 219 recognised, 0 unrecognised
+Free RAM, GB: 3.3
+Telemetry rows: 331 recognised, 0 unrecognised
 
 ## Spend per model
 | model | calls | tokens_in | tokens_out | usage_unknown | http_429 | errors |
 |---|---|---|---|---|---|---|
-| google/gemini-3.5-flash-lite | 20 | 359506 | 5860 | 0 | 0 | 0 |
+| google/gemini-3.5-flash-lite | 32 | 371127 | 7273 | 3 | 0 | 3 |
 | google/gemini-3.6-flash | 4 | 6680 | 325 | 3 | 0 | 3 |
-| google/gemma-4-31b-it | 8 | 3811 | 369 | 4 | 0 | 4 |
+| google/gemma-4-26b-a4b-it | 1 | 0 | 0 | 1 | 0 | 1 |
+| google/gemma-4-31b-it | 17 | 8316 | 589 | 11 | 0 | 11 |
 
 ## Spans
 | span | rows | calls |
 |---|---|---|
-| answer | 5 | 0 |
-| gate | 39 | 0 |
-| infra | 18 | 0 |
-| loop | 57 | 0 |
-| other | 1 | 0 |
-| review | 13 | 8 |
-| run | 83 | 24 |
+| answer | 11 | 0 |
+| gate | 64 | 0 |
+| infra | 27 | 0 |
+| loop | 75 | 0 |
+| other | 3 | 0 |
+| review | 29 | 18 |
+| run | 119 | 36 |
 | triage | 3 | 0 |
 
 ## Channels (model ids)

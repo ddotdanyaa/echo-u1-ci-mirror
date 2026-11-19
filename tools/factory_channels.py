@@ -43,6 +43,8 @@ BALANCE_COOL_S = 6 * 3600      # 402: negative balance does not fix itself withi
 TRANSIENT_RETRY_S = 20
 DEFAULT_COOL_S = 60
 RATE_SUSPECT_COOL_S = 900      # Kilo slept inside the call (its own 429 retries): cool the channel, not the task
+OVERLOAD_STATUSES = (500, 502, 503, 504)   # the provider's model is overloaded or failing right now
+OVERLOAD_COOL_S = 120          # long enough for the retry and the next pass to take another channel
 TIERS = ('small', 'main', 'escalation')
 
 
@@ -511,11 +513,21 @@ def apply_failure(state, channel, info, *, env=None, now=None) -> dict:
     if kind in ('rate_minute', 'rate_day'):
         seconds = int(info.get('retry_after_s') or DEFAULT_COOL_S)
         if info.get('scope') == 'model':     # an upstream provider of ONE model: the rest of the account is fine
-            if not isinstance(state.get('model_cool'), dict):
-                state['model_cool'] = {}
-            models = state['model_cool']
-            models[channel['model']] = max(models.get(channel['model'], 0), now + max(1, seconds))
-            return {'action': 'cool_model', 'cool_s': seconds}
+            return _cool_model(state, channel, now, seconds)
         cool(state, channel, now=now, seconds=seconds)
         return {'action': 'cool', 'cool_s': seconds}
+    if kind == 'transient' and info.get('status') in OVERLOAD_STATUSES:
+        # "This model is currently experiencing high demand" (503): the MODEL is overloaded, not the account. Cooled,
+        # the retry and the next pass take another channel (live 19.11 18:18-18:20: two passes were deferred on a
+        # 503 of gemini-3.5-flash-lite while three other channels idled).
+        return _cool_model(state, channel, now, OVERLOAD_COOL_S)
     return {'action': 'none', 'cool_s': 0}
+
+
+def _cool_model(state, channel, now, seconds) -> dict:
+    """Cool one MODEL (every channel of it) for ``seconds``; the account and the other models stay usable."""
+    if not isinstance(state.get('model_cool'), dict):
+        state['model_cool'] = {}
+    models = state['model_cool']
+    models[channel['model']] = max(models.get(channel['model'], 0), now + max(1, seconds))
+    return {'action': 'cool_model', 'cool_s': seconds}
