@@ -1,9 +1,10 @@
 # Factory status (generated, structured data only)
 
-Generated: 2026-11-19T22:33:10Z
-Source commit: sha44af5bea1fd5
+Generated: 2026-11-19T22:43:21Z
+Source commit: sha2725232986a5
 
 ## Commits (sha, time)
+- sha27252329 2026-11-20T01:43:05+03:00
 - sha44af5bea 2026-11-20T01:32:55+03:00
 - sha1a51710a 2026-11-20T01:31:21+03:00
 - sha0b955456 2026-11-20T01:28:32+03:00
@@ -23,7 +24,6 @@ Source commit: sha44af5bea1fd5
 - sha9afbc479 2026-11-20T00:41:16+03:00
 - sha96067707 2026-11-20T00:40:42+03:00
 - sha013b5d25 2026-11-20T00:37:55+03:00
-- sha17d7ca82 2026-11-20T00:27:59+03:00
 
 ## Funnel
 | step | count |
@@ -35,25 +35,25 @@ Source commit: sha44af5bea1fd5
 | gate_pass | 11 |
 | known_to_loop | 366 |
 | promoted | 11 |
-| ready | 19 |
+| ready | 18 |
 | reviewed | 14 |
 | triaged | 29 |
 
 Side counters: blocked=7, parked=0, requeued=0
-Tasks now: BLOCKED=7, DONE=8, FAILED=3, PROMOTED=7, READY=19, RUNNING=1
+Tasks now: BLOCKED=7, DONE=8, FAILED=4, PROMOTED=7, READY=18, RUNNING=1
 Accepted: 0
 Promoted: 11
-Free RAM, GB: 2.74
-Telemetry rows: 2170 recognised, 0 unrecognised
+Free RAM, GB: 3.84
+Telemetry rows: 2209 recognised, 0 unrecognised
 
 ## Spend per model
 | model | calls | tokens_in | tokens_out | usage_unknown | http_429 | errors |
 |---|---|---|---|---|---|---|
-| google/gemini-3.1-flash-lite | 64 | 236877 | 19128 | 8 | 0 | 8 |
-| google/gemini-3.5-flash-lite | 191 | 1015143 | 40896 | 12 | 0 | 12 |
+| google/gemini-3.1-flash-lite | 68 | 249058 | 20630 | 8 | 0 | 8 |
+| google/gemini-3.5-flash-lite | 195 | 1026359 | 42426 | 12 | 0 | 12 |
 | google/gemini-3.6-flash | 24 | 69915 | 3702 | 6 | 1 | 6 |
-| google/gemma-4-26b-a4b-it | 25 | 50703 | 26301 | 10 | 0 | 10 |
-| google/gemma-4-31b-it | 48 | 41512 | 2040 | 30 | 0 | 30 |
+| google/gemma-4-26b-a4b-it | 26 | 56039 | 26301 | 10 | 0 | 10 |
+| google/gemma-4-31b-it | 49 | 41512 | 2040 | 31 | 0 | 31 |
 | openrouter/cohere/north-mini-code:free | 1 | 1603 | 8192 | 0 | 0 | 0 |
 | openrouter/nvidia/nemotron-3-ultra-550b-a55b:free | 22 | 76445 | 94977 | 1 | 1 | 1 |
 
@@ -61,13 +61,13 @@ Telemetry rows: 2170 recognised, 0 unrecognised
 | span | rows | calls |
 |---|---|---|
 | answer | 113 | 0 |
-| gate | 440 | 0 |
-| infra | 65 | 0 |
-| loop | 467 | 0 |
-| other | 83 | 0 |
+| gate | 449 | 0 |
+| infra | 66 | 0 |
+| loop | 473 | 0 |
+| other | 87 | 0 |
 | promote | 14 | 0 |
 | review | 133 | 70 |
-| run | 832 | 305 |
+| run | 851 | 315 |
 | triage | 23 | 0 |
 
 ## Channels (model ids)
@@ -93,13 +93,14 @@ Telemetry rows: 2170 recognised, 0 unrecognised
 
 ## Published files
 Modules: 19
-Tests in the cloud: 44
-Tests not in the cloud: 51
+Tests in the cloud: 40
+Tests not in the cloud: 55
 - tests/test_agent_factory.py (backlog-id, email, env-path, key, long-run, owner-name, path, user-path)
 - tests/test_factory_ab.py (backlog-id)
 - tests/test_factory_channels.py (long-run)
 - tests/test_factory_context.py (env-path, key, long-run, owner-name, path, short-name, user-path)
 - tests/test_factory_context_fit_whole.py (backlog-id)
+- tests/test_factory_critic_prior.py (dependency)
 - tests/test_factory_decompose.py (backlog-id, call-word, email)
 - tests/test_factory_gate.py (email, path)
 - tests/test_factory_gate_marker.py (backlog-id)
@@ -134,6 +135,7 @@ Tests not in the cloud: 51
 - tests/test_factory_owner_list.py (backlog-id, call-word, long-run)
 - tests/test_factory_profile.py (backlog-id, email)
 - <redacted-name> (backlog-id, long-run)
+- tests/test_factory_quota_wire.py (dependency)
 - tests/test_factory_regex_lock.py (call-word, key)
 - tests/test_factory_reject_apply.py (dependency)
 - tests/test_factory_reject_note.py (dependency)
@@ -143,6 +145,8 @@ Tests not in the cloud: 51
 - tests/test_factory_selffix.py (long-run)
 - tests/test_factory_spec.py (backlog-id)
 - tests/test_factory_status.py (backlog-id)
+- tests/test_factory_tournament.py (dependency)
+- tests/test_factory_tournament_gate.py (dependency)
 - tests/test_factory_triage.py (backlog-id, call-word, email, env-path, phone)
 - tests/test_factory_triage_example.py (backlog-id)
 - tests/test_factory_triage_state.py (backlog-id, call-word)

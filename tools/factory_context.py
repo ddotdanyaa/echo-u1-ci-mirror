@@ -201,6 +201,7 @@ def _fragments(source: str, keywords: set, room: int, priority: frozenset = froz
     candidates.sort(key=lambda n: (0 if n.name in priority or any(a <= n.lineno and n.end_lineno <= b for a, b in spans) else 1, n.end_lineno - n.lineno, n.lineno))
     picked, taken, used = [], set(), 0
     spans = []        # (start, end, name, part): what is shown; _joined() closes the small gaps between them
+    budgets = {}      # a windowed definition: what is left of its FRAGMENT_MAX_CHARS for the gaps
     for node in candidates:
         start = min([node.lineno] + [d.lineno for d in node.decorator_list])
         node_lines = list(range(start, node.end_lineno + 1))
@@ -259,20 +260,28 @@ def _fragments(source: str, keywords: set, room: int, priority: frozenset = froz
             if piece:
                 picked.append((start, piece))
                 used += piece_len
-    return _joined(spans, lines, max(0, room - used))
+                budgets[node.name] = FRAGMENT_MAX_CHARS - piece_len
+    return _joined(spans, lines, max(0, room - used), budgets)
 
 
-def _joined(spans, lines, spare: int) -> str:
+def _joined(spans, lines, spare: int, budgets=None) -> str:
     """The shown parts in line order. Parts whose unseen gap is at most GAP_FILL_LINES lines become ONE contiguous
     part, gap included, while ``spare`` characters allow it; overlapping parts are shown once. 19.11 23:59: a SEARCH
-    copied across two parts with a try/except unseen between them matched nothing, 4 passes in a row, twice."""
+    copied across two parts with a try/except unseen between them matched nothing, 4 passes in a row, twice.
+    The gap between two windows of ONE large definition is also paid from that definition's own budget
+    (``budgets``: FRAGMENT_MAX_CHARS minus its windows), so one big definition never outgrows a fragment (cloud matrix
+    20.11 01:38: 6 423 characters for a bound of 6 000 + 200 after the gap fill)."""
+    budgets = dict(budgets or {})
     merged = []
     for start, end, name, part in sorted(spans):
         if merged:
             m_start, m_end, m_name, m_part = merged[-1]
             cost = sum(len(lines[i - 1]) + 1 for i in range(m_end + 1, start))
-            if start <= m_end + 1 + GAP_FILL_LINES and cost <= spare:
+            own = m_part and part and m_name == name and name in budgets
+            if start <= m_end + 1 + GAP_FILL_LINES and cost <= spare and (not own or cost <= budgets[name]):
                 spare -= cost
+                if own:
+                    budgets[name] -= cost
                 merged[-1] = (m_start, max(m_end, end), m_name, m_part or part)
                 continue
         merged.append((start, end, name, part))
