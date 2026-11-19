@@ -105,18 +105,20 @@ def _definitions(tree):
                         yield 1, sub
 
 
-def outline(source: str, max_chars: int = OUTLINE_MAX_CHARS) -> str:
-    """Table of contents of a python module: top-level defs/classes and methods with line ranges."""
+def outline(source: str, max_chars: int = OUTLINE_MAX_CHARS, tools: bool = True) -> str:
+    """Table of contents of a python module: top-level defs/classes and methods with line ranges.
+    ``tools=False``: the reader has no read tool (the light engine), so no "read it" instructions."""
     try:
         tree = ast.parse(source)
     except SyntaxError:
-        return '(the file does not parse; read it by line numbers)'
+        return '(the file does not parse; read it by line numbers)' if tools else '(the file does not parse)'
     rows = ['%sL%d-%d %s' % ('  ' * depth, node.lineno, node.end_lineno, _sig(node))
             for depth, node in _definitions(tree)]
     text, used = [], 0
     for i, row in enumerate(rows):
         if used + len(row) + 1 > max_chars:
-            text.append('... %d more definitions (read the file by line numbers)' % (len(rows) - i))
+            text.append(('... %d more definitions (read the file by line numbers)' if tools else
+                         '... %d more definitions are not shown') % (len(rows) - i))
             break
         text.append(row)
         used += len(row) + 1
@@ -152,7 +154,8 @@ def identifier_tokens(text: str) -> set:
     return found
 
 
-def _fragments(source: str, keywords: set, room: int, priority: frozenset = frozenset()) -> str:
+def _fragments(source: str, keywords: set, room: int, priority: frozenset = frozenset(),
+               tools: bool = True) -> str:
     """Selected definitions as they are. Python fragments are deliberately NOT redacted: redaction could
     corrupt code, and secrets never enter the work copy (forbidden paths, .env). Non-.py heads are redacted."""
     try:
@@ -174,7 +177,8 @@ def _fragments(source: str, keywords: set, room: int, priority: frozenset = froz
         cut = ''
         if len(body) > FRAGMENT_MAX_CHARS:
             body = body[:FRAGMENT_MAX_CHARS]
-            cut = '\n# ... cut: read lines %d-%d with the read tool' % (start, node.end_lineno)
+            cut = ('\n# ... cut: read lines %d-%d with the read tool' if tools else
+                   '\n# ... cut: lines %d-%d are not shown') % (start, node.end_lineno)
         piece = '# %s, lines %d-%d\n%s%s' % (node.name, start, node.end_lineno, body, cut)
         if used + len(piece) + 2 > room:
             continue          # does not fit: NOT marked as taken, so a smaller overlapping one may still be shown
@@ -185,22 +189,23 @@ def _fragments(source: str, keywords: set, room: int, priority: frozenset = froz
 
 
 def large_view(name: str, source: str, keywords: set, room: int, priority: frozenset = frozenset(),
-               hint: str = READ_HINT) -> str:
+               hint: str = READ_HINT, tools: bool = True) -> str:
     """Outline + the definitions whose names are mentioned, within ``room`` characters."""
     lines = len(_lines(source))
     head = 'FILE %s (LARGE: %d lines, %d chars; outline and selected parts only)\n%s' % (
         name, lines, len(source), hint)
     if name.endswith('.py'):
-        toc = outline(source, min(OUTLINE_MAX_CHARS, max(300, room // 2)))
+        toc = outline(source, min(OUTLINE_MAX_CHARS, max(300, room // 2)), tools)
         body = head + '\nOUTLINE\n' + toc
-        frag = _fragments(source, keywords, max(0, room - len(body) - 40), priority)
+        frag = _fragments(source, keywords, max(0, room - len(body) - 40), priority, tools)
         return body + ('\nSELECTED PARTS\n' + frag if frag else '')
     return head + '\nHEAD OF THE FILE\n' + redact(source)[:max(300, min(3000, room - len(head) - 40))]
 
 
 def render(files: dict, targets: dict, *, large: set, keywords: set, budget_chars: int,
-           small_tokens: int, priority: frozenset = frozenset(), hint: str = READ_HINT) -> str:
-    """Prompt body: small files whole (as ``packet`` does), large ones as outline + fragments."""
+           small_tokens: int, priority: frozenset = frozenset(), hint: str = READ_HINT, tools: bool = True) -> str:
+    """Prompt body: small files whole (as ``packet`` does), large ones as outline + fragments. ``tools=False``
+    for a reader without a read tool (the light engine): no "read it" instructions anywhere in the body."""
     small = {n: v for n, v in files.items() if n not in large}
     sections = [packet(small, targets, max_tokens=small_tokens)] if small else []
     used = sum(len(s) for s in sections)
@@ -219,7 +224,7 @@ def render(files: dict, targets: dict, *, large: set, keywords: set, budget_char
                 if cut is not None and len(cut) <= room:
                     sections.append('FILE %s (slice %s of a large file)\n%s' % (n, targets[n], cut))
                     continue
-            sections.append(large_view(n, text, keywords, room, priority, hint))
+            sections.append(large_view(n, text, keywords, room, priority, hint, tools))
     elif used > budget_chars:
         raise InvalidPlan('context exceeds the prompt budget; split the task')
     return '\n\n'.join(sections)

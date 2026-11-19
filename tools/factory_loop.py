@@ -594,12 +594,18 @@ class Loop:
         LEASE_LIFETIME_S (restart check 19.11 17:54: two kills left three tasks RUNNING for 30 minutes). A restart
         is not the task's doing: no expiry is counted and the attempt comes back (orphan=True), so restarts of
         the coordinator never block or fail a healthy task; a pass that hangs still expires by time."""
+        if self.ckpt.with_suffix(self.ckpt.suffix + ".lockdir").exists():
+            # the lock survived clear_stale_lockdir: a live holder is working, its lease is no orphan
+            self.event("infra", status="skipped", reason="orphan_leases: state locked")
+            return
         try:
             _, state = self.load()
+            expired = F.release_expired(state, time.time())          # past their deadline already: ordinary expiries
             freed = F.release_expired(state, float("inf"), orphan=True)
-            if freed:
+            if expired or freed:
                 self.save(state)
-                self.event("infra", status="released", reason="orphan_leases", tasks=len(freed))
+                self.event("infra", status="released", reason="orphan_leases", tasks=len(freed),
+                           expired=len(expired))
         except Exception as e:                       # an aid: the loop starts anyway, leases expire by time
             self.err("orphan leases", e)
 
@@ -615,20 +621,26 @@ class Loop:
                 return
             owner = lock / F.LOCK_OWNER
             try:
-                pid = int(owner.read_text(encoding="ascii").strip())
-            except FileNotFoundError:
-                pid = None                  # anonymous: an older runner, or the instant between mkdir and write
-            except (OSError, ValueError):
-                pid = 0                     # an unreadable holder is no live holder
+                text = owner.read_text(encoding="ascii").strip()
+            except OSError:
+                text = ""                   # absent or unreadable this instant: the age rule decides
+            try:
+                pid = int(text) if text else None   # anonymous: an older runner, or between mkdir and the write
+            except ValueError:
+                pid = 0                     # garbage is no live holder
+            age = time.time() - lock.stat().st_mtime
+            alive = pid is not None and pid != os.getpid() and pid_alive(pid)
             if pid is None:
-                stale = time.time() - lock.stat().st_mtime > F.LOCK_STALE_S
+                stale = age > F.LOCK_STALE_S
             else:
-                stale = not pid_alive(pid)
+                # a pid is reused (a reboot, hours later); no pass outlives RUNNER_TIMEOUT_S (the loop kills it);
+                # the loop itself is never the holder (critic 19.11 18:39)
+                stale = not alive or age > RUNNER_TIMEOUT_S + F.LOCK_STALE_S
             if stale:
                 owner.unlink(missing_ok=True)
                 lock.rmdir()
                 self.event("infra", status="cleared", reason="stale_lockdir",
-                           holder="anonymous" if pid is None else "dead")
+                           holder="anonymous" if pid is None else ("old" if alive else "dead"))
         except OSError as e:
             self.event("infra", status="error", reason="lockdir: " + F.redact(str(e))[:200])
 
@@ -1507,6 +1519,9 @@ class Loop:
         if self.free_ram_fn() < MIN_FREE_RAM:
             return Outcome(sleep=60, action="WAIT", reason="low_ram")
         self.clear_stale_lockdir()      # a dead runner's lock must not refuse this pass (restart check 19.11)
+        if self.ckpt.with_suffix(self.ckpt.suffix + ".lockdir").exists():
+            # a live or young holder: the runner would refuse without a result (NO_RESULT counts towards the brake)
+            return Outcome(sleep=60, action="WAIT", reason="state_locked")
         cmd = self.runner_cmd + [
             "--root", str(self.mirror), "--plan", str(self.plan_path),
             "--checkpoint", str(self.ckpt), "--staging", str(self.stage),
@@ -1661,7 +1676,7 @@ class Loop:
         """The class of a rejection key WITHOUT its free text. In the runner a key is 'gate:no_changes' (a fixed
         word) or 'review: <the reviewer's remarks>' / 'gate: <why>' / 'weakening: <text>' (free text that may be
         private): a fixed word stays, any other text becomes a short hash, so a repeat still matches and no
-        remark reaches the brief, error_memory.json or the telemetry (D8 critic, criterion 1)."""
+        remark reaches the brief, error_memory.json or the telemetry (<id> critic, criterion 1)."""
         head, _, rest = rkey.partition(":")
         rest = rest.strip()
         if not rest or re.fullmatch(r"[a-z_]{1,40}", rest):

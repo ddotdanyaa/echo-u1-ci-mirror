@@ -73,7 +73,8 @@ CLOSED = re.compile(r"(?<![\w])(?<!не )(?:сделано|закрыто|гот
 OPEN_WORD = re.compile(r"(?<![\w])(?:не сделан\w*|не начат\w*|нов\w*|откры\w*|обязательство|улучшение|блокер|частично|регресс\w*|open|new)(?![\w])", re.I)
 CLASS_LABEL = re.compile(r"^\W*(?:обязательство|улучшение|блокер)\W*$", re.I)
 # A Russian phone number: 8 or +7 or 7, an area/operator code 3xx 4xx 8xx 9xx, 11 digits in all (separators allowed), or
-# the city form "(495) 123-45-67".  The ONE owner of the phone rule: "80000000000 байт" is a size, not a number.
+# the city form: a 3-4 digit code in brackets, then 7 digits.  The ONE owner of the phone rule: eleven digits starting
+# with 80 are a size in bytes, not a number.
 PHONE = re.compile(r"(?<![\w.])(?:(?:\+7|[78])[\s(-]*[3489]\d{2}[\s)-]*\d{3}[\s-]*\d{2}[\s-]*\d{2}"
                    r"|\(\s*[3489]\d{2,3}\s*\)[\s.-]*\d{3}[\s-]*\d{2}[\s-]*\d{2})(?!\d)")
 PRIVATE = re.compile(_B % (
@@ -123,7 +124,7 @@ def _normalize(text: str) -> str:
 
 
 def _cut_labels(t: str) -> str:
-    """"Ваши слова 14:36 (L1):" and the like.  With a quote after it only the label (and its time/reference/
+    """"Ваши слова 14:36 (<id>):" and the like.  With a quote after it only the label (and its time/reference/
     bracket) goes; without a quote the whole sentence goes (the words themselves follow).  A bare
     "Слова-паразиты" (no time, bracket or colon) is not a label."""
     out, pos = [], 0
@@ -378,9 +379,9 @@ def _public_state(state: str, limit: int = 240) -> str:
 
 def public_goal(text: str, min_chars: int = MIN_PUBLIC_CHARS):
     """Text that may go to an external free model: the owner's quotes (nested «a «b» c» too, “…”, „…“, ‘…’,
-    "…", '…'; an unpaired one up to the end of its sentence), line references (L12345, "(L1, L2)"), clock times
+    "…", '…'; an unpaired one up to the end of its sentence), line references (<id>, "(<id>, <id>)"), clock times
     (14:36, 22:43:45, 14:36:, "в 14.36", "09.15 МСК"; not 3.14 or 7.8.27), brackets holding only dates/times/
-    references, and labels like "Ваши слова 14:36 (L1):" (without a quote after the label the sentence goes)
+    references, and labels like "Ваши слова 14:36 (<id>):" (without a quote after the label the sentence goes)
     are cut out.  Control and format characters are removed ALWAYS.  None when a cut happened and less than ~40
     characters are left."""
     clean, cut = _cut(text)
@@ -537,7 +538,7 @@ def _git(root, *args) -> str:
 def _closing_ids(subject: str) -> list[str]:
     """IDs closed by a subject: the prefix before the first ':' must be ONLY IDs separated by commas
     and/or spaces (``<id>, <id>: ..``, ``<id> <id> <id>: ..``).  ``Revert <id>: ..`` and
-    ``wave W7 E1: ..`` close nothing (``Revert``/``wave`` are not IDs)."""
+    ``wave <id> <id>: ..`` close nothing (``Revert``/``wave`` are not IDs)."""
     if ":" not in subject:
         return []
     parts = [p for p in re.split(r"[,\s]+", subject.split(":", 1)[0].strip()) if p]
@@ -602,7 +603,7 @@ def _safe_title(r: dict) -> str:
 
 
 def parse_open_rows(backlog_path, repo_root, include_closed: bool = False) -> list[dict]:
-    """Open rows of BACKLOG_ECHO.md section 4, ordered P0 -> P4 -> no priority, then by ID.
+    """Open rows of BACKLOG_ECHO.md section 4, ordered <id> -> <id> -> no priority, then by ID.
 
     Each item: {backlog_id, priority, state, text, mentioned_files, mentioned_tests, private}
     (+ section, line, closed_at_head).  A private row (call records, keys, .env, personal data) has
@@ -646,7 +647,7 @@ def _translit(text: str) -> str:
 
 
 def _task_id(backlog_id: str) -> str:
-    # "#" (a part of a cut row: R8#1) gets its own escape, so R8#1 never equals R8-1, R8.1 or R8_1
+    # "#" (a part of a cut row: ID#1) gets its own escape, so ID#1 never equals ID-1, ID.1 or ID_1
     return "bl_" + _translit(backlog_id.replace("#", "_x23_"))
 
 
@@ -671,7 +672,7 @@ def _id_variants(backlog_id: str) -> set[str]:
 
 def _tests_named_by_id(backlog_id: str, test_paths) -> list[str]:
     """Tests that can be the red test of an ID: ``test_v_<ID>*.py`` and ``test_<id_lower>*.py`` (any
-    spelling of the ID, whole token: E5 does not match <id>).  Order: test_v_<ID> first, then by name."""
+    spelling of the ID, whole token: <id> does not match <id>).  Order: test_v_<ID> first, then by name."""
     out = []
     for path in test_paths:
         stem = PurePosixPath(path).stem.lower()
@@ -858,7 +859,9 @@ def _test_reads(files, extra=()) -> list[str]:
 
 def _import_hint(files) -> str:
     """' Проверяемый код: echo_sync.fast_text (импортируй из него).' for the goal of a new test, '' without code."""
-    mods = [f[:-3].replace("/", ".") for f in files if f.endswith(".py") and not f.startswith("tests/")]
+    # a package's __init__.py is imported by the package name (echo_sync.__init__ would be a second copy)
+    mods = [re.sub(r"\.__init__$", "", f[:-3].replace("/", ".")) for f in files
+            if f.endswith(".py") and not f.startswith("tests/")]
     return (" Проверяемый код: %s (импортируй из этих модулей, других не выдумывай)." % ", ".join(mods)) if mods else ""
 
 
@@ -938,7 +941,7 @@ def triage_portion(backlog_path, head_root, known_backlog_ids, limit, profile_at
     "profile_attempts": {backlog_id: n} (failed profile runs so far; the caller passes the old ones back as
     ``profile_attempts`` and stores the new ones), "env_streak": consecutive portions that could not profile for the
     environment (the caller passes the old value back as ``env_streak``; at 5 an event and a hold "ENV-PYTEST" appear), "deferred": [{backlog_id, reason}] (rows left for the next portion by the profiling deadline: NOT skipped,
-    so a caller that marks skipped rows as seen does not lose them)} in P0 -> P4 order.
+    so a caller that marks skipped rows as seen does not lose them)} in <id> -> <id> order.
     - rows closed at HEAD (``<ID>:`` commit) -> stale; IDs in known_backlog_ids -> skipped; two IDs
       that give the same task id (<id> / <id>) -> both skipped "коллизия id";
     - private rows (<private-marker>/<private-marker>, call records, keys, .env, personal data) are checked FIRST: hold, plus an

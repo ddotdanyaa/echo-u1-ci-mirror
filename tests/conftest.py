@@ -33,7 +33,7 @@ def _logging_comes_back():
     logging.disable(logging.NOTSET)
 
 
-# <id> / R9: a registry of the process-wide substitutions, not a list of the two that were found.
+# <id> / <id>: a registry of the process-wide substitutions, not a list of the two that were found.
 # What a test leaves behind is found by comparing the module-level callables, classes and modules of the code under test with what they were at its start.
 SCOPE = ('echo_sync', 'tools', 'helpers_')          # the product, its tools and the helper modules of the tests
 KEPT = (types.FunctionType, types.BuiltinFunctionType, types.ModuleType, type)
@@ -88,7 +88,9 @@ def _fake_voice():
     factory mirror: cloud run 19.11 44550183146 stopped every shard at this import)."""
     try:
         import helpers_fake_voice as FV
-    except ImportError:
+    except ModuleNotFoundError as error:      # only its absence: a helper broken inside stays a loud error
+        if error.name != 'helpers_fake_voice':
+            raise
         return None
     return FV
 

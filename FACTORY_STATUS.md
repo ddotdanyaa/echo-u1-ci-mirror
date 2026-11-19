@@ -1,9 +1,12 @@
 # Factory status (generated, structured data only)
 
-Generated: 2026-11-19T15:31:11Z
-Source commit: shad507b723387f
+Generated: 2026-11-19T16:36:36Z
+Source commit: sha8154f9788bc0
 
 ## Commits (sha, time)
+- sha8154f978 2026-11-19T19:35:20+03:00
+- shaafd002ad 2026-11-19T18:56:02+03:00
+- sha864eaf9a 2026-11-19T18:38:54+03:00
 - shad507b723 2026-11-19T18:29:20+03:00
 - sha0bb551de 2026-11-19T18:20:11+03:00
 - sha33a1ab55 2026-11-19T18:17:00+03:00
@@ -21,50 +24,51 @@ Source commit: shad507b723387f
 - shad1b3557d 2026-11-19T15:05:56+03:00
 - sha1e41f026 2026-11-19T14:55:25+03:00
 - sha9f47f5fe 2026-11-19T14:36:43+03:00
-- sha8da7a784 2026-11-19T14:23:20+03:00
-- sha08be01f0 2026-11-19T12:39:46+03:00
-- shaa88a6343 2026-11-19T12:08:39+03:00
 
 ## Funnel
 | step | count |
 |---|---|
 | accepted | 0 |
-| claimed | 10 |
-| coded | 6 |
+| claimed | 19 |
+| coded | 11 |
 | found_in_backlog | unknown |
-| gate_pass | 0 |
-| known_to_loop | 156 |
-| promoted | 0 |
-| ready | 3 |
-| reviewed | 3 |
-| triaged | 10 |
+| gate_pass | 1 |
+| known_to_loop | 199 |
+| promoted | 1 |
+| ready | 2 |
+| reviewed | 6 |
+| triaged | 18 |
 
-Side counters: blocked=4, parked=0, requeued=0
-Tasks now: BLOCKED=4, FAILED=6, READY=3, RUNNING=1
+Side counters: blocked=8, parked=0, requeued=0
+Tasks now: BLOCKED=8, FAILED=16, PROMOTED=1, READY=2
 Accepted: 0
-Promoted: 0
-Free RAM, GB: 3.3
-Telemetry rows: 331 recognised, 0 unrecognised
+Promoted: 1
+Free RAM, GB: 2.47
+Telemetry rows: 544 recognised, 0 unrecognised
 
 ## Spend per model
 | model | calls | tokens_in | tokens_out | usage_unknown | http_429 | errors |
 |---|---|---|---|---|---|---|
-| google/gemini-3.5-flash-lite | 32 | 371127 | 7273 | 3 | 0 | 3 |
+| google/gemini-3.1-flash-lite | 3 | 1244 | 469 | 2 | 0 | 2 |
+| google/gemini-3.5-flash-lite | 40 | 393870 | 7815 | 5 | 0 | 5 |
 | google/gemini-3.6-flash | 4 | 6680 | 325 | 3 | 0 | 3 |
-| google/gemma-4-26b-a4b-it | 1 | 0 | 0 | 1 | 0 | 1 |
-| google/gemma-4-31b-it | 17 | 8316 | 589 | 11 | 0 | 11 |
+| google/gemma-4-26b-a4b-it | 5 | 3720 | 0 | 3 | 0 | 3 |
+| google/gemma-4-31b-it | 25 | 14893 | 1014 | 15 | 0 | 15 |
+| openrouter/cohere/north-mini-code:free | 1 | 1603 | 8192 | 0 | 0 | 0 |
+| openrouter/nvidia/nemotron-3-ultra-550b-a55b:free | 13 | 38634 | 39417 | 0 | 0 | 0 |
 
 ## Spans
 | span | rows | calls |
 |---|---|---|
-| answer | 11 | 0 |
-| gate | 64 | 0 |
-| infra | 27 | 0 |
-| loop | 75 | 0 |
-| other | 3 | 0 |
-| review | 29 | 18 |
-| run | 119 | 36 |
-| triage | 3 | 0 |
+| answer | 15 | 0 |
+| gate | 105 | 0 |
+| infra | 34 | 0 |
+| loop | 131 | 0 |
+| other | 4 | 0 |
+| promote | 1 | 0 |
+| review | 52 | 31 |
+| run | 196 | 60 |
+| triage | 6 | 0 |
 
 ## Channels (model ids)
 - g-3-1-flash-lite
@@ -84,8 +88,8 @@ Telemetry rows: 331 recognised, 0 unrecognised
 
 ## Published files
 Modules: 10
-Tests in the cloud: 17
-Tests not in the cloud: 27
+Tests in the cloud: 13
+Tests not in the cloud: 31
 - tests/test_agent_factory.py (backlog-id, email, env-path, key, long-run, owner-name, path, user-path)
 - tests/test_factory_channels.py (long-run)
 - tests/test_factory_context.py (env-path, key, long-run, owner-name, path, short-name, user-path)
@@ -94,18 +98,22 @@ Tests not in the cloud: 27
 - tests/test_factory_gate_marker.py (backlog-id)
 - tests/test_factory_gate_more.py (email)
 - tests/test_factory_gate_slots.py (long-run)
+- tests/test_factory_light.py (key, url)
 - tests/test_factory_loop_answers.py (backlog-id, call-word, long-run)
 - tests/test_factory_loop_answers2.py (backlog-id, call-word, env-path, path, phone, user-path)
 - tests/test_factory_loop_answers3.py (backlog-id)
 - tests/test_factory_loop_core2.py (env-path, path)
 - tests/test_factory_loop_core3.py (env-path, key, long-run)
-- tests/test_factory_loop_d8c.py (dependency)
+- tests/test_factory_loop_d8b.py (backlog-id)
+- tests/test_factory_loop_d8c.py (backlog-id)
 - tests/test_factory_loop_d8d.py (backlog-id, call-word, key, long-run, phone)
 - tests/test_factory_loop_d8e.py (long-run)
+- tests/test_factory_loop_git.py (backlog-id)
 - tests/test_factory_loop_parents.py (dependency)
 - tests/test_factory_loop_r7.py (backlog-id, ip, key, long-run, phone)
 - tests/test_factory_loop_r7b.py (dependency)
 - tests/test_factory_loop_report.py (key, long-run)
+- tests/test_factory_loop_report7.py (backlog-id)
 - tests/test_factory_loop_run.py (key, long-run)
 - tests/test_factory_profile.py (backlog-id, email)
 - <redacted-name> (backlog-id, long-run)

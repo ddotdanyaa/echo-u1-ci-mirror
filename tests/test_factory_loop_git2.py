@@ -115,7 +115,7 @@ def test_dirt_only_in_package_files_does_not_block(env):
 
 
 def test_review_without_package_is_requeued_with_event(env):
-    env.set_row("T1", status="REVIEW", attempts=1)       # nothing in stage/for-review/T1
+    env.set_row("T1", status="REVIEW", attempts=1)       # nothing in stage/for-review/<id>
     env.loop().step()
     assert env.state()["tasks"]["T1"]["status"] == "READY"
     assert env.state()["infra_streak"] == 0

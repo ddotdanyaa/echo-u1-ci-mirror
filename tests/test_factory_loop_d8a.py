@@ -1,4 +1,4 @@
-"""factory_loop round D8: addressed deferral instead of an endless brake, a brake with a term (d8a group)."""
+"""factory_loop round <id>: addressed deferral instead of an endless brake, a brake with a term (d8a group)."""
 import json
 import random
 

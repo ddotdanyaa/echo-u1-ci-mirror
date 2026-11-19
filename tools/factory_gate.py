@@ -341,7 +341,56 @@ def _env_reason(message: str, root, notes=None) -> str:
         top = module.group(1).split('.')[0]
         if (Path(root) / top).is_dir() or (Path(root) / (top + '.py')).is_file():
             return ''
+        # the module's name travels with the class: the runner tells a module the CANDIDATE started to import
+        # (its defect) from a package the factory's venv lacks (the environment)
+        return '%s: %s' % (hit.group(1), module.group(1))
     return hit.group(1)
+
+
+_SKIP_DIRS = frozenset(('.git', '__pycache__', 'node_modules', '.venv', 'venv', '.pytest_cache'))
+
+
+def _imports(text: str, top: str) -> bool:
+    return re.search(r'^\s*(?:import|from)\s+' + re.escape(top) + r'(?:[.\s,]|$)', text, re.M) is not None
+
+
+def _project_imports(root, top: str) -> bool:
+    """True when a .py file of the project at ``root`` imports the package ``top``."""
+    for folder, dirs, files in os.walk(root):
+        dirs[:] = [d for d in dirs if d not in _SKIP_DIRS]
+        for file in files:
+            if file.endswith('.py'):
+                try:
+                    if _imports((Path(folder) / file).read_text(encoding='utf-8', errors='replace'), top):
+                        return True
+                except OSError:
+                    continue
+    return False
+
+
+def candidate_import(result: GateResult, base_root, tree, changed) -> GateResult:
+    """THE decision "environment or the candidate" for a missing module (critic 19.11: it had a second owner in the
+    runner). A module only the candidate's changed files import, which no file of the base project imports, is the
+    candidate's own defect: env_reason cleared (the red result is judged like any red one) and a note for the next
+    attempt. A package the project already imports and this venv lacks stays the environment (parked, no strike)."""
+    kind, _, module = (result.env_reason or '').partition(':')
+    module = module.strip()
+    if kind.strip() not in ('ModuleNotFoundError', 'ImportError') or not re.fullmatch(r'[\w.]+', module):
+        return result
+    top = module.split('.')[0]
+    mine = False
+    for name in changed or ():
+        if name.endswith('.py'):
+            try:
+                mine = mine or _imports(Path(tree).joinpath(*name.split('/')).read_text(
+                    encoding='utf-8', errors='replace'), top)
+            except OSError:
+                continue
+    if not mine or _project_imports(base_root, top):
+        return result
+    note = ('the candidate imports a module that is not available: %s (use only the project modules and the '
+            'standard library)' % module)
+    return replace(result, env_reason='', diag=redact(note + '\n' + result.diag)[:DIAG_LIMIT])
 
 
 # Base for a unit_test task: the new test does not exist yet, so nothing may be compared against it.

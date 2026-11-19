@@ -17,7 +17,7 @@ def test_requeue_loop_with_proofs_in_between_still_reaches_the_park(env):
     """REVIEW without a package -> requeue -> a proof run -> REVIEW without a package ... must park."""
     loop = env.loop()
     for _ in range(3):
-        env.set_row("T1", status="REVIEW", attempts=1)       # nothing in stage/for-review/T1
+        env.set_row("T1", status="REVIEW", attempts=1)       # nothing in stage/for-review/<id>
         loop.step()                                           # the real _promote requeues (or parks)
         if env.state()["tasks"]["T1"]["status"] == "BLOCKED":
             break

@@ -9,7 +9,7 @@ is never grepped, because it carries the model's answer and other people's files
 Gemini error semantics: https://ai.google.dev/gemini-api/docs/troubleshooting (400 invalid key,
 403 permission/region, 429 ``QuotaFailure.violations[].quotaId`` PerMinute/PerDay and
 ``RetryInfo.retryDelay``); free-tier limits and the daily reset (midnight Pacific time):
-https://ai.google.dev/gemini-api/docs/rate-limits (see W7/reports/DAY19_RESEARCH_R1_AGENTS_APIS.md).
+https://ai.google.dev/gemini-api/docs/rate-limits (see <id>/reports/DAY19_RESEARCH_R1_AGENTS_APIS.md).
 
 TPM counts INPUT tokens (checked 19.11.2026 on https://ai.google.dev/gemini-api/docs/rate-limits, which now
 redirects to aistudio.google.com/docs/rate-limits: the column is "Tokens per minute (input) (TPM)"). That page
@@ -27,7 +27,7 @@ import time
 from .agent_factory import InvalidPlan, MODEL_ID
 
 CHARS_PER_TOKEN = 3.5
-# Measured by the canary (U1/05_WORK/W7/reports/DAY19_CHANNEL_CANARY.md, "Токены на запрос"): the input of the
+# Measured by the canary (<id>/05_WORK/<id>/reports/DAY19_CHANNEL_CANARY.md, "Токены на запрос"): the input of the
 # first Kilo step is 6 026 on Gemini, 4 377 on Gemma 26B, 5 045 on OpenRouter; the old guess was 13 000.
 KILO_OVERHEAD_TOKENS = 7300    # 6 026 (the largest first step) + 20 %
 SMALL_OVERHEAD_TOKENS = 5300   # 4 377 (Gemma, the small tier) + 20 %
@@ -45,6 +45,9 @@ DEFAULT_COOL_S = 60
 RATE_SUSPECT_COOL_S = 900      # Kilo slept inside the call (its own 429 retries): cool the channel, not the task
 OVERLOAD_STATUSES = (500, 502, 503, 504)   # the provider's model is overloaded or failing right now
 OVERLOAD_COOL_S = 120          # long enough for the retry and the next pass to take another channel
+OVERLOAD_COOL_MAX_S = 900      # a model that stays overloaded is tried 4 times an hour, not 30 (live 19.11: Gemma 4
+                               # answered 503 to 11 of 17 reviews, each refusal took 0.6-43 s)
+OVERLOAD_FORGET_S = 1800       # no overload of the model for half an hour: the next one starts a new series
 TIERS = ('small', 'main', 'escalation')
 
 
@@ -420,16 +423,20 @@ def _classify_error_event(error: dict):
         if _find(body, 'provider_code') is not None:       # the UPSTREAM provider of one model, not the account
             info['scope'] = 'model'
         return info
+    if status is None and name == 'NetworkError':
+        # no HTTP answer at all (the light engine): the machine's network, the same for every channel; the
+        # runner counts it towards the brake instead of postponing one task for ever (critic 19.11)
+        return _info('network', None, name, message)
     if (status is not None and status >= 500) or (status is None and name == 'APIError'):
         return _info('transient', status, name, message)
     return _info('other', status, name, message)
 
 
 def classify(stdout: bytes, stderr: bytes, rc: int, idle: bool = False) -> dict:
-    """Class of a finished call: ok | key_invalid | region | rate_minute | rate_day | transient | too_big
-    | timeout | launcher | other | unknown. ``retry_after_s`` is the cooling the provider asked for.
+    """Class of a finished call: ok | key_invalid | region | rate_minute | rate_day | transient | network
+    | too_big | timeout | launcher | other | unknown. ``retry_after_s`` is the cooling the provider asked for.
     ``idle``: the worker did nothing visible (no step, no tool). Kilo retries a 429 by itself and sleeps by
-    retry-after (R3-01), so a timeout of an idle worker is a rate limit in disguise, not a worker fault."""
+    retry-after (<id>), so a timeout of an idle worker is a rate limit in disguise, not a worker fault."""
     if rc == 124:
         if idle:
             info = _info('rate_minute', None, 'RetryStall', 'Kilo slept inside the call: rate limited?',
@@ -520,8 +527,20 @@ def apply_failure(state, channel, info, *, env=None, now=None) -> dict:
         # "This model is currently experiencing high demand" (503): the MODEL is overloaded, not the account. Cooled,
         # the retry and the next pass take another channel (live 19.11 18:18-18:20: two passes were deferred on a
         # 503 of gemini-3.5-flash-lite while three other channels idled).
-        return _cool_model(state, channel, now, OVERLOAD_COOL_S)
+        return _cool_model(state, channel, now, _overload_seconds(state, channel['model'], now))
     return {'action': 'none', 'cool_s': 0}
+
+
+def _overload_seconds(state, model, now) -> int:
+    """OVERLOAD_COOL_S, doubled for every further overload of the same model within OVERLOAD_FORGET_S of the
+    previous one, at most OVERLOAD_COOL_MAX_S."""
+    if not isinstance(state.get('model_overload'), dict):
+        state['model_overload'] = {}
+    table = state['model_overload']
+    last = _numbers(table.get(model))
+    series = int(last[0]) + 1 if len(last) == 2 and 0 <= now - last[1] < OVERLOAD_FORGET_S else 1
+    table[model] = [series, now]
+    return min(OVERLOAD_COOL_MAX_S, OVERLOAD_COOL_S * 2 ** min(series - 1, 8))
 
 
 def _cool_model(state, channel, now, seconds) -> dict:

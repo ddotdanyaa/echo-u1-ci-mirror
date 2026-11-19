@@ -29,7 +29,7 @@ import urllib.error
 import urllib.request
 from dataclasses import replace
 
-from .agent_factory import (BudgetExhausted, DEFER_REASONS, LEASE_LIFETIME_S, LOCK_OWNER, InvalidPlan, Task, acquire, add_feedback, charge_call,
+from .agent_factory import (BudgetExhausted, DEFER_REASONS, LEASE_LIFETIME_S, LOCK_OWNER, MODEL_ID, InvalidPlan, Task, acquire, add_feedback, charge_call,
                             defer, defer_streak, seconds_to_local_midnight,
                             load_state, read_plan, ready, redact,
                             route, quarantine, safe_path, safe_source, save_atomic, settle)
@@ -83,7 +83,7 @@ def requests_for(steps: int) -> int:
     """Provider requests of one multi-step call: every step plus the final answer after the tool limit."""
     return steps + 1
 
-GATE_TIMEOUT_S = 30                   # owner rule 17.11: pytest never longer than 30 s
+GATE_TIMEOUT_S = 30                   # owner rule: pytest never longer than 30 s
 MAX_NEIGHBORS = 6
 INFRA_DEFER_S = 300
 DIFF_LIMIT = 3000
@@ -98,6 +98,13 @@ ESCALATE_AFTER = 3          # the same postponement this many times in a row bec
 INFRA_CHANNEL_REASONS = frozenset(("dead", "no_key", "no_channels", "reservation_exceeds_tpm"))
 REVIEW_HINT = ("The file is large: read the places you need with the read tool by line numbers from the "
                "outline. Do not edit anything: you only judge the diff.")
+LIGHT_REVIEW_HINT = "The file is large: only its outline and the parts below are shown. You only judge the diff."
+# The test author's most frequent defects, from the reviewers' rejections of the live series 19.11 17:53-18:38
+# (a MagicMock as the code under test, assert False, a name-exists tautology, counts of the repository)
+UNIT_TEST_RULES = ("The test must import the real functions or classes from the code files shown and call them, "
+                   "then assert on what they return or do. Never test a MagicMock in place of that code, never "
+                   "write assert False, a test that only checks that a name exists, or a hard-coded count of "
+                   "files or markers in the repository.")
 MARKER_PROBE = gate.GateResult(1, 1, 0, 1, 0, 0, True, '')   # a red result: only the marker can fail it
 REVIEW_OVERHEAD = 1500      # reviewer instructions + verdict format on top of the files
 COPY_IGNORE = shutil.ignore_patterns(".git", "__pycache__", ".pytest_cache", ".env*", "SECRETS_LOCAL",
@@ -494,6 +501,15 @@ REVIEW_CHECKS = (
     'test (special-casing test inputs, copying expected values) instead of fixing the behaviour; '
     '(3) NO scope creep: nothing outside the task and the listed files. A legitimate pass '
     'statement is not itself a defect.')
+# A unit_test task writes ONLY the test; its code task comes after it. Live 19.11 19:14-19:16: with the checks of a
+# fix the reviewer rejected good tests "the patch only adds a test case but does not implement the fix".
+REVIEW_CHECKS_TEST = (
+    'This task writes ONLY a test: the fix is a separate later task, so the code under test stays unchanged and '
+    'the new test is expected to FAIL on it now. Never reject it because the code is not fixed. Check ALL of: '
+    '(1) the test imports the real code and calls it, and asserts the behaviour the task describes; (2) it fails '
+    'on the current code because of the described defect and would pass once the defect is fixed; (3) NO stub: no '
+    'MagicMock in place of the code under test, no assert False, no test that only checks that a name exists, no '
+    'hard-coded counts of files or markers in the repository; (4) nothing outside the test file.')
 
 
 def review_candidate(task: Task, workdir: Path, model: str, invoke, *,
@@ -509,9 +525,14 @@ def review_candidate(task: Task, workdir: Path, model: str, invoke, *,
         review_root = Path(directory) / 'input'
         snapshot = prepare(workdir, reviewer, review_root)
         files_for_hint = [n for n in snapshot if n != POLICY_FILE]
-        head = ('Review this patch task: ' + redact(task.title) + '.\n' + REVIEW_CHECKS +
-                ' Read only the explicitly supplied files (relative paths in your working directory: '
-                + ', '.join(sorted(files_for_hint)) + '); grep inside it is allowed, nothing outside it.\n'
+        light = engine_for('review', reviewer) == 'light'   # no tools: no read/grep words (critic 19.11 18:5x)
+        checks = REVIEW_CHECKS_TEST if task.kind == 'unit_test' else REVIEW_CHECKS
+        head = ('Review this patch task: ' + redact(task.title) + '.\n' + checks +
+                (' The task files are below: small files whole, a large file as its outline and the parts that '
+                 'matter. Judge the candidate by its diff and the code shown; never reject it only because some '
+                 'code is not shown.\n' if light else
+                 ' Read only the explicitly supplied files (relative paths in your working directory: '
+                 + ', '.join(sorted(files_for_hint)) + '); grep inside it is allowed, nothing outside it.\n') +
                 'Return exactly JSON {"approved":true|false,"reasons":["each concrete defect"]}.\n')
         files = {n: v for n, v in snapshot.items() if n != POLICY_FILE}
         full_diff = unified_diff(baseline, workdir, task.touch_files, REVIEW_DIFF_LIMIT) if baseline is not None else ''
@@ -524,7 +545,7 @@ def review_candidate(task: Task, workdir: Path, model: str, invoke, *,
         body = render(files, targets, large=big, keywords=words,
                       budget_chars=channels.PROMPT_LIMIT_CHARS - len(head) - 250 -
                       (REVIEW_DIFF_LIMIT if baseline is not None else 0), small_tokens=task.context_budget,
-                      priority=priority, hint=REVIEW_HINT)
+                      priority=priority, hint=LIGHT_REVIEW_HINT if light else REVIEW_HINT, tools=not light)
         room = channels.PROMPT_LIMIT_CHARS - len(head) - len(body) - 250  # the diff takes only what is left
         diff = ''
         if baseline is not None and room > 300:
@@ -537,10 +558,8 @@ def review_candidate(task: Task, workdir: Path, model: str, invoke, *,
         if summary['provider_error'] or summary['finish_reason'] in ('length', 'max_tokens'):
             raise ReviewFault('reviewer provider error or truncated answer')
         text = summary['text'].strip()
-        if text.startswith('```'):
-            text = re.sub(r'^```(?:json)?\s*|\s*```$', '', text)
-        try:
-            answer = json.loads(text)
+        try:   # the first JSON object of the answer: free models wrap it in prose or a ```json fence
+            answer, _ = json.JSONDecoder().raw_decode(text[text.index('{'):])
         except ValueError as error:
             raise ReviewFault('reviewer answer is not JSON') from error
         if not isinstance(answer, dict) or type(answer.get('approved')) is not bool:
@@ -561,11 +580,18 @@ def build_coder_prompt(task: Task, visible: dict[str, bytes], feedback: str | No
     prompt of the light engine, which has no tools: no read/grep instructions (live 19.11 17:48-17:50:
     with them the model answered "CANNOT: requires access outside the provided files")."""
     targets = visible_targets(task)
-    core = ("Implement ONLY task " + task.id + ": " + redact(task.title) +
-            ". Change only: " + ", ".join(task.touch_files) +
-            ". Read-only tests: " + ", ".join(task.tests) +
-            ". Do not modify tests, execute deployment, read parent folders, "
-            "or use network tools other than the configured model.")
+    if task.kind == 'unit_test':
+        # its own test file is the one file it writes: never "read-only" or "do not modify tests" (critic 19.11)
+        core = ("Write ONLY the test of task " + task.id + ": " + redact(task.title) +
+                ". Create or change only the test file: " + ", ".join(task.touch_files) +
+                ". The code it tests is read-only. Do not execute deployment, read parent folders, "
+                "or use network tools other than the configured model.\n" + UNIT_TEST_RULES)
+    else:
+        core = ("Implement ONLY task " + task.id + ": " + redact(task.title) +
+                ". Change only: " + ", ".join(task.touch_files) +
+                ". Read-only tests: " + ", ".join(task.tests) +
+                ". Do not modify tests, execute deployment, read parent folders, "
+                "or use network tools other than the configured model.")
     if light:
         core += ("\nThe task files are below: small files whole, a large file as its outline and the parts "
                  "that matter for the task.")
@@ -594,7 +620,7 @@ def build_coder_prompt(task: Task, visible: dict[str, bytes], feedback: str | No
     budget = channels.PROMPT_LIMIT_CHARS - REVIEW_OVERHEAD - len(core) - (2500 if prev_diff else 0) - 60
     core += '\n' + render(visible, targets, large=large_names(task, visible), keywords=words,
                           budget_chars=budget, small_tokens=task.context_budget, priority=priority,
-                          **({'hint': LIGHT_HINT} if light else {}))
+                          **({'hint': LIGHT_HINT, 'tools': False} if light else {}))
     room = channels.PROMPT_LIMIT_CHARS - len(core) - 200
     if prev_diff and room > 300:
         core += "\nDiff of the rejected candidate (do not repeat its mistake):\n" + prev_diff[:room]
@@ -670,7 +696,7 @@ def model_attempt(task: Task, workdir: Path, model: str, timeout: int,
             return 124, b"", b"worker-timeout"
 
 
-# ---- The light engine (owner 19.11 16:51: small edits and reviews through fast calls, Kilo only for multi-file
+# ---- The light engine (owner: small edits and reviews through fast calls, Kilo only for multi-file
 # edits). ONE REST request instead of a Kilo agent loop. The coder prompt already carries the files (render():
 # small files whole, keyword slices of large ones), so the model answers at once with SEARCH/REPLACE blocks and the
 # runner applies them to the approved files only: the triage localises, one edit, the deterministic gate decides
@@ -697,7 +723,8 @@ LIGHT_REVIEW_RULES = ("You review a code patch. This call has NO tools: everythi
 _LIGHT_NAME = re.compile(r'[\w./\\-]+\.[A-Za-z0-9]+')
 # Gemma 4 on the OpenAI-compatible endpoint puts its reasoning before the answer (<thought>...</thought>, live 19.11);
 # other free models use <think>. A draft edit inside it must never be applied, and the verdict JSON follows it.
-_LIGHT_THOUGHT = re.compile(r'<(thought|think)>.*?(?:</\1>|\Z)\s*', re.S | re.I)
+# Only a LEADING block: the same tags inside a REPLACE (code that strips them) are the edit itself (critic 19.11).
+_LIGHT_THOUGHT = re.compile(r'^\s*<(thought|think)>.*?(?:</\1>|\Z)\s*', re.S | re.I)
 
 
 def light_rules(task: Task) -> str:
@@ -735,11 +762,12 @@ def parse_edit_blocks(text: str, allowed: tuple) -> tuple[list, int]:
     while i < len(lines):
         s = lines[i].strip()
         if s.startswith('<<<<<<<') and 'SEARCH' in s:
+            # the separator and the end are whole lines: a longer ===== underline inside SEARCH is text
             j = i + 1
-            while j < len(lines) and not lines[j].strip().startswith('======='):
+            while j < len(lines) and lines[j].strip() != '=======':
                 j += 1
             k = j + 1
-            while k < len(lines) and not (lines[k].strip().startswith('>>>>>>>') and 'REPLACE' in lines[k]):
+            while k < len(lines) and lines[k].strip() != '>>>>>>> REPLACE':
                 k += 1
             if k >= len(lines):
                 break
@@ -758,13 +786,27 @@ def parse_edit_blocks(text: str, allowed: tuple) -> tuple[list, int]:
     return blocks, outside
 
 
+def _line_hits(text: str, search: str) -> list[int]:
+    """Starts of the exact occurrences of ``search`` that begin and end on line boundaries (a SEARCH that is the
+    head of a longer line, '    return x' in '    return x_list', is no occurrence: critic 19.11)."""
+    hits, start = [], 0
+    while True:
+        i = text.find(search, start)
+        if i < 0:
+            return hits
+        end = i + len(search)
+        if (i == 0 or text[i - 1] == '\n') and (end == len(text) or text[end] == '\n' or search.endswith('\n')):
+            hits.append(i)
+        start = i + 1
+
+
 def _replace_once(text: str, search: str, replace: str) -> str | None:
     """``text`` with the ONE occurrence of ``search`` replaced; trailing spaces of lines are ignored when the
     exact text is absent. None when it is absent or ambiguous."""
-    count = text.count(search)
-    if count == 1:
-        return text.replace(search, replace, 1)
-    if count > 1:
+    hits = _line_hits(text, search)
+    if len(hits) == 1:
+        return text[:hits[0]] + replace + text[hits[0] + len(search):]
+    if len(hits) > 1:
         return None
     lines = text.split('\n')
     want = [line.rstrip() for line in search.split('\n')]
@@ -783,21 +825,24 @@ def _replace_once(text: str, search: str, replace: str) -> str | None:
 
 def apply_edit_blocks(workdir: Path, blocks) -> tuple[list[str], dict]:
     """Apply the blocks inside ``workdir`` (the file names come from the task, never from the model):
-    ``(changed files, {failure: count})``. A CRLF file stays CRLF."""
-    applied, failed = [], {}
+    ``(changed files, {failure: count})``. All or nothing: when one block fails no file is written (half a
+    candidate could pass weak tests; the failure note goes to the next attempt). A CRLF file stays CRLF."""
+    failed, texts, crlf = {}, {}, {}
 
     def fail(why):
         failed[why] = failed.get(why, 0) + 1
 
     for name, search, replace_text in blocks:
-        path = Path(workdir).joinpath(*name.split('/'))
-        try:
-            raw = path.read_bytes().decode('utf-8') if path.is_file() else ''
-        except (OSError, UnicodeDecodeError):
-            fail('unreadable file')
-            continue
-        crlf = '\r\n' in raw
-        text = raw.replace('\r\n', '\n')
+        if name not in texts:
+            path = Path(workdir).joinpath(*name.split('/'))
+            try:
+                raw = path.read_bytes().decode('utf-8') if path.is_file() else ''
+            except (OSError, UnicodeDecodeError):
+                fail('unreadable file')
+                continue
+            crlf[name] = '\r\n' in raw
+            texts[name] = raw.replace('\r\n', '\n')
+        text = texts[name]
         if not search.strip():
             if text.strip():
                 fail('empty SEARCH on a file that is not empty')
@@ -808,15 +853,37 @@ def apply_edit_blocks(workdir: Path, blocks) -> tuple[list[str], dict]:
             if new is None:
                 fail('SEARCH not found exactly once')
                 continue
+        texts[name] = new
+    payload = {}
+    for name, text in texts.items():
+        try:      # a lone surrogate from a JSON escape cannot be written: the model's answer, not a crash
+            payload[name] = (text.replace('\n', '\r\n') if crlf[name] else text).encode('utf-8')
+        except UnicodeError:
+            fail('text that cannot be written as UTF-8')
+    if failed:
+        return [], failed
+    applied = []
+    for name, data in payload.items():
+        path = Path(workdir).joinpath(*name.split('/'))
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes((new.replace('\n', '\r\n') if crlf else new).encode('utf-8'))
+            path.write_bytes(data)
         except OSError:
             fail('unwritable file')
             continue
-        if name not in applied:
-            applied.append(name)
+        applied.append(name)
     return applied, failed
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """A 3xx is an error, never followed: urllib would resend the Authorization header to the new host (critic
+    19.11), so the key could reach a third party."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_LIGHT_OPENER = urllib.request.build_opener(_NoRedirect)
 
 
 def _light_post(url: str, key: str, body: dict, timeout: float) -> tuple[int | None, bytes]:
@@ -824,7 +891,7 @@ def _light_post(url: str, key: str, body: dict, timeout: float) -> tuple[int | N
     request = urllib.request.Request(url, data=json.dumps(body).encode('utf-8'), method='POST',
                                      headers={'Content-Type': 'application/json', 'Authorization': 'Bearer ' + key})
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with _LIGHT_OPENER.open(request, timeout=timeout) as response:
             return response.status, response.read()
     except urllib.error.HTTPError as error:
         try:
@@ -835,9 +902,11 @@ def _light_post(url: str, key: str, body: dict, timeout: float) -> tuple[int | N
         return None, type(error).__name__.encode()
 
 
-def _light_error(status: int | None, raw: bytes) -> bytes:
+def _light_error(status: int | None, raw: bytes, name: str = 'APIError') -> bytes:
     """A Kilo-shaped error event: classify() reads the status and the provider body (quota ids, retryDelay).
-    Gemini's OpenAI-compatible endpoint wraps the error object into a one-element list."""
+    Gemini's OpenAI-compatible endpoint wraps the error object into a one-element list. ``name``:
+    'NetworkError' (no HTTP answer at all) and 'UnreadableAnswer' (HTTP 200 that is no chat completion) have
+    classes of their own (critic 19.11: both were 'transient' for ever, never the brake)."""
     text = (raw or b'')[:4000].decode('utf-8', 'replace')
     try:
         body = json.loads(text)
@@ -848,7 +917,7 @@ def _light_error(status: int | None, raw: bytes) -> bytes:
     data = {'message': text[:300]}
     if status is not None:
         data.update(statusCode=status, responseBody=text)
-    return (json.dumps({'type': 'error', 'error': {'name': 'APIError', 'data': data}}) + '\n').encode('utf-8')
+    return (json.dumps({'type': 'error', 'error': {'name': name, 'data': data}}) + '\n').encode('utf-8')
 
 
 def _light_note(total: int, applied: list, failed: dict, outside: int, text: str) -> str:
@@ -877,6 +946,8 @@ def light_attempt(task: Task, workdir: Path, model: str, timeout: int = LIGHT_TI
     url = LIGHT_ENDPOINTS.get(provider)
     if url is None or not model_id:
         return 125, b'', b'light: unsupported provider'
+    if not MODEL_ID.fullmatch(model):      # 0 rubles: an OpenRouter model without ':free' never leaves the machine
+        return 125, b'', b'light: model id refused (a paid or malformed model)'
     prompt = prompt_override if prompt_override is not None else _default_prompt(task, workdir, light=True)
     if len(prompt) > channels.PROMPT_LIMIT_CHARS:
         return 125, b'', b'context-too-large'
@@ -888,17 +959,27 @@ def light_attempt(task: Task, workdir: Path, model: str, timeout: int = LIGHT_TI
             'messages': [{'role': 'system', 'content': LIGHT_REVIEW_RULES if review else light_rules(task)},
                          {'role': 'user', 'content': prompt}]}
     status, raw = (post or _light_post)(url, key, body, max(10, min(int(timeout), LIGHT_TIMEOUT_S)))
+    if status is None and raw == b'TimeoutError':
+        # the request reached the provider, the answer did not come in time: Kilo's timeout contract (the idle
+        # series, then the ceiling: reviewer_failed / worker_timeout), never an endless 'transient' (critic 19.11)
+        return 124, b'', b'worker-timeout'
+    if status is None:          # no connection at all (DNS, the proxy is down): the request never reached a provider
+        return 1, _light_error(None, raw, 'NetworkError'), b''
     if status != 200:
         return 1, _light_error(status, raw), b''
     try:
         data = json.loads(raw.decode('utf-8'))
+        error = data.get('error') if isinstance(data, dict) and 'choices' not in data else None
+        if isinstance(error, dict) and type(error.get('code')) is int:
+            # OpenRouter: an error during generation comes with HTTP 200 and an error object (its own code)
+            return 1, _light_error(error['code'], raw), b''
         choice = data['choices'][0]
         content = choice['message'].get('content') or ''
         if isinstance(content, list):   # some OpenAI-compatible providers answer with text parts
             content = ''.join(str(p.get('text', '')) for p in content if isinstance(p, dict))
         text = _LIGHT_THOUGHT.sub('', str(content)).strip()
     except (ValueError, KeyError, IndexError, TypeError, AttributeError):
-        return 1, _light_error(None, b'unreadable answer'), b''
+        return 1, _light_error(None, b'unreadable answer', 'UnreadableAnswer'), b''
     usage = data.get('usage') if isinstance(data.get('usage'), dict) else {}
     given = usage.get('prompt_tokens_details') if isinstance(usage.get('prompt_tokens_details'), dict) else {}
     made = usage.get('completion_tokens_details') if isinstance(usage.get('completion_tokens_details'), dict) else {}
@@ -1000,9 +1081,9 @@ def once(*, root: Path, plan: Path, checkpoint: Path, staging: Path,
                      configured=configured, max_attempts=max_attempts, swept_failed=swept_failed,
                      base_sha=base_sha or os.environ.get('FACTORY_BASE_SHA'))
     finally:
-        with contextlib.suppress(OSError):
+        with contextlib.suppress(OSError):    # a lock left behind is cleared by the loop; the pass result stands
             owner.unlink(missing_ok=True)
-        lock.rmdir()
+            lock.rmdir()
 
 
 def _pass(tasks, task: Task, state: dict, **kwargs) -> dict:
@@ -1185,6 +1266,8 @@ def _pass_inner(tasks, task: Task, state: dict, *, checkpoint: Path, root: Path,
                 unknown = summary['steps'] == 0 and actual_input is None
                 failed = code != 0 or info['kind'] != 'ok' or summary['provider_error']
                 fact = max(booked, summary['steps']) if (failed or unknown) else max(1, summary['steps'])
+                if info['kind'] == 'network':
+                    fact = 0         # no HTTP answer: the request never reached the provider's quota
                 channels.reconcile(state['channel_quotas'], selected, at, tokens, charged,
                                    requests=booked, actual_requests=fact)
             calls.append({'role': role, 'attempt': attempt, 'channel': selected['id'] if selected else None,
@@ -1211,7 +1294,7 @@ def _pass_inner(tasks, task: Task, state: dict, *, checkpoint: Path, root: Path,
                 done = channels.apply_failure(state['channel_quotas'], selected, info, env=os.environ)
             else:
                 done = {'cool_s': info.get('retry_after_s') or 0}
-            if kind == 'transient' and retry == 0:
+            if kind in ('transient', 'network') and retry == 0:
                 time.sleep(channels.TRANSIENT_RETRY_S)
                 continue
             raise ChannelFault(info, done.get('cool_s') or 0)
@@ -1247,6 +1330,10 @@ def _pass_inner(tasks, task: Task, state: dict, *, checkpoint: Path, root: Path,
             return release('balance', soonest(error.wait_s or channels.BALANCE_COOL_S))
         if kind == 'transient':
             return release('transient', 60)
+        if kind == 'network':
+            # the machine has no network: every channel fails the same way, so the loop brake decides (a series
+            # of these stops the factory instead of spending the daily call budget on passes that cannot work)
+            return release('network', 60, infra=True)
         if kind == 'timeout':
             return block('worker_timeout', infra=True)
         if kind == 'launcher':
@@ -1277,7 +1364,7 @@ def _pass_inner(tasks, task: Task, state: dict, *, checkpoint: Path, root: Path,
         persistent reason. The gate may hand the reason over as an ``env:`` verdict: the prefix is not part of it.
         'pytest slot:' (no slot / no RAM) is a passing shortage: release_transient with a long hold after many in a
         row, never a block. Any other reason (a missing package) has its own small ceiling, then parks the task
-        for Opus with the candidate saved. (A dedicated defer reason waits for D8; 'transient' is whitelisted.)"""
+        for Opus with the candidate saved. (A dedicated defer reason waits for <id>; 'transient' is whitelisted.)"""
         reason = why_text[4:].lstrip() if why_text.startswith('env:') else why_text
         report['reason_detail'] = scrub(redact(reason))[:300]
         events.append('env_shortage')
@@ -1443,16 +1530,10 @@ def _pass_inner(tasks, task: Task, state: dict, *, checkpoint: Path, root: Path,
         with tempfile.TemporaryDirectory(prefix='factory-gate-tree-', ignore_cleanup_errors=True) as d:
             tree = candidate_tree(root, ctx['workdir'], changed, Path(d))
             ctx['roots'].append(tree)
-            cand = timed('gate_s', lambda: gate_run(tree, task.tests))
+            # the gate decides whether a missing module is the environment or the candidate's own import (live
+            # 19.11 18:06-18:08: written tests imported modules that do not exist and went round as 'environment')
+            cand = gate.candidate_import(timed('gate_s', lambda: gate_run(tree, task.tests)), root, tree, changed)
             ctx['counts'] = cand
-            if (cand.env_reason.split(':', 1)[0].strip() in ('ModuleNotFoundError', 'ImportError')
-                    and not base.env_reason):
-                # the base collected without it (a new test has no base at all), so the candidate's own change made the
-                # import fail: its defect, with a strike and a hint. Live 19.11 18:06-18:08: written tests imported
-                # modules that do not exist and went round as 'environment' with no strike and no feedback.
-                return reject('gate', 'gate: import error',
-                              'the candidate imports a module that is not available (use only the project modules '
-                              'and the standard library): ' + cand.diag, changed)
             if cand.env_reason:
                 return env_release(cand.env_reason)
             factory_env(state)['shortages'].pop(tid, None)   # measured: both environment series are over

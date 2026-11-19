@@ -36,7 +36,7 @@ def test_task_level_deferral_does_not_stop_the_other_tasks(tmp_path, monkeypatch
     loop.step()
     e.set_row("T1", not_before=e.clock.t + 300)       # what the runner does for this task
     out = loop.step()
-    assert out.action == "RUN"                        # T2 runs, no channel cooldown
+    assert out.action == "RUN"                        # <id> runs, no channel cooldown
     ls = json.loads((e.state_dir / "loop_state.json").read_text(encoding="utf-8"))
     assert ls.get("channel_until", 0) <= e.clock.t
 

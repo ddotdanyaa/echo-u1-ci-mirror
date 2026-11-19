@@ -110,7 +110,7 @@ class Task:
 
 
 def _parse_priority(value: object) -> int:
-    """P0..P4 (or an int 0..9); smaller runs first."""
+    """<id>..P4 (or an int 0..9); smaller runs first."""
     if type(value) is int and 0 <= value <= 9:
         return value
     if isinstance(value, str) and re.fullmatch(r"P[0-9]", value):
@@ -361,6 +361,7 @@ def settle(state: dict, tid: str, token: str, *,
                    ("READY" if row["attempts"] < max_attempts else "FAILED"))
     row.update(status=next_status, lease=None, deadline=None, evidence=evidence)
     row.pop("defer_streak", None)
+    row.pop("orphan_releases", None)    # the pass ended: a series of restarts during its passes is over
     if not tests_ok and strike:
         # A strike is only a candidate failing the gate/reviewer (never a channel fault).
         add_strike(state, tid)
@@ -414,7 +415,7 @@ def park(state: dict, tid: str, reason: str, note: str) -> None:
     if row["status"] not in ("READY", "RUNNING", "REVIEW"):
         raise InvalidPlan("only an unsettled task can be parked")
     row.update(status="BLOCKED", blocked_reason=reason, lease=None, deadline=None)
-    for key in ("pending_review", "not_before"):
+    for key in ("pending_review", "not_before", "orphan_releases"):
         row.pop(key, None)
     add_feedback(state, tid, "gate", note)
 
@@ -435,12 +436,13 @@ def quarantine(state: dict, tid: str, token: str, *, reason: str) -> None:
     if row["status"] != "RUNNING" or row["lease"] != token:
         raise InvalidPlan("stale/foreign lease")
     row.pop("pending_review", None)  # a blocked task must not resume a stale candidate
+    row.pop("orphan_releases", None)
     row.update(status="BLOCKED", lease=None, deadline=None,
                blocked_reason=reason,
                evidence=sha256(reason.encode("utf-8")).hexdigest())
 
 
-DEFER_REASONS = frozenset(("rate_minute", "rate_day", "transient", "region", "key_invalid",
+DEFER_REASONS = frozenset(("rate_minute", "rate_day", "transient", "network", "region", "key_invalid",
                            "balance", "model_missing",
                            "provider_error", "gate_unknown", "no_independent_reviewer",
                            "channel_wait", "reviewer_failed", "budget_exhausted", "os_error",
@@ -468,6 +470,7 @@ def defer(state: dict, tid: str, token: str, reason: str, seconds: float, *,
                              "n": (streak["n"] if type(streak.get("n")) is int else 0) + 1
                              if streak.get("reason") == reason else 1},
                evidence=sha256(reason.encode("utf-8")).hexdigest())
+    row.pop("orphan_releases", None)
     if state.get("strikes", {}).get(_strike_key(row, tid), 0) >= MAX_STRIKES:
         row.update(status="FAILED", reason="quarantine")
     return row["status"]
@@ -507,19 +510,28 @@ def accept(state: dict, tid: str, *, reviewer: str) -> None:
     row["reviewer"] = redact(reviewer)[:80]
 
 
+ORPHAN_FREE_RELEASES = 2   # restarts in a row during one task's passes that are not counted against it
+
+
 def release_expired(state: dict, now: float, *, orphan: bool = False) -> list[str]:
     """RUNNING with an expired lease goes back to READY: no strike, the attempt is
     NOT refunded. The third expiry of one task blocks it (blocked_reason
     "lease_expired"), so a task that kills its worker cannot loop forever.
-    ``orphan``: the lease of a pass the loop lost at a restart (no runner of the state can be alive): not the
-    task's doing, so no expiry is counted and the attempt acquire() took comes back."""
+    ``orphan``: the lease of a pass the loop lost at a restart (no runner of the state can be alive): the first
+    ORPHAN_FREE_RELEASES in a row are not the task's doing (no expiry counted, the attempt acquire() took comes
+    back); from the next one in a row it is an ordinary expiry, so a task whose pass kills the loop every time
+    still ends BLOCKED (critic 19.11 18:39). A pass that ends (settle, defer, quarantine, park) or Opus's unblock
+    resets the series."""
     freed = []
     for tid, row in state["tasks"].items():
         if row["status"] == "RUNNING" and row.get("deadline") is not None and row["deadline"] <= now:
             if orphan:
-                row.update(status="READY", lease=None, deadline=None, attempts=max(0, row["attempts"] - 1))
-                freed.append(tid)
-                continue
+                series = row.get("orphan_releases")
+                row["orphan_releases"] = (series if type(series) is int and series > 0 else 0) + 1
+                if row["orphan_releases"] <= ORPHAN_FREE_RELEASES:
+                    row.update(status="READY", lease=None, deadline=None, attempts=max(0, row["attempts"] - 1))
+                    freed.append(tid)
+                    continue
             row["lease_expiries"] = row.get("lease_expiries", 0) + 1
             row.update(status="READY", lease=None, deadline=None)
             if row["lease_expiries"] >= 3:
@@ -554,6 +566,7 @@ def unblock(state: dict, tid: str, note: str) -> None:
     row.pop("not_before", None)
     row.pop("pending_review", None)
     row.pop("defer_streak", None)
+    row.pop("orphan_releases", None)
     add_feedback(state, tid, "opus", note)
 
 
