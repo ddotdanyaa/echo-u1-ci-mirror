@@ -120,16 +120,27 @@ def small_minute_need(tokens: int, channel=None) -> int:
     return int(base * (k + STEP_GROWTH * k * (k - 1) / 2))
 
 
+def excluded_models(exclude_model) -> frozenset:
+    """None, one model id, or a collection of model ids -> the set of excluded models."""
+    if exclude_model is None:
+        return frozenset()
+    if isinstance(exclude_model, str):
+        return frozenset((exclude_model,))
+    return frozenset(exclude_model)
+
+
 def route_order(channels, role, attempt, tokens, *, preferred=None, exclude_model=None):
     """Channels in the order a call tries them. Coder, attempt 1: main, small (only when ``tokens`` fit its tpm),
     escalation; attempt 2 and later: escalation, main. Reviewer: small first; cross-review: main first.
-    ``exclude_model`` (the coder's model) never reviews its own work. ``preferred`` breaks ties inside a tier."""
+    ``exclude_model`` (the coder's model) never reviews its own work; a collection of models excludes them all (the
+    tournament's next candidate and the chain's next critic are other models). ``preferred`` breaks ties in a tier."""
     key = ('code', 1 if attempt <= 1 else 2) if role == 'code' else role
     ranks = _ROLE_TIERS[key]
+    excluded = excluded_models(exclude_model)
     picked = []
     for channel in channels:
         tier = tier_of(channel)
-        if tier not in ranks or channel['model'] == exclude_model:
+        if tier not in ranks or channel['model'] in excluded:
             continue
         if tier == 'small' and small_minute_need(tokens, channel) > channel['tpm']:    # Gemma only when a minute of it fits
             continue
@@ -184,12 +195,27 @@ def _model_cool(state, channel) -> float:
     return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else 0.0
 
 
+def _balanced(channels, state, now):
+    """Channels of one model on several keys: the one with the most requests left today first; the order of the
+    models stays (owner: the load spreads over all connected keys instead of using one key up first)."""
+    def left(channel):
+        times = state.get(channel['group'], {}).get('request_times', [])
+        return channel['rpd'] - sum(1 for t in times if now - t < 86400)
+    models, by_model = [], {}
+    for channel in channels:
+        if channel['model'] not in by_model:
+            by_model[channel['model']] = []
+            models.append(channel['model'])
+        by_model[channel['model']].append(channel)
+    return [c for m in models for c in sorted(by_model[m], key=lambda c: -left(c))]
+
+
 def choose(channels, state, tokens, env, *, now=None, requests=1):
     """First channel that can take ``tokens`` and ``requests`` now, else ChannelUnavailable(reason, wait_s)."""
     now = time.time() if now is None else now
     validate(channels)
     reasons = []  # (reason, wait_s)
-    for channel in channels:
+    for channel in _balanced(channels, state, now):
         group = state.get(channel['group'], {})
         dead = state.get('dead', {}).get(channel['id'])
         if dead and dead.get('key') == _fingerprint(env, channel):

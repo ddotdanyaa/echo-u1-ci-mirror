@@ -65,6 +65,7 @@ LARGE_FILE_CHARS = 12000     # a touch/read file above this is shown as outline 
 OUTLINE_MAX_CHARS = 7000
 FRAGMENT_MAX_CHARS = 6000
 WINDOW_MAX_LINES = 40        # one window of a large definition (merged hits); more hits make more windows
+GAP_FILL_LINES = 8           # unseen lines between two shown parts up to this many are shown too (room permitting)
 MIN_VIEW_CHARS = 1500
 READ_HINT = ("The file is large: read the places you need with the read tool by line numbers (offset/limit) "
              "from the outline; edit only the files listed in touch_files.")
@@ -162,6 +163,17 @@ class _Assigned:
         self.lineno, self.end_lineno = node.lineno, node.end_lineno
 
 
+def _imports(source: str) -> str:
+    """The module's top-level import statements as written (a guessed import is a SEARCH not found)."""
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return ''
+    lines = _lines(source)
+    return '\n'.join('\n'.join(lines[n.lineno - 1:n.end_lineno]) for n in tree.body
+                     if isinstance(n, (ast.Import, ast.ImportFrom)))[:1500]
+
+
 def _fragments(source: str, keywords: set, room: int, priority: frozenset = frozenset(),
                tools: bool = True) -> str:
     """Selected definitions as they are. Python fragments are deliberately NOT redacted: redaction could
@@ -185,20 +197,22 @@ def _fragments(source: str, keywords: set, room: int, priority: frozenset = froz
                 candidates.append(_Assigned(name, node))
     # names from the task title / goal / feedback first, names only the test mentions after them;
     # a method the title names is taken BEFORE the class the test names (no nesting loss)
-    candidates.sort(key=lambda n: (0 if n.name in priority else 1, n.end_lineno - n.lineno, n.lineno))
+    spans = [(n.lineno, n.end_lineno) for n in candidates if n.name in priority]
+    candidates.sort(key=lambda n: (0 if n.name in priority or any(a <= n.lineno and n.end_lineno <= b for a, b in spans) else 1, n.end_lineno - n.lineno, n.lineno))
     picked, taken, used = [], set(), 0
+    spans = []        # (start, end, name, part): what is shown; _joined() closes the small gaps between them
     for node in candidates:
         start = min([node.lineno] + [d.lineno for d in node.decorator_list])
         node_lines = list(range(start, node.end_lineno + 1))
         if any(ln in taken for ln in node_lines):   # a container of a shown part is not pulled in on top of it
             continue
         full_body = '\n'.join(lines[start - 1:node.end_lineno])
-        if len(full_body) <= FRAGMENT_MAX_CHARS:
-            piece = '# %s, lines %d-%d\n%s' % (node.name, start, node.end_lineno, full_body)
-            if used + len(piece) + 2 <= room:
-                picked.append((start, piece))
-                used += len(piece) + 2
-                taken.update(node_lines)
+        piece = '# %s, lines %d-%d\n%s' % (node.name, start, node.end_lineno, full_body)
+        if len(full_body) <= FRAGMENT_MAX_CHARS and used + len(piece) + 2 <= room:
+            picked.append((start, piece))
+            spans.append((start, node.end_lineno, node.name, False))
+            used += len(piece) + 2
+            taken.update(node_lines)
         else:
             nested = {n.name for n in ast.walk(node) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))} if isinstance(node, ast.AST) else {node.name}
             active_keywords = (identifier_tokens(' '.join(sorted(keywords))) | (keywords & nested)) or keywords
@@ -238,13 +252,33 @@ def _fragments(source: str, keywords: set, room: int, priority: frozenset = froz
                 if used + piece_len + extra > room or piece_len + extra > FRAGMENT_MAX_CHARS:
                     continue                                    # one big definition never eats the room
                 chosen.append((w_start, w_piece))
+                spans.append((w_start, w_end, node.name, True))
                 piece_len += extra
                 taken.update(range(w_start, w_end + 1))
             piece = '\n\n'.join(p for _, p in sorted(chosen))
             if piece:
                 picked.append((start, piece))
                 used += piece_len
-    return '\n\n'.join(p for _, p in sorted(picked))
+    return _joined(spans, lines, max(0, room - used))
+
+
+def _joined(spans, lines, spare: int) -> str:
+    """The shown parts in line order. Parts whose unseen gap is at most GAP_FILL_LINES lines become ONE contiguous
+    part, gap included, while ``spare`` characters allow it; overlapping parts are shown once. 19.11 23:59: a SEARCH
+    copied across two parts with a try/except unseen between them matched nothing, 4 passes in a row, twice."""
+    merged = []
+    for start, end, name, part in sorted(spans):
+        if merged:
+            m_start, m_end, m_name, m_part = merged[-1]
+            cost = sum(len(lines[i - 1]) + 1 for i in range(m_end + 1, start))
+            if start <= m_end + 1 + GAP_FILL_LINES and cost <= spare:
+                spare -= cost
+                merged[-1] = (m_start, max(m_end, end), m_name, m_part or part)
+                continue
+        merged.append((start, end, name, part))
+    return '\n\n'.join('# %s, lines %d-%d%s\n%s' % (name, start, end, ' (part)' if part else '',
+                                                  '\n'.join(lines[start - 1:end]))
+                       for start, end, name, part in merged)
 
 
 def large_view(name: str, source: str, keywords: set, room: int, priority: frozenset = frozenset(),
@@ -254,8 +288,9 @@ def large_view(name: str, source: str, keywords: set, room: int, priority: froze
     head = 'FILE %s (LARGE: %d lines, %d chars; outline and selected parts only)\n%s' % (
         name, lines, len(source), hint)
     if name.endswith('.py'):
+        imports = _imports(source)
         toc = outline(source, min(OUTLINE_MAX_CHARS, max(300, room // 2)), tools)
-        body = head + '\nOUTLINE\n' + toc
+        body = head + ('\nIMPORTS\n' + imports if imports else '') + '\nOUTLINE\n' + toc
         frag = _fragments(source, keywords, max(0, room - len(body) - 40), priority, tools)
         return body + ('\nSELECTED PARTS\n' + frag if frag else '')
     return head + '\nHEAD OF THE FILE\n' + redact(source)[:max(300, min(3000, room - len(head) - 40))]

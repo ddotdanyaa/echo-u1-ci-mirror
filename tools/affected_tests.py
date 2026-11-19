@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import hashlib
 import json
 import re
 import pickle
@@ -121,17 +122,32 @@ def changed_symbols(rel, root, base):
 
 
 
-_CACHE_FILE = Path(tempfile.gettempdir()) / 'affected_tests_parse_cache.pkl'
-_CACHE = {}
-try:
-    _CACHE = pickle.loads(_CACHE_FILE.read_bytes())
-except Exception:
-    _CACHE = {}
+# Laptop load 19.11 23:55: the old cache (keyed by folder and file, read by every import, never pruned) reached 59 MB
+# on disk and about 600 MB in every runner process. Now: keyed by the file and its text, read by the first Graph only,
+# at most CACHE_MAX entries (the newest). A new file name leaves the old cache unread.
+_CACHE_FILE = Path(tempfile.gettempdir()) / 'affected_tests_parse_cache2.pkl'
+CACHE_MAX = 20000   # entries (path, text hash) -> parse; the newest are kept
+_CACHE = None       # read by the first Graph, never by the import (the loop imports this module for nothing else)
+
+
+def _cache() -> dict:
+    global _CACHE
+    if _CACHE is None:
+        try:
+            _CACHE = pickle.loads(_CACHE_FILE.read_bytes())
+        except Exception:
+            _CACHE = {}
+        if not isinstance(_CACHE, dict):
+            _CACHE = {}
+    return _CACHE
 
 
 def _save_cache():
+    cache = _cache()
+    for key in list(cache)[:max(0, len(cache) - CACHE_MAX)]:   # the oldest first: a dict keeps insertion order
+        del cache[key]
     try:
-        _CACHE_FILE.write_bytes(pickle.dumps(_CACHE))
+        _CACHE_FILE.write_bytes(pickle.dumps(cache))
     except Exception:
         pass
 
@@ -215,11 +231,12 @@ class Graph:
         except OSError:
             src = ''
         self.text[rel] = src
-        st = p.stat()
-        key = (st.st_size, st.st_mtime_ns)
-        hit = _CACHE.get((str(self.root), rel))
-        raw = hit[1] if hit and hit[0] == key else _parse_raw(rel, src)
-        _CACHE[(str(self.root), rel)] = (key, raw)
+        cache = _cache()
+        key = (rel, hashlib.sha1(src.encode('utf-8', 'replace')).hexdigest())
+        raw = cache.pop(key, None)       # taken out and put back: a used entry moves to the newest end
+        if raw is None:
+            raw = _parse_raw(rel, src)
+        cache[key] = raw
         deps = self.edges[rel]
         for kind, name, names in raw['imports']:
             r = self._resolve(name)

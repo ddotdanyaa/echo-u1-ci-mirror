@@ -67,7 +67,17 @@ PRIO_CELL = re.compile(r"P([0-4])")
 PRIO = re.compile(r"(?<![\w])P([0-4])(?![\w])")
 PATH = re.compile(r"(?<![\w/.-])((?:echo_sync|tools|tests)/[\w./-]*[\w-]\.[A-Za-z]{1,5})(?![\w/-])")
 _B = r"(?<![\w])(?:%s)(?![\w])"          # whole-word wrapper; \w covers Cyrillic
-WAITING = re.compile(_B % r"ждёт|ждет|после|зависит|нужен телефон|заблокирован\w*|блокирован\w*|отложен\w*|дубль|отказ", re.I)
+# "реализовано в ветке X" waits for a merge, not a coder (live 19.11 21:43: <id> became a test task and the free model
+# invented a defect); "не реализовано" stays open
+WAITING = re.compile(_B % r"ждёт|ждет|после|зависит|нужен телефон|заблокирован\w*|блокирован\w*|отложен\w*|дубль|отказ"
+                     r"|(?<!не )реализован\w*", re.I)
+# a cell part that starts with "дубль"/"отказ" (after a [..] tag) marks the row as no task (live 19.11 20:13: <id>'s
+# notes said "**[sync17.11]** дубль: код и тесты уже на базе" and its test was junk); the formulation is never such a mark
+_DUP_MARK = re.compile(r"^[\s*`]*(?:\[[^\]]*\][\s*`]*)?(?:дубль|отказ)\b", re.I)
+
+
+def _marked_duplicate(cells: list) -> bool:
+    return any(_DUP_MARK.match(part) for cell in cells for part in cell.split(" · "))
 STRONG_WAIT = re.compile(_B % r"нужен телефон|ждёт записи\w*|ждет записи\w*|ждёт владельца|ждет владельца", re.I)  # whole state
 CLOSED = re.compile(r"(?<![\w])(?<!не )(?:сделано|закрыто|готово|выложено|выполнено)(?![\w])", re.I)
 OPEN_WORD = re.compile(r"(?<![\w])(?:не сделан\w*|не начат\w*|нов\w*|откры\w*|обязательство|улучшение|блокер|частично|регресс\w*|open|new)(?![\w])", re.I)
@@ -403,6 +413,9 @@ def _heads(state: str) -> list[str]:
     heads = [_head(segs[0])]
     if CLASS_LABEL.match(heads[0]) and len(segs) > 1:
         heads.append(_head(segs[1]))
+    seg = segs[len(heads) - 1]
+    if heads[-1].strip().lower() == "действует" and ":" in seg:   # "действует: ждёт итога <id>" - the tail decides
+        heads.append(_head(seg.split(":", 1)[1]))
     return heads
 
 
@@ -488,6 +501,9 @@ def parse_section4(markdown: str) -> list[dict]:
         row_text = " | ".join(cells)
         text = cells[ti] if ti is not None and ti < len(cells) else (cells[1] if len(cells) > 1 else "")
         cls = classify_state(state if si is not None else row_text, si is not None)
+        if cls == "open" and _marked_duplicate([c for k, c in enumerate(cells)
+                                                if k != 0 and k != (ti if ti is not None else 1)]):
+            cls = "waiting"
         seen[ident] = {"backlog_id": ident, "priority": "P" + pm.group(1) if pm else None,
                        "state": state, "text": text, "row": row_text, "section": section,
                        "line": line_no, "locations": [{"line": line_no, "section": section}],
@@ -857,6 +873,28 @@ def _test_reads(files, extra=()) -> list[str]:
     return out[:MAX_TOUCH + 1]
 
 
+EXAMPLE_MAX_CHARS = 12000
+
+
+def _example_test(root, files, mentioned, graph):
+    """ONE existing test of the code a new test is about: the example of its setup (fixtures, fakes, temp files).
+    Live 19.11 23:40: the authors saw the module but no test of it; their tests crashed on sqlite or hung 30 s.
+    The test the row mentions first, else the smallest test importing a touch file directly; never a
+    factory-written test (tests/test_factory_*), never a file over EXAMPLE_MAX_CHARS bytes. None when there is none."""
+    root = Path(root)
+    cands = [t for t in mentioned if t.endswith(".py")]
+    if graph is not None:
+        direct = {t for f in files for t in graph.rev.get(f, ()) if graph.is_test(t)}
+        cands += sorted(direct, key=lambda t: ((root / t).stat().st_size if (root / t).is_file() else 10 ** 9, t))
+    for t in cands:
+        p = root / t
+        if t.startswith("tests/test_factory_") or not p.is_file():
+            continue
+        if p.stat().st_size <= EXAMPLE_MAX_CHARS:
+            return t
+    return None
+
+
 def _import_hint(files) -> str:
     """' Проверяемый код: echo_sync.fast_text (импортируй из него).' for the goal of a new test, '' without code."""
     # a package's __init__.py is imported by the package name (echo_sync.__init__ would be a second copy)
@@ -1217,13 +1255,22 @@ def triage_portion(backlog_path, head_root, known_backlog_ids, limit, profile_at
             if t not in ordered:
                 ordered.append(t)
         if not named:
+            if graph is None:        # the example's second source: tests importing the touch files directly
+                from tools.affected_tests import Graph
+                graph = Graph(root)
+            ex = _example_test(root, touch, mentioned, graph)
+            ex_hint = ""
+            ex_reads = []
+            if ex:
+                ex_hint = " Образец настройки (фича, фикстуры, фейки): %s." % ex
+                ex_reads = [ex]
             goal = ("Написать тест: он должен падать на текущем коде из-за дефекта строки и проходить после "
-                    "исправления. Первой строкой файла напиши комментарий «# factory-backlog-id: %s».%s "
-                    "Упомянутые тесты (не дублировать): %s. Строка: %s" % (bid, _import_hint(touch), ", ".join(extra) or "нет", text))
+                    "исправления. Первой строкой файла напиши комментарий «# factory-backlog-id: %s».%s%s "
+                    "Упомянутые тесты (не дублировать): %s. Строка: %s" % (bid, _import_hint(touch), ex_hint, ", ".join(extra) or "нет", text))
             group.append(dict(base, id=tid + "_test", title=("Тест для %s" % bid)[:120],
                               goal=goal[:1500], depends_on=[],
                               touch_files=[tpath], tests=[tpath], kind="unit_test",
-                              read_files=_test_reads(touch, read_files)))
+                              read_files=_test_reads(touch, read_files + ex_reads)))
             ordered = [tpath]
             deps = [tid + "_test"]
         tail = suspects + ("" if not extra else " Проверь, что не ломаешь: " + ", ".join(extra))

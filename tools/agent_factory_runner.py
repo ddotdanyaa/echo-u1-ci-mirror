@@ -39,6 +39,7 @@ from .factory_process import kilo_argv, run_owned
 from . import affected_tests
 from . import factory_channels as channels
 from . import factory_gate as gate
+from . import factory_quota as quota_ledger
 
 ENV_ALLOW = ("PATH", "PATHEXT", "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC", "LANG")
 POLICY_FILE = "kilo.jsonc"
@@ -515,11 +516,45 @@ REVIEW_CHECKS_TEST = (
     'on the current code because of the described defect and would pass once the defect is fixed; (3) NO stub: no '
     'MagicMock in place of the code under test, no assert False, no test that only checks that a name exists, no '
     'hard-coded counts of files or markers in the repository; (4) nothing outside the test file.')
+# Owner: «турнир нескольких кандидатов с последовательной цепочкой критиков». A pass of the light engine
+# asks up to TOURNAMENT_SIZE coders, each a different model, and every next one is told why the previous one failed;
+# the first candidate that passes the mechanical checks (it changes the files, compiles, weakens no check) goes to the
+# gate. Then REVIEW_CHAIN critics of different models review it one after another, each with its own lens; the
+# first rejection ends the chain (the owner's cap is 4 rounds). A missing further model shortens the tournament or
+# the chain, never fails the pass.
+TOURNAMENT_SIZE = 3
+TOURNAMENT_NOTE = ('\nAnother model already tried this task in this pass and its answer could not be used: %s. Do not '
+                   'repeat that mistake: copy every SEARCH line exactly from the code shown above.\n')
+# <id>: a candidate that fails the test gate for real (not the environment, not an unknown neighbour) does not end the
+# pass while the tournament has room: the next model sees the failing output and the diff of the previous one.
+TOURNAMENT_GATE_NOTE = ('\nAnother model already tried this task in this pass; its change was applied and the tests '
+                        'failed. Do not repeat that mistake.\nFailing test output:\n%s\n')
+TOURNAMENT_DIFF_NOTE = '\nIts diff (do not repeat it):\n%s\n'
+TOURNAMENT_OUTPUT_LIMIT = 1500
+
+
+class _GateRetry:
+    """A real test failure of one candidate: the arguments of the ONE rejection that settles the pass if no other
+    model can try, the failing output for the next prompt and the names of the files the candidate changed."""
+    def __init__(self, reject_args: tuple, diag: str, changed):
+        self.reject_args, self.diag, self.changed = reject_args, diag, list(changed)
+
+
+REVIEW_CHAIN = 2
+REVIEW_LENSES = (
+    '',
+    'You are the SECOND critic: an earlier critic approved this candidate. Look only for what it may have missed: '
+    'an expected result of the task\'s own examples that the change or the test does not pin exactly (a check that '
+    'only says a value changed accepts any wrong change), a case the task names that is not handled, a change the '
+    'task did not ask for. Approve when none of these is there.',
+    'You are the THIRD critic: two critics approved. Check that nothing the task asks for is missing and that the '
+    'change cannot break the code around it (callers, error paths, other inputs of the same function).',
+    'You are the LAST critic: three critics approved. Reject only a concrete defect you can name with its line.')
 
 
 def review_candidate(task: Task, workdir: Path, model: str, invoke, *,
                      baseline: dict[str, bytes] | None = None,
-                     scratch: Path | None = None) -> tuple[bool, list[str]]:
+                     scratch: Path | None = None, lens: str = '', prior: tuple = ()) -> tuple[bool, list[str]]:
     """A separate call sees an immutable copy and returns ``(approved, reasons)``.
 
     Its opinion never grants DONE. A failed call or an unreadable answer raises ReviewFault
@@ -531,14 +566,18 @@ def review_candidate(task: Task, workdir: Path, model: str, invoke, *,
         snapshot = prepare(workdir, reviewer, review_root)
         files_for_hint = [n for n in snapshot if n != POLICY_FILE]
         light = engine_for('review', reviewer) == 'light'   # no tools: no read/grep words (critic 19.11 18:5x)
-        checks = REVIEW_CHECKS_TEST if task.kind == 'unit_test' else REVIEW_CHECKS
+        checks = (REVIEW_CHECKS_TEST if task.kind == 'unit_test' else REVIEW_CHECKS) + (' ' + lens if lens else '')
+        # <id> (owner): the next critic sees the remarks of all earlier critics of this candidate
+        earlier = ('Earlier critics of this same candidate said:\n' +
+                   ''.join('- ' + redact(str(p))[:600] + '\n' for p in prior) +
+                   'Find what they missed or got wrong; do not repeat their remarks.\n') if prior else ''
         head = ('Review this patch task: ' + redact(task.title) + '.\n' + checks +
                 (' The task files are below: small files whole, a large file as its outline and the parts that '
                  'matter. Judge the candidate by its diff and the code shown; never reject it only because some '
                  'code is not shown.\n' if light else
                  ' Read only the explicitly supplied files (relative paths in your working directory: '
                  + ', '.join(sorted(files_for_hint)) + '); grep inside it is allowed, nothing outside it.\n') +
-                'Return exactly JSON {"approved":true|false,"reasons":["each concrete defect"]}.\n')
+                earlier + 'Return exactly JSON {"approved":true|false,"reasons":["each concrete defect"]}.\n')
         files = {n: v for n, v in snapshot.items() if n != POLICY_FILE}
         full_diff = unified_diff(baseline, workdir, task.touch_files, REVIEW_DIFF_LIMIT) if baseline is not None else ''
         priority = frozenset(keywords_from(task.title, strict=False)
@@ -575,7 +614,7 @@ def review_candidate(task: Task, workdir: Path, model: str, invoke, *,
             reasons = [reasons]
         reasons = [str(r)[:400] for r in reasons if str(r).strip()] if isinstance(reasons, list) else []
         if answer['approved']:
-            return True, []
+            return True, reasons          # an approving critic keeps its remarks: the next critic sees them
         return False, reasons or ['rejected without a stated reason']
 
 
@@ -829,7 +868,11 @@ def _replace_once(text: str, search: str, replace: str) -> str | None:
         return '\n'.join(lines[:hits[0]] + replace.split('\n') + lines[hits[0] + n:])
     if hits:
         return None
-    return _replace_shifted(lines, want, replace)
+    shifted = _replace_shifted(lines, want, replace)
+    if shifted is not None:
+        return shifted
+    from .factory_patterns import repair     # ERROR_PATTERNS: a view line or a reflowed line, one place only
+    return repair(text, search, replace)
 
 
 def _replace_shifted(lines: list, want: list, replace: str) -> str | None:
@@ -977,12 +1020,9 @@ def _missing_blocks_note(workdir: Path, blocks) -> str:
         if _replace_once(text, search, replace_text) is not None:
             continue
         where = 'in the file more than once' if len(_line_hits(text, search)) > 1 else 'not in the file'
-        first = ''
-        for line in search.split('\n'):
-            stripped = line.strip()
-            if stripped:
-                first = stripped[:80]
-                break
+        have = {x.strip() for x in text.split('\n')}
+        wanted = [x.strip() for x in search.split('\n') if x.strip()]
+        first = next((x for x in wanted if x not in have), wanted[0] if wanted else '')[:80]
         parts.append("block %d (%s) SEARCH is %s: '%s'" % (i, name, where, first))
         if len(parts) >= 2:
             break
@@ -1001,6 +1041,20 @@ def _light_note(total: int, applied: list, failed: dict, outside: int, text: str
         parts.append('%d block(s) for a file outside the task' % outside)
     parts.extend('%d: %s' % (n, why) for why, n in sorted(failed.items()))
     return '; '.join(parts)
+
+
+LIGHT_ANSWERS_KEPT = 200
+
+def _keep_answer(workdir: Path, text: str) -> None:
+    try:
+        folder = Path(workdir).parent / 'answers'
+        folder.mkdir(exist_ok=True)
+        (folder / (Path(workdir).name + '.txt')).write_text(text[:20000], encoding='utf-8')
+        files = sorted((p for p in folder.iterdir() if p.is_file()), key=lambda p: p.stat().st_mtime)
+        for old in files[:max(0, len(files) - LIGHT_ANSWERS_KEPT)]:
+            old.unlink()
+    except OSError:
+        pass
 
 
 def light_attempt(task: Task, workdir: Path, model: str, timeout: int = LIGHT_TIMEOUT_S,
@@ -1058,10 +1112,13 @@ def light_attempt(task: Task, workdir: Path, model: str, timeout: int = LIGHT_TI
     tokens = {}
     if type(usage.get('prompt_tokens')) is int:
         tokens['input'] = max(0, usage['prompt_tokens'] - (cached or 0))   # prompt_tokens include the cached part
+    # completion_tokens already include the reasoning (OpenAI usage schema); the Kilo shape keeps them apart, so the
+    # reasoning is counted once (live 19.11 19:44: Nemotron booked 5 515 + 8 192 + 8 192 for 13 707 real tokens)
+    reasoning = made.get('reasoning_tokens') if type(made.get('reasoning_tokens')) is int else None
     if type(usage.get('completion_tokens')) is int:
-        tokens['output'] = usage['completion_tokens']
-    if type(made.get('reasoning_tokens')) is int:
-        tokens['reasoning'] = made['reasoning_tokens']
+        tokens['output'] = max(0, usage['completion_tokens'] - (reasoning or 0))
+    if reasoning is not None:
+        tokens['reasoning'] = reasoning
     if cached is not None:
         tokens['cache'] = {'read': cached, 'write': 0}
     events, note = [], ''
@@ -1073,6 +1130,10 @@ def light_attempt(task: Task, workdir: Path, model: str, timeout: int = LIGHT_TI
         note = _light_note(len(blocks) + outside, applied, failed, outside, text)
         if failed.get('SEARCH not found exactly once'):
             note += _missing_blocks_note(Path(workdir), blocks)
+            from .factory_patterns import hints as pattern_hints
+            note += ''.join('; ' + h for h in pattern_hints(blocks))
+        if not applied:
+            _keep_answer(Path(workdir), text)
     events.append({'type': 'text', 'part': {'text': text}})
     events.append({'type': 'step_finish', 'part': {'reason': choice.get('finish_reason') or 'stop', 'tokens': tokens}})
     return 0, ''.join(json.dumps(e, ensure_ascii=False) + '\n' for e in events).encode('utf-8'), note.encode('utf-8')
@@ -1152,7 +1213,8 @@ def once(*, root: Path, plan: Path, checkpoint: Path, staging: Path,
         return _pass(tasks, task, state, checkpoint=checkpoint, root=root, staging=staging,
                      small_model=small_model, large_model=large_model, review_model=review_model,
                      configured=configured, max_attempts=max_attempts, swept_failed=swept_failed,
-                     base_sha=base_sha or os.environ.get('FACTORY_BASE_SHA'))
+                     base_sha=base_sha or os.environ.get('FACTORY_BASE_SHA'),
+                     ledger=(channel_config.resolve().parent / 'quota') if channel_config is not None else None)
     finally:
         with contextlib.suppress(OSError):    # a lock left behind is cleared by the loop; the pass result stands
             owner.unlink(missing_ok=True)
@@ -1166,7 +1228,7 @@ def _pass(tasks, task: Task, state: dict, **kwargs) -> dict:
 
 def _pass_inner(tasks, task: Task, state: dict, *, checkpoint: Path, root: Path, staging: Path,
           small_model: str, large_model: str, review_model: str, configured: list,
-          max_attempts: int, base_sha: str | None, swept_failed=()) -> dict:
+          max_attempts: int, base_sha: str | None, swept_failed=(), ledger: Path | None = None) -> dict:
     tid = task.id
     staging.mkdir(parents=True, exist_ok=True)
     try:
@@ -1278,20 +1340,25 @@ def _pass_inner(tasks, task: Task, state: dict, *, checkpoint: Path, root: Path,
                 order = channels.route_order(configured, route, attempt, base_tokens, preferred=preferred,
                                              exclude_model=exclude_model)
                 if not order and route == 'code':     # no escalation/main channel at all: any channel is better than none
-                    order = channels.route_order(configured, route, 1, 0, preferred=preferred)
+                    order = channels.route_order(configured, route, 1, 0, preferred=preferred,
+                                                 exclude_model=exclude_model)   # never a model the tournament tried
                 if not order:
                     raise NoIndependentReviewer()
                 quota = state.setdefault('channel_quotas', {})
-                live = channels.usable(order, quota, os.environ) or order   # a dead or keyless channel sets no ceiling
+                seen = (quota_ledger.view(quota, quota_ledger.others(ledger, str(checkpoint)))
+                        if ledger is not None else quota)    # <id>: the other states' bookings of the same keys
+                live = channels.usable(order, seen, os.environ) or order   # a dead or keyless channel sets no ceiling
                 tokens = min(base_tokens, max(c['tpm'] for c in live))  # a huge file may not make every channel "too small"
                 if tokens < base_tokens and 'reservation_capped' not in events:
                     events.append('reservation_capped')
-                selected = channels.choose(order, quota, tokens, os.environ,
+                selected = channels.choose(order, seen, tokens, os.environ,
                                            requests=booked)   # a multi-step call needs room
                 charge_call(state, tid)   # BEFORE booking: an exhausted budget must leave no reservation behind
                 at = channels.reserve(quota, selected, tokens, requests=booked)   # exactly what choose() checked
+                if ledger is not None:
+                    quota_ledger.publish(ledger, str(checkpoint), quota)
                 chosen, kwargs['key_env'] = selected['model'], selected['key_env']
-            elif exclude_model is not None and chosen == exclude_model:
+            elif chosen in channels.excluded_models(exclude_model):
                 raise NoIndependentReviewer()
             else:
                 tokens = base_tokens
@@ -1350,6 +1417,7 @@ def _pass_inner(tasks, task: Task, state: dict, *, checkpoint: Path, root: Path,
                           'reasoning_tokens': summary['reasoning_tokens'],
                           'cache_read_tokens': summary['cache_read_tokens'],
                           'cache_write_tokens': summary['cache_write_tokens'],
+                          'candidate': ctx.get('candidate', 0) if role != 'review' else None,
                           'dur_s': elapsed, 'error_class': None if info['kind'] == 'ok' else info['kind'],
                           'http_status': info.get('status'), 'returncode': code,
                           'tool_events': summary['tool_events'], 'steps': summary['steps'],
@@ -1357,6 +1425,8 @@ def _pass_inner(tasks, task: Task, state: dict, *, checkpoint: Path, root: Path,
                           'finish_reason': summary['finish_reason'], 'files_read': summary['files_read'],
                           'provider_error': info['kind'] not in ('ok', 'unknown') or summary['provider_error']})
             ctx['last_text'] = summary['text']
+            if ledger is not None and selected is not None:
+                quota_ledger.publish(ledger, str(checkpoint), state['channel_quotas'])
             save_atomic(checkpoint, state)
             kind = info['kind']
             if kind == 'ok' or (kind == 'unknown' and code == 0):
@@ -1365,6 +1435,8 @@ def _pass_inner(tasks, task: Task, state: dict, *, checkpoint: Path, root: Path,
                 raise ChannelFault(info)
             if selected is not None:
                 done = channels.apply_failure(state['channel_quotas'], selected, info, env=os.environ)
+                if ledger is not None:
+                    quota_ledger.publish(ledger, str(checkpoint), state['channel_quotas'])
             else:
                 done = {'cool_s': info.get('retry_after_s') or 0}
             if kind in ('transient', 'network') and retry == 0:
@@ -1378,7 +1450,9 @@ def _pass_inner(tasks, task: Task, state: dict, *, checkpoint: Path, root: Path,
         if not configured:
             return default
         pool = [c for c in configured if not (ctx['role'] == 'review' and c['model'] == ctx['coder_model'])]
-        wait = channels.next_wait(pool, state.get('channel_quotas', {}), ctx['last_tokens'], os.environ,
+        quota = state.get('channel_quotas', {})
+        seen = quota_ledger.view(quota, quota_ledger.others(ledger, str(checkpoint))) if ledger is not None else quota
+        wait = channels.next_wait(pool, seen, ctx['last_tokens'], os.environ,
                                   requests=1 if ctx.get('light') else
                                   requests_for(REVIEW_STEPS if ctx['role'] == 'review' else PROVIDER_STEPS))
         return default if wait is None else max(5.0, wait)
@@ -1540,7 +1614,123 @@ def _pass_inner(tasks, task: Task, state: dict, *, checkpoint: Path, root: Path,
             report['reason_detail'] = scrub(redact(base.diag))[:300]
             return release_or_block('gate_unknown', INFRA_DEFER_S)
 
-        # 2. ONE coder call (a rejected candidate comes back next pass with feedback and its diff).
+        # 3. Deterministic gates (factory_gate only). A decision, not a settlement: a dict ends the pass; a
+        # _GateRetry is a real test failure the tournament may answer with another model; (changed, receipt) goes on.
+        def run_gates():
+            changed = inspect_changes(task, ctx['workdir'], ctx['baseline'])
+            if not changed:
+                last = calls[-1] if calls else {}
+                if last.get('steps', 0) >= PROVIDER_STEPS and not last.get('last_step_tools'):
+                    events.append('steps_exhausted')    # the model ran out of steps and answered in text only
+                    return reject('gate', 'gate:steps_exhausted',
+                                  'the step limit ended the call without an edit (last step had no tool use)', ())
+                note = ctx.get('light_note') or ''
+                return reject('gate', 'gate:no_changes', 'the model produced no change to the approved files'
+                              + (' (' + note + ')' if note else ''), ())
+            cand_files = {n: ctx['workdir'].joinpath(*n.split('/')).read_text(encoding='utf-8', errors='replace')
+                          for n in changed}
+            for name, source in cand_files.items():
+                if name.endswith('.py'):
+                    try:
+                        compile(source, name, 'exec')
+                    except (SyntaxError, ValueError) as error:
+                        return reject('gate', 'gate: compile error in ' + name,
+                                      'does not compile: %s' % error, changed)
+            problems = gate.weakening_violations(root, cand_files, task.kind, task.touch_files)
+            if problems:
+                text = '; '.join(problems)
+                return reject('gate', 'weakening: ' + text[:300], 'weakening of the checks: ' + text, changed)
+            if task.kind == 'unit_test':
+                if task.backlog_id:
+                    first = next((n for n in changed if n in task.tests), task.tests[0])   # the first CHANGED test file
+                    marker_ok, marker_why = gate.accept_unit_test(MARKER_PROBE, cand_files.get(first, ''), task.backlog_id)
+                    if not marker_ok:   # cheaper than running pytest first
+                        return reject('gate', 'gate: ' + marker_why[:300], marker_why, changed)
+                else:
+                    events.append('unit_test_marker_skipped')   # nothing to check against: never an unfixable rejection
+            with tempfile.TemporaryDirectory(prefix='factory-gate-tree-', ignore_cleanup_errors=True) as d:
+                tree = candidate_tree(root, ctx['workdir'], changed, Path(d))
+                ctx['roots'].append(tree)
+                # the gate decides whether a missing module is the environment or the candidate's own import (live
+                # 19.11 18:06-18:08: written tests imported modules that do not exist and went round as 'environment')
+                cand = gate.candidate_import(timed('gate_s', lambda: gate_run(tree, task.tests)), root, tree, changed)
+                ctx['counts'] = cand
+                if cand.env_reason:
+                    return env_release(cand.env_reason)
+                factory_env(state)['shortages'].pop(tid, None)   # measured: both environment series are over
+                factory_env(state)['other'].pop(tid, None)
+                # pytest executes untrusted code: it may not rewrite the frozen tests or inputs.
+                for name in sorted((set(task.tests) | set(task.read_files)) - set(changed)):
+                    original, after = root.joinpath(*name.split('/')), tree.joinpath(*name.split('/'))
+                    if original.is_file() and (not after.is_file() or after.read_bytes() != original.read_bytes()):
+                        return reject('gate', 'gate: immutable file changed during pytest',
+                                      'pytest changed a frozen file: ' + name, changed)
+                if task.kind == 'unit_test':
+                    ok, why = gate.accept_unit_test(cand)
+                else:
+                    ok, why = gate.accept(base, cand, verdict == 'red')
+                if not ok and why.startswith('env:'):
+                    return env_release(why)
+                if not ok:
+                    return _GateRetry(('gate', 'gate: ' + why[:300], why + '\n' + cand.diag, changed), cand.diag or why,
+                                      changed)
+                if task.kind != 'unit_test':
+                    try:
+                        near = neighbor_tests(root, task)[:MAX_NEIGHBORS]
+                    except Exception as error:  # noqa: BLE001 - "graph unavailable" is not "no neighbours"
+                        events.append('neighbors_unavailable:' + redact(type(error).__name__))
+                        near = []
+                    if near:
+                        def neighbours():
+                            skipped_count = 0
+                            last_result = None
+                            for name in near:
+                                mine = gate_run(tree, [name])
+                                last_result = mine
+                                if mine.env_reason:
+                                    return 'env', mine
+                                if not mine.junit_ok and not (mine.failed or mine.errors):
+                                    skipped_count += 1
+                                    continue
+                                if mine.failed + mine.errors > 0:
+                                    theirs = gate_run(base_root(), [name])
+                                    last_result = theirs
+                                    if theirs.env_reason:
+                                        return 'env', theirs
+                                    if not theirs.junit_ok and not (theirs.failed or theirs.errors):
+                                        return 'unknown', mine
+                                    if mine.failed_ids or theirs.failed_ids:
+                                        fresh = set(mine.failed_ids) - set(theirs.failed_ids)
+                                    else:
+                                        fresh = {'count'} if mine.failed + mine.errors > theirs.failed + theirs.errors else set()
+                                    if fresh:
+                                        return 'regression', mine
+                            if skipped_count == len(near):
+                                return 'skipped', last_result
+                            if skipped_count > 0:
+                                events.append('neighbors_skipped')
+                            return 'ok', last_result
+                        outcome, mine = timed('neighbors_s', neighbours)
+                        if outcome == 'env':
+                            return env_release(mine.env_reason)
+                        if outcome == 'skipped':
+                            events.append('neighbors_skipped')
+                        elif outcome == 'unknown':
+                            report['reason_detail'] = 'neighbour tests of the base are not measured'
+                            # keep the candidate: the next pass resumes at the gates and measures, no new coder call
+                            row['pending_review'] = dict(workdir=str(ctx['workdir']), baseline_digest=baseline_digest,
+                                                         coder_model=ctx['coder_model'])
+                            report['pending_review'] = True
+                            return release_or_block('gate_unknown', INFRA_DEFER_S)
+                        elif outcome == 'regression':
+                            return _GateRetry(('gate', 'gate:neighbors_regression',
+                                               'new red among neighbour tests: ' + ', '.join(near) + '\n' + mine.diag,
+                                               changed), mine.diag, changed)
+            receipt = _digest(json.dumps(_counts(cand)), ','.join(changed))
+            return changed, receipt
+
+        # 2. The coder call(s) (a rejected candidate comes back next pass with feedback and its diff).
+        decision = None
         if not pending:
             feedback = fresh_feedback(state, tid)
             feedback = scrub(feedback) if feedback else feedback
@@ -1563,133 +1753,129 @@ def _pass_inner(tasks, task: Task, state: dict, *, checkpoint: Path, root: Path,
                     ctx['workdir'] = staging / (prefix + "-retry-" + str(retry))
                     ctx['baseline'] = prepare(root, task, ctx['workdir'])
                 return ctx['workdir']
-            rc, out, err = timed('code_s', lambda: call(role, task, dir_for, chosen, prompt))
-            ctx['coder_model'] = calls[-1]['model']
-            if event_summary(out)['finish_reason'] in ('length', 'max_tokens'):
-                events.append('output_truncated')
 
-        # 3. Deterministic gates (factory_gate only).
-        changed = inspect_changes(task, ctx['workdir'], ctx['baseline'])
-        if not changed:
-            last = calls[-1] if calls else {}
-            if last.get('steps', 0) >= PROVIDER_STEPS and not last.get('last_step_tools'):
-                events.append('steps_exhausted')    # the model ran out of steps and answered in text only
-                return reject('gate', 'gate:steps_exhausted',
-                              'the step limit ended the call without an edit (last step had no tool use)', ())
-            note = ctx.get('light_note') or ''
-            return reject('gate', 'gate:no_changes', 'the model produced no change to the approved files'
-                          + (' (' + note + ')' if note else ''), ())
-        cand_files = {n: ctx['workdir'].joinpath(*n.split('/')).read_text(encoding='utf-8', errors='replace')
-                      for n in changed}
-        for name, source in cand_files.items():
-            if name.endswith('.py'):
+            def unusable() -> str:
+                """Step 3's mechanical checks, without a strike: why this candidate cannot go to the gate ('' when it
+                can). A candidate that fails them makes room for the tournament's next model."""
+                now = inspect_changes(task, ctx['workdir'], ctx['baseline'])
+                if not now:
+                    return ctx.get('light_note') or 'its answer changed no file'
+                texts = {n: ctx['workdir'].joinpath(*n.split('/')).read_text(encoding='utf-8', errors='replace')
+                         for n in now}
+                for name, source in texts.items():
+                    if name.endswith('.py'):
+                        try:
+                            compile(source, name, 'exec')
+                        except (SyntaxError, ValueError) as error:
+                            return 'its edit of %s does not compile (%s)' % (name, error)
+                if gate.weakening_violations(root, texts, task.kind, task.touch_files):
+                    return 'its edit weakened a check'
+                if task.kind == 'unit_test' and task.backlog_id:
+                    first = next((n for n in now if n in task.tests), task.tests[0])
+                    ok, why = gate.accept_unit_test(MARKER_PROBE, texts.get(first, ''), task.backlog_id)
+                    return '' if ok else why
+                return ''
+
+            def gate_note(failure) -> str:
+                """The note for the next coder after a real test failure: the failing output (scrubbed, redacted) and the
+                diff of the candidate. Over PROMPT_LIMIT_CHARS the diff goes first, then the output is shortened."""
+                output = scrub(redact(failure.diag))[:TOURNAMENT_OUTPUT_LIMIT]
+                diff = unified_diff(ctx['baseline'], ctx['workdir'], failure.changed, DIFF_LIMIT)
+                room = channels.PROMPT_LIMIT_CHARS - len(prompt)
+                for part in (TOURNAMENT_DIFF_NOTE % diff if diff else '', ''):
+                    note = TOURNAMENT_GATE_NOTE % output + part
+                    if len(note) <= room:
+                        return note
+                fixed = len(TOURNAMENT_GATE_NOTE % '')
+                return TOURNAMENT_GATE_NOTE % output[:max(0, room - fixed)] if room > fixed else ''
+
+            size = TOURNAMENT_SIZE if configured and engine_for(role, task) == 'light' else 1
+            tried, k_prompt, held, gate_failed, next_note = [], prompt, None, [], ''
+            for k in range(size):
+                if k:
+                    held = (ctx['workdir'], ctx['baseline'])
+                    tried.append(ctx['coder_model'])
+                    k_prompt = prompt + next_note
+                    if len(k_prompt) > channels.PROMPT_LIMIT_CHARS:
+                        k_prompt = prompt
+                    ctx['workdir'] = staging / ('%s-cand-%d' % (prefix, k))
+                    shutil.rmtree(ctx['workdir'], ignore_errors=True)
+                    ctx['baseline'] = prepare(root, task, ctx['workdir'])
+                    events.append('tournament_candidate_%d' % (k + 1))
+                ctx['candidate'] = k
                 try:
-                    compile(source, name, 'exec')
-                except (SyntaxError, ValueError) as error:
-                    return reject('gate', 'gate: compile error in ' + name,
-                                  'does not compile: %s' % error, changed)
-        problems = gate.weakening_violations(root, cand_files, task.kind, task.touch_files)
-        if problems:
-            text = '; '.join(problems)
-            return reject('gate', 'weakening: ' + text[:300], 'weakening of the checks: ' + text, changed)
-        if task.kind == 'unit_test':
-            if task.backlog_id:
-                first = next((n for n in changed if n in task.tests), task.tests[0])   # the first CHANGED test file
-                marker_ok, marker_why = gate.accept_unit_test(MARKER_PROBE, cand_files.get(first, ''), task.backlog_id)
-                if not marker_ok:   # cheaper than running pytest first
-                    return reject('gate', 'gate: ' + marker_why[:300], marker_why, changed)
-            else:
-                events.append('unit_test_marker_skipped')   # nothing to check against: never an unfixable rejection
-        with tempfile.TemporaryDirectory(prefix='factory-gate-tree-', ignore_cleanup_errors=True) as d:
-            tree = candidate_tree(root, ctx['workdir'], changed, Path(d))
-            ctx['roots'].append(tree)
-            # the gate decides whether a missing module is the environment or the candidate's own import (live
-            # 19.11 18:06-18:08: written tests imported modules that do not exist and went round as 'environment')
-            cand = gate.candidate_import(timed('gate_s', lambda: gate_run(tree, task.tests)), root, tree, changed)
-            ctx['counts'] = cand
-            if cand.env_reason:
-                return env_release(cand.env_reason)
-            factory_env(state)['shortages'].pop(tid, None)   # measured: both environment series are over
-            factory_env(state)['other'].pop(tid, None)
-            # pytest executes untrusted code: it may not rewrite the frozen tests or inputs.
-            for name in sorted((set(task.tests) | set(task.read_files)) - set(changed)):
-                original, after = root.joinpath(*name.split('/')), tree.joinpath(*name.split('/'))
-                if original.is_file() and (not after.is_file() or after.read_bytes() != original.read_bytes()):
-                    return reject('gate', 'gate: immutable file changed during pytest',
-                                  'pytest changed a frozen file: ' + name, changed)
-            if task.kind == 'unit_test':
-                ok, why = gate.accept_unit_test(cand)
-            else:
-                ok, why = gate.accept(base, cand, verdict == 'red')
-            if not ok and why.startswith('env:'):
-                return env_release(why)
-            if not ok:
-                return reject('gate', 'gate: ' + why[:300], why + '\n' + cand.diag, changed)
-            if task.kind != 'unit_test':
-                try:
-                    near = neighbor_tests(root, task)[:MAX_NEIGHBORS]
-                except Exception as error:  # noqa: BLE001 - "graph unavailable" is not "no neighbours"
-                    events.append('neighbors_unavailable:' + redact(type(error).__name__))
-                    near = []
-                if near:
-                    def neighbours():
-                        skipped_count = 0
-                        last_result = None
-                        for name in near:
-                            mine = gate_run(tree, [name])
-                            last_result = mine
-                            if mine.env_reason:
-                                return 'env', mine
-                            if not mine.junit_ok and not (mine.failed or mine.errors):
-                                skipped_count += 1
-                                continue
-                            if mine.failed + mine.errors > 0:
-                                theirs = gate_run(base_root(), [name])
-                                last_result = theirs
-                                if theirs.env_reason:
-                                    return 'env', theirs
-                                if not theirs.junit_ok and not (theirs.failed or theirs.errors):
-                                    return 'unknown', mine
-                                if mine.failed_ids or theirs.failed_ids:
-                                    fresh = set(mine.failed_ids) - set(theirs.failed_ids)
-                                else:
-                                    fresh = {'count'} if mine.failed + mine.errors > theirs.failed + theirs.errors else set()
-                                if fresh:
-                                    return 'regression', mine
-                        if skipped_count == len(near):
-                            return 'skipped', last_result
-                        if skipped_count > 0:
-                            events.append('neighbors_skipped')
-                        return 'ok', last_result
-                    outcome, mine = timed('neighbors_s', neighbours)
-                    if outcome == 'env':
-                        return env_release(mine.env_reason)
-                    if outcome == 'skipped':
-                        events.append('neighbors_skipped')
-                    elif outcome == 'unknown':
-                        report['reason_detail'] = 'neighbour tests of the base are not measured'
-                        # keep the candidate: the next pass resumes at the gates and measures, no new coder call
-                        row['pending_review'] = dict(workdir=str(ctx['workdir']), baseline_digest=baseline_digest,
-                                                     coder_model=ctx['coder_model'])
-                        report['pending_review'] = True
-                        return release_or_block('gate_unknown', INFRA_DEFER_S)
-                    elif outcome == 'regression':
-                        return reject('gate', 'gate:neighbors_regression',
-                                      'new red among neighbour tests: ' + ', '.join(near) + '\n' + mine.diag,
-                                      changed)
-        receipt = _digest(json.dumps(_counts(cand)), ','.join(changed))
+                    rc, out, err = timed('code_s', lambda: call(role, task, dir_for, chosen, k_prompt,
+                                                                exclude_model=tried or None))
+                except (ChannelFault, channels.ChannelUnavailable, NoIndependentReviewer):
+                    if not k:
+                        raise
+                    ctx['workdir'], ctx['baseline'] = held      # no further model now: the last candidate stands
+                    events.append('tournament_short')
+                    break
+                decision = None          # the earlier candidate's failure is history now; this one is judged afresh
+                ctx['coder_model'] = calls[-1]['model']
+                if event_summary(out)['finish_reason'] in ('length', 'max_tokens'):
+                    events.append('output_truncated')
+                if k + 1 >= size:
+                    break                            # the tournament is full: this candidate stands
+                why = unusable()
+                if why:                              # mechanically unusable: the next model hears why
+                    next_note = TOURNAMENT_NOTE % scrub(redact(why))[:300]
+                    continue
+                decision = run_gates()               # usable: the deterministic gates decide
+                if not isinstance(decision, _GateRetry):
+                    break                            # passed, or a final result (environment, unknown neighbour, ...)
+                gate_failed.append(ctx['coder_model'])
+                events.append('tournament_gate_retry_%d' % (k + 1))
+                next_note = gate_note(decision)
+            if size > 1:
+                report['tournament'] = dict(size=size, candidates=ctx['candidate'] + 1,
+                                            models=tried + [ctx['coder_model']])
+                if gate_failed:
+                    report['tournament']['gate_failed'] = list(gate_failed)
+        if decision is None:
+            decision = run_gates()                   # the standing candidate (or the kept one of a pending review)
+            if isinstance(decision, _GateRetry) and 'tournament' in report:
+                report['tournament']['gate_failed'] = report['tournament'].get('gate_failed', []) + [ctx['coder_model']]
+        if isinstance(decision, _GateRetry):
+            return reject(*decision.reject_args)     # the pass ends on its last gate failure: ONE rejection
+        if isinstance(decision, dict):
+            return decision
+        changed, receipt = decision
+
 
         # 4. Independent reviewer: another model, reasons go back as feedback.
         row['pending_review'] = dict(workdir=str(ctx['workdir']), baseline_digest=baseline_digest,
                                      coder_model=ctx['coder_model'])
         save_atomic(checkpoint, state)
 
+        critics = []      # the models that reviewed this candidate: the next critic is none of them, nor the coder
+
         def invoke(call_task, directory, preferred, **kwargs):
             return call('review', call_task, lambda _retry: directory, preferred,
-                        kwargs['prompt_override'], exclude_model=ctx['coder_model'])
+                        kwargs['prompt_override'], exclude_model=[ctx['coder_model']] + critics)
         try:
             approved, reasons = timed('review_s', lambda: review_candidate(
                 task, ctx['workdir'], review_model, invoke, baseline=ctx['baseline'], scratch=staging))
+            critics.append(calls[-1]['model'])
+            said = ['critic 1 %s: %s' % ('approved' if approved else 'rejected', '; '.join(reasons) or 'no remarks')]
+            for n in range(1, min(REVIEW_CHAIN, len(REVIEW_LENSES)) if approved else 0):
+                try:     # the sequential chain: another model with its own lens; a missing one shortens it
+                    approved, reasons = timed('review_s', lambda: review_candidate(
+                        task, ctx['workdir'], review_model, invoke, baseline=ctx['baseline'], scratch=staging,
+                        lens=REVIEW_LENSES[n], prior=tuple(said)))
+                except (NoIndependentReviewer, channels.ChannelUnavailable, ReviewFault, ChannelFault):
+                    events.append('review_chain_short')
+                    approved = True          # the earlier critics approved; no further model now
+                    break
+                critics.append(calls[-1]['model'])
+                events.append('review_chain_%d' % (n + 1))
+                said.append('critic %d %s: %s' % (n + 1, 'approved' if approved else 'rejected',
+                                                  '; '.join(reasons) or 'no remarks'))
+                if not approved:
+                    break
+            report['critics'] = list(critics)
+            report['critiques'] = list(said)
         except NoIndependentReviewer:
             report['pending_review'] = True
             return _wait(release_or_block, report, 'no_independent_reviewer', status='WAITING_CHANNEL')

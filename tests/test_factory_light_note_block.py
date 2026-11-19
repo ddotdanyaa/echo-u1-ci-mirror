@@ -48,6 +48,16 @@ def test_the_note_says_when_a_search_is_found_more_than_once_and_names_two_block
     assert 'block 3' not in text
 
 
+def test_the_note_names_the_first_line_that_is_not_in_the_file(tmp_path, monkeypatch):
+    """Live 19.11 22:30: the note said "SEARCH is not in the file: 'import ast'" although 'import ast' was there;
+    the lines after it were the guess. The note names the first line of the block that the file does not have."""
+    monkeypatch.setenv('GOOGLE_GENERATIVE_AI_API_KEY', 'synthetic')
+    (tmp_path / 'calc.py').write_text('import ast\nimport os\n\nX = 1\n')
+    answer = _block('import ast\nimport json', 'import ast\nimport json\nimport types')
+    _, _, note = W.light_attempt(_task(), tmp_path, MODEL, prompt_override='p', post=_reply(answer))
+    assert "block 1 (calc.py) SEARCH is not in the file: 'import json'" in note.decode()
+
+
 def test_a_successful_edit_keeps_the_short_note(tmp_path, monkeypatch):
     monkeypatch.setenv('GOOGLE_GENERATIVE_AI_API_KEY', 'synthetic')
     (tmp_path / 'calc.py').write_text('X = 1\n')

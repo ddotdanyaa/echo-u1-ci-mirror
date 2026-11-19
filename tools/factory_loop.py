@@ -47,6 +47,53 @@ ES_CONTINUOUS = 0x80000000
 ES_SYSTEM_REQUIRED = 0x00000001
 # Channel-wide reasons stop every task; everything else is the task's own not_before.
 from tools.agent_factory_runner import ESCALATE_AFTER, INFRA_CHANNEL_REASONS, INFRA_DEFERS  # noqa: <id>
+from tools.agent_factory_runner import _light_post  # noqa: <id>  (the <id> spec pass; tests replace this name)
+from tools import factory_ab  # noqa: <id>
+
+
+def _http_get(url: str, headers: dict, timeout: float = 30):
+    """(status, JSON or None) of one GET (<id> model listings); the key travels in the headers only."""
+    import urllib.error
+    import urllib.request
+    req = urllib.request.Request(url, headers={**headers, "User-Agent": "factory"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.status, json.loads(resp.read().decode("utf-8", errors="replace"))
+    except urllib.error.HTTPError as e:
+        return e.code, None
+    except (urllib.error.URLError, OSError, ValueError):
+        return None, None
+
+
+def _probe(row: dict, key: str):
+    """HTTP status of one tiny call of the row's model with the key (<id>: only a row that answers is written)."""
+    from tools.agent_factory_runner import LIGHT_ENDPOINTS
+    provider, _, model_id = row["model"].partition("/")
+    body = {"model": model_id, "temperature": 0, "max_tokens": 5,
+            "messages": [{"role": "user", "content": "Say OK"}]}
+    status, _ = _light_post(LIGHT_ENDPOINTS[provider], key, body, 60)
+    return status
+
+
+def _env_values(text: str, names) -> dict:
+    """Values of the given names in an env file text (the same parsing as load_keys); never logged."""
+    found = {}
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if line.startswith("export "):
+            line = line[7:].strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        if key.strip() in names:
+            found[key.strip()] = value.strip().strip('"').strip("'")
+    return found
+
+# <id>: A/B experiments. A new one = one line here plus the place that reads Loop.arm(tid, name).
+EXPERIMENTS = {
+    "spec_pass": ("on", "off"),
+    "coder_model": ("google/gemini-3.5-flash-lite", "google/gemini-3.1-flash-lite"),
+}
 
 DEAD_CHANNEL = INFRA_DEFERS | INFRA_CHANNEL_REASONS   # real infrastructure faults: the runner's sets
 CHANNEL_REASONS = DEAD_CHANNEL | frozenset(("rate_minute", "rate_day", "region", "budget_exhausted",
@@ -325,6 +372,86 @@ class Loop:
         self._since_mem: dict = {}
         self._tries_mem: dict = {}
         self.iterations = 0
+        self._run_exps = None      # the experiments of the RUN in progress, written to its loop event
+
+    def arm(self, tid: str, name: str, ls: dict | None = None) -> str:
+        """<id>: the decided winner of the experiment, else the task's stable hash arm."""
+        arms = EXPERIMENTS[name]
+        try:
+            won = ((ls if ls is not None else self.ls()).get("experiments") or {}).get(name) or {}
+            if won.get("winner") in arms:
+                return won["winner"]
+        except Exception as e:
+            self.err("arm", e)
+        return factory_ab.assign(tid, name, arms)
+
+    def _task_experiments(self, tid: str, task, ls: dict) -> dict:
+        names = ["coder_model"] + (["spec_pass"] if task is not None and task.kind == "unit_test" else [])
+        return {n: self.arm(tid, n, ls) for n in names}
+
+    DISCOVER_EVERY_S = 86400
+
+    def _discover_keys(self) -> None:
+        """<id> (owner: a new key is one line in the secrets, the registry is not edited by hand): once a day at START
+        the free models of every key of the env file are listed by its provider, probed once, and only the verified
+        rows are written to the channel registry (tools/factory_discover.py); a new key reaches the runner at once.
+        A fault never stops the loop."""
+        from tools import factory_channels as C
+        from tools import factory_discover as D
+        try:
+            ls = self.ls()
+            if self.clock() - float(ls.get("discovered_at") or 0) < self.DISCOVER_EVERY_S:
+                return
+            text = (Path(self.cfg.env_file).read_text(encoding="utf-8", errors="replace")
+                    if self.cfg.env_file else "")
+            names = D.key_names(text)
+            values = _env_values(text, set(names))
+            keys = {n: os.environ.get(n) or self.extra_env.get(n) or values.get(n) for n in names}
+            keys = {n: v for n, v in keys.items() if v}
+            path = Path(self.cfg.channels)
+            registry = json.loads(path.read_text(encoding="utf-8"))
+            report = D.discover(registry, keys, get=_http_get, probe=_probe)
+            if report["added"]:
+                C.validate(registry["channels"])
+                tmp = path.with_name(path.name + ".discover.tmp")
+                tmp.write_text(json.dumps(registry, ensure_ascii=False, indent=1), encoding="utf-8")
+                retry_fs(os.replace, tmp, path)
+                for row in registry["channels"]:
+                    if row["id"] in report["added"] and not os.environ.get(row["key_env"]):
+                        self.extra_env.setdefault(row["key_env"], keys[row["key_env"]])
+                self._key_names = None          # the scrubber reads the key names of the registry again
+            ls["discovered_at"] = self.clock()
+            self.save_ls(ls)
+            self.event("discover", status="ok", reason="added %d, probe failed %d, listing errors %d" % (
+                len(report["added"]), len(report["failed"]), len(report["errors"])),
+                added=report["added"][:20] or None, errors=report["errors"] or None)
+        except Exception as e:
+            self.err("discover", e)
+
+    def _decide_experiments(self) -> None:
+        """<id>: at START every undecided experiment is decided from the telemetry (enough cases, a clear margin);
+        the decision goes to loop_state, the growth journal and an event. A fault never stops the loop."""
+        try:
+            rows = self._telemetry_rows()
+            ls = self.ls()
+            done = ls.setdefault("experiments", {})
+            changed = False
+            for name in EXPERIMENTS:
+                if isinstance(done.get(name), dict) and done[name].get("winner"):
+                    continue
+                per_arm = factory_ab.outcomes(rows, name)
+                decision = factory_ab.decide(per_arm)
+                if decision is None:
+                    continue
+                at = self.ts()
+                done[name] = {"winner": decision["winner"], "at": at, "per_arm": per_arm}
+                changed = True
+                factory_ab.record(self.dir / "growth.jsonl", name, decision, at)
+                self.event("experiment", status="decided", reason=("%s: %s" % (name, decision["winner"]))[:200])
+            if changed:
+                self.save_ls(ls)
+        except Exception as e:
+            self.err("experiments", e)
 
     def err(self, where: str, e: BaseException) -> None:
         """A swallowed error is still an event (never a silent pass)."""
@@ -725,9 +852,11 @@ class Loop:
             self._brake_close()
         while LOCK_NOTES:
             self.event("infra", status="lock_check_failed", reason=LOCK_NOTES.pop(0))
+        exps, self._run_exps = (self._run_exps if out.action == "RUN" else None), None
         self.event("loop", action=out.action, reason=out.reason, status=out.status,
                    sleep_s=out.sleep, dur_s=round(self.clock() - t0, 3),
-                   base_sha=self.base_sha or None, iteration=self.iterations)
+                   base_sha=self.base_sha or None, iteration=self.iterations,
+                   experiments=exps or None)
         self._stats()
         return out
 
@@ -855,6 +984,11 @@ class Loop:
         name, why = act["action"], act.get("reason", "")
         if name == "PROMOTE":
             return self._promote(act["task_id"], tasks, state, ls)
+        if name == "RUN" and self._spec_pass(act.get("task_id") or "", tasks, state, ls):
+            tasks, state = self.load()          # the answer was applied or the task parked: choose again
+            ls = self.ls()
+            act = F.next_action(state, now, wait_s, self._has_more(ls, now), tasks)
+            name, why = act["action"], act.get("reason", "")
         if name == "RUN":
             return self._run(tasks, state, ls, act.get("task_id") or "")
         if (name == "WAIT" and why == "channel_cooldown" and float(act.get("wait_s") or 0) >= 300
@@ -873,6 +1007,270 @@ class Loop:
             self._write_questions(tasks, state, ls)
             return Outcome(sleep=cfg.hold_sleep, action="HOLD", reason=why)
         return Outcome(sleep=cfg.done_sleep, action="DONE", reason=why)
+
+    # -- <id> spec pass: one free model call turns a unit_test row into a spec before the test is written
+    SPEC_CODE_MAX = 40000          # all files shown together; a file above LARGE_FILE_CHARS is shown as a view
+    SPEC_FILE_ROOM = 14000         # the view of one large file: outline + the parts the row names
+    SPEC_FINAL = frozenset(("ok", "not_testable", "failed", "too_large"))   # "later": no channel or HTTP error
+
+    def _spec_pass(self, tid: str, tasks, state, ls) -> bool:
+        """True when the task's goal changed or the task was parked (the caller chooses again). Never raises."""
+        task = tasks.get(tid)
+        if (task is None or task.kind != "unit_test" or not task.privacy_safe or task.only_opus
+                or ls.get("specs", {}).get(tid) in self.SPEC_FINAL
+                or self.arm(tid, "spec_pass", ls) == "off"):
+            return False
+        try:
+            return self._spec_one(tid, task, state, ls)
+        except Exception as e:
+            self.err("spec", e)
+            try:
+                ls.setdefault("specs", {})[tid] = "failed"
+                self.save_ls(ls)
+            except Exception as e2:
+                self.err("spec mark", e2)
+            return False
+
+    def _spec_one(self, tid: str, task, state, ls) -> bool:
+        from tools import factory_context as X
+        from tools import factory_requeue
+        from tools import factory_spec
+        specs = ls.setdefault("specs", {})
+        code, total = {}, 0
+        words = X.keywords_from(task.title or "", task.goal or "", strict=False)
+        for rel in task.read_files:
+            try:
+                text = (self.mirror / rel).read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            if len(text) > X.LARGE_FILE_CHARS:   # live 20.11: 10 of 16 test tasks read a file above 24k chars
+                text = X.large_view(rel, text, words, self.SPEC_FILE_ROOM, hint="", tools=False)
+            code[rel], total = text, total + len(text)
+        if not code:
+            specs[tid] = "failed"
+            self.save_ls(ls)
+            self.event("spec", task_id=tid, status="failed", reason="no code to show")
+            return False
+        if total > self.SPEC_CODE_MAX:
+            specs[tid] = "too_large"
+            self.save_ls(ls)
+            self.event("spec", task_id=tid, status="too_large", chars=total)
+            return False
+        bid = task.backlog_id or ""
+        row = F.redact(((task.title or "") + chr(10) + (task.goal or "")).strip())
+        text = factory_spec.prompt(row, code)
+        status, model, answer, used = self._light_ask(text, attempt=1, section="loop-spec",
+                                                      quotas=ls.setdefault("spec_quotas", {}), max_tokens=1500)
+        later = status != "ok"          # no channel or an HTTP error: not the row's fault, the next RUN asks again
+        if not later:
+            status = "failed"           # until the answer parses
+        spec = factory_spec.parse(answer, code) if answer else None
+        changed = False
+        if later:
+            specs[tid] = "later"
+        elif spec is None:
+            specs[tid] = "failed"
+        elif spec["testable"]:
+            payload = {"task_id": tid, "goal": factory_spec.goal(spec, bid) + " Row: " + (task.goal or "")[:600]}
+            factory_requeue._write_answer(self.dir / "answers", payload, tid)
+            specs[tid], status = "ok", "ok"
+        else:
+            why = "spec: not a testable code defect: " + spec["why"]
+            ls["holds"][bid] = why
+            specs[tid], status = "not_testable", "not_testable"
+        self.save_ls(ls)
+        self.event("spec", task_id=tid, model=self.rs(model), status=status, tokens=used)
+        if specs[tid] == "ok":
+            self.apply_answers()
+            changed = True
+        elif specs[tid] == "not_testable":
+            self._park(tid, "spec_not_testable", why)
+            self._write_questions(*self.load(), self.ls())
+            changed = True
+        return changed
+
+    def _light_ask(self, text: str, *, attempt: int, section: str, quotas: dict, max_tokens: int):
+        """One free model call outside the runner (the <id> spec pass, the <id> self-fix head): a registry channel in
+        route_order (attempt 1: main first; 2: escalation first), booked in the shared quota ledger under `section`
+        and cooled there on 429/5xx. Returns (status, model, answer, tokens): status 'ok', 'no_channel' or
+        'http_<code>'; tokens = the usage of the answer, else the estimate."""
+        from tools import agent_factory_runner as R
+        from tools import factory_channels as C
+        from tools import factory_quota as Q
+        tokens = C.estimate_tokens(len(text), 0, 500)
+        channels = json.loads(Path(self.cfg.channels).read_text(encoding="utf-8"))["channels"]
+        env = {**os.environ, **self.extra_env}
+        folder = Path(self.cfg.channels).resolve().parent / "quota"
+
+        def publish():
+            try:
+                Q.publish(folder, section, quotas)
+            except OSError as e:
+                self.err(section + " ledger", e)
+        try:
+            channel = C.choose(C.route_order(channels, "code", attempt, tokens),
+                               Q.view(quotas, Q.others(folder, section)), tokens, env, now=self.clock())
+        except C.ChannelUnavailable:
+            return "no_channel", None, "", tokens
+        model = channel["model"]
+        C.reserve(quotas, channel, tokens, now=self.clock())
+        publish()
+        provider, _, model_id = model.partition("/")
+        body = {"model": model_id, "temperature": 0, "max_tokens": max_tokens,
+                "messages": [{"role": "user", "content": text}]}
+        code_http, raw = _light_post(R.LIGHT_ENDPOINTS[provider], env[channel["key_env"]], body, 120)
+        if code_http != 200:
+            if code_http in (429, 500, 503):      # the next call takes another channel for a while
+                C.cool(quotas, channel, now=self.clock())
+                publish()
+            return "http_%s" % code_http, model, "", tokens
+        try:
+            data = json.loads(raw.decode("utf-8") if isinstance(raw, bytes) else raw)
+            answer = data["choices"][0]["message"].get("content") or ""
+            used = (data.get("usage") or {}).get("total_tokens")
+        except (ValueError, KeyError, IndexError, TypeError, AttributeError):
+            answer, used = "", None
+        return "ok", model, answer, used or tokens
+
+    # -- <id> self-fix: a failure class that repeated becomes a self-build task designed by a free head model
+    SELFFIX_EVERY_S = 3600
+    SELF_DIR = DEFAULT_STATE_DIR.parent / "self"    # the self-build folder next to the state: plans, trees, queue pid
+
+    def _telemetry_rows(self) -> list:
+        """The rows of telemetry.jsonl and .1 (a broken line is skipped)."""
+        rows = []
+        for name in (self.tel_path.name, self.tel_path.name + ".1"):
+            try:
+                text = (self.dir / name).read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            for line in text.splitlines():
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(row, dict):
+                    rows.append(row)
+        return rows
+
+    def _selffix(self) -> None:
+        """At most once an hour: the most frequent failure class that repeated (<id>) and has no open self-fix gets ONE
+        self-build plan from a free head model (strongest channel first): a red-by-assert test in a copy of the
+        factory source and the exact change (tools/factory_selffix.py). The plan goes to the self-build queue when
+        none runs; its candidate waits for the coordinator's acceptance. A fault never stops the loop."""
+        from tools import factory_selffix as X
+        try:
+            ls = self.ls()
+            if self.clock() - float(ls.get("selffix_at") or 0) < self.SELFFIX_EVERY_S:
+                return
+            ls["selffix_at"] = self.clock()
+            self.save_ls(ls)
+            self_dir = self.SELF_DIR
+            if X.queue_running(self_dir):
+                self.event("selffix", status="queue_busy")
+                return
+            src_root, base_sha = (self_dir / "src_path.txt").read_text(encoding="utf-8").split()[:2]
+            # one row per finished runner attempt (the loop's own RUN event repeats it: counted twice, a single
+            # failure would look like a repeat)
+            rows = [r for r in self._telemetry_rows()
+                    if r.get("span") == "run" and r.get("attempt") and r.get("reason")]
+            ledger = ls.setdefault("selffix", {})
+            quotas = ls.setdefault("selffix_quotas", {})
+            asked = {}
+
+            def ask(prompt):
+                status, model, answer, used = self._light_ask(prompt, attempt=2, section="loop-selffix",
+                                                              quotas=quotas, max_tokens=4000)
+                asked.update(status=status, model=model, tokens=used)
+                return answer
+            stamp = dt.datetime.fromtimestamp(self.clock()).strftime("%m%d%H%M")
+            report = X.run(rows, ledger, ask=ask, repo_root=src_root, src_root=src_root, self_dir=self_dir,
+                           base_sha=base_sha, python=sys.executable, now_iso=self.ts(), stamp=stamp)
+            if asked and asked.get("status") != "ok":     # the head was not reached: ask again next hour
+                ledger.pop(report.get("cls"), None)
+            self.save_ls(ls)
+            launched = report.get("status") == "open" and X.launch(_ROOT, report["plan"], self_dir, sys.executable)
+            self.event("selffix", status=report.get("status"), reason=self.rs(
+                "%s: %s" % (report.get("cls"), report.get("plan") or report.get("why") or ""), 300),
+                model=self.rs(asked.get("model") or None), tokens=asked.get("tokens"), launched=launched or None)
+        except Exception as e:
+            self.err("selffix", e)
+
+    # -- <id>/<id>: the free head answers the mechanical holds (which file to change) while the loop is idle
+    HOLDS_EVERY_S = 1200
+    _last_out = None
+
+    def _head_holds(self) -> None:
+        """At most once per HOLDS_EVERY_S and only after an idle step (HOLD, an empty TRIAGE, DONE): up to three holds
+        of the kinds 'ambiguous localisation' and 'which module' go to a free head model; a valid pick becomes an
+        answer file (backlog_id, touch_files, tests, note) that apply_answers turns into a task. A private or unclean
+        row is never sent. A fault never stops the loop."""
+        from tools import factory_context as X
+        from tools import factory_holds as H
+        from tools import factory_requeue
+        out = self._last_out
+        if out is None or not (out.action in ("HOLD", "DONE") or (out.action == "TRIAGE" and out.status == "empty")):
+            return
+        try:
+            ls = self.ls()
+            if self.clock() - float(ls.get("holds_at") or 0) < self.HOLDS_EVERY_S:
+                return
+            ls["holds_at"] = self.clock()
+            done = ls.setdefault("head_holds", {})
+            picked = H.select(ls.get("holds") or {}, done, self.clock())
+            self.save_ls(ls)
+            for bid, question in picked:
+                try:
+                    self._head_one(bid, question, H, X, factory_requeue)
+                except Exception as e:
+                    self.err("head_holds", e)
+        except Exception as e:
+            self.err("head_holds", e)
+
+    def _head_one(self, bid, question, H, X, factory_requeue) -> None:
+        def record(status, model=None, tokens=None):
+            ls = self.ls()
+            ls.setdefault("head_holds", {})[bid] = {"at": self.ts(), "status": status}
+            self.save_ls(ls)
+            self.event("head", backlog_id=bid, status=status, model=self.rs(model), tokens=tokens)
+        goal, private, unclean = self._backlog_text(bid)
+        if private or unclean:
+            return record("private")
+        files, tests = H.candidates(question)
+        if H.kind_of(question) == "ambiguous" and not tests:
+            own = H.row_test(bid, self.mirror)
+            tests = [own] if own else []
+        if not tests or not files:
+            return record("no_test")
+        outlines = {}
+        for rel in files:
+            try:
+                outlines[rel] = X.outline((self.mirror / rel).read_text(encoding="utf-8", errors="replace"), 1500,
+                                          tools=False)
+            except OSError:
+                pass
+        ls = self.ls()
+        status, model, answer, tokens = self._light_ask(
+            H.prompt(bid, goal, question, files, tests, outlines), attempt=2, section="loop-holds",
+            quotas=ls.setdefault("holds_quotas", {}), max_tokens=800)
+        self.save_ls(ls)
+        if status != "ok":
+            return record("later", model, tokens)
+        picked = H.parse(answer, files)
+        if picked is None:
+            return record("invalid", model, tokens)
+        if "skip" in picked:
+            return record("skip", model, tokens)
+        try:
+            if picked["note"]:
+                self._check_note(picked["note"])
+        except F.InvalidPlan:
+            return record("invalid", model, tokens)
+        payload = {"backlog_id": bid, "touch_files": picked["touch_files"], "tests": tests}
+        if picked["note"]:
+            payload["note"] = picked["note"]
+        factory_requeue._write_answer(self.dir / "answers", payload, "head-" + bid)
+        record("answered", model, tokens)
 
     # -- Opus answer box
     ANSWER_MAX_BYTES = 64 * 1024
@@ -1545,11 +1943,22 @@ class Loop:
         if self.ckpt.with_suffix(self.ckpt.suffix + ".lockdir").exists():
             # a live or young holder: the runner would refuse without a result (NO_RESULT counts towards the brake)
             return Outcome(sleep=60, action="WAIT", reason="state_locked")
+        small, large, review = cfg.small_model, cfg.large_model, cfg.review_model
+        self._run_exps = None
+        if hint:
+            try:
+                self._run_exps = self._task_experiments(hint, tasks.get(hint), ls)
+                coder = self._run_exps["coder_model"]       # <id>: the task's arm is the code model
+                small = large = coder
+                if review == coder:                         # the review model must differ from the code model
+                    review = next(m for m in EXPERIMENTS["coder_model"] if m != coder)
+            except Exception as e:
+                self.err("experiments arm", e)
         cmd = self.runner_cmd + [
             "--root", str(self.mirror), "--plan", str(self.plan_path),
             "--checkpoint", str(self.ckpt), "--staging", str(self.stage),
-            "--small-model", cfg.small_model, "--large-model", cfg.large_model,
-            "--review-model", cfg.review_model, "--channels", str(cfg.channels),
+            "--small-model", small, "--large-model", large,
+            "--review-model", review, "--channels", str(cfg.channels),
             "--max-tasks", "1", "--max-attempts", str(cfg.max_attempts),
             "--max-model-calls", str(cfg.max_model_calls), "--base-sha", self.base_sha,
             "--execute", "--ack-host-access-risk"]
@@ -2175,6 +2584,21 @@ class Loop:
             else:
                 os.environ[name] = value
 
+    def _requeue_on_new_version(self) -> None:
+        """<id>: a new factory version gets one more try at the FAILED/BLOCKED tasks whose failure class it may have
+        fixed (tools/factory_requeue.py); the answers go through the Opus answer box; a fault never stops the loop."""
+        from tools import factory_requeue
+        try:
+            tasks, _ = self.load()
+            skip = {tid for tid, t in tasks.items() if t.only_opus or not t.privacy_safe}
+            done = factory_requeue.run(self.cfg.state_dir, _ROOT.name, skip=skip, check=self._check_note)
+        except Exception as e:
+            self.err("requeue", e)
+            return
+        if done:
+            self.event("loop", action="REQUEUE", status="ok",
+                       reason="version %s: %s" % (_ROOT.name, ",".join(done))[:200])
+
     def run(self) -> int:
         cfg = self.cfg
         if not self.acquire():
@@ -2194,6 +2618,9 @@ class Loop:
                 self.event("infra", status="skipped_channel", reason=note)
             self.event("loop", action="START", status="ok", reason="start", pid=os.getpid(),
                        branch=cfg.branch, until=str(cfg.until) if cfg.until else None)
+            self._requeue_on_new_version()
+            self._decide_experiments()
+            self._discover_keys()
             while True:
                 if self.stop.exists():
                     self.event("loop", action="EXIT", status="stop", reason="STOP")
@@ -2201,7 +2628,10 @@ class Loop:
                 if cfg.until and dt.datetime.fromtimestamp(self.clock()) >= cfg.until:
                     self.event("loop", action="EXIT", status="deadline", reason="deadline")
                     return EXIT_OK
+                self._selffix()                     # at most once an hour (<id>)
+                self._head_holds()                  # idle: the free head answers mechanical holds (<id>/<id>)
                 out = self.step()
+                self._last_out = out
                 if out.code is not None:
                     return out.code
                 if cfg.once:

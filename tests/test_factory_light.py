@@ -113,7 +113,7 @@ def test_attempt_applies_the_edit_and_reports_like_kilo(tmp_path, monkeypatch):
     summary = W.event_summary(out, tmp_path)
     assert summary['steps'] == 1 and summary['tool_events'] == 1 and summary['last_step_tools'] == 1
     assert (summary['input_tokens'], summary['cache_read_tokens'], summary['output_tokens'],
-            summary['reasoning_tokens']) == (800, 100, 40, 7)
+            summary['reasoning_tokens']) == (800, 100, 33, 7)    # completion 40 holds the 7 of reasoning
     assert C.classify(out, note, rc)['kind'] == 'ok'
     assert note.decode() == 'edit blocks 1, changed files 1'
 

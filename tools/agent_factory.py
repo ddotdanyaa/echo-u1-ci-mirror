@@ -403,7 +403,7 @@ def add_strike(state: dict, tid: str) -> int:
     return strikes[key]
 
 
-PARK_REASONS = frozenset(("runner_no_result", "no_package", "promote_failed"))
+PARK_REASONS = frozenset(("runner_no_result", "no_package", "promote_failed", "spec_not_testable"))
 
 
 def park(state: dict, tid: str, reason: str, note: str) -> None:
@@ -552,6 +552,10 @@ def mark_promoted(state: dict, tid: str, commit_sha: str) -> None:
     if row.get("kind") == "unit_test" and row.get("backlog_id"):
         # the sub-task shares the strike key of its main task: its attempts must not eat theirs
         state.get("strikes", {}).pop("bl:" + row["backlog_id"], None)
+        for other, orow in state["tasks"].items():   # quarantined by these strikes before it ever ran
+            if (other != tid and orow.get("backlog_id") == row["backlog_id"] and orow.get("status") == "FAILED"
+                    and orow.get("reason") == "quarantine" and not orow.get("attempts")):
+                orow.update(status="READY", reason=None)
 
 
 def unblock(state: dict, tid: str, note: str) -> None:
