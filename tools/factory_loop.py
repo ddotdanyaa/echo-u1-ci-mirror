@@ -1001,6 +1001,8 @@ class Loop:
         kind = tasks[tid].kind if tid in tasks else (ans.get("kind") or "code")
         if ans.get("accept"):
             return self._accept_answer(tid, bid, state, note)
+        if ans.get("reject"):
+            return self._reject_answer(tid, bid, state, note)
         if ans.get("close"):
             return self._close_answer(ans, tid, bid, tasks, state, note)
         for path in fields.get("touch_files") or []:  # the one rule, here and in the CLI
@@ -1142,6 +1144,25 @@ class Loop:
         bid = bid or state["tasks"][tid].get("backlog_id")
         self.event("accept", task_id=tid, backlog_id=bid, status="accepted", reason="accepted_by_coordinator")
         return {"task_id": tid, "backlog_id": bid, "reason": "accepted"}
+
+    def _reject_answer(self, tid, bid, state, note) -> dict:
+        if not tid or tid not in state["tasks"]:
+            raise F.InvalidPlan("reject needs a known task (--task-id)")
+        status = state["tasks"][tid]["status"]
+        if status != "PROMOTED":
+            raise F.InvalidPlan("only a PROMOTED task can be rejected (it is %s)" % status)
+        ls = self.ls()
+        if tid in (ls.get("accepted") or {}):
+            raise F.InvalidPlan("task %s is already accepted" % tid)
+        row = state["tasks"][tid]
+        ls.setdefault("rejected", {}).setdefault(tid, []).append(row.get("commit"))
+        self.save_ls(ls)
+        row.update(status="READY", attempts=0, commit=None, lease=None, deadline=None)
+        F.add_feedback(state, tid, "opus", note or "rejected by Opus")
+        self.save(state)
+        bid = bid or row.get("backlog_id")
+        self.event("reject", task_id=tid, backlog_id=bid, status="rejected", reason="rejected_by_coordinator")
+        return {"task_id": tid, "backlog_id": bid, "reason": "rejected"}
 
     def _close_answer(self, ans, tid, bid, tasks, state, note) -> dict:
         """Opus closes the row: the task becomes DONE, or the hold is dropped and remembered.
@@ -1894,10 +1915,11 @@ class Loop:
         # idempotency: the commit may exist although the state was not written
         done_sha = ""
         prefix = "factory(%s):" % tid
+        rejected = set(ls.get("rejected", {}).get(tid, []))
         for line in git_run(cfg.repo, "log", "--format=%H %s", "-F", "--grep=" + prefix,
                             cfg.branch).splitlines():
             sha_, _, subject = line.partition(" ")
-            if subject.startswith(prefix):
+            if subject.startswith(prefix) and sha_ not in rejected:
                 done_sha = sha_
                 break
         if done_sha:

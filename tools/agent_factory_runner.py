@@ -104,7 +104,9 @@ LIGHT_REVIEW_HINT = "The file is large: only its outline and the parts below are
 UNIT_TEST_RULES = ("The test must import the real functions or classes from the code files shown and call them, "
                    "then assert on what they return or do. Never test a MagicMock in place of that code, never "
                    "write assert False, a test that only checks that a name exists, or a hard-coded count of "
-                   "files or markers in the repository.")
+                   "files or markers in the repository. The project has no pytest-asyncio plugin: never write "
+                   "async def test functions or @pytest.mark.asyncio; drive async code with asyncio.run(...) inside "
+                   "a plain def test function.")
 MARKER_PROBE = gate.GateResult(1, 1, 0, 1, 0, 0, True, '')   # a red result: only the marker can fail it
 REVIEW_OVERHEAD = 1500      # reviewer instructions + verdict format on top of the files
 COPY_IGNORE = shutil.ignore_patterns(".git", "__pycache__", ".pytest_cache", ".env*", "SECRETS_LOCAL",
@@ -1563,23 +1565,34 @@ def _pass_inner(tasks, task: Task, state: dict, *, checkpoint: Path, root: Path,
                     near = []
                 if near:
                     def neighbours():
-                        mine = gate_run(tree, near)
-                        if mine.env_reason:
-                            return 'env', mine
-                        if not mine.junit_ok and not (mine.failed or mine.errors):
-                            return 'skipped', mine
-                        if mine.failed + mine.errors == 0:
-                            return 'ok', mine
-                        theirs = gate_run(base_root(), near)
-                        if theirs.env_reason:
-                            return 'env', theirs
-                        if not theirs.junit_ok and not (theirs.failed or theirs.errors):
-                            return 'unknown', mine   # the candidate is red there and the base is not measured
-                        if mine.failed_ids or theirs.failed_ids:  # by NAME: fix one + break another = regression
-                            fresh = set(mine.failed_ids) - set(theirs.failed_ids)
-                        else:
-                            fresh = {'count'} if mine.failed + mine.errors > theirs.failed + theirs.errors else set()
-                        return ('regression' if fresh else 'ok'), mine
+                        skipped_count = 0
+                        last_result = None
+                        for name in near:
+                            mine = gate_run(tree, [name])
+                            last_result = mine
+                            if mine.env_reason:
+                                return 'env', mine
+                            if not mine.junit_ok and not (mine.failed or mine.errors):
+                                skipped_count += 1
+                                continue
+                            if mine.failed + mine.errors > 0:
+                                theirs = gate_run(base_root(), [name])
+                                last_result = theirs
+                                if theirs.env_reason:
+                                    return 'env', theirs
+                                if not theirs.junit_ok and not (theirs.failed or theirs.errors):
+                                    return 'unknown', mine
+                                if mine.failed_ids or theirs.failed_ids:
+                                    fresh = set(mine.failed_ids) - set(theirs.failed_ids)
+                                else:
+                                    fresh = {'count'} if mine.failed + mine.errors > theirs.failed + theirs.errors else set()
+                                if fresh:
+                                    return 'regression', mine
+                        if skipped_count == len(near):
+                            return 'skipped', last_result
+                        if skipped_count > 0:
+                            events.append('neighbors_skipped')
+                        return 'ok', last_result
                     outcome, mine = timed('neighbors_s', neighbours)
                     if outcome == 'env':
                         return env_release(mine.env_reason)

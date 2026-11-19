@@ -20,6 +20,8 @@ jobs:
             files: 'tests/test_factory_loop_git4.py tests/test_factory_loop_git5.py tests/test_factory_loop_report2.py tests/test_factory_loop_report3.py'
           - shard: 4
             files: 'tests/test_factory_loop_report4.py tests/test_factory_loop_report5.py tests/test_factory_loop_report6.py tests/test_factory_red_by_assert.py'
+          - shard: 5
+            files: 'tests/test_factory_reject_promote.py tests/test_factory_unit_rules_async.py'
     name: shard ${{ matrix.shard }}
     runs-on: windows-latest
     timeout-minutes: 25
