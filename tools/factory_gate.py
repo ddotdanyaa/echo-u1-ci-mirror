@@ -35,7 +35,12 @@ ENV_ALLOW = ('PATH', 'SYSTEMROOT', 'SYSTEMDRIVE', 'WINDIR', 'COMSPEC', 'PATHEXT'
 FORBIDDEN_BASENAMES = frozenset((
     'conftest.py', 'pytest.ini', '.pytest.ini', 'pytest.toml', 'setup.cfg', 'pyproject.toml', 'tox.ini',
     'sitecustomize.py', 'usercustomize.py'))
-FORBIDDEN_PATHS = frozenset((
+# The factory's own code: the acceptance and every factory module (new ones too). A candidate may change such a file
+# only when its OWN task names it in touch_files. The triage and Opus' answers ask is_forbidden without names (they
+# never put these paths into a task) and the loop's promote checks without names (it never merges them), so only a
+# task the coordinator wrote by hand reaches them and its result is taken by hand (fac-self 19.11: the factory works
+# on its own code, the coordinator accepts) - the CODEOWNERS rule, not a switch.
+OWNER_PATHS = frozenset((
     'tools/red_ratchet.py', 'tools/push_guard.py',
     # The tools modules the factory really imports in a process that holds the channel keys (checked by grep over
     # agent_factory_runner, factory_loop, factory_gate, agent_factory_import):
@@ -47,8 +52,8 @@ FORBIDDEN_PATHS = frozenset((
     # backlog_register's CLI path only), and rows about them are ordinary project work.
     'tools/affected_tests.py', 'tools/id_query.py', 'tools/backlog_register.py',
     'tools/__init__.py'))
-# The acceptance and every factory module (new ones too) are closed to candidates.
-FORBIDDEN_GLOBS = ('*cloud_env_red*.txt', '*.pth', 'tools/factory_*.py', 'tools/agent_factory*.py')
+OWNER_GLOBS = ('tools/factory_*.py', 'tools/agent_factory*.py')
+FORBIDDEN_GLOBS = ('*cloud_env_red*.txt', '*.pth')   # closed even when named, like FORBIDDEN_BASENAMES
 # Concrete constructs only, case-sensitive: skip_silence, "skipped", skip_chunks are legitimate code.
 WEAKENING = re.compile(
     r'\bpytest\.(?:skip|xfail|exit|importorskip)\b|\bmark\.(?:skip|skipif|xfail)\b|\bunittest\.skip\w*'
@@ -500,9 +505,10 @@ def _weak_count(text: str, is_py: bool) -> int:
     return count
 
 
-def is_forbidden(path: str, kind=None):
+def is_forbidden(path: str, kind=None, named=()):
     """The ONE rule of which paths a candidate may not write: the reason, or None when allowed.
 
+    ``named``: the touch_files of the candidate's own task - only they open the factory's own code (OWNER_*).
     Canonicalised like everything else here (_canon: casefold, '//' and '.' collapsed, backslashes).
     weakening_violations and the triage (agent_factory_import) both call this."""
     canon = _canon(path)
@@ -510,26 +516,29 @@ def is_forbidden(path: str, kind=None):
         return 'path outside the repository'
     parts = canon.split('/')
     name = parts[-1]
-    if (name in FORBIDDEN_BASENAMES or canon in FORBIDDEN_PATHS
+    if (name in FORBIDDEN_BASENAMES
             or any(fnmatch.fnmatchcase(name, g) or fnmatch.fnmatchcase(canon, g) for g in FORBIDDEN_GLOBS)):
         return 'forbidden file'
+    if ((canon in OWNER_PATHS or any(fnmatch.fnmatchcase(canon, g) for g in OWNER_GLOBS))
+            and canon not in {_canon(n) for n in named}):
+        return "forbidden file (the factory's own code: only a task that names it)"
     if kind != 'unit_test' and parts[0] == 'tests':
         return 'tests/** may be changed only by a unit_test task'
     return None
 
 
-def weakening_violations(base_root, cand_files: dict, kind) -> list[str]:
-    """Deterministic list of reasons a candidate weakens the checks (empty = clean)."""
-    return weakening_check(base_root, cand_files, kind)[0]
+def weakening_violations(base_root, cand_files: dict, kind, named=()) -> list[str]:
+    """Deterministic list of reasons a candidate weakens the checks (empty = clean); ``named`` as in is_forbidden."""
+    return weakening_check(base_root, cand_files, kind, named)[0]
 
 
-def weakening_check(base_root, cand_files: dict, kind):
+def weakening_check(base_root, cand_files: dict, kind, named=()):
     """``(violations, notes)``: notes are neutral remarks (a check that had to be skipped), not violations."""
     out, notes = [], []
     root = Path(base_root)
     for raw, text in sorted(cand_files.items()):
         path = _canon(raw)
-        reason = is_forbidden(raw, kind)
+        reason = is_forbidden(raw, kind, named)
         if reason is not None:
             out.append(f'{raw if path is None else path}: {reason}')
             continue

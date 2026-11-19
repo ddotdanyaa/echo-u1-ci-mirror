@@ -13,13 +13,13 @@ jobs:
       matrix:
         include:
           - shard: 1
-            files: 'tests/test_factory_light.py tests/test_factory_lock_owner.py tests/test_factory_loop.py tests/test_factory_loop_d8a.py'
+            files: 'tests/test_factory_light.py tests/test_factory_light_key.py tests/test_factory_lock_owner.py tests/test_factory_loop.py'
           - shard: 2
-            files: 'tests/test_factory_loop_git2.py tests/test_factory_loop_git3.py tests/test_factory_loop_git4.py tests/test_factory_loop_git5.py'
+            files: 'tests/test_factory_loop_d8a.py tests/test_factory_loop_git2.py tests/test_factory_loop_git3.py tests/test_factory_loop_git4.py'
           - shard: 3
-            files: 'tests/test_factory_loop_report2.py tests/test_factory_loop_report3.py tests/test_factory_loop_report4.py tests/test_factory_loop_report5.py'
+            files: 'tests/test_factory_loop_git5.py tests/test_factory_loop_report2.py tests/test_factory_loop_report3.py tests/test_factory_loop_report4.py'
           - shard: 4
-            files: 'tests/test_factory_loop_report6.py'
+            files: 'tests/test_factory_loop_report5.py tests/test_factory_loop_report6.py'
     name: shard ${{ matrix.shard }}
     runs-on: windows-latest
     timeout-minutes: 25

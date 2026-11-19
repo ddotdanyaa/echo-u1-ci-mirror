@@ -103,7 +103,7 @@ def test_a_longer_underline_inside_search_is_text_not_the_separator():
 
 
 def test_attempt_applies_the_edit_and_reports_like_kilo(tmp_path, monkeypatch):
-    monkeypatch.setenv('GEMINI_API_KEY', 'synthetic')
+    monkeypatch.setenv('GOOGLE_GENERATIVE_AI_API_KEY', 'synthetic')
     (tmp_path / 'calc.py').write_text('def add(a,b): return a-b\n')
     usage = dict(prompt_tokens=900, completion_tokens=40, prompt_tokens_details=dict(cached_tokens=100),
                  completion_tokens_details=dict(reasoning_tokens=7))
@@ -119,7 +119,7 @@ def test_attempt_applies_the_edit_and_reports_like_kilo(tmp_path, monkeypatch):
 
 
 def test_the_reviewer_copy_is_never_edited_and_answers_with_its_text(tmp_path, monkeypatch):
-    monkeypatch.setenv('GEMINI_API_KEY', 'synthetic')
+    monkeypatch.setenv('GOOGLE_GENERATIVE_AI_API_KEY', 'synthetic')
     (tmp_path / 'calc.py').write_text('def add(a,b): return a-b\n')
     seen = []
 
@@ -239,7 +239,7 @@ def test_a_paid_openrouter_model_never_leaves_the_machine_and_a_redirect_is_neve
 
 def test_an_answer_that_does_not_come_in_time_follows_the_timeout_contract(tmp_path, monkeypatch):
     """Critic 19.11: a light timeout was 'transient' for ever; now it is Kilo's timeout (idle series, ceiling)."""
-    monkeypatch.setenv('GEMINI_API_KEY', 'synthetic')
+    monkeypatch.setenv('GOOGLE_GENERATIVE_AI_API_KEY', 'synthetic')
     rc, out, note = W.light_attempt(task(), tmp_path, 'google/x', prompt_override='p',
                                     post=lambda *a: (None, b'TimeoutError'))
     assert (rc, out, note) == (124, b'', b'worker-timeout')
@@ -248,7 +248,7 @@ def test_an_answer_that_does_not_come_in_time_follows_the_timeout_contract(tmp_p
 
 def test_reasoning_before_the_answer_is_dropped_and_a_draft_inside_it_is_never_applied(tmp_path, monkeypatch):
     """Gemma 4 answers '<thought>...</thought>OK' on the OpenAI-compatible endpoint (live 19.11)."""
-    monkeypatch.setenv('GEMINI_API_KEY', 'synthetic')
+    monkeypatch.setenv('GOOGLE_GENERATIVE_AI_API_KEY', 'synthetic')
     (tmp_path / 'calc.py').write_text('def add(a,b): return a-b\n')
     draft = BLOCK.replace('a+b', 'a*b')
     rc, out, note = W.light_attempt(task(), tmp_path, 'google/gemma-4-31b-it', prompt_override='p',
@@ -263,13 +263,13 @@ def test_reasoning_before_the_answer_is_dropped_and_a_draft_inside_it_is_never_a
 
 
 def test_no_key_is_key_invalid_without_a_request(tmp_path, monkeypatch):
-    monkeypatch.delenv('GEMINI_API_KEY', raising=False)
+    monkeypatch.delenv('GOOGLE_GENERATIVE_AI_API_KEY', raising=False)
     rc, out, note = W.light_attempt(task(), tmp_path, 'google/x', prompt_override='p')   # _no_network would fail
     assert rc == 1 and C.classify(out, note, rc)['kind'] == 'key_invalid'
 
 
 def test_an_answer_without_blocks_tells_the_next_attempt_why(tmp_path, monkeypatch):
-    monkeypatch.setenv('GEMINI_API_KEY', 'synthetic')
+    monkeypatch.setenv('GOOGLE_GENERATIVE_AI_API_KEY', 'synthetic')
     (tmp_path / 'calc.py').write_text('def add(a,b): return a-b\n')
     _, _, note = W.light_attempt(task(), tmp_path, 'google/x', prompt_override='p',
                                  post=reply('CANNOT: the function is not in the shown part'))

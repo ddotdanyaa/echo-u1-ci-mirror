@@ -707,6 +707,7 @@ LIGHT_MAX_FILES = 2              # a coder task that changes more files is a mul
 LIGHT_OVERHEAD_TOKENS = 600      # the rules below and the chat wrapper (Kilo: 5 300-7 300)
 LIGHT_TIMEOUT_S = 180
 LIGHT_MAX_OUTPUT = 8192
+LIGHT_REASONING_TOKENS = 2048
 LIGHT_ENDPOINTS = {'google': 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions',
                    'openrouter': 'https://openrouter.ai/api/v1/chat/completions'}
 LIGHT_EDIT_RULES = (
@@ -951,13 +952,15 @@ def light_attempt(task: Task, workdir: Path, model: str, timeout: int = LIGHT_TI
     prompt = prompt_override if prompt_override is not None else _default_prompt(task, workdir, light=True)
     if len(prompt) > channels.PROMPT_LIMIT_CHARS:
         return 125, b'', b'context-too-large'
-    key = os.environ.get(key_env or ('OPENROUTER_API_KEY' if provider == 'openrouter' else 'GEMINI_API_KEY'), '')
+    key = os.environ.get(key_env or ('OPENROUTER_API_KEY' if provider == 'openrouter' else 'GOOGLE_GENERATIVE_AI_API_KEY'), '')
     if not key:
         return 1, _light_error(401, b'{"error": {"message": "no API key in the environment"}}'), b''
     review = not task.touch_files
     body = {'model': model_id, 'max_tokens': LIGHT_MAX_OUTPUT, 'temperature': 0 if review else 0.2,
             'messages': [{'role': 'system', 'content': LIGHT_REVIEW_RULES if review else light_rules(task)},
                          {'role': 'user', 'content': prompt}]}
+    if provider == 'openrouter':
+        body['reasoning'] = {'max_tokens': LIGHT_REASONING_TOKENS}
     status, raw = (post or _light_post)(url, key, body, max(10, min(int(timeout), LIGHT_TIMEOUT_S)))
     if status is None and raw == b'TimeoutError':
         # the request reached the provider, the answer did not come in time: Kilo's timeout contract (the idle
@@ -1515,7 +1518,7 @@ def _pass_inner(tasks, task: Task, state: dict, *, checkpoint: Path, root: Path,
                 except (SyntaxError, ValueError) as error:
                     return reject('gate', 'gate: compile error in ' + name,
                                   'does not compile: %s' % error, changed)
-        problems = gate.weakening_violations(root, cand_files, task.kind)
+        problems = gate.weakening_violations(root, cand_files, task.kind, task.touch_files)
         if problems:
             text = '; '.join(problems)
             return reject('gate', 'weakening: ' + text[:300], 'weakening of the checks: ' + text, changed)

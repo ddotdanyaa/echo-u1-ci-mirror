@@ -2024,8 +2024,8 @@ class Loop:
             return "outside task scope: " + ", ".join(extra[:5])
         texts = {r: (src.joinpath(*r.split("/"))).read_text(encoding="utf-8", errors="replace")
                  for r in rel}
-        bad = factory_gate.weakening_violations(self.mirror, texts, task.kind)
-        return "; ".join(bad[:3]) if bad else ""
+        bad = factory_gate.weakening_violations(self.mirror, texts, task.kind)   # no names: the loop never
+        return "; ".join(bad[:3]) if bad else ""                                  # merges the factory's own code
 
     @staticmethod
     def _dirty_paths(wt: Path) -> list[str]:
