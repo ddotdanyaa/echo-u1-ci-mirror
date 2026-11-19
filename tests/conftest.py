@@ -83,9 +83,19 @@ def _substitutions_come_back(request):
     restore(before, request.node.nodeid)
 
 
+def _fake_voice():
+    """The product's synthetic voice helper, or None where only the factory's tests are present (the public
+    factory mirror: cloud run 19.11 44550183146 stopped every shard at this import)."""
+    try:
+        import helpers_fake_voice as FV
+    except ImportError:
+        return None
+    return FV
+
+
 def pytest_terminal_summary(terminalreporter):
-    import helpers_fake_voice as FV
-    if FV.USED['cues']:
+    FV = _fake_voice()
+    if FV is not None and FV.USED['cues']:
         terminalreporter.section('synthetic voice')
         terminalreporter.write_line(f"{FV.MARK}: {FV.USED['cues']} cues in {FV.USED['tests']} tests (no SAPI on this machine, tests/helpers_fake_voice.py); a test of the real voice cannot pass on it: tools/data/cloud_env_red.txt")
     if LEAKS:
@@ -117,7 +127,10 @@ def _a_machine_without_sapi_gets_the_synthetic_voice(request):
     the decision under test. Here only the child is stood in (``helpers_fake_voice``: silent PCM as long as the text, the SAPI tail included); the manager, ``render_cue_pcm``, the cache and the
     trims stay the product's, nothing in ``echo_sync`` changes. On Windows nothing is installed. A test with its own fake worker or Popen never reaches it. The class is re-checked every test
     (a test that reloads ``echo_sync.sapi_worker`` gets a fresh class), the first import of the product is swallowed when the product cannot be imported at all."""
-    import helpers_fake_voice as FV
+    FV = _fake_voice()
+    if FV is None:                  # only the factory's tests are present: no product, no voice to stand in
+        yield
+        return
     if not FV.available():
         try:
             from echo_sync.sapi_worker import SapiWorkerManager
