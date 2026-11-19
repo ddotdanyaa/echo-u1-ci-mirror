@@ -821,9 +821,45 @@ def _replace_once(text: str, search: str, replace: str) -> str | None:
         return None
     n = len(want)
     hits = [i for i in range(len(lines) - n + 1) if [line.rstrip() for line in lines[i:i + n]] == want]
-    if len(hits) != 1:
+    if len(hits) == 1:
+        return '\n'.join(lines[:hits[0]] + replace.split('\n') + lines[hits[0] + n:])
+    if hits:
         return None
-    return '\n'.join(lines[:hits[0]] + replace.split('\n') + lines[hits[0] + n:])
+    return _replace_shifted(lines, want, replace)
+
+
+def _replace_shifted(lines: list, want: list, replace: str) -> str | None:
+    """aider's leading-whitespace rule (fac-light-indent, live 19.11: 11 of 32 coder answers missed their SEARCH):
+    the SEARCH lines equal ONE place of the file but for one and the same prefix of spaces and tabs, and the REPLACE
+    lines get that prefix. A prefix with anything but spaces/tabs is no shift ('return x' is never the tail of
+    'foo_return x': coordinator's acceptance). None when there is no such place or more than one."""
+    rep = [line.rstrip() for line in replace.split('\n')]
+    lead = [len(x) - len(x.lstrip(' \t')) for x in want + rep if x.strip()]
+    cut = min(lead) if lead else 0
+    want = [x[cut:] if x.strip() else '' for x in want]
+    rep = [x[cut:] if x.strip() else '' for x in rep]
+
+    def prefix_at(i):
+        found = None
+        for k, wanted in enumerate(want):
+            have = lines[i + k].rstrip()
+            if not wanted:
+                if have.strip():
+                    return None
+                continue
+            if not have.endswith(wanted):
+                return None
+            prefix = have[:len(have) - len(wanted)]
+            if prefix.strip(' \t') or (found is not None and prefix != found):
+                return None
+            found = prefix
+        return found
+
+    places = [(i, p) for i in range(len(lines) - len(want) + 1) for p in [prefix_at(i)] if p is not None]
+    if len(places) != 1:
+        return None
+    i, prefix = places[0]
+    return '\n'.join(lines[:i] + [prefix + x if x else '' for x in rep] + lines[i + len(want):])
 
 
 def apply_edit_blocks(workdir: Path, blocks) -> tuple[list[str], dict]:
@@ -923,6 +959,32 @@ def _light_error(status: int | None, raw: bytes, name: str = 'APIError') -> byte
     return (json.dumps({'type': 'error', 'error': {'name': name, 'data': data}}) + '\n').encode('utf-8')
 
 
+def _missing_blocks_note(workdir: Path, blocks) -> str:
+    parts = []
+    for i, (name, search, replace_text) in enumerate(blocks, 1):
+        if not search.strip():
+            continue
+        try:
+            path = Path(workdir).joinpath(*name.split('/'))
+            raw = path.read_bytes().decode('utf-8') if path.is_file() else ''
+            text = raw.replace('\r\n', '\n')
+        except (OSError, UnicodeDecodeError):
+            continue
+        if _replace_once(text, search, replace_text) is not None:
+            continue
+        where = 'in the file more than once' if len(_line_hits(text, search)) > 1 else 'not in the file'
+        first = ''
+        for line in search.split('\n'):
+            stripped = line.strip()
+            if stripped:
+                first = stripped[:80]
+                break
+        parts.append("block %d (%s) SEARCH is %s: '%s'" % (i, name, where, first))
+        if len(parts) >= 2:
+            break
+    return ''.join('; ' + p for p in parts)
+
+
 def _light_note(total: int, applied: list, failed: dict, outside: int, text: str) -> str:
     """One line for the next attempt's feedback: what happened to the edit blocks (no file text)."""
     if not total:
@@ -1005,6 +1067,8 @@ def light_attempt(task: Task, workdir: Path, model: str, timeout: int = LIGHT_TI
         events.extend({'type': 'tool_use', 'part': {'tool': 'edit', 'state': {'input': {'filePath': n}}}}
                       for n in applied)
         note = _light_note(len(blocks) + outside, applied, failed, outside, text)
+        if failed.get('SEARCH not found exactly once'):
+            note += _missing_blocks_note(Path(workdir), blocks)
     events.append({'type': 'text', 'part': {'text': text}})
     events.append({'type': 'step_finish', 'part': {'reason': choice.get('finish_reason') or 'stop', 'tokens': tokens}})
     return 0, ''.join(json.dumps(e, ensure_ascii=False) + '\n' for e in events).encode('utf-8'), note.encode('utf-8')

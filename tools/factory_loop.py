@@ -2438,6 +2438,7 @@ def answer_main(argv) -> int:
     p.add_argument("--close", action="store_true", help="close the row/task (needs --note)")
     p.add_argument("--accept", action="store_true",
                    help="the coordinator accepts a PROMOTED task (PROMOTED = merged, ACCEPTED = taken)")
+    p.add_argument("--reject", action="store_true", help="the coordinator rejects a PROMOTED task: back to READY with --note")
     p.add_argument("--release-private", action="store_true",
                    help="allow a public --goal for a private/unknown backlog row (explicit release)")
     p.add_argument("--goal", help="technical wording for the coder (checked: no owner words)")
@@ -2464,6 +2465,8 @@ def answer_main(argv) -> int:
     if a.accept and (not a.task_id or a.close or any(x is not None for x in (
             a.touch, a.tests, a.read, a.target, a.depends_on)) or a.goal):
         p.error("--accept needs --task-id and nothing else but --note")
+    if a.reject and (not a.task_id or not a.note.strip() or a.accept or a.close or a.goal or any(x is not None for x in (a.touch, a.tests, a.read, a.target, a.depends_on))):
+        p.error("--reject needs --task-id and --note and nothing else")
     if a.close and not a.note.strip():
         p.error("--close needs --note with the reason")
     if a.close and any(x is not None for x in (a.touch, a.tests, a.read, a.target, a.depends_on)):
@@ -2484,6 +2487,8 @@ def answer_main(argv) -> int:
         ans["close"] = True
     if a.accept:
         ans["accept"] = True
+    if a.reject:
+        ans["reject"] = True
     if a.kind == "unit_test":
         if set(a.touch or []) != set(a.tests or []) or not a.touch:
             p.error("a unit_test task touches exactly its tests: --touch must equal --tests")
