@@ -129,18 +129,20 @@ def excluded_models(exclude_model) -> frozenset:
     return frozenset(exclude_model)
 
 
-def route_order(channels, role, attempt, tokens, *, preferred=None, exclude_model=None):
+def route_order(channels, role, attempt, tokens, *, preferred=None, exclude_model=None, skip_tiers=()):
     """Channels in the order a call tries them. Coder, attempt 1: main, small (only when ``tokens`` fit its tpm),
     escalation; attempt 2 and later: escalation, main. Reviewer: small first; cross-review: main first.
     ``exclude_model`` (the coder's model) never reviews its own work; a collection of models excludes them all (the
-    tournament's next candidate and the chain's next critic are other models). ``preferred`` breaks ties in a tier."""
+    tournament's next candidate and the chain's next critic are other models). ``preferred`` breaks ties in a tier.
+    ``skip_tiers``: tiers this call may not use (<id> small_follow_up 'off': no small-tier model as a later
+    tournament candidate)."""
     key = ('code', 1 if attempt <= 1 else 2) if role == 'code' else role
     ranks = _ROLE_TIERS[key]
     excluded = excluded_models(exclude_model)
     picked = []
     for channel in channels:
         tier = tier_of(channel)
-        if tier not in ranks or channel['model'] in excluded:
+        if tier not in ranks or tier in skip_tiers or channel['model'] in excluded:
             continue
         if tier == 'small' and small_minute_need(tokens, channel) > channel['tpm']:    # Gemma only when a minute of it fits
             continue

@@ -75,4 +75,4 @@ def test_keeping_the_answer_never_breaks_the_attempt(tmp_path, monkeypatch):
     (tmp_path / 'answers').write_text('a file where the folder should be')
     rc, _, note = W.light_attempt(_task(), _work(tmp_path, 'task-T1-ghi', 'x = 1\n'), MODEL, prompt_override='p',
                                   post=_reply('no block here'))
-    assert rc == 0 and note == b'the answer had no SEARCH/REPLACE edit block'
+    assert rc == 0 and note == b'the answer had no SEARCH/REPLACE edit block (nor a REPLACE FUNCTION block)'

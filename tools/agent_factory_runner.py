@@ -524,7 +524,8 @@ REVIEW_CHECKS_TEST = (
 # the chain, never fails the pass.
 TOURNAMENT_SIZE = 3
 TOURNAMENT_NOTE = ('\nAnother model already tried this task in this pass and its answer could not be used: %s. Do not '
-                   'repeat that mistake: copy every SEARCH line exactly from the code shown above.\n')
+                   'repeat that mistake: copy every SEARCH line exactly from the code shown above, or give REPLACE FUNCTION '
+                   'for a function shown whole.\n')
 # <id>: a candidate that fails the test gate for real (not the environment, not an unknown neighbour) does not end the
 # pass while the tournament has room: the next model sees the failing output and the diff of the previous one.
 TOURNAMENT_GATE_NOTE = ('\nAnother model already tried this task in this pass; its change was applied and the tests '
@@ -761,9 +762,14 @@ LIGHT_EDIT_RULES = (
     "its own line; a line <<<<<<< SEARCH; lines copied EXACTLY from the shown file (enough to be unique, never "
     "line numbers or omission markers); a line =======; the new lines; a line >>>>>>> REPLACE. An empty SEARCH "
     "part creates a new file (or fills an empty one) with the new lines. Several blocks are allowed. If the "
-    "code you must change is not shown, answer one line: CANNOT: and the name of the function you need.")
+    "code you must change is not shown, answer one line: CANNOT: and the name of the function you need. To "
+    "replace a whole function or method instead, write the line REPLACE FUNCTION <path> <name> (name: func or "
+    "Class.method), then a ```python fence with the complete new definition, then a closing ``` line. Use it "
+    "only for a function shown WHOLE in the message, never for one shown in part; write every line of it, "
+    "never ... or a comment instead of code.")
 LIGHT_HINT = ("The file is large: only its outline and the parts below are shown. Copy SEARCH lines from the "
-              "shown parts; if the code to change is not shown, answer CANNOT: and the function name.")
+              "shown parts; if the code to change is not shown, answer CANNOT: and the function name. REPLACE FUNCTION "
+              "only for a function shown whole.")
 LIGHT_REVIEW_RULES = ("You review a code patch. This call has NO tools: everything you may use is in the message. "
                       "Answer with the JSON verdict only.")
 _LIGHT_NAME = re.compile(r'[\w./\\-]+\.[A-Za-z0-9]+')
@@ -773,12 +779,37 @@ _LIGHT_NAME = re.compile(r'[\w./\\-]+\.[A-Za-z0-9]+')
 _LIGHT_THOUGHT = re.compile(r'^\s*<(thought|think)>.*?(?:</\1>|\Z)\s*', re.S | re.I)
 
 
-def light_rules(task: Task) -> str:
-    """The coder's system text with the task's real file paths (live 19.11: a placeholder path in the format
-    example was copied literally and became 'a block for a file outside the task')."""
+def _example_function(task: Task, workdir) -> str:
+    """A function of the first touch file that the title or the goal names (``Class.method`` or a plain name), else
+    the first one of the file; '' when the file is no readable Python."""
+    import ast
     first = task.touch_files[0]
+    try:
+        tree = ast.parse((Path(workdir).joinpath(*first.split('/'))).read_bytes().decode('utf-8'))
+    except (OSError, UnicodeDecodeError, SyntaxError, ValueError, RecursionError, MemoryError, TypeError):
+        return ''
+    names = [n.name for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
+    for c in (n for n in tree.body if isinstance(n, ast.ClassDef)):
+        names.extend('%s.%s' % (c.name, m.name) for m in c.body if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef)))
+    said = re.findall(r'[^\W\d]\w*(?:\.[^\W\d]\w*)?', '%s %s' % (task.title, task.goal))
+    for word in said:
+        hit = [n for n in names if n == word] or [n for n in names if n.rpartition('.')[2] == word and '.' in n]
+        if hit:
+            return hit[0]
+    return names[0] if names else ''
+
+
+def light_rules(task: Task, workdir=None) -> str:
+    """The coder's system text with the task's real file paths (live 19.11: a placeholder path in the format
+    example was copied literally and became 'a block for a file outside the task'). The function in the example
+    is a real one of the first file when ``workdir`` is given."""
+    first = task.touch_files[0]
+    name = (_example_function(task, workdir) if workdir is not None else '') or 'Class.method'
+    leaf = name.rpartition('.')[2]
     return (LIGHT_EDIT_RULES + "\nAllowed files: " + ", ".join(task.touch_files) + ".\nThe shape of a block:\n"
-            + first + "\n<<<<<<< SEARCH\n(old lines)\n=======\n(new lines)\n>>>>>>> REPLACE")
+            + first + "\n<<<<<<< SEARCH\n(old lines)\n=======\n(new lines)\n>>>>>>> REPLACE"
+            + "\nor, for a whole function shown whole:\nREPLACE FUNCTION " + first + " " + name + "\n```python\n"
+            "def " + leaf + "(...):\n    (the whole new definition, every line)\n```")
 
 
 def engine_for(role: str, task: Task) -> str:
@@ -799,14 +830,78 @@ def _light_target(line: str, allowed: tuple) -> str | None:
     return hits[0] if len(hits) == 1 else ''
 
 
+class _FuncTarget(str):
+    """The 'search' part of a function block: the name (func or Class.method) of the definition to replace."""
+
+
+class _Blocks(list):
+    """The parsed blocks; ``problems`` = {why: count} of function blocks that could not be read (never applied)."""
+    problems: dict
+
+
+_NAME = r'[^\W\d]\w*'
+_FUNC_START = re.compile(r'REPLACE\s+FUNCTION\b', re.I)
+_FUNC_HEAD = re.compile(r'REPLACE\s+FUNCTION\s+(\S+)\s+(%s(?:\.%s)?)(?:\s*\(\s*\))?' % (_NAME, _NAME), re.I)
+_FENCE = re.compile(r'\s*(`{3,})')
+FUNC_SHAPE = 'REPLACE FUNCTION <path> <name>, then a ```python fence, the whole definition, a closing ``` line'
+
+
+def _func_clean(line: str) -> str:
+    return re.sub(r'[`*]', '', line).strip('#: \t')
+
+
+def _function_block(lines: list, i: int, allowed: tuple):
+    """Read the function block whose header is ``lines[i]``: ``(next line, file or None, block or None, problem or
+    None, outside)``. A blank line between the header and the fence is fine; the fence closes on a whole line of at
+    least as many backticks as it opened with."""
+    head = _FUNC_HEAD.fullmatch(_func_clean(lines[i]))
+    if head is None:
+        return i + 1, None, None, 'a REPLACE FUNCTION line gave no block; shape: ' + FUNC_SHAPE, 0
+    name = _light_target(head.group(1), allowed)
+    j = i + 1
+    while j < len(lines) and not lines[j].strip():
+        j += 1
+    fence = _FENCE.match(lines[j]) if j < len(lines) else None
+    if fence is None:
+        return i + 1, name or None, None, 'REPLACE FUNCTION block without a ``` fence; shape: ' + FUNC_SHAPE, 0
+    closing = re.compile(r'\s*`{%d,}\s*' % len(fence.group(1)))
+    k = j + 1
+    while k < len(lines) and not closing.fullmatch(lines[k]):
+        k += 1
+    if k >= len(lines):
+        return len(lines), name or None, None, 'REPLACE FUNCTION block without a closing ``` line', 0
+    if not name:
+        return k + 1, None, None, None, 1
+    body = lines[j + 1:k]
+    if any(x.strip().startswith('<<<<<<<') and 'SEARCH' in x for x in body):
+        return k + 1, name, ('inner', parse_edit_blocks('\n'.join(body), (name,))), None, 0
+    return k + 1, name, (name, _FuncTarget(head.group(2)), '\n'.join(body)), None, 0
+
+
 def parse_edit_blocks(text: str, allowed: tuple) -> tuple[list, int]:
     """``([(file, search, replace)], blocks for a file outside the task)``. The file of a block is the last
     file-name line before it; a block without one belongs to the only allowed file. An unterminated block is
-    never applied."""
+    never applied; a function block that cannot be read is named in ``blocks.problems``."""
     lines = text.replace('\r\n', '\n').split('\n')
-    blocks, outside, current, i = [], 0, None, 0
+    blocks, outside, current, i = _Blocks(), 0, None, 0
+    blocks.problems = {}
     while i < len(lines):
         s = lines[i].strip()
+        if _FUNC_START.match(_func_clean(s)):
+            i, name, got, why, out = _function_block(lines, i, allowed)
+            outside += out
+            if name:
+                current = name
+            if why:
+                blocks.problems[why] = blocks.problems.get(why, 0) + 1
+            if got is not None and got[0] == 'inner':
+                blocks.extend(got[1][0])
+                outside += got[1][1]
+                for w, n in got[1][0].problems.items():
+                    blocks.problems[w] = blocks.problems.get(w, 0) + n
+            elif got is not None:
+                blocks.append(got)
+            continue
         if s.startswith('<<<<<<<') and 'SEARCH' in s:
             # the separator and the end are whole lines: a longer ===== underline inside SEARCH is text
             j = i + 1
@@ -909,10 +1004,139 @@ def _replace_shifted(lines: list, want: list, replace: str) -> str | None:
     return '\n'.join(lines[:i] + [prefix + x if x else '' for x in rep] + lines[i + len(want):])
 
 
-def apply_edit_blocks(workdir: Path, blocks) -> tuple[list[str], dict]:
+_PARSE_ERRORS = (SyntaxError, ValueError, RecursionError, MemoryError)
+_ELIDED = re.compile(r'\.\.\.|…|existing code|rest of|unchanged|omitted|same as (?:before|above)', re.I)
+
+
+def _scan_text(new: str):
+    """``(lines inside a multi-line string, comments)`` of a piece of Python, or None when it does not tokenize."""
+    import io
+    import tokenize
+    inside, comments, stack = set(), [], []
+    fstart, fend = getattr(tokenize, 'FSTRING_START', -1), getattr(tokenize, 'FSTRING_END', -1)
+    try:
+        for tok in tokenize.generate_tokens(io.StringIO(new).readline):
+            if tok.type == tokenize.STRING and tok.end[0] > tok.start[0]:
+                inside.update(range(tok.start[0] + 1, tok.end[0] + 1))
+            elif tok.type == fstart:
+                stack.append(tok.start[0])
+            elif tok.type == fend and stack:
+                inside.update(range(stack.pop() + 1, tok.end[0] + 1))
+            elif tok.type == tokenize.COMMENT:
+                comments.append(tok.string)
+    except (tokenize.TokenError, *_PARSE_ERRORS):
+        return None
+    return inside, comments
+
+
+def _shifted(new: str, inside: set, pad: str) -> str:
+    """``new`` with the margin of its first code line replaced by ``pad``. A line inside a multi-line string is
+    never touched (its text is the value of the string); a blank line elsewhere becomes empty."""
+    lines = new.split('\n')
+    margin = next((x[:len(x) - len(x.lstrip())] for x in lines if x.strip()), '')
+    out = []
+    for n, x in enumerate(lines, 1):
+        if n in inside:
+            out.append(x)
+        elif not x.strip():
+            out.append('')
+        else:
+            k = 0
+            while k < len(margin) and k < len(x) and x[k] in ' \t':
+                k += 1
+            out.append(pad + x[k:])
+    return '\n'.join(out)
+
+
+def _is_stub(node) -> bool:
+    import ast
+    body = node.body[1:] if (node.body and isinstance(node.body[0], ast.Expr)
+                             and isinstance(node.body[0].value, ast.Constant)
+                             and isinstance(node.body[0].value.value, str)) else node.body
+    return all(isinstance(n, ast.Pass) or (isinstance(n, ast.Expr) and isinstance(n.value, ast.Constant)
+                                           and n.value.value is Ellipsis) for n in body)
+
+
+def _ellipses(node) -> int:
+    import ast
+    return sum(1 for n in ast.walk(node) if isinstance(n, ast.Expr) and isinstance(n.value, ast.Constant)
+               and n.value.value is Ellipsis)
+
+
+def _function_nodes(tree, target: str) -> list:
+    import ast
+    cls, _, leaf = target.rpartition('.')
+    scopes = [n.body for n in tree.body if isinstance(n, ast.ClassDef) and n.name == cls] if cls else [tree.body]
+    return [n for body in scopes for n in body
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == leaf]
+
+
+def _replace_function(text: str, target: str, new: str, shown: str | None = None) -> tuple[str | None, str]:
+    """``(text with the one top-level function or Class.method replaced, '')`` or ``(None, reason)``. The new
+    definition is re-indented to the old one and must parse as exactly one function of the same name. ``shown``:
+    the text the model saw; the old definition must stand in it whole (a function shown in part or only in the
+    outline is not replaced: the model would delete code it never read). Decorators the new text omits stay."""
+    import ast
+    if '\r' in text or '\r' in new:
+        return None, "function '%s': a lone carriage return in the text" % target
+    try:
+        tree = ast.parse(text)
+    except _PARSE_ERRORS:
+        return None, "function '%s': the file does not parse" % target
+    leaf = target.rpartition('.')[2]
+    found = _function_nodes(tree, target)
+    if not found:
+        return None, "function '%s' not found (only a top-level function or a method of a top-level class)" % target
+    if len(found) > 1:
+        return None, "function '%s' is defined more than once" % target
+    node = found[0]
+    lines = text.split('\n')
+    deco_first = min([node.lineno] + [d.lineno for d in node.decorator_list])
+    old_whole = '\n'.join(lines[deco_first - 1:node.end_lineno])
+    if shown is not None and old_whole not in shown:
+        return None, ("function '%s' was not shown whole: use SEARCH/REPLACE on the shown lines or answer CANNOT: %s"
+                      % (target, target))
+    new = new.strip('\n')
+    scanned = _scan_text(new)
+    if scanned is None:
+        return None, "new text of function '%s' does not parse" % target
+    inside, comments = scanned
+    try:
+        parsed = ast.parse(_shifted(new, inside, ''))
+    except _PARSE_ERRORS:
+        return None, "new text of function '%s' does not parse" % target
+    if len(parsed.body) != 1 or not isinstance(parsed.body[0], (ast.FunctionDef, ast.AsyncFunctionDef)):
+        return None, "new text of function '%s' must define exactly one function" % target
+    fresh_node = parsed.body[0]
+    if fresh_node.name != leaf:
+        return None, "new text of function '%s' defines another name (%s), not the same name" % (
+            target, fresh_node.name)
+    if (_is_stub(fresh_node) and not _is_stub(node)) or _ellipses(fresh_node) > _ellipses(node):
+        return None, "new text of function '%s' elides code (... or pass): write every line" % target
+    bad = next((c for c in comments if _ELIDED.search(c) and c not in old_whole), None)
+    if bad is not None:
+        return None, "new text of function '%s' elides code (comment %r): write every line" % (target, bad[:30])
+    first = node.lineno if (node.decorator_list and not fresh_node.decorator_list) else deco_first
+    head_line = lines[node.lineno - 1]
+    pad = head_line[:len(head_line) - len(head_line.lstrip())]
+    fresh = _shifted(new, inside, pad).split('\n')
+    done = '\n'.join(lines[:first - 1] + fresh + lines[node.end_lineno:])
+    try:
+        again = ast.parse(done)
+    except _PARSE_ERRORS:
+        return None, "function '%s': the file does not parse after the replacement" % target
+    placed = _function_nodes(again, target)
+    same = lambda n: (ast.dump(n.args), [ast.dump(x) for x in n.body], ast.dump(n.returns) if n.returns else '')
+    if len(placed) != 1 or same(placed[0]) != same(fresh_node):
+        return None, "function '%s': the file does not parse after the replacement" % target
+    return done, ''
+
+
+def apply_edit_blocks(workdir: Path, blocks, shown: str | None = None) -> tuple[list[str], dict]:
     """Apply the blocks inside ``workdir`` (the file names come from the task, never from the model):
     ``(changed files, {failure: count})``. All or nothing: when one block fails no file is written (half a
-    candidate could pass weak tests; the failure note goes to the next attempt). A CRLF file stays CRLF."""
+    candidate could pass weak tests; the failure note goes to the next attempt). A CRLF file stays CRLF. ``shown``:
+    the prompt the model saw (LF); a function block is applied only to a definition that stands in it whole."""
     failed, texts, crlf = {}, {}, {}
 
     def fail(why):
@@ -929,7 +1153,12 @@ def apply_edit_blocks(workdir: Path, blocks) -> tuple[list[str], dict]:
             crlf[name] = '\r\n' in raw
             texts[name] = raw.replace('\r\n', '\n')
         text = texts[name]
-        if not search.strip():
+        if isinstance(search, _FuncTarget):
+            new, why = _replace_function(text, str(search), replace_text, shown)
+            if new is None:
+                fail(why)
+                continue
+        elif not search.strip():
             if text.strip():
                 fail('empty SEARCH on a file that is not empty')
                 continue
@@ -1009,7 +1238,7 @@ def _light_error(status: int | None, raw: bytes, name: str = 'APIError') -> byte
 def _missing_blocks_note(workdir: Path, blocks) -> str:
     parts = []
     for i, (name, search, replace_text) in enumerate(blocks, 1):
-        if not search.strip():
+        if not search.strip() or isinstance(search, _FuncTarget):
             continue
         try:
             path = Path(workdir).joinpath(*name.split('/'))
@@ -1035,7 +1264,7 @@ def _light_note(total: int, applied: list, failed: dict, outside: int, text: str
         answer = text.strip()
         if answer[:7].upper() == 'CANNOT:':
             return 'the model answered CANNOT: ' + redact(answer[7:].strip())[:150]   # reject() scrubs paths
-        return 'the answer had no SEARCH/REPLACE edit block'
+        return 'the answer had no SEARCH/REPLACE edit block (nor a REPLACE FUNCTION block)'
     parts = ['edit blocks %d, changed files %d' % (total, len(applied))]
     if outside:
         parts.append('%d block(s) for a file outside the task' % outside)
@@ -1079,7 +1308,7 @@ def light_attempt(task: Task, workdir: Path, model: str, timeout: int = LIGHT_TI
         return 1, _light_error(401, b'{"error": {"message": "no API key in the environment"}}'), b''
     review = not task.touch_files
     body = {'model': model_id, 'max_tokens': LIGHT_MAX_OUTPUT, 'temperature': 0 if review else 0.2,
-            'messages': [{'role': 'system', 'content': LIGHT_REVIEW_RULES if review else light_rules(task)},
+            'messages': [{'role': 'system', 'content': LIGHT_REVIEW_RULES if review else light_rules(task, workdir)},
                          {'role': 'user', 'content': prompt}]}
     if provider == 'openrouter':
         body['reasoning'] = {'max_tokens': LIGHT_REASONING_TOKENS}
@@ -1124,10 +1353,14 @@ def light_attempt(task: Task, workdir: Path, model: str, timeout: int = LIGHT_TI
     events, note = [], ''
     if not review:
         blocks, outside = parse_edit_blocks(text, tuple(task.touch_files))
-        applied, failed = apply_edit_blocks(Path(workdir), blocks)
+        problems = dict(getattr(blocks, 'problems', {}))
+        if problems:      # a function block that could not be read is half a candidate: nothing is applied
+            applied, failed = [], problems
+        else:
+            applied, failed = apply_edit_blocks(Path(workdir), blocks, prompt.replace('\r\n', '\n'))
         events.extend({'type': 'tool_use', 'part': {'tool': 'edit', 'state': {'input': {'filePath': n}}}}
                       for n in applied)
-        note = _light_note(len(blocks) + outside, applied, failed, outside, text)
+        note = _light_note(len(blocks) + outside + sum(problems.values()), applied, failed, outside, text)
         if failed.get('SEARCH not found exactly once'):
             note += _missing_blocks_note(Path(workdir), blocks)
             from .factory_patterns import hints as pattern_hints
@@ -1154,7 +1387,8 @@ def once(*, root: Path, plan: Path, checkpoint: Path, staging: Path,
          small_model: str, large_model: str, execute: bool = False,
          acknowledge: bool = False, review_model: str | None = None,
          channel_config: Path | None = None, max_attempts: int = 2,
-         max_model_calls: int | None = None, base_sha: str | None = None) -> dict:
+         max_model_calls: int | None = None, base_sha: str | None = None,
+         small_follow_up: bool = True) -> dict:
     tasks = read_plan(json.loads(plan.read_text(encoding="utf-8")))
     if staging.resolve().is_relative_to(root.resolve()):
         raise InvalidPlan("staging inside source project is forbidden")
@@ -1213,7 +1447,7 @@ def once(*, root: Path, plan: Path, checkpoint: Path, staging: Path,
         return _pass(tasks, task, state, checkpoint=checkpoint, root=root, staging=staging,
                      small_model=small_model, large_model=large_model, review_model=review_model,
                      configured=configured, max_attempts=max_attempts, swept_failed=swept_failed,
-                     base_sha=base_sha or os.environ.get('FACTORY_BASE_SHA'),
+                     base_sha=base_sha or os.environ.get('FACTORY_BASE_SHA'), small_follow_up=small_follow_up,
                      ledger=(channel_config.resolve().parent / 'quota') if channel_config is not None else None)
     finally:
         with contextlib.suppress(OSError):    # a lock left behind is cleared by the loop; the pass result stands
@@ -1228,7 +1462,8 @@ def _pass(tasks, task: Task, state: dict, **kwargs) -> dict:
 
 def _pass_inner(tasks, task: Task, state: dict, *, checkpoint: Path, root: Path, staging: Path,
           small_model: str, large_model: str, review_model: str, configured: list,
-          max_attempts: int, base_sha: str | None, swept_failed=(), ledger: Path | None = None) -> dict:
+          max_attempts: int, base_sha: str | None, swept_failed=(), ledger: Path | None = None,
+          small_follow_up: bool = True) -> dict:
     tid = task.id
     staging.mkdir(parents=True, exist_ok=True)
     try:
@@ -1323,8 +1558,9 @@ def _pass_inner(tasks, task: Task, state: dict, *, checkpoint: Path, root: Path,
         return finish(status, reason=reason, reason_detail=redact(text)[:400])
 
     def call(role: str, call_task: Task, directory_for, preferred: str, prompt: str,
-             *, exclude_model: str | None = None) -> tuple[int, bytes, bytes]:
-        """One real model call with reservation, charging, classification, one transient retry."""
+             *, exclude_model: str | None = None, skip_tiers: tuple = ()) -> tuple[int, bytes, bytes]:
+        """One real model call with reservation, charging, classification, one transient retry. ``skip_tiers``:
+        channel tiers this call may not use (factory_channels.route_order)."""
         ctx['role'] = role
         if len(prompt) > channels.PROMPT_LIMIT_CHARS:
             raise PromptTooLarge(str(len(prompt)))
@@ -1338,10 +1574,11 @@ def _pass_inner(tasks, task: Task, state: dict, *, checkpoint: Path, root: Path,
             if configured:
                 route = 'review' if role == 'review' else 'code'
                 order = channels.route_order(configured, route, attempt, base_tokens, preferred=preferred,
-                                             exclude_model=exclude_model)
+                                             exclude_model=exclude_model, skip_tiers=skip_tiers)
                 if not order and route == 'code':     # no escalation/main channel at all: any channel is better than none
                     order = channels.route_order(configured, route, 1, 0, preferred=preferred,
-                                                 exclude_model=exclude_model)   # never a model the tournament tried
+                                                 exclude_model=exclude_model,   # never a model the tournament tried
+                                                 skip_tiers=skip_tiers)
                 if not order:
                     raise NoIndependentReviewer()
                 quota = state.setdefault('channel_quotas', {})
@@ -1804,8 +2041,9 @@ def _pass_inner(tasks, task: Task, state: dict, *, checkpoint: Path, root: Path,
                     events.append('tournament_candidate_%d' % (k + 1))
                 ctx['candidate'] = k
                 try:
-                    rc, out, err = timed('code_s', lambda: call(role, task, dir_for, chosen, k_prompt,
-                                                                exclude_model=tried or None))
+                    rc, out, err = timed('code_s', lambda: call(
+                        role, task, dir_for, chosen, k_prompt, exclude_model=tried or None,
+                        skip_tiers=() if small_follow_up or not k else ('small',)))   # <id> small_follow_up
                 except (ChannelFault, channels.ChannelUnavailable, NoIndependentReviewer):
                     if not k:
                         raise
@@ -1972,6 +2210,8 @@ def main(argv=None):
                    help="strikes: a task becomes FAILED after N failed attempts")
     p.add_argument("--max-model-calls", type=int,
                    help="explicit model-call budget written into this checkpoint")
+    p.add_argument("--small-follow-up", choices=("on", "off"), default="on",
+                   help="may a small-tier model be a later tournament candidate (an A/B arm)")
     args = p.parse_args(argv)
     if not 1 <= args.max_tasks <= 10:
         p.error("--max-tasks must be in 1..10")
@@ -1986,7 +2226,8 @@ def main(argv=None):
         options = {}
         if args.execute:
             options.update(review_model=args.review_model or args.large_model,
-                           channel_config=args.channels, base_sha=args.base_sha)
+                           channel_config=args.channels, base_sha=args.base_sha,
+                           small_follow_up=args.small_follow_up == "on")
         result = once(root=args.root, plan=args.plan, checkpoint=args.checkpoint,
                       staging=args.staging, small_model=args.small_model,
                       large_model=args.large_model, execute=args.execute,

@@ -19,21 +19,33 @@ def outcomes(rows, experiment: str) -> dict:
         if arm is None:
             continue
         if arm not in result:
-            result[arm] = {'n': 0, 'ok': 0}
+            result[arm] = {'n': 0, 'ok': 0, 's': 0.0}
         result[arm]['n'] += 1
+        dur = row.get('dur_s')
+        if isinstance(dur, (int, float)) and not isinstance(dur, bool) and dur > 0:
+            result[arm]['s'] = round(result[arm]['s'] + dur, 3)      # the arm's own run time
         if row.get('status') in ('REVIEW', 'PROMOTED', 'DONE'):
             result[arm]['ok'] += 1
     return result
 
 
-def decide(per_arm: dict, min_n: int = 10, margin: float = 0.15):
+def decide(per_arm: dict, min_n: int = 10, margin: float = 0.15, per_hour: bool = False, min_ok: int = 3):
+    """The better arm, or None without enough cases or a clear margin. Per run: the pass rates differ by ``margin``.
+    ``per_hour``: the rate is passes per hour of the arm's own run time, the best has at least ``min_ok`` passes and
+    beats the next by the factor 1 + ``margin`` (an arm that only costs time is the slower one)."""
     if len(per_arm) < 2 or any(v['n'] < min_n for v in per_arm.values()):
         return None
-    rates = {arm: round(v['ok'] / v['n'], 4) for arm, v in per_arm.items()}
+    if per_hour:
+        rates = {arm: round(v['ok'] * 3600.0 / v['s'], 4) if v.get('s') else 0.0 for arm, v in per_arm.items()}
+    else:
+        rates = {arm: round(v['ok'] / v['n'], 4) for arm, v in per_arm.items()}
     sorted_arms = sorted(rates.keys(), key=lambda a: rates[a], reverse=True)
     best = sorted_arms[0]
     other = rates[sorted_arms[1]]
-    if rates[best] - other < margin:
+    if per_hour:
+        if per_arm[best]['ok'] < min_ok or rates[best] <= other * (1 + margin):
+            return None
+    elif rates[best] - other < margin:
         return None
     return {
         'winner': best,

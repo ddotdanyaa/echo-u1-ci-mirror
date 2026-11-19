@@ -259,7 +259,7 @@ def test_reasoning_before_the_answer_is_dropped_and_a_draft_inside_it_is_never_a
     assert W.event_summary(out)['text'] == '{"approved": true, "reasons": []}'
     _, _, note = W.light_attempt(task(), tmp_path, 'google/x', prompt_override='p',
                                  post=reply('<thought>cut off by the length limit ' + BLOCK))
-    assert note.decode() == 'the answer had no SEARCH/REPLACE edit block'   # an unterminated thought hides all
+    assert note.decode() == 'the answer had no SEARCH/REPLACE edit block (nor a REPLACE FUNCTION block)'   # an unterminated thought hides all
 
 
 def test_no_key_is_key_invalid_without_a_request(tmp_path, monkeypatch):
@@ -275,7 +275,7 @@ def test_an_answer_without_blocks_tells_the_next_attempt_why(tmp_path, monkeypat
                                  post=reply('CANNOT: the function is not in the shown part'))
     assert note.decode() == 'the model answered CANNOT: the function is not in the shown part'
     _, _, note = W.light_attempt(task(), tmp_path, 'google/x', prompt_override='p', post=reply('I think it is fine.'))
-    assert note.decode() == 'the answer had no SEARCH/REPLACE edit block'
+    assert note.decode() == 'the answer had no SEARCH/REPLACE edit block (nor a REPLACE FUNCTION block)'
 
 
 def test_the_coder_rules_name_the_task_files_never_a_placeholder_path():

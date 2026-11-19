@@ -93,7 +93,13 @@ def _env_values(text: str, names) -> dict:
 EXPERIMENTS = {
     "spec_pass": ("on", "off"),
     "coder_model": ("google/gemini-3.5-flash-lite", "google/gemini-3.1-flash-lite"),
+    # 20.11 02:05: a small-tier model (Gemma 4) as a later tournament candidate won 0 of ~20 coder calls of the
+    # night and took ~175 s per call (503s, answers cut at the output cap): the runner's --small-follow-up
+    "small_follow_up": ("on", "off"),
 }
+# Decided by passes per hour of the arm's own run time, not per run: an arm that only costs time wins nothing per
+# run but loses per hour.
+PER_HOUR_EXPERIMENTS = frozenset(("small_follow_up",))
 
 DEAD_CHANNEL = INFRA_DEFERS | INFRA_CHANNEL_REASONS   # real infrastructure faults: the runner's sets
 CHANNEL_REASONS = DEAD_CHANNEL | frozenset(("rate_minute", "rate_day", "region", "budget_exhausted",
@@ -386,7 +392,8 @@ class Loop:
         return factory_ab.assign(tid, name, arms)
 
     def _task_experiments(self, tid: str, task, ls: dict) -> dict:
-        names = ["coder_model"] + (["spec_pass"] if task is not None and task.kind == "unit_test" else [])
+        names = ["coder_model", "small_follow_up"] + (
+            ["spec_pass"] if task is not None and task.kind == "unit_test" else [])
         return {n: self.arm(tid, n, ls) for n in names}
 
     DISCOVER_EVERY_S = 86400
@@ -440,7 +447,8 @@ class Loop:
                 if isinstance(done.get(name), dict) and done[name].get("winner"):
                     continue
                 per_arm = factory_ab.outcomes(rows, name)
-                decision = factory_ab.decide(per_arm)
+                decision = (factory_ab.decide(per_arm, margin=0.25, per_hour=True) if name in PER_HOUR_EXPERIMENTS
+                            else factory_ab.decide(per_arm))
                 if decision is None:
                     continue
                 at = self.ts()
@@ -1964,6 +1972,8 @@ class Loop:
             "--max-tasks", "1", "--max-attempts", str(cfg.max_attempts),
             "--max-model-calls", str(cfg.max_model_calls), "--base-sha", self.base_sha,
             "--execute", "--ack-host-access-risk"]
+        if (self._run_exps or {}).get("small_follow_up") in EXPERIMENTS["small_follow_up"]:
+            cmd += ["--small-follow-up", self._run_exps["small_follow_up"]]
         t0 = self.clock()
         wall0 = time.time()
         try:
