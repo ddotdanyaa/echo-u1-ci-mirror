@@ -51,7 +51,9 @@ OWNER_PATHS = frozenset((
     # tools/replay, harvest, ladder and rehearsal are NOT listed: the loop never reaches them (they hang off
     # backlog_register's CLI path only), and rows about them are ordinary project work.
     'tools/affected_tests.py', 'tools/id_query.py', 'tools/backlog_register.py',
-    'tools/__init__.py'))
+    'tools/__init__.py',
+    # the data that decides the verdicts of the acceptance tools (critic 19.11).
+    'tools/data/push_guard_allow.txt', 'tools/data/known_red.txt', 'tools/owner_census_caps.json'))
 OWNER_GLOBS = ('tools/factory_*.py', 'tools/agent_factory*.py')
 FORBIDDEN_GLOBS = ('*cloud_env_red*.txt', '*.pth')   # closed even when named, like FORBIDDEN_BASENAMES
 # Concrete constructs only, case-sensitive: skip_silence, "skipped", skip_chunks are legitimate code.
@@ -295,7 +297,8 @@ def run_tests(root, tests, timeout_s, workdir=None, wait_s=None) -> GateResult:
         fail = case.find('failure')
         if fail is not None:
             msg = fail.get('message') or ''
-            if not (msg.startswith('assert') or msg.startswith('AssertionError') or msg.startswith('Failed:')):
+            if not (msg.startswith('assert') or msg.startswith('AssertionError')
+                    or (msg.startswith('Failed:') and re.search(r'\.py:\d+: in \w', fail.text or ''))):
                 crashed.append('%s::%s: %s' % (case.get('classname', ''), case.get('name', ''),
                                                (msg.splitlines() or [''])[0][:120]))   # an empty message too
             notes.append('failure %s::%s: %s' % (case.get('classname', ''), case.get('name', ''), msg[:300]))

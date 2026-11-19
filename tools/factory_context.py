@@ -155,6 +155,13 @@ def identifier_tokens(text: str) -> set:
     return found
 
 
+class _Assigned:
+    """A module-level assignment shown like a definition (it has no decorators)."""
+    def __init__(self, name, node):
+        self.name, self.decorator_list = name, []
+        self.lineno, self.end_lineno = node.lineno, node.end_lineno
+
+
 def _fragments(source: str, keywords: set, room: int, priority: frozenset = frozenset(),
                tools: bool = True) -> str:
     """Selected definitions as they are. Python fragments are deliberately NOT redacted: redaction could
@@ -164,7 +171,18 @@ def _fragments(source: str, keywords: set, room: int, priority: frozenset = froz
     except SyntaxError:
         return ''
     lines = _lines(source)
+    defined = {n.name for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))}
+    named = {p for p in priority if p in defined or identifier_tokens(p)}
     candidates = [node for depth, node in _definitions(tree) if node.name in keywords]
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+            name = node.targets[0].id
+            if name in keywords:
+                candidates.append(_Assigned(name, node))
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            name = node.target.id
+            if name in keywords:
+                candidates.append(_Assigned(name, node))
     # names from the task title / goal / feedback first, names only the test mentions after them;
     # a method the title names is taken BEFORE the class the test names (no nesting loss)
     candidates.sort(key=lambda n: (0 if n.name in priority else 1, n.end_lineno - n.lineno, n.lineno))
@@ -182,8 +200,8 @@ def _fragments(source: str, keywords: set, room: int, priority: frozenset = froz
                 used += len(piece) + 2
                 taken.update(node_lines)
         else:
-            ident_keywords = identifier_tokens(' '.join(sorted(keywords)))
-            active_keywords = ident_keywords if ident_keywords else keywords
+            nested = {n.name for n in ast.walk(node) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))} if isinstance(node, ast.AST) else {node.name}
+            active_keywords = (identifier_tokens(' '.join(sorted(keywords))) | (keywords & nested)) or keywords
             def_lines_sub = lines[start - 1:node.end_lineno]
             targets = []
             for i, l in enumerate(def_lines_sub, start):
@@ -207,7 +225,7 @@ def _fragments(source: str, keywords: set, room: int, priority: frozenset = froz
             scored_windows = []
             for w_s, w_e in raw_windows:
                 w_lines = range(w_s, w_e + 1)
-                p_count = sum(1 for ln in w_lines for p_name in priority if re.search(r'\b' + re.escape(p_name) + r'\b', lines[ln - 1]))
+                p_count = sum(1 for p_name in named if any(re.search(r'\b' + re.escape(p_name) + r'\b', lines[ln - 1]) for ln in w_lines))
                 t_count = sum(1 for ln in w_lines if ln in targets)
                 score = (p_count, t_count)   # a named part first, however many plain hits a big block has
                 scored_windows.append((score, w_s, w_e))

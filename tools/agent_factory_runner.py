@@ -343,7 +343,10 @@ def prepare(root: Path, task: Task, workdir: Path) -> dict[str, bytes]:
     big = large_names(task, staged)
     targets = visible_targets(task)   # only dependency context is sliced; writable files and tests stay whole
     # Big files reach the model as outline + fragments (and are read by line numbers): not counted here.
-    packet({n: v for n, v in staged.items() if n not in big}, targets, max_tokens=task.context_budget)
+    # The task's budget (default 8 000) never caps below the prompt itself: render() checks the exact room
+    # (live 19.11 21:24: <id>_test, 11 662 bytes against a 28 000-character prompt, was refused here).
+    packet({n: v for n, v in staged.items() if n not in big}, targets,
+           max_tokens=max(task.context_budget, channels.PROMPT_LIMIT_CHARS))
     # The model may not create/replace its own permissions. The file is also
     # compared byte-for-byte after coding and after pytest.
     conf = (json.dumps(worker_policy(task, readable=sorted(big & set(task.read_files))), sort_keys=True, ensure_ascii=False,
@@ -544,9 +547,10 @@ def review_candidate(task: Task, workdir: Path, model: str, invoke, *,
         big = {n for n, v in files.items() if n in (set(task.touch_files) | set(task.read_files))
                and n not in task.tests and len(v) > LARGE_FILE_CHARS}
         targets = visible_targets(task)
-        body = render(files, targets, large=big, keywords=words,
-                      budget_chars=channels.PROMPT_LIMIT_CHARS - len(head) - 250 -
-                      (REVIEW_DIFF_LIMIT if baseline is not None else 0), small_tokens=task.context_budget,
+        review_budget = (channels.PROMPT_LIMIT_CHARS - len(head) - 250 -
+                         (REVIEW_DIFF_LIMIT if baseline is not None else 0))
+        body = render(files, targets, large=big, keywords=words, budget_chars=review_budget,
+                      small_tokens=max(task.context_budget, review_budget),
                       priority=priority, hint=LIGHT_REVIEW_HINT if light else REVIEW_HINT, tools=not light)
         room = channels.PROMPT_LIMIT_CHARS - len(head) - len(body) - 250  # the diff takes only what is left
         diff = ''
@@ -621,7 +625,7 @@ def build_coder_prompt(task: Task, visible: dict[str, bytes], feedback: str | No
     words = priority | keywords_from(tests_text, prev_diff, feedback)
     budget = channels.PROMPT_LIMIT_CHARS - REVIEW_OVERHEAD - len(core) - (2500 if prev_diff else 0) - 60
     core += '\n' + render(visible, targets, large=large_names(task, visible), keywords=words,
-                          budget_chars=budget, small_tokens=task.context_budget, priority=priority,
+                          budget_chars=budget, small_tokens=max(task.context_budget, budget), priority=priority,
                           **({'hint': LIGHT_HINT, 'tools': False} if light else {}))
     room = channels.PROMPT_LIMIT_CHARS - len(core) - 200
     if prev_diff and room > 300:

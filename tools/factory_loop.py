@@ -1002,6 +1002,8 @@ class Loop:
         if ans.get("accept"):
             return self._accept_answer(tid, bid, state, note)
         if ans.get("reject"):
+            if tid in tasks and note and tasks[tid].privacy_safe and not tasks[tid].only_opus:
+                self._check_note(raw_note)
             return self._reject_answer(tid, bid, state, note)
         if ans.get("close"):
             return self._close_answer(ans, tid, bid, tasks, state, note)
