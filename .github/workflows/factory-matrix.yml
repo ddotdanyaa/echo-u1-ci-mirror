@@ -33,7 +33,7 @@ jobs:
           - shard: 10
             files: 'tests/test_factory_red_by_assert.py tests/test_factory_reject_cli.py tests/test_factory_reject_promote.py tests/test_factory_revive.py'
           - shard: 11
-            files: 'tests/test_factory_unit_rules_async.py'
+            files: 'tests/test_factory_row_text.py tests/test_factory_unit_rules_async.py'
     name: shard ${{ matrix.shard }}
     runs-on: windows-latest
     timeout-minutes: 25
