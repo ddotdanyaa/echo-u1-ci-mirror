@@ -607,9 +607,29 @@ TOURNAMENT_OUTPUT_LIMIT = 1500
 
 class _GateRetry:
     """A real test failure of one candidate: the arguments of the ONE rejection that settles the pass if no other
-    model can try, the failing output for the next prompt and the names of the files the candidate changed."""
-    def __init__(self, reject_args: tuple, diag: str, changed):
+    model can try, the failing output for the next prompt and the names of the files the candidate changed.
+    ``no_effect``: the test failed exactly as on the base (same_failure): the change missed the checked path."""
+    def __init__(self, reject_args: tuple, diag: str, changed, no_effect: bool = False):
         self.reject_args, self.diag, self.changed = reject_args, diag, list(changed)
+        self.no_effect = no_effect
+
+
+# <id> class "a change without effect" (live 20.11 10:35-10:43: 17 of 18 passes reached the gate with a real edit and
+# every attempt of a task failed with the very output of the unchanged base: the models edited code off the path the
+# guard test checks, e.g. cue timers for a test about the words of an objection)
+NO_EFFECT_NOTE = ('\nThe previous change had NO effect on the failing test: it fails exactly as it did before the '
+                  'change, so the code it edited is not on the path this test checks. Find where the asserted '
+                  'behaviour is decided and change that place.')
+_ADDRESS = re.compile(r'0x[0-9A-Fa-f]{4,}')
+_WORKDIR = re.compile(r'task-[\w.-]+')
+_SECONDS = re.compile(r'\b\d+(?:\.\d+)?s\b')
+
+
+def same_failure(base_diag: str, cand_diag: str) -> bool:
+    """The candidate's failing output is the base's (object addresses, work folders and durations aside)."""
+    def norm(text):
+        return _SECONDS.sub('?s', _WORKDIR.sub('task', _ADDRESS.sub('0x?', text or ''))).strip()
+    return bool(norm(cand_diag)) and norm(base_diag) == norm(cand_diag)
 
 
 REVIEW_CHAIN = 2
@@ -2210,8 +2230,12 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                                                'nothing that ran is red' % len(cand.unrun))
                     return release_or_block('gate_unknown', INFRA_DEFER_S)
                 if not ok:
-                    return _GateRetry(('gate', 'gate: ' + why[:300], why + '\n' + cand.diag, changed), cand.diag or why,
-                                      changed)
+                    no_effect = task.kind != 'unit_test' and same_failure(base.diag, cand.diag)
+                    if no_effect:
+                        events.append('no_effect')
+                    return _GateRetry(('gate', 'gate: ' + why[:300],
+                                       ('[no effect] ' if no_effect else '') + why + '\n' + cand.diag, changed),
+                                      cand.diag or why, changed, no_effect)
                 left = gate.unmeasured(base, cand) if task.kind != 'unit_test' else ()
                 if left:      # accepted on every test that ran; these hang or lack a package here on both sides
                     events.append('unmeasured:%d' % len(left))
@@ -2332,8 +2356,9 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                 output = scrub(redact(failure.diag))[:TOURNAMENT_OUTPUT_LIMIT]
                 diff = unified_diff(ctx['baseline'], ctx['workdir'], failure.changed, DIFF_LIMIT)
                 room = channels.PROMPT_LIMIT_CHARS - len(prompt)
+                lead = NO_EFFECT_NOTE if getattr(failure, 'no_effect', False) else ''
                 for part in (TOURNAMENT_DIFF_NOTE % diff if diff else '', ''):
-                    note = TOURNAMENT_GATE_NOTE % output + part
+                    note = lead + TOURNAMENT_GATE_NOTE % output + part
                     if len(note) <= room:
                         return note
                 fixed = len(TOURNAMENT_GATE_NOTE % '')
