@@ -1119,6 +1119,23 @@ def _guessed_key_hits(tree, known, words=frozenset()) -> list:
     return out
 
 
+# What the coder is told up front about the rules below and accept_unit_test: ONE line per rule code that _hollow
+# emits (a test checks the codes match), so a rule and its sentence change together.
+HOLLOW_RULE_TEXT = {
+    'A': 'Call the real code and assert what it returns or does; hasattr/getattr on a name that exists nowhere in '
+         'the code is rejected.',
+    'A2': 'Use no names or attributes that are absent from the code shown: an invented module.name is rejected.',
+    'B': 'Never read the source text (inspect.getsource or similar): run the code instead.',
+    'E': 'Never assert only "is not None": assert the exact value the defect gets wrong.',
+    'G': 'Use no guessed dict keys: look every key up in the code; a lookup by a key found nowhere in the code is '
+         'rejected.',
+}
+ALL_RED_RULE_TEXT = ('Every new test function must fail on today\'s code, because of the defect: one that already '
+                     'passes is rejected.')
+UNIT_TEST_RULES = 'The gate rejects a unit test that breaks any of these:\n' + '\n'.join(
+    '- ' + text for text in (*HOLLOW_RULE_TEXT.values(), ALL_RED_RULE_TEXT))
+
+
 def _hollow(text: str, names, modules) -> list:
     """``[(rule, message)]`` for one test module; see hollow_test_reasons."""
     tree = _parse_py(text)

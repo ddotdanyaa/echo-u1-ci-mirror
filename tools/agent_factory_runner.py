@@ -122,7 +122,7 @@ UNIT_TEST_RULES = ("The test must import the real functions or classes from the 
                    "write assert False, a test that only checks that a name exists, or a hard-coded count of "
                    "files or markers in the repository. The project has no pytest-asyncio plugin: never write "
                    "async def test functions or @pytest.mark.asyncio; drive async code with asyncio.run(...) inside "
-                   "a plain def test function.")
+                   "a plain def test function." "\n" + gate.UNIT_TEST_RULES)   # one source: the gate's own rules
 MARKER_PROBE = gate.GateResult(1, 1, 0, 1, 0, 0, True, '')   # a red result: only the marker can fail it
 REVIEW_NOTE_LIMIT = 400     # <id>: what the task's earlier candidates were rejected for, shown to its critics
 REVIEW_OVERHEAD = 1500 + REVIEW_NOTE_LIMIT      # reviewer instructions + verdict format on top of the files
