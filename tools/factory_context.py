@@ -408,29 +408,59 @@ def _joined(spans, lines, spare: int, budgets=None) -> str:
                        for start, end, name, part in merged)
 
 
+def _pinned_missing(source: str, pinned: frozenset, frag: str) -> list:
+    """The pinned names that stand in ``source`` but not in ``frag`` as a whole definition."""
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return []
+    out, lines = [], _lines(source)
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.name in pinned:
+            start = min([node.lineno] + [d.lineno for d in node.decorator_list])
+            whole = '\n'.join(lines[start - 1:node.end_lineno])
+            if whole not in frag and node.name not in out:     # a merged neighbour changes the part's header
+                out.append(node.name)
+    return out
+
+
 def large_view(name: str, source: str, keywords: set, room: int, priority: frozenset = frozenset(),
-               hint: str = READ_HINT, tools: bool = True, asked: frozenset = frozenset()) -> str:
+               hint: str = READ_HINT, tools: bool = True, asked: frozenset = frozenset(),
+               pinned: frozenset = frozenset()) -> str:
     """Outline + the definitions whose names are mentioned, within ``room`` characters; a definition of this file
-    the model ``asked`` for first, with the outline cut to a quarter of the room to make room for it."""
+    the model ``asked`` for first, with the outline cut to a quarter of the room to make room for it. ``pinned``:
+    definitions the coordinator named (context targets): shown whole before anything else, whatever their size; the
+    outline shrinks further when they still do not fit, and one that cannot fit even then is announced in the view."""
     lines = len(_lines(source))
     head = 'FILE %s (LARGE: %d lines, %d chars; outline and selected parts only)\n%s' % (
         name, lines, len(source), hint)
     if name.endswith('.py'):
         imports = _imports(source)
-        here = any(re.search(r'\b(?:def|class)\s+%s\b' % re.escape(a), source) for a in asked)
+        first = frozenset(asked) | frozenset(pinned)
+        here = any(re.search(r'\b(?:def|class)\s+%s\b' % re.escape(a), source) for a in first)
         toc = outline(source, min(OUTLINE_MAX_CHARS, max(300, room // (4 if here else 2))), tools)
         body = head + ('\nIMPORTS\n' + imports if imports else '') + '\nOUTLINE\n' + toc
-        frag = _fragments(source, keywords, max(0, room - len(body) - 40), priority, tools, asked)
-        return body + ('\nSELECTED PARTS\n' + frag if frag else '')
+        frag = _fragments(source, keywords, max(0, room - len(body) - 40), priority, tools, first)
+        missing = _pinned_missing(source, frozenset(pinned), frag) if pinned else []
+        if missing:      # the named targets win the budget: the outline and the imports give way
+            body = head + '\nOUTLINE\n' + outline(source, 300, tools)
+            frag = _fragments(source, keywords, max(0, room - len(body) - 40), priority, tools, first)
+            missing = _pinned_missing(source, frozenset(pinned), frag)
+        note = ''
+        if missing:
+            note = ('\nNOTE: the named target(s) %s do not fit the prompt budget whole and are shown in part or not '
+                    'at all; do not guess their other lines.' % ', '.join(missing))
+        return body + ('\nSELECTED PARTS\n' + frag if frag else '') + note
     return head + '\nHEAD OF THE FILE\n' + redact(source)[:max(300, min(3000, room - len(head) - 40))]
 
 
 def render(files: dict, targets: dict, *, large: set, keywords: set, budget_chars: int,
            small_tokens: int, priority: frozenset = frozenset(), hint: str = READ_HINT, tools: bool = True,
-           asked: frozenset = frozenset()) -> str:
+           asked: frozenset = frozenset(), pinned: dict | None = None) -> str:
     """Prompt body: small files whole (as ``packet`` does), large ones as outline + fragments. ``tools=False``
     for a reader without a read tool (the light engine): no "read it" instructions anywhere in the body.
-    ``asked``: definitions the model asked to see (asked_names), shown first."""
+    ``asked``: definitions the model asked to see (asked_names), shown first. ``pinned``: file -> names the
+    coordinator named (context targets), shown whole first, writable files included."""
     small = {n: v for n, v in files.items() if n not in large}
     sections = [packet(small, targets, max_tokens=small_tokens)] if small else []
     used = sum(len(s) for s in sections)
@@ -449,7 +479,8 @@ def render(files: dict, targets: dict, *, large: set, keywords: set, budget_char
                 if cut is not None and len(cut) <= room:
                     sections.append('FILE %s (slice %s of a large file)\n%s' % (n, targets[n], cut))
                     continue
-            sections.append(large_view(n, text, keywords, room, priority, hint, tools, asked))
+            sections.append(large_view(n, text, keywords, room, priority, hint, tools, asked,
+                                       frozenset((pinned or {}).get(n, ()))))
     elif used > budget_chars:
         raise InvalidPlan('context exceeds the prompt budget; split the task')
     return '\n\n'.join(sections)

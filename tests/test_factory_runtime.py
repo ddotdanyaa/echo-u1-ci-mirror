@@ -2695,7 +2695,7 @@ def test_light_engine_passes_a_one_file_task_with_one_request_per_call(rig):
 
 
 def test_light_engine_gives_the_reason_of_an_unapplied_edit_to_the_next_attempt(rig):
-    wrong = FIX_BLOCK.replace('return a-b', 'return a - b', 1)    # SEARCH that is not in the file
+    wrong = FIX_BLOCK.replace('return a-b', 'return b - a', 1)    # SEARCH that is not in the file
     light_rig(rig, {'code': (200, wrong), 'review': (200, approval_json())})
     result = rig.once()
     assert result['status'] == 'READY' and result['reason'] == 'gate:no_changes'

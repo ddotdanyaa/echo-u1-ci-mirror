@@ -278,6 +278,17 @@ def visible_targets(task: Task) -> dict:
     return {n: s for n, s in task.context_targets if n not in task.touch_files + task.tests}
 
 
+def pinned_targets(task: Task) -> dict:
+    """file -> definition names the coordinator named in context_targets (a name selector, 'Class.method' gives the
+    method), writable files included: the coder prompt shows each of them whole before anything else."""
+    out: dict = {}
+    for name, sel in task.context_targets:
+        leaf = str(sel).rpartition('.')[2]
+        if leaf.isidentifier():
+            out.setdefault(name, set()).add(leaf)
+    return {n: frozenset(v) for n, v in out.items()}
+
+
 def inside_staging(path, staging) -> bool:
     """True only for a path STRICTLY inside staging (staging itself and anything outside are not)."""
     try:
@@ -1017,7 +1028,8 @@ def build_coder_prompt(task: Task, visible: dict[str, bytes], feedback: str | No
     budget = channels.PROMPT_LIMIT_CHARS - REVIEW_OVERHEAD - len(core) - (2500 if prev_diff else 0) - 60
     core += '\n' + render(visible, targets, large=large_names(task, visible), keywords=words,
                           budget_chars=budget, small_tokens=max(task.context_budget, budget), priority=priority,
-                          asked=asked, **({'hint': LIGHT_HINT, 'tools': False} if light else {}))
+                          asked=asked, pinned=pinned_targets(task),
+                          **({'hint': LIGHT_HINT, 'tools': False} if light else {}))
     room = channels.PROMPT_LIMIT_CHARS - len(core) - 200
     if prev_diff and room > 300:
         core += "\nDiff of the rejected candidate (do not repeat its mistake):\n" + prev_diff[:room]
@@ -1334,13 +1346,20 @@ def _line_hits(text: str, search: str) -> list[int]:
 
 
 def _replace_once(text: str, search: str, replace: str) -> str | None:
-    """``text`` with the ONE occurrence of ``search`` replaced; trailing spaces of lines are ignored when the
-    exact text is absent. None when it is absent or ambiguous."""
+    """``text`` with the ONE occurrence of ``search`` replaced; None when it is absent or ambiguous."""
+    return _replace_once_how(text, search, replace)[0]
+
+
+def _replace_once_how(text: str, search: str, replace: str) -> tuple[str | None, str]:
+    """``(new text or None, matcher)``. Matchers in order: 'exact' (whole lines), 'rstrip' (trailing spaces of
+    lines ignored), 'shifted' (one common indent prefix), 'squeezed' (whitespace inside a line ignored, one place
+    only), 'repair' (factory_patterns: a view line, a reflowed line). Ambiguous at a matcher: None, no later
+    matcher is tried (a second place is a second place)."""
     hits = _line_hits(text, search)
     if len(hits) == 1:
-        return text[:hits[0]] + replace + text[hits[0] + len(search):]
+        return text[:hits[0]] + replace + text[hits[0] + len(search):], 'exact'
     if len(hits) > 1:
-        return None
+        return None, ''
     lines = text.split('\n')
     want = [line.rstrip() for line in search.split('\n')]
     while want and not want[-1]:
@@ -1348,18 +1367,109 @@ def _replace_once(text: str, search: str, replace: str) -> str | None:
     while want and not want[0]:
         want.pop(0)
     if not want:
-        return None
+        return None, ''
     n = len(want)
     hits = [i for i in range(len(lines) - n + 1) if [line.rstrip() for line in lines[i:i + n]] == want]
     if len(hits) == 1:
-        return '\n'.join(lines[:hits[0]] + replace.split('\n') + lines[hits[0] + n:])
+        return '\n'.join(lines[:hits[0]] + replace.split('\n') + lines[hits[0] + n:]), 'rstrip'
     if hits:
-        return None
+        return None, ''
     shifted = _replace_shifted(lines, want, replace)
     if shifted is not None:
-        return shifted
+        return shifted, 'shifted'
+    squeezed = _replace_squeezed(lines, want, replace)
+    if squeezed is not None:
+        return squeezed, 'squeezed'
     from .factory_patterns import repair     # ERROR_PATTERNS: a view line or a reflowed line, one place only
-    return repair(text, search, replace)
+    fixed = repair(text, search, replace)
+    return fixed, ('repair' if fixed is not None else '')
+
+
+_COMMENT = chr(0)      # marks where a comment starts inside _squeeze
+_DEF_HEAD = re.compile(r'(?:async\s+def|def|class)\s')
+
+
+def _squeeze(line: str) -> str:
+    """The line with the whitespace OUTSIDE string literals removed, but for one space kept between two word
+    characters ('not x', 'return x' stay two words); a comment is cut and a trailing ':' dropped on a def/class
+    line only. The literals stay exact, so two different code lines never collapse into one key."""
+    out, quote, i, n = [], '', 0, len(line)
+    while i < n:
+        c = line[i]
+        if quote:
+            out.append(c)
+            if c == '\\' and i + 1 < n:
+                out.append(line[i + 1])
+                i += 1
+            elif c == quote:
+                quote = ''
+        elif c in '"\'':
+            quote = c
+            out.append(c)
+        elif c == '#':
+            out.append(_COMMENT)            # a comment start: kept as a marker, cut below on a def line only
+            out.append(line[i:])
+            break
+        elif c in ' \t':
+            j = i
+            while j < n and line[j] in ' \t':
+                j += 1
+            if out and j < n and (out[-1][-1:].isalnum() or out[-1][-1:] == '_') and \
+                    (line[j].isalnum() or line[j] == '_'):
+                out.append(' ')
+            i = j - 1
+        else:
+            out.append(c)
+        i += 1
+    key = ''.join(out)
+    head = _DEF_HEAD.match(line.lstrip()) is not None
+    code, mark, comment = key.partition(_COMMENT)
+    if head:
+        key = code.rstrip()
+        return key[:-1].rstrip() if key.endswith(':') else key
+    return code + ('#' + comment[1:] if mark else '')
+
+
+def _replace_squeezed(lines: list, want: list, replace: str) -> str | None:
+    """The SEARCH lines equal ONE place of the file once the whitespace inside each line is ignored (the file may be
+    written compactly, 'f(a,b)', the model in PEP8, 'f(a, b)'); line breaks must agree. The REPLACE lines stay as the
+    model wrote them, moved by the one indent difference of the place. None when there is no such place or more than
+    one."""
+    keys = [_squeeze(x) for x in want]
+    if not any(keys):
+        return None
+    n = len(want)
+
+    def lead(x):
+        return x[:len(x) - len(x.lstrip(' \t'))]
+
+    def shift_at(i):
+        """The one indent difference of every code line of the place, or None when the lines disagree."""
+        found = None
+        for got, wanted in zip(lines[i:i + n], want):
+            if not wanted.strip():
+                continue
+            delta = len(lead(got)) - len(lead(wanted))
+            if found is not None and delta != found:
+                return None
+            found = delta
+        return found
+
+    places = [i for i in range(len(lines) - n + 1)
+              if [_squeeze(x) for x in lines[i:i + n]] == keys and shift_at(i) is not None]
+    if len(places) != 1:
+        return None
+    i = places[0]
+    delta = shift_at(i)
+    unit = lead(lines[i + next(j for j, x in enumerate(want) if x.strip())])[:1] or ' '
+    out = []
+    for x in replace.split('\n'):
+        x = x.rstrip()
+        if not x.strip():
+            out.append('')
+            continue
+        out.append(unit * max(0, len(lead(x)) + delta) + x.lstrip(' \t'))
+    return '\n'.join(lines[:i] + out + lines[i + n:])
 
 
 def _replace_shifted(lines: list, want: list, replace: str) -> str | None:
@@ -1529,7 +1639,7 @@ def apply_edit_blocks(workdir: Path, blocks, shown: str | None = None) -> tuple[
     ``(changed files, {failure: count})``. All or nothing: when one block fails no file is written (half a
     candidate could pass weak tests; the failure note goes to the next attempt). A CRLF file stays CRLF. ``shown``:
     the prompt the model saw (LF); a function block is applied only to a definition that stands in it whole."""
-    failed, texts, crlf = {}, {}, {}
+    failed, texts, crlf, how = {}, {}, {}, []
 
     def fail(why):
         failed[why] = failed.get(why, 0) + 1
@@ -1556,10 +1666,11 @@ def apply_edit_blocks(workdir: Path, blocks, shown: str | None = None) -> tuple[
                 continue
             new = replace_text if replace_text.endswith('\n') else replace_text + '\n'
         else:
-            new = _replace_once(text, search, replace_text)
+            new, matcher = _replace_once_how(text, search, replace_text)
             if new is None:
                 fail('SEARCH not found exactly once')
                 continue
+            how.append(matcher)
         texts[name] = new
     payload = {}
     for name, text in texts.items():
@@ -1579,7 +1690,14 @@ def apply_edit_blocks(workdir: Path, blocks, shown: str | None = None) -> tuple[
             fail('unwritable file')
             continue
         applied.append(name)
+    applied = _Applied(applied)
+    applied.matchers = how           # telemetry: which matcher placed each SEARCH/REPLACE block
     return applied, failed
+
+
+class _Applied(list):
+    """The changed files; ``matchers``: the matcher that placed each block (see _replace_once_how)."""
+    matchers: list = []
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -1772,6 +1890,8 @@ def light_attempt(task: Task, workdir: Path, model: str, timeout: int = LIGHT_TI
         events.extend({'type': 'tool_use', 'part': {'tool': 'edit', 'state': {'input': {'filePath': n}}}}
                       for n in applied)
         note = _light_note(len(blocks) + outside + sum(problems.values()), applied, failed, outside, text)
+        if 'squeezed' in getattr(applied, 'matchers', ()):
+            note += '; matcher: whitespace-tolerant x%d' % applied.matchers.count('squeezed')
         if failed.get('SEARCH not found exactly once'):
             note += _missing_blocks_note(Path(workdir), blocks, prompt)
             from .factory_patterns import hints as pattern_hints
