@@ -1599,8 +1599,14 @@ class Loop:
             row = state["tasks"][tid]
             if row["status"] in ("RUNNING", "REVIEW"):
                 raise _Later("task is %s" % row["status"])
-            if row["status"] in ("DONE", "PROMOTED"):
-                raise F.InvalidPlan("task is already %s" % row["status"])
+            if row["status"] == "DONE":
+                raise F.InvalidPlan("task is already DONE")
+            if row["status"] == "PROMOTED":
+                # a close drops the candidate in ONE answer, its commit kept as rejected the way --reject keeps it (live
+                # 20.11 03:54: the close was refused, the reject after it made the task READY and the loop wrote the same
+                # test again before a second close could come)
+                ls.setdefault("rejected", {}).setdefault(tid, []).append(row.get("commit"))
+                row["commit"] = None
             row.update(status="DONE", lease=None, deadline=None, blocked_reason=None,
                        reason="closed_by_opus")
             self._drop_pending(row)

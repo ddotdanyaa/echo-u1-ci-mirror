@@ -63,3 +63,17 @@ def test_a_successful_edit_keeps_the_short_note(tmp_path, monkeypatch):
     (tmp_path / 'calc.py').write_text('X = 1\n')
     _, _, note = W.light_attempt(_task(), tmp_path, MODEL, prompt_override='p', post=_reply(_block('X = 1', 'X = 2')))
     assert note == b'edit blocks 1, changed files 1'
+
+
+def test_the_note_gives_the_closest_real_line_of_a_guessed_one(tmp_path, monkeypatch):
+    """The night 19-20.11: 14 of 56 no-change passes searched for a line the model guessed. The note names the real
+    line it most looks like; an unlike line gets no such hint."""
+    monkeypatch.setenv('GOOGLE_GENERATIVE_AI_API_KEY', 'synthetic')
+    (tmp_path / 'calc.py').write_text('def add(a,b): return a-b\n    if not text or not answer.strip():\n        return 0\n')
+    answer = _block('    if not text or not answer:\n        return 0', '    pass')
+    _, _, note = W.light_attempt(_task(), tmp_path, MODEL, prompt_override='p', post=_reply(answer))
+    assert ("SEARCH is not in the file: 'if not text or not answer:', the closest line there: "
+            "'if not text or not answer.strip():'") in note.decode()
+    unlike = _block('    for item in sorted(pending_jobs):', '    pass')
+    _, _, note = W.light_attempt(_task(), tmp_path, MODEL, prompt_override='p', post=_reply(unlike))
+    assert 'closest line' not in note.decode()

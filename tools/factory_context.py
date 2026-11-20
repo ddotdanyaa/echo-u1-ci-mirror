@@ -131,12 +131,18 @@ FILE_EXTENSIONS = frozenset(("py", "md", "json", "yaml", "yml", "txt", "toml", "
                              "html", "xml", "js", "ts"))
 
 
+# A dotted name starts where no letter precedes it: inside a long word every start failed only after re-scanning the
+# rest of the word (quadratic; live 20.11: one 29 000-character comment word cost 20 s per prompt). Linear now.
+_DOTTED = re.compile(r'(?<![^\W\d])[^\W\d]\w*(?:\.[^\W\d]\w*)+')
+_FILE_SUFFIX = re.compile(r'\.(?:' + '|'.join(sorted(FILE_EXTENSIONS)) + r')\b', re.I)
+
+
 def identifier_tokens(text: str) -> set:
     """Identifier-like tokens of a free text: with an underscore, CamelCase or dotted (a.b gives a and b);
     plain prose words are not identifiers and never select a fragment."""
     found: set = set()
     text = text or ''
-    for m in re.finditer(r'[^\W\d]\w*(?:\.[^\W\d]\w*)+', text):
+    for m in _DOTTED.finditer(text):
         parts = m.group(0).split('.')
         called = text[m.end():m.end() + 1] == '('          # obj.log(...) is a call, never a file name
         if parts[-1].lower() in FILE_EXTENSIONS and not called:
@@ -148,7 +154,7 @@ def identifier_tokens(text: str) -> set:
         found |= {p for p in parts if len(p) >= 3}
     for m in re.finditer(r'[^\W\d]\w*', text):
         word = m.group(0)
-        if re.match(r'\.(?:' + '|'.join(sorted(FILE_EXTENSIONS)) + r')\b', text[m.end():], re.I):
+        if _FILE_SUFFIX.match(text, m.end()):
             continue                    # agent_factory_runner.py: a file name, not an identifier
         if len(word) >= 3 and ('_' in word or re.search(r'[a-z][A-Z]', word)
                                or re.match(r'[A-Z][a-z]+[A-Z]', word)):
@@ -185,6 +191,35 @@ def asked_names(text: str) -> frozenset:
     return frozenset((a or b).split('.')[-1] for a, b in _ASKED.findall(text or ''))
 
 
+# a failing test id of the gate (factory_gate: 'classname::name'; the name may carry a [parameter])
+_FAILED_ID = re.compile(r'::([^\W\d]\w*)(?:\[[^\]\n]*\])?')
+
+
+def failing_names(failing: str, sources: dict) -> frozenset:
+    """The test functions the failing ids in ``failing`` name, with what each uses from its own file: the functions
+    it calls, the fixtures it takes, the module names it reads. A big test file is shown as outline + parts and these
+    parts first. ``sources``: name -> bytes of the task's test files."""
+    names = set(_FAILED_ID.findall(failing or ''))
+    if not names:
+        return frozenset()
+    used: set = set()
+    kinds = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+    for data in sources.values():
+        try:
+            tree = ast.parse(data.decode('utf-8', 'replace'))
+        except SyntaxError:
+            continue
+        defined = {n.name for n in ast.walk(tree) if isinstance(n, kinds)}
+        defined |= {t.id for n in tree.body if isinstance(n, ast.Assign) for t in n.targets if isinstance(t, ast.Name)}
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in names:
+                refs = {a.arg for a in node.args.args + node.args.kwonlyargs}
+                refs |= {sub.id for sub in ast.walk(node) if isinstance(sub, ast.Name)}
+                refs |= {sub.attr for sub in ast.walk(node) if isinstance(sub, ast.Attribute)}
+                used |= (refs & defined) - {node.name}
+    return frozenset(names | used)
+
+
 def _fragments(source: str, keywords: set, room: int, priority: frozenset = frozenset(),
                tools: bool = True, asked: frozenset = frozenset()) -> str:
     """Selected definitions as they are. Python fragments are deliberately NOT redacted: redaction could
@@ -218,6 +253,19 @@ def _fragments(source: str, keywords: set, room: int, priority: frozenset = froz
     picked, taken, used = [], set(), 0
     spans = []        # (start, end, name, part): what is shown; _joined() closes the small gaps between them
     budgets = {}      # a windowed definition: what is left of its FRAGMENT_MAX_CHARS for the gaps
+    # the words of each line once: '\bname\b' of a word name is "name is one of the line's words". Live 20.11: a test
+    # file of 560 functions took over 30 s, one regex per (line, name) recompiled 224 665 times past re's cache
+    words_of = [set(re.findall(r'\w+', line)) for line in lines]
+    plain = identifier_tokens(' '.join(sorted(keywords)))
+    odd = {k: re.compile(r'\b' + re.escape(k) + r'\b') for k in set(keywords) | plain | named
+           if not re.fullmatch(r'\w+', k)}       # a name with other characters keeps its regex
+
+    def hits(line_no, names) -> set:
+        """The names of ``names`` that stand in line ``line_no`` as whole words."""
+        found = names & words_of[line_no - 1]
+        if odd:
+            found = found | {k for k, p in odd.items() if k in names and p.search(lines[line_no - 1])}
+        return found
     for node in candidates:
         start = min([node.lineno] + [d.lineno for d in node.decorator_list])
         node_lines = list(range(start, node.end_lineno + 1))
@@ -232,14 +280,9 @@ def _fragments(source: str, keywords: set, room: int, priority: frozenset = froz
             taken.update(node_lines)
         else:
             nested = {n.name for n in ast.walk(node) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))} if isinstance(node, ast.AST) else {node.name}
-            active_keywords = (identifier_tokens(' '.join(sorted(keywords))) | (keywords & nested)) or keywords
-            def_lines_sub = lines[start - 1:node.end_lineno]
-            targets = []
-            for i, l in enumerate(def_lines_sub, start):
-                if i in taken:
-                    continue
-                if any(re.search(r'\b' + re.escape(k) + r'\b', l) for k in active_keywords):
-                    targets.append(i)
+            active_keywords = (plain | (keywords & nested)) or set(keywords)
+            targets = [i for i in range(start, node.end_lineno + 1) if i not in taken and hits(i, active_keywords)]
+            target_set = set(targets)
             if not targets:
                 continue
             raw_windows = []
@@ -256,8 +299,8 @@ def _fragments(source: str, keywords: set, room: int, priority: frozenset = froz
             scored_windows = []
             for w_s, w_e in raw_windows:
                 w_lines = range(w_s, w_e + 1)
-                p_count = sum(1 for p_name in named if any(re.search(r'\b' + re.escape(p_name) + r'\b', lines[ln - 1]) for ln in w_lines))
-                t_count = sum(1 for ln in w_lines if ln in targets)
+                p_count = len(set().union(*(hits(ln, named) for ln in w_lines)))
+                t_count = sum(1 for ln in w_lines if ln in target_set)
                 score = (p_count, t_count)   # a named part first, however many plain hits a big block has
                 scored_windows.append((score, w_s, w_e))
             scored_windows.sort(key=lambda item: item[0], reverse=True)   # stable: ties keep the earlier window

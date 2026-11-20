@@ -33,8 +33,8 @@ from .agent_factory import (BudgetExhausted, DEFER_REASONS, LEASE_LIFETIME_S, LO
                             defer, defer_streak, seconds_to_local_midnight,
                             load_state, read_plan, ready, redact,
                             route, quarantine, safe_path, safe_source, save_atomic, settle)
-from .factory_context import (LARGE_FILE_CHARS, asked_names, identifier_tokens, keywords_from, packet, render,
-                              scrub_paths)
+from .factory_context import (LARGE_FILE_CHARS, asked_names, failing_names, identifier_tokens, keywords_from, packet,
+                              render, scrub_paths)
 from .factory_process import kilo_argv, run_owned
 from . import affected_tests
 from . import factory_channels as channels
@@ -110,6 +110,9 @@ UNIT_TEST_RULES = ("The test must import the real functions or classes from the 
                    "a plain def test function.")
 MARKER_PROBE = gate.GateResult(1, 1, 0, 1, 0, 0, True, '')   # a red result: only the marker can fail it
 REVIEW_OVERHEAD = 1500      # reviewer instructions + verdict format on top of the files
+VIEW_ROOM = 3000            # the least room planned for one file shown as outline + parts (render's floor is lower)
+# what the files of one prompt may take: the reviewer's room besides its diff and instructions, less the coder's text
+FIT_ROOM = channels.PROMPT_LIMIT_CHARS - REVIEW_DIFF_LIMIT - REVIEW_OVERHEAD - 3000
 COPY_IGNORE = shutil.ignore_patterns(".git", "__pycache__", ".pytest_cache", ".env*", "SECRETS_LOCAL",
                                      "*.pem", "*.key")
 
@@ -302,9 +305,21 @@ def fresh_feedback(state: dict, tid: str) -> str | None:
 
 
 def large_names(task: Task, files: dict[str, bytes]) -> set[str]:
-    """Writable/read-only source files too big to be pasted into a prompt whole."""
-    scope = set(task.touch_files) | set(task.read_files)
-    return {n for n, v in files.items() if n in scope and n not in task.tests and len(v) > LARGE_FILE_CHARS}
+    """The files of the task shown as outline + parts, not whole: each over LARGE_FILE_CHARS, tests too, then the
+    largest of the rest until the whole ones and VIEW_ROOM per view fit FIT_ROOM. The ONE rule of the coder prompt,
+    the reviewer prompt, prepare(), the pass's size check and the read budget (live 20.11 04:29: four tasks were
+    refused before any model call, every time, because their tests were always shown whole: one test file was
+    50 KB, another task had five test files of 68 KB together)."""
+    scope = set(task.touch_files) | set(task.read_files) | set(task.tests)
+    sized = sorted(((len(v), n) for n, v in files.items() if n in scope), reverse=True)
+    big = {n for size, n in sized if size > LARGE_FILE_CHARS}
+    rest = [(size, n) for size, n in sized if n not in big]
+    whole = sum(size for size, _ in rest)
+    while rest and whole + VIEW_ROOM * len(big) > FIT_ROOM:
+        size, name = rest.pop(0)
+        big.add(name)
+        whole -= size
+    return big
 
 
 def prepare(root: Path, task: Task, workdir: Path) -> dict[str, bytes]:
@@ -591,8 +606,7 @@ def review_candidate(task: Task, workdir: Path, model: str, invoke, *,
         priority = frozenset(keywords_from(task.title, strict=False)
                              | identifier_tokens(getattr(task, 'goal', '') or ''))
         words = priority | keywords_from(full_diff)
-        big = {n for n, v in files.items() if n in (set(task.touch_files) | set(task.read_files))
-               and n not in task.tests and len(v) > LARGE_FILE_CHARS}
+        big = large_names(task, files)
         targets = visible_targets(task)
         review_budget = (channels.PROMPT_LIMIT_CHARS - len(head) - 250 -
                          (REVIEW_DIFF_LIMIT if baseline is not None else 0))
@@ -669,8 +683,9 @@ def build_coder_prompt(task: Task, visible: dict[str, bytes], feedback: str | No
     if feedback:
         core += "\nThe previous candidate was rejected. Feedback:\n" + redact(feedback)
     tests_text = ' '.join(visible[n].decode('utf-8', 'replace') for n in task.tests if n in visible)
+    tests_shown = {n: visible[n] for n in task.tests if n in visible}
     priority = frozenset(keywords_from(task.title, strict=False) | identifier_tokens(feedback or '')
-                         | identifier_tokens(goal or '') | asked)
+                         | identifier_tokens(goal or '') | asked | failing_names(failing, tests_shown))
     words = priority | keywords_from(tests_text, prev_diff, feedback)
     budget = channels.PROMPT_LIMIT_CHARS - REVIEW_OVERHEAD - len(core) - (2500 if prev_diff else 0) - 60
     core += '\n' + render(visible, targets, large=large_names(task, visible), keywords=words,
@@ -1269,7 +1284,14 @@ def _missing_blocks_note(workdir: Path, blocks) -> str:
         have = {x.strip() for x in text.split('\n')}
         wanted = [x.strip() for x in search.split('\n') if x.strip()]
         first = next((x for x in wanted if x not in have), wanted[0] if wanted else '')[:80]
-        parts.append("block %d (%s) SEARCH is %s: '%s'" % (i, name, where, first))
+        part = "block %d (%s) SEARCH is %s: '%s'" % (i, name, where, first)
+        # a guessed line (14 of the 56 no-change passes of the night 19-20.11): the real line it most looks like, so
+        # the next attempt copies that one instead of guessing again; only a close look-alike is named
+        close = difflib.get_close_matches(first, [x for x in have if x], n=1, cutoff=0.75) if first and \
+            where == 'not in the file' else []
+        if close:
+            part += ", the closest line there: '%s'" % close[0][:100]
+        parts.append(part)
         if len(parts) >= 2:
             break
     return ''.join('; ' + p for p in parts)
@@ -1841,8 +1863,7 @@ def _pass_inner(tasks, task: Task, state: dict, *, checkpoint: Path, root: Path,
             pending = None
         baseline_dir = ctx['workdir'] if not pending else staging / (prefix + '-baseline')
         ctx['baseline'] = prepare(root, task, baseline_dir)
-        ctx['read_chars'] = sum(len(v) for n, v in ctx['baseline'].items()
-                                if n in (set(task.touch_files) | set(task.read_files)) and len(v) > LARGE_FILE_CHARS)
+        ctx['read_chars'] = sum(len(ctx['baseline'][n]) for n in large_names(task, ctx['baseline']))
         baseline_digest = sha256(b''.join(n.encode() + sha256(v).digest()
                                           for n, v in sorted(ctx['baseline'].items()))).hexdigest()
         if pending:
