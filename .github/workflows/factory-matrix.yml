@@ -36,7 +36,7 @@ jobs:
           - shard: 11
             files: 'tests/test_factory_reject_promote.py tests/test_factory_revive.py tests/test_factory_row_text.py tests/test_factory_selffix_second_repo.py'
           - shard: 12
-            files: 'tests/test_factory_unit_rules_async.py tests/test_factory_view_fill.py'
+            files: 'tests/test_factory_test_order.py tests/test_factory_unit_rules_async.py tests/test_factory_view_fill.py'
     name: shard ${{ matrix.shard }}
     runs-on: windows-latest
     timeout-minutes: 25
@@ -53,7 +53,13 @@ jobs:
         run: python -m pip install --disable-pip-version-check pytest==8.4.2 rapidfuzz razdel pymorphy3 snowballstemmer hypothesis httpx
       - name: Run shard
         shell: bash
-        run: python -m pytest ${{ matrix.files }} -q -p no:cacheprovider --tb=short
+        run: python -m pytest ${{ matrix.files }} -q -p no:cacheprovider --tb=short --junitxml=junit-${{ matrix.shard }}.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: shard-junit-${{ matrix.shard }}
+          path: junit-${{ matrix.shard }}.xml
+          if-no-files-found: ignore
   gate:
     if: startsWith(github.ref, 'refs/heads/gate/')
     name: gate

@@ -55,6 +55,17 @@ OVERLOAD_FORGET_S = 1800       # no overload of the model for half an hour: the 
 STREAK_FAILS = 3
 STREAK_COOL_S = 600
 STREAK_COOL_MAX_S = 14400
+# Reliability of a model (recent calls, from note_outcome): the last RATING_WINDOW outcomes of all its channels; fewer than
+# RATING_MIN of them say nothing (healthy). A model below RATING_BAD goes last within its tier, and a sticky choice never
+# keeps it. A channel whose last MISSING_STREAK calls all answered 404 is skipped until its config changes.
+RATING_WINDOW = 20
+RATING_MIN = 5
+RATING_BAD = 0.5
+MISSING_STREAK = 3
+# Steps of one task, and tasks of one module family, prefer the key+model they used last while it has room
+# (fewer key switches, and Gemini's implicit prompt cache stays warm); the memory is forgotten after this long.
+AFFINITY_TTL_S = 1800
+AFFINITY_MAX = 200
 TIERS = ('small', 'main', 'escalation')
 # The day of a provider's daily quota (requests per day): Google AI Studio resets at midnight Pacific (the page
 # above), OpenRouter's free models at 00:00 UTC (live 19.11 20:03: its 429 free-models-per-day carries
@@ -145,13 +156,60 @@ def excluded_models(exclude_model) -> frozenset:
     return frozenset(exclude_model)
 
 
-def route_order(channels, role, attempt, tokens, *, preferred=None, exclude_model=None, skip_tiers=()):
+def _config_tag(channel) -> str:
+    """Identifies the channel's configuration: a changed registry entry (model, key name, limits) is a new tag."""
+    return hashlib.sha256(json.dumps(channel, sort_keys=True, default=str).encode('utf-8')).hexdigest()[:12]
+
+
+def _stats(state, channel) -> dict:
+    """The reliability record of one channel (kept in the checkpoint beside the quotas, so it survives a restart)."""
+    table = state.get('channel_stats')
+    if not isinstance(table, dict):
+        table = state['channel_stats'] = {}
+    row = table.get(channel['id'])
+    if not isinstance(row, dict):
+        row = table[channel['id']] = {}
+    tag = _config_tag(channel)
+    if row.get('config') != tag:     # the registry entry changed: what was learned about the old one does not apply
+        row.clear()
+        row['config'] = tag
+    row['model'] = channel['model']
+    if not isinstance(row.get('results'), list):
+        row['results'] = []
+    if type(row.get('missing')) is not int:
+        row['missing'] = 0
+    return row
+
+
+def rating(state, model) -> float:
+    """Share of successful calls among the recent ones of ``model`` (all its channels); 1.0 until RATING_MIN calls are known."""
+    table = state.get('channel_stats') if isinstance(state, dict) else None
+    results = []
+    for row in (table.values() if isinstance(table, dict) else ()):
+        if isinstance(row, dict) and row.get('model') == model:
+            results.extend(r for r in (row.get('results') or []) if r in (0, 1) and type(r) is int)
+    if len(results) < RATING_MIN:
+        return 1.0
+    return sum(results) / len(results)
+
+
+def missing_for_good(state, channel) -> bool:
+    """The last MISSING_STREAK calls of this channel all answered 404 and its config is unchanged since."""
+    table = state.get('channel_stats') if isinstance(state, dict) else None
+    row = table.get(channel['id']) if isinstance(table, dict) else None
+    return (isinstance(row, dict) and row.get('config') == _config_tag(channel)
+            and type(row.get('missing')) is int and row['missing'] >= MISSING_STREAK)
+
+
+def route_order(channels, role, attempt, tokens, *, preferred=None, exclude_model=None, skip_tiers=(), state=None):
     """Channels in the order a call tries them. Coder, attempt 1: main, small (only when ``tokens`` fit its tpm),
     escalation; attempt 2 and later: escalation, main. Reviewer: small first; cross-review: main first.
     ``exclude_model`` (the coder's model) never reviews its own work; a collection of models excludes them all (the
     tournament's next candidate and the chain's next critic are other models). ``preferred`` breaks ties in a tier.
     ``skip_tiers``: tiers this call may not use (<id> small_follow_up 'off': no small-tier model as a later
-    tournament candidate)."""
+    tournament candidate). ``state`` (the quota state): inside a tier the models that keep failing go last, the
+    rest follow the live reliability rating (``preferred`` first among equals), and a channel that answers 404 on
+    every call is left out until its config changes."""
     key = ('code', 1 if attempt <= 1 else 2) if role == 'code' else role
     ranks = _ROLE_TIERS[key]
     excluded = excluded_models(exclude_model)
@@ -162,8 +220,15 @@ def route_order(channels, role, attempt, tokens, *, preferred=None, exclude_mode
             continue
         if tier == 'small' and small_minute_need(tokens, channel) > channel['tpm']:    # Gemma only when a minute of it fits
             continue
+        if state is not None and missing_for_good(state, channel):
+            continue
         picked.append(channel)
-    return sorted(picked, key=lambda c: (ranks.index(tier_of(c)), c['model'] != preferred))
+    if state is None:
+        return sorted(picked, key=lambda c: (ranks.index(tier_of(c)), c['model'] != preferred))
+    def live(c):
+        r = rating(state, c['model'])
+        return (ranks.index(tier_of(c)), r < RATING_BAD, c['model'] != preferred, -round(r, 1))
+    return sorted(picked, key=live)
 
 
 def _fingerprint(env, channel) -> str:
@@ -185,13 +250,19 @@ def _dead_until(dead: dict):
     return None
 
 
+def _dead_applies(dead, env, channel) -> bool:
+    """A dead mark is bound to the key it was made for and, when it carries one, to the channel's config."""
+    return (dead.get('key') == _fingerprint(env, channel)
+            and dead.get('config') in (None, _config_tag(channel)))
+
+
 def usable(channels, state, env, *, now=None):
     """The channels that can ever take a call now: a key is set and no dead mark for that key is in force."""
     now = time.time() if now is None else now
     live = []
     for channel in channels:
         dead = state.get('dead', {}).get(channel['id'])
-        if dead and dead.get('key') == _fingerprint(env, channel):
+        if dead and _dead_applies(dead, env, channel):
             until = _dead_until(dead)
             if until is None or until > now:
                 continue
@@ -213,6 +284,50 @@ def _model_cool(state, channel) -> float:
     return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else 0.0
 
 
+def _channel_cool(state, channel) -> float:
+    table = state.get('channel_cool')
+    value = table.get(channel['id']) if isinstance(table, dict) else None
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else 0.0
+
+
+def cooled_until(state, channel) -> float:
+    """When the channel can take a call again as far as cooling goes: the latest of its quota group, its model and
+    the channel itself (a per-minute limit cools only the channel)."""
+    group = state.get(channel['group'])
+    until = group.get('cool_until', 0) if isinstance(group, dict) else 0
+    until = until if isinstance(until, (int, float)) and not isinstance(until, bool) else 0
+    return max(until, _model_cool(state, channel), _channel_cool(state, channel))
+
+
+def _affinity_names(affinity):
+    if not affinity:
+        return []
+    return [affinity] if isinstance(affinity, str) else [str(a) for a in affinity if a]
+
+
+def _sticky(ordered, state, affinity, now):
+    """``ordered`` with the channel this affinity used last moved to the front of its own tier (never ahead of a
+    better tier), unless its model has gone bad since. The first name with a live memory decides."""
+    table = state.get('affinity')
+    if not isinstance(table, dict):
+        return ordered
+    for name in _affinity_names(affinity):
+        entry = table.get(name)
+        if not (isinstance(entry, (list, tuple)) and len(entry) == 2 and isinstance(entry[1], (int, float))
+                and 0 <= now - entry[1] < AFFINITY_TTL_S):
+            continue
+        mine = [c for c in ordered if c['id'] == entry[0]]
+        if not mine or rating(state, mine[0]['model']) < RATING_BAD:
+            continue
+        pick = mine[0]
+        first = next(c for c in ordered if tier_of(c) == tier_of(pick))
+        if first is pick:
+            return ordered
+        rest = [c for c in ordered if c is not pick]
+        return rest[:rest.index(first)] + [pick] + rest[rest.index(first):]
+    return ordered
+
+
 def _balanced(channels, state, now):
     """Channels of one model on several keys: the one with the most requests left today first; the order of the
     models stays (owner: the load spreads over all connected keys instead of using one key up first)."""
@@ -229,15 +344,21 @@ def _balanced(channels, state, now):
     return [c for m in models for c in sorted(by_model[m], key=lambda c: -left(c))]
 
 
-def choose(channels, state, tokens, env, *, now=None, requests=1):
-    """First channel that can take ``tokens`` and ``requests`` now, else ChannelUnavailable(reason, wait_s)."""
+def choose(channels, state, tokens, env, *, now=None, requests=1, affinity=None):
+    """First channel that can take ``tokens`` and ``requests`` now, else ChannelUnavailable(reason, wait_s).
+    ``affinity``: a name (or a list of names, the closest first: the task, then its module family) whose last
+    channel is tried first within its tier while it has room; reserve() with the same names remembers the pick.
+    None keeps the plain order."""
     now = time.time() if now is None else now
     validate(channels)
     reasons = []  # (reason, wait_s)
-    for channel in _balanced(channels, state, now):
+    ordered = _balanced(channels, state, now)
+    if affinity:
+        ordered = _sticky(ordered, state, affinity, now)
+    for channel in ordered:
         group = state.get(channel['group'], {})
         dead = state.get('dead', {}).get(channel['id'])
-        if dead and dead.get('key') == _fingerprint(env, channel):
+        if dead and _dead_applies(dead, env, channel):
             until = _dead_until(dead)       # None = until the key changes; a TTL entry expires (the retry probe)
             if until is None or until > now:
                 reasons.append(('dead', 3600.0 if until is None else max(1.0, min(3600.0, until - now))))
@@ -248,7 +369,7 @@ def choose(channels, state, tokens, env, *, now=None, requests=1):
         if tokens > channel['tpm']:
             reasons.append(('reservation_exceeds_tpm', 3600.0))
             continue
-        cool = max(group.get('cool_until', 0), _model_cool(state, channel))
+        cool = cooled_until(state, channel)
         if cool > now:
             reasons.append(('cool', cool - now))
             continue
@@ -293,11 +414,12 @@ def next_wait(channel_list, state, tokens, env, *, now=None, requests=1):
     return min(waits)
 
 
-def reserve(state, channel, tokens, *, now=None, requests=1):
+def reserve(state, channel, tokens, *, now=None, requests=1, affinity=None):
     """Book ``tokens`` and ``requests``; returns the booking timestamp for reconcile().
 
     The contract with choose(): the day window gets the whole run (at most rpd), the minute window only what
-    fits one minute (at most rpm). reconcile() later replaces both with the fact."""
+    fits one minute (at most rpm). reconcile() later replaces both with the fact. ``affinity`` (see choose())
+    remembers this channel for those names."""
     now = time.time() if now is None else now
     group = state.setdefault(channel['group'], {})
     day = int(now // 86400)
@@ -313,7 +435,25 @@ def reserve(state, channel, tokens, *, now=None, requests=1):
     group['request_times'] = times + [now] * per_day
     group['rpm_times'] = minute_times + [now] * per_minute
     group['minute'] = [(t, n) for t, n in group.get('minute', []) if now - t < 60] + [(now, tokens)]
+    _remember(state, channel, affinity, now)
     return now
+
+
+def _remember(state, channel, affinity, now) -> None:
+    names = _affinity_names(affinity)
+    if not names:
+        return
+    table = state.get('affinity')
+    if not isinstance(table, dict):
+        table = state['affinity'] = {}
+    for name in names:
+        table[name] = [channel['id'], now]
+    for name in [n for n, e in table.items() if not (isinstance(e, (list, tuple)) and len(e) == 2
+                                                      and isinstance(e[1], (int, float))
+                                                      and 0 <= now - e[1] < AFFINITY_TTL_S)]:
+        del table[name]
+    for name in sorted(table, key=lambda n: table[n][1])[:max(0, len(table) - AFFINITY_MAX)]:
+        del table[name]
 
 
 def headroom(channels, state, tokens, env, *, now=None, requests=1, cap=16) -> int:
@@ -365,6 +505,19 @@ def cool(state, channel, *, now=None, seconds=DEFAULT_COOL_S):
     now = time.time() if now is None else now
     group = state.setdefault(channel['group'], {})
     group['cool_until'] = max(group.get('cool_until', 0), now + max(1, seconds))
+
+
+def cool_channel(state, channel, *, now=None, seconds=DEFAULT_COOL_S) -> dict:
+    """Cool ONE channel (its model on its key); the key's other models and the model on other keys stay usable.
+    Never shortens a longer cooling."""
+    now = time.time() if now is None else now
+    if not isinstance(state.get('channel_cool'), dict):
+        state['channel_cool'] = {}
+    table = state['channel_cool']
+    table[channel['id']] = max(_channel_cool(state, channel), now + max(1, seconds))
+    for cid in [c for c, until in table.items() if not isinstance(until, (int, float)) or until <= now - 3600]:
+        del table[cid]                                       # old terms are history
+    return {'action': 'cool_channel', 'cool_s': seconds}
 
 
 # ---- error classification ---------------------------------------------------------------------
@@ -603,6 +756,13 @@ def apply_failure(state, channel, info, *, env=None, now=None) -> dict:
                                                        'reason': 'key_invalid'}
         return {'action': 'dead', 'cool_s': 0}
     if kind == 'model_missing':   # one 404 must not kill the channel for good: dead for 6 h, then probed again
+        row = _stats(state, channel)
+        row['missing'] += 1
+        if row['missing'] >= MISSING_STREAK:      # every recent call answered 404: only a changed config revives it
+            state.setdefault('dead', {})[channel['id']] = {'key': _fingerprint(env, channel), 'since': now,
+                                                           'reason': 'model_missing_streak', 'until': None,
+                                                           'config': _config_tag(channel)}
+            return {'action': 'dead', 'cool_s': 0, 'reason': 'model_missing_streak'}
         state.setdefault('dead', {})[channel['id']] = {'key': _fingerprint(env, channel), 'since': now,
                                                        'reason': 'model_missing',
                                                        'until': now + MODEL_MISSING_TTL_S}
@@ -617,7 +777,11 @@ def apply_failure(state, channel, info, *, env=None, now=None) -> dict:
         seconds = _day_cool(channel, info, now) if kind == 'rate_day' else int(info.get('retry_after_s') or DEFAULT_COOL_S)
         if info.get('scope') == 'model':     # an upstream provider of ONE model: the rest of the account is fine
             return _cool_model(state, channel, now, seconds)
-        cool(state, channel, now=now, seconds=seconds)
+        if kind == 'rate_minute' and info.get('status') != 402:
+            # a per-minute limit is the limit of one model on one key: the other models of the project keep working
+            # (live 20.11: 15 suspected per-minute stalls each cooled a whole project for 15 minutes)
+            return cool_channel(state, channel, now=now, seconds=seconds)
+        cool(state, channel, now=now, seconds=seconds)     # a daily quota or the account's own budget: the whole key
         return {'action': 'cool', 'cool_s': seconds}
     if kind == 'transient' and (info.get('status') in OVERLOAD_STATUSES or info.get('name') == 'EmptyAnswer'):
         # "This model is currently experiencing high demand" (503): the MODEL is overloaded, not the account. Cooled,
@@ -659,7 +823,10 @@ def note_outcome(state, channel, ok, *, now=None, channels=()) -> dict:
     group = state.setdefault(channel['group'], {})
     table = group.get('fail_streak') if isinstance(group.get('fail_streak'), dict) else {}
     group['fail_streak'] = table
+    row = _stats(state, channel)
+    row['results'] = (row['results'] + [1 if ok else 0])[-RATING_WINDOW:]
     if ok:
+        row['missing'] = 0
         table.pop(channel['id'], None)
         return {'action': 'none', 'cool_s': 0}
     prior = table.get(channel['id'])
@@ -690,10 +857,7 @@ def _other_route(state, channel, channels, now) -> bool:
             until = _dead_until(mark)
             if until is None or until > now:
                 continue
-        group = state.get(other['group']) if isinstance(state.get(other['group']), dict) else {}
-        until = group.get('cool_until', 0)
-        until = until if isinstance(until, (int, float)) and not isinstance(until, bool) else 0
-        if max(until, _model_cool(state, other)) <= now:
+        if cooled_until(state, other) <= now:
             return True
     return False
 

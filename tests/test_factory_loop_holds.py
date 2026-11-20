@@ -56,6 +56,9 @@ def test_a_busy_loop_answers_too(tmp_path, monkeypatch):
     env.runner_says({"status": "NO_RESULT"})
     loop._last_out = loop.step()                      # a RUN step: the loop is busy
     loop._head_holds()
+    if loop._bg is not None:                          # a busy loop asks in the background thread
+        loop._bg.done.wait(10)
+        loop._bg_poll()
     assert len(calls) == 1 and answers(env)[0]["backlog_id"] == "B9"
 
 

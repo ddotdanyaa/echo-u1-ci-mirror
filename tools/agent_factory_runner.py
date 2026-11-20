@@ -480,6 +480,75 @@ def neighbor_tests(root: Path, task: Task) -> list[str]:
     return out[:MAX_NEIGHBORS]
 
 
+DURATIONS_FILE = "tests/data/factory_durations.json"    # measured seconds per test file of the previous cloud run
+
+
+def _known_seconds(root: Path) -> dict:
+    """The recorded duration table of ``root`` (flat ``{test path: seconds}``); missing or malformed is just empty."""
+    try:
+        raw = json.loads((Path(root) / DURATIONS_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    return {k: float(v) for k, v in raw.items()
+            if isinstance(k, str) and isinstance(v, (int, float)) and not isinstance(v, bool) and v >= 0}
+
+
+def gate_order(root: Path, names, first=()) -> list[str]:
+    """Order of test runs: ``first`` (what failed last time) before everything else, then the fast before the heavy:
+    by the recorded duration of the file, and for a file with none by its size scaled to the recorded ones (bytes
+    when nothing is recorded at all). Stable, never drops or adds a name."""
+    names = list(dict.fromkeys(names))
+    head = set(first)
+    secs = _known_seconds(root)
+
+    def size(name: str) -> int:
+        try:
+            return (Path(root) / name.split("::", 1)[0]).stat().st_size
+        except OSError:
+            return 0
+    ratios = sorted(secs[n.split("::", 1)[0]] / size(n) for n in names
+                    if n.split("::", 1)[0] in secs and size(n) > 0)
+    scale = ratios[len(ratios) // 2] if ratios else None
+
+    def estimate(name: str) -> float:
+        file = name.split("::", 1)[0]
+        if file in secs:
+            return secs[file]
+        return size(name) * scale if scale else float(size(name))
+    return ([n for n in names if n in head]
+            + sorted((n for n in names if n not in head), key=lambda n: (estimate(n), n)))
+
+
+def red_entries(ids, tests) -> list[str]:
+    """The entries of ``tests`` (files or ``file::test``) that hold a test id of ``ids`` ('classname::name' as the
+    gate records them: ``tests.test_x.Class::name``): what the last candidate was red on."""
+    files = set()
+    for one in ids:
+        parts = str(one).split("::", 1)[0].split(".")
+        for i, part in enumerate(parts):
+            if part.startswith("test_"):
+                files.add("/".join(parts[:i + 1]) + ".py")
+                break
+    return [t for t in tests if t.split("::", 1)[0] in files]
+
+
+def staged_run(run, root: Path, tests, red=()):
+    """One result for ``tests``: the entries that failed last time run ALONE first; still red (and not by the
+    environment): that result is the answer, the rest never runs. Green or unclear: the rest runs and both are merged
+    (a single run when there is nothing to split)."""
+    tests = gate_order(root, tests, red)
+    first = [t for t in tests if t in set(red)]
+    if not first or len(first) == len(tests):
+        return run(tests)
+    one = run(first)
+    if one.env_reason or (one.failed + one.errors > 0 and not one.env_failed):
+        return one
+    rest = [t for t in tests if t not in set(first)]
+    return gate._merge([(tuple(first), one), (tuple(rest), run(rest))])
+
+
 def candidate_tree(root: Path, workdir: Path, changed, into: Path) -> Path:
     """Full copy of the source tree with the candidate files laid over it: real tests import
     the whole package (conftest, sibling modules) that the model's narrow copy lacks."""
@@ -2467,7 +2536,10 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                 ctx['roots'].append(tree)
                 # the gate decides whether a missing module is the environment or the candidate's own import (live
                 # 19.11 18:06-18:08: written tests imported modules that do not exist and went round as 'environment')
-                cand = gate.candidate_import(timed('gate_s', lambda: gate_run(tree, task.tests, touched=changed)), root, tree, changed)
+                red_ids = [i for _, ids in ctx.get('gate_red', ()) for i in ids]
+                cand = gate.candidate_import(timed('gate_s', lambda: staged_run(
+                    lambda part: gate_run(tree, part, touched=changed), root, task.tests,
+                    red_entries(red_ids, task.tests))), root, tree, changed)
                 ctx['counts'] = cand
                 if cand.env_reason:
                     return env_release(cand.env_reason)
@@ -2506,7 +2578,7 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                     events.append('unmeasured:%d' % len(left))
                 if task.kind != 'unit_test':
                     try:
-                        near = neighbor_tests(root, task)[:MAX_NEIGHBORS]
+                        near = gate_order(root, neighbor_tests(root, task)[:MAX_NEIGHBORS], ctx.get('neighbour_red', ()))
                     except Exception as error:  # noqa: BLE001 - "graph unavailable" is not "no neighbours"
                         events.append('neighbors_unavailable:' + redact(type(error).__name__))
                         near = []
@@ -2534,6 +2606,7 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                                     else:
                                         fresh = {'count'} if mine.failed + mine.errors > theirs.failed + theirs.errors else set()
                                     if fresh:
+                                        ctx.setdefault('neighbour_red', []).append(name)
                                         return 'regression', mine
                             if skipped_count == len(near):
                                 return 'skipped', last_result

@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import contextlib
+import copy
 import errno
 import hashlib
 import inspect
@@ -29,6 +30,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import threading
 import time
 import uuid
 from types import SimpleNamespace
@@ -406,6 +408,29 @@ class Pool:
         return self.finished()
 
 
+class Prefetch:
+    """One background job of the loop: a triage portion or the head's hold picks. The thread does only network and
+    file reads on private copies; the loop's own thread applies the result (the plan, the state and the loop state
+    are written there only), so a slow free-model call never holds back the admission of a ready task."""
+
+    def __init__(self, kind: str, work, ctx):
+        self.kind, self.ctx, self._work = kind, ctx, work
+        self.result = self.error = None
+        self.done = threading.Event()
+        self.t0 = time.monotonic()
+        self.dur_s = 0.0
+        self.thread = threading.Thread(target=self._run, name="factory-" + kind, daemon=True)
+
+    def _run(self) -> None:
+        try:
+            self.result = self._work()
+        except BaseException as e:          # handed to the loop thread, which raises or books it as before
+            self.error = e
+        finally:
+            self.dur_s = time.monotonic() - self.t0
+            self.done.set()
+
+
 class Loop:
     TXN_WAIT_S = 10.0       # a transaction on the state waits at most this long for the lock (a commit lasts ms)
     CLAIM_WAIT_S = 2.0      # the claim waits less: a held lock is WAIT state_locked, not a stalled loop
@@ -452,6 +477,9 @@ class Loop:
         self._tries_mem: dict = {}
         self.iterations = 0
         self._run_exps = None      # the experiments of the RUN in progress, written to its loop event
+        self._bg = None            # the one background job in flight (Prefetch) or None
+        self._bg_cancel = threading.Event()
+        self._tel_lock = threading.RLock()
 
     def arm(self, tid: str, name: str, ls: dict | None = None) -> str:
         """<id>: the decided winner of the experiment, else the task's stable hash arm."""
@@ -596,12 +624,13 @@ class Loop:
         row = {"ts": self.ts(), "run_id": self.run_id, "span": span}
         row.update({k: v for k, v in fields.items() if v is not None})
         line = self._scrub(json.dumps(row, ensure_ascii=False))
-        self._rotate_telemetry()
-        with self.tel_path.open("a", encoding="utf-8") as fh:
-            fh.write(line + "\n")
-        if self._rotate_note:
-            note, self._rotate_note = self._rotate_note, None
-            self.event("infra", status="rotate_failed", reason=note)
+        with self._tel_lock:                # the background job may report an error while the loop writes
+            self._rotate_telemetry()
+            with self.tel_path.open("a", encoding="utf-8") as fh:
+                fh.write(line + "\n")
+            if self._rotate_note:
+                note, self._rotate_note = self._rotate_note, None
+                self.event("infra", status="rotate_failed", reason=note)
 
     # -- loop_state.json
     def ls(self) -> dict:
@@ -1076,6 +1105,7 @@ class Loop:
         cfg, now = self.cfg, self.clock()
         self.base_sha = refresh_mirror(cfg.repo, cfg.branch, self.mirror)
         self.apply_answers()  # Opus answers first: before anything else touches the state
+        self._bg_poll()       # a finished background triage / hold pick is applied here, in this thread
         with self.txn() as (_tasks, state):       # a lease a live worker still holds is ended by the loop, not freed
             freed = F.release_expired(state, now, keep=self.pool.tids())
         if freed:
@@ -1102,6 +1132,7 @@ class Loop:
             return self._promote(act["task_id"], tasks, state, ls)
         if (name == "WAIT" and why == "channel_cooldown" and float(act.get("wait_s") or 0) >= 300
                 and now - float(ls.get("wait_triage_at", 0)) >= cfg.triage_retry_s
+                and self._bg is None
                 and self._has_more(ls, now)
                 and not any(r["status"] == "RUNNING" for r in state["tasks"].values())):
             ls["wait_triage_at"] = now  # a long channel wait: triage the next portion meanwhile
@@ -1110,14 +1141,16 @@ class Loop:
         if name == "UNBLOCK":                  # <id>: a block's term is over, the loop lifts it itself (no wait for Opus)
             return self._auto_unblock(act)
         if name == "TRIAGE":
+            if self.pool.workers:               # feed while they work: the portion is asked in the background
+                self._triage_prefetch(state, tasks, ls, now)
+                return self._await_workers()
+            if self._bg is not None:            # one job in flight: nothing else to do but to look at it again
+                self._bg.done.wait(WAIT_CHUNK_S)
+                return Outcome(sleep=0, action="WAIT", reason="prefetch_running")
             out = self._triage(state, tasks, ls, now)
-            if not self.pool.workers:
-                if out.status == "empty":       # <id>: the backlog gave nothing: a FAILED task past its term instead
-                    return self._idle_requeue(tasks, state, now) or out
-                return out
-            if out.proof:
-                self._series_ok()              # triage worked while a runner works: then the iteration waits for it
-            return self._await_workers()
+            if out.status == "empty":           # the backlog gave nothing: a FAILED task past its term instead
+                return self._idle_requeue(tasks, state, now) or out
+            return out
         if self.pool.workers:                  # nothing more to start now: wait for the next worker to end
             return self._await_workers()
         if name == "RUN":                      # work is ready but no worker may start: the reason is the wait
@@ -1231,18 +1264,22 @@ class Loop:
         while True:
             if self._ending() or self._brake_due is not None:
                 return self._drain()
-            done = self.pool.wait_any(WAIT_CHUNK_S)
+            done = self.pool.wait_any(0.25 if self._bg is not None else WAIT_CHUNK_S)
             if done:
                 return self._account_done(done[0])
             late = [w for w in self.pool.workers.values()
                     if w.owned is not None and w.res is None and time.monotonic() - w.t_claim > RUNNER_TIMEOUT_S]
             if late:
                 return self._account_done(late[0], timed_out=True)
+            self._bg_poll()                     # a finished portion becomes tasks now, not after the next worker ends
+            self._head_holds()                  # the gate decides; a pick runs in the background
             tasks, state = self.load()
             ls = self.ls()
             now = self.clock()
             act = self._act(state, tasks, ls, now)
-            if act["action"] == "RUN":
+            if act["action"] == "TRIAGE":
+                self._triage_prefetch(state, tasks, ls, now)
+            elif act["action"] == "RUN":
                 out, act, tasks, state, ls = self._fill(act, tasks, state, ls, now)
                 if out is not None:
                     return out
@@ -1506,31 +1543,48 @@ class Loop:
         except Exception as e:
             self.err("selffix", e)
 
-    # -- <id>/<id>: the free head answers the mechanical holds (which file to change): at once when idle, else every 20 min
+    # -- the free head answers the mechanical holds (which file to change): at once when idle, when READY is
+    # low after HOLDS_LOW_EVERY_S, else every 20 min. With live workers the asks run in the background thread.
     HOLDS_EVERY_S = 1200
+    HOLDS_LOW_EVERY_S = 30        # READY below the pool: the next picks are not held back for the 20 minutes
+    READY_FLOOR = 2               # the pool size taken for the READY-low rule when fewer workers are live
     _last_out = None
 
+    def _ready_low(self) -> bool:
+        try:
+            state = self.load()[1]
+        except Exception as e:
+            self.err("ready count", e)
+            return False
+        ready = sum(1 for r in state["tasks"].values() if r.get("status") == "READY")
+        return ready < max(self.READY_FLOOR, len(self.pool.workers))
+
     def _head_holds(self) -> None:
-        """Owner: «пустая READY-очередь при наличии допустимого неразобранного бэклога — не IDLE и не
-        остановка, а триггер автоматического триажа следующей порции задач». After an idle step (HOLD, DONE, an empty
-        TRIAGE) at once; while the loop is busy at most once per HOLDS_EVERY_S (live 20.11 01:33-02:17: requeued tasks
-        kept it busy, 68 holds waited, the head never ran). Up to three holds of the kinds 'ambiguous localisation'
-        and 'which module' go to a free head model; a valid pick becomes an answer file (backlog_id, touch_files,
-        tests, note) that apply_answers turns into a task. A private or unclean row is never sent. A fault never
-        stops the loop."""
+        """An empty READY queue with an unparsed backlog is the trigger of the next triage portion, not idleness. After
+        an idle step (HOLD, DONE, an empty TRIAGE) at once; with READY below the pool size after HOLDS_LOW_EVERY_S;
+        else at most once per HOLDS_EVERY_S (requeued tasks kept the loop busy and the head never ran). Up to three holds
+        of the kinds 'ambiguous localisation' and 'which module' go to a free head model; a valid pick becomes an
+        answer file (backlog_id, touch_files, tests, note) that apply_answers turns into a task. A private or unclean
+        row is never sent. A fault never stops the loop."""
         from tools import factory_context as X
         from tools import factory_holds as H
         from tools import factory_requeue
+        if self._bg is not None:                 # one background job at a time; the gate is not used up
+            return
         out = self._last_out
         idle = out is not None and (out.action in ("HOLD", "DONE") or (out.action == "TRIAGE" and out.status == "empty"))
         try:
             ls = self.ls()
-            if not idle and self.clock() - float(ls.get("holds_at") or 0) < self.HOLDS_EVERY_S:
+            since = self.clock() - float(ls.get("holds_at") or 0)
+            if not idle and since < self.HOLDS_EVERY_S and not (since >= self.HOLDS_LOW_EVERY_S and self._ready_low()):
                 return
             ls["holds_at"] = self.clock()
             done = ls.setdefault("head_holds", {})
             picked = H.select(ls.get("holds") or {}, done, self.clock())
             self.save_ls(ls)
+            if picked and (self.pool.workers or (out is not None and not idle)):    # a runner works or work is about to start: no ask in this thread
+                self._holds_prefetch(picked, ls, H, X, factory_requeue)
+                return
             for bid, question in picked:
                 try:
                     self._head_one(bid, question, H, X, factory_requeue)
@@ -1539,22 +1593,37 @@ class Loop:
         except Exception as e:
             self.err("head_holds", e)
 
+    def _head_record(self, bid, status, model=None, tokens=None) -> None:
+        ls = self.ls()
+        ls.setdefault("head_holds", {})[bid] = {"at": self.ts(), "status": status}
+        self.save_ls(ls)
+        self.event("head", backlog_id=bid, status=status, model=self.rs(model), tokens=tokens)
+
     def _head_one(self, bid, question, H, X, factory_requeue) -> None:
-        def record(status, model=None, tokens=None):
-            ls = self.ls()
-            ls.setdefault("head_holds", {})[bid] = {"at": self.ts(), "status": status}
-            self.save_ls(ls)
-            self.event("head", backlog_id=bid, status=status, model=self.rs(model), tokens=tokens)
+        prep = self._head_prep(bid, question, H, X)
+        if "status" in prep:
+            return self._head_record(bid, prep["status"])
+        ls = self.ls()
+        # attempt 1: the main tier first. Picking files among candidates is light work; the escalation tier (3.6 Flash,
+        # 20 a day per key) stays for the coder's hard attempts and the hourly self-fix design
+        got = self._light_ask(prep["prompt"], attempt=1, section="loop-holds",
+                              quotas=ls.setdefault("holds_quotas", {}), max_tokens=800)
+        self.save_ls(ls)
+        return self._head_finish(bid, prep, got, H, factory_requeue)
+
+    def _head_prep(self, bid, question, H, X) -> dict:
+        """Reads only (the backlog text, the mirror): {'status': ...} when nothing is asked, else the prompt and the
+        row's facts. Safe in the background thread."""
         goal, private, unclean = self._backlog_text(bid)
         if private or unclean:
-            return record("private")
+            return {"status": "private"}
         kind = H.kind_of(question)
         files, tests = H.candidates(question)
         if kind == "ambiguous" and not tests:
             own = H.row_test(bid, self.mirror)
             tests = [own] if own else []
         if not files or (not tests and kind != "candidates"):    # <id>: the triage makes a candidates row's test
-            return record("no_test")
+            return {"status": "no_test"}
         outlines = {}
         for rel in files:
             try:
@@ -1562,13 +1631,15 @@ class Loop:
                                           tools=False)
             except OSError:
                 pass
-        ls = self.ls()
-        # attempt 1: the main tier first. Picking files among candidates is light work; the escalation tier (3.6 Flash,
-        # 20 a day per key) stays for the coder's hard attempts and the hourly self-fix design (<id>)
-        status, model, answer, tokens = self._light_ask(
-            H.prompt(bid, goal, question, files, tests, outlines), attempt=1, section="loop-holds",
-            quotas=ls.setdefault("holds_quotas", {}), max_tokens=800)
-        self.save_ls(ls)
+        return {"kind": kind, "files": files, "tests": tests,
+                "prompt": H.prompt(bid, goal, question, files, tests, outlines)}
+
+    def _head_finish(self, bid, prep, got, H, factory_requeue) -> None:
+        """The state side of a hold pick; the loop's own thread only."""
+        def record(status, model=None, tokens=None):
+            self._head_record(bid, status, model, tokens)
+        kind, files, tests = prep["kind"], prep["files"], prep["tests"]
+        status, model, answer, tokens = got
         if status != "ok":
             return record("later", model, tokens)
         picked = H.parse(answer, files, kind=kind)
@@ -1600,6 +1671,65 @@ class Loop:
             payload["note"] = picked["note"]
         factory_requeue._write_answer(self.dir / "answers", payload, "head-" + bid)
         record("answered", model, tokens)
+
+    def _holds_prefetch(self, picked, ls, H, X, factory_requeue) -> bool:
+        quotas = copy.deepcopy(ls.get("holds_quotas") or {})      # private: the loop's ledger is written in its thread
+
+        def work():
+            out = []
+            for bid, question in picked:
+                if self._bg_cancel.is_set():
+                    break
+                try:
+                    prep = self._head_prep(bid, question, H, X)
+                    got = None if "status" in prep else self._light_ask(
+                        prep["prompt"], attempt=1, section="loop-holds", quotas=quotas, max_tokens=800)
+                    out.append((bid, prep, got))
+                except Exception as e:
+                    out.append((bid, None, e))
+            return out, quotas
+        return self._bg_start("holds", work, (H, factory_requeue))
+
+    def _holds_apply(self, job) -> None:
+        if job.error is not None:
+            return self.err("head_holds", job.error)
+        results, quotas = job.result
+        H, factory_requeue = job.ctx
+        try:
+            ls = self.ls()
+            ls["holds_quotas"] = quotas
+            self.save_ls(ls)
+        except Exception as e:
+            self.err("head_holds", e)
+        for bid, prep, got in results:
+            try:
+                if prep is None:
+                    raise got
+                if "status" in prep:
+                    self._head_record(bid, prep["status"])
+                else:
+                    self._head_finish(bid, prep, got, H, factory_requeue)
+            except Exception as e:
+                self.err("head_holds", e)
+
+    # -- the background slot: ONE job in flight (a triage portion or the head's picks)
+    def _bg_start(self, kind: str, work, ctx) -> bool:
+        if self._bg is not None:
+            return False
+        job = self._bg = Prefetch(kind, work, ctx)
+        job.thread.start()
+        return True
+
+    def _bg_poll(self) -> None:
+        """Loop thread: a finished job is applied here (a triage error is raised here, as the synchronous one was)."""
+        job = self._bg
+        if job is None or not job.done.is_set():
+            return
+        self._bg = None
+        if job.kind == "triage":
+            self._triage_apply(job)
+        else:
+            self._holds_apply(job)
 
     def _book_not_code(self, bid, why, record, model, tokens) -> None:
         """<id>: the head model says the row is not a change of the code (owner process, proxy, server, laptop, phone):
@@ -2132,14 +2262,15 @@ class Loop:
 
     LOCATE_CALLS = 24       # free-model calls the localization may spend in one triage pass
 
-    def _locate_ask(self, ls):
+    def _locate_ask(self, ls, quotas=None):
         """ask(prompt) -> text for the triage's localization: the same free channel choice, quota booking and
         redaction as the head pick (_light_ask), at most LOCATE_CALLS calls a pass. A refusal is an empty answer."""
-        quotas = ls.setdefault("locate_quotas", {})
+        if quotas is None:
+            quotas = ls.setdefault("locate_quotas", {})
         spent = [0]
 
         def ask(prompt):
-            if spent[0] >= self.LOCATE_CALLS:
+            if spent[0] >= self.LOCATE_CALLS or self._bg_cancel.is_set():
                 return ""
             spent[0] += 1
             status, _model, answer, _used = self._light_ask(F.redact(str(prompt)), attempt=1, section="loop-locate",
@@ -2148,6 +2279,38 @@ class Loop:
         return ask
 
     def _triage(self, state, tasks, ls, now) -> Outcome:
+        ctx = self._triage_prepare(state, tasks, ls, now)
+        try:
+            res = ctx["fn"](**ctx["kwargs"])
+        except (ValueError, NotImplementedError) as e:
+            return self._triage_failed(e, ctx, ls)
+        return self._triage_finish(res, ctx, ls)
+
+    def _triage_prefetch(self, state, tasks, ls, now) -> bool:
+        """The same portion in the background thread: the loop keeps admitting and reaping meanwhile."""
+        if self._bg is not None:
+            return False
+        quotas = copy.deepcopy(ls.get("locate_quotas") or {})     # private: merged back when the result is applied
+        ctx = self._triage_prepare(state, tasks, ls, now, quotas=quotas)
+        self.save_ls(ls)                                          # the seen reset and the weak drops are kept
+        ctx["quotas"] = quotas
+        return self._bg_start("triage", lambda: ctx["fn"](**ctx["kwargs"]), ctx)
+
+    def _triage_apply(self, job) -> None:
+        ctx = job.ctx
+        ls = self.ls()                                  # fresh: the state moved on while the portion was asked
+        ls["locate_quotas"] = ctx["quotas"]
+        ctx["dur_s"] = round(job.dur_s, 3)
+        if job.error is None:
+            out = self._triage_finish(job.result, ctx, ls)
+            if out is not None and out.proof:
+                self._series_ok()                       # triage worked while a runner works: the infra series ends
+        elif isinstance(job.error, (ValueError, NotImplementedError)):
+            self._triage_failed(job.error, ctx, ls)
+        else:
+            raise job.error
+
+    def _triage_prepare(self, state, tasks, ls, now, quotas=None) -> dict:
         cfg = self.cfg
         fn = self.triage_fn
         if fn is None:
@@ -2175,23 +2338,24 @@ class Loop:
         if scopes and _accepts(fn, "scopes"):
             kwargs["scopes"] = scopes
         if _accepts(fn, "ask"):
-            kwargs["ask"] = self._locate_ask(ls)
-        try:
-            res = fn(**kwargs)
-        except ValueError as e:  # the backlog cannot be parsed: not infrastructure, try after an edit
-            ls["triage_empty"] = {"mtime": mtime, "until": now + cfg.triage_retry_s}
-            self._defer_seen(ls, now)
-            self.save_ls(ls)
+            kwargs["ask"] = self._locate_ask(ls, quotas)
+        return {"fn": fn, "kwargs": kwargs, "mtime": mtime, "dropped": dropped, "t0": t0, "now": now}
+
+    def _triage_failed(self, e, ctx, ls) -> Outcome:
+        cfg, now, mtime = self.cfg, ctx["now"], ctx["mtime"]
+        ls["triage_empty"] = {"mtime": mtime, "until": now + cfg.triage_retry_s}
+        self._defer_seen(ls, now)
+        self.save_ls(ls)
+        if isinstance(e, ValueError):  # the backlog cannot be parsed: not infrastructure, try after an edit
             self.event("triage", status="empty", reason="backlog_unparsable: " + F.redact(str(e))[:120])
             return Outcome(action="TRIAGE", reason="backlog_unparsable", status="empty",
                            sleep=cfg.triage_idle_sleep)
-        except NotImplementedError as e:
-            ls["triage_empty"] = {"mtime": mtime, "until": now + cfg.triage_retry_s}
-            self._defer_seen(ls, now)
-            self.save_ls(ls)
-            self.event("triage", status="empty",
-                       reason="triage_not_implemented: " + F.redact(str(e))[:120])
-            return Outcome(action="TRIAGE", reason="triage_not_implemented", status="empty")
+        self.event("triage", status="empty",
+                   reason="triage_not_implemented: " + F.redact(str(e))[:120])
+        return Outcome(action="TRIAGE", reason="triage_not_implemented", status="empty")
+
+    def _triage_finish(self, res, ctx, ls) -> Outcome:
+        cfg, now, mtime, dropped, t0 = self.cfg, ctx["now"], ctx["mtime"], ctx["dropped"], ctx["t0"]
         self._book_seen(ls, res, now)
         portion = list(res.get("tasks") or [])
         new_holds = []
@@ -2251,8 +2415,8 @@ class Loop:
         if new_holds or dropped:
             self._write_questions(tasks2, state2, ls)
         self._write_reconcile(tasks2, state2, ls, now)
-        self.event("triage", status="added" if progress else "empty", dur_s=round(
-            self.clock() - t0, 3), reason="added=%d holds=%d skipped=%d stale=%d" % (
+        self.event("triage", status="added" if progress else "empty", dur_s=ctx.get("dur_s") or round(
+            self.clock() - t0, 3), prefetch=True if "quotas" in ctx else None, reason="added=%d holds=%d skipped=%d stale=%d" % (
             len(added), len(new_holds), len(res.get("skipped") or ()), len(res.get("stale") or ())),
             append_skipped=skipped_by_append or None, deferred=len(deferred) or None,
             events=events or None)
@@ -3156,10 +3320,11 @@ class Loop:
         not a wait, a budget stop or a block BEFORE the model."""
         blocked = str(res.get("blocked_reason") or "")
         if (st in ("WAITING_CHANNEL", "IDLE", "NO_RESULT") or rkey in CHANNEL_REASONS
-                or rkey in BEFORE_MODEL or blocked in BEFORE_MODEL):
+                or rkey in BEFORE_MODEL or blocked in BEFORE_MODEL
+                or rkey == "review_chain_short"):   # a wait for a free critic model, not a failed run: never brakes
             return False
         return bool(calls) or rkey.startswith(REJECT_PREFIXES) or rkey in (
-            "gate_unknown", "reviewer_failed", "no_independent_reviewer", "provider_error", "review_chain_short")
+            "gate_unknown", "reviewer_failed", "no_independent_reviewer", "provider_error")
 
     def _spread_brake(self, ls: dict, out: Outcome) -> Outcome:
         """K different tasks failed without any proof of work: the same BRAKE path, with the causes."""
@@ -3663,6 +3828,7 @@ class Loop:
                     return EXIT_OK
                 self._sleep(min(out.sleep, WAIT_CHUNK_S) if self.pool.workers else out.sleep)
         finally:
+            self._bg_cancel.set()                          # a background ask in flight ends; nothing of it was applied
             for w in list(self.pool.workers.values()):     # an exit with live workers (an error): their jobs die
                 try:
                     if w.owned is not None:
