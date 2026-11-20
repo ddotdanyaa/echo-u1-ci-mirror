@@ -1,9 +1,10 @@
 # Factory status (generated, structured data only)
 
-Generated: 2026-11-20T03:50:25Z
-Source commit: sha51a8356d9703
+Generated: 2026-11-20T04:02:25Z
+Source commit: sha6a1742d8d3cd
 
 ## Commits (sha, time)
+- sha6a1742d8 2026-11-20T07:02:07+03:00
 - sha51a8356d 2026-11-20T06:50:04+03:00
 - sha5c7a1faf 2026-11-20T06:42:02+03:00
 - sha8aed118c 2026-11-20T06:39:33+03:00
@@ -23,7 +24,6 @@ Source commit: sha51a8356d9703
 - sha886e6076 2026-11-20T02:57:14+03:00
 - shaad200c31 2026-11-20T02:53:56+03:00
 - sha25517e21 2026-11-20T02:48:33+03:00
-- sha348433d7 2026-11-20T02:45:48+03:00
 
 ## Funnel
 | step | count |
@@ -35,39 +35,39 @@ Source commit: sha51a8356d9703
 | gate_pass | 13 |
 | known_to_loop | 352 |
 | promoted | 13 |
-| ready | 4 |
+| ready | 8 |
 | reviewed | 15 |
 | triaged | 40 |
 
 Side counters: blocked=15, parked=0, requeued=0
-Tasks now: BLOCKED=15, DONE=20, FAILED=17, READY=4
+Tasks now: BLOCKED=15, DONE=20, FAILED=12, READY=8, RUNNING=1
 Accepted: 0
 Promoted: 13
-Free RAM, GB: 3.5
-Telemetry rows: 3403 recognised, 0 unrecognised
+Free RAM, GB: 3.53
+Telemetry rows: 3447 recognised, 0 unrecognised
 
 ## Spend per model
 | model | calls | tokens_in | tokens_out | usage_unknown | http_429 | errors |
 |---|---|---|---|---|---|---|
-| google/gemini-3.1-flash-lite | 164 | 795081 | 56196 | 9 | 0 | 9 |
-| google/gemini-3.5-flash-lite | 316 | 1951098 | 75654 | 13 | 0 | 13 |
+| google/gemini-3.1-flash-lite | 169 | 826808 | 58392 | 9 | 0 | 9 |
+| google/gemini-3.5-flash-lite | 321 | 1983644 | 77421 | 13 | 0 | 13 |
 | google/gemini-3.6-flash | 24 | 69915 | 3702 | 6 | 1 | 6 |
 | google/gemma-4-26b-a4b-it | 41 | 107516 | 28677 | 15 | 0 | 15 |
-| google/gemma-4-31b-it | 64 | 60152 | 3140 | 41 | 0 | 41 |
+| google/gemma-4-31b-it | 65 | 60152 | 3140 | 42 | 0 | 42 |
 | openrouter/cohere/north-mini-code:free | 20 | 69376 | 10273 | 3 | 0 | 4 |
 | openrouter/nvidia/nemotron-3-ultra-550b-a55b:free | 51 | 230417 | 113622 | 1 | 1 | 1 |
 
 ## Spans
 | span | rows | calls |
 |---|---|---|
-| answer | 177 | 0 |
-| gate | 678 | 0 |
-| infra | 89 | 0 |
-| loop | 678 | 0 |
-| other | 176 | 0 |
+| answer | 183 | 0 |
+| gate | 684 | 0 |
+| infra | 90 | 0 |
+| loop | 685 | 0 |
+| other | 179 | 0 |
 | promote | 17 | 0 |
 | review | 165 | 88 |
-| run | 1393 | 592 |
+| run | 1414 | 603 |
 | triage | 30 | 0 |
 
 ## Channels (model ids)
@@ -102,7 +102,7 @@ Tests not in the cloud: 60
 - tests/test_factory_channels.py (long-run)
 - tests/test_factory_context.py (env-path, key, long-run, owner-name, path, short-name, user-path)
 - tests/test_factory_context_fit_whole.py (backlog-id)
-- tests/test_factory_critic_prior.py (dependency)
+- tests/test_factory_critic_prior.py (backlog-id)
 - tests/test_factory_decompose.py (backlog-id, call-word, email)
 - tests/test_factory_feedback_window.py (backlog-id)
 - tests/test_factory_gate.py (email, path)

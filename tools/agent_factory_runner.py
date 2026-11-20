@@ -32,7 +32,7 @@ from dataclasses import replace
 
 from .agent_factory import (BudgetExhausted, DEFER_REASONS, LEASE_LIFETIME_S, LOCK_OWNER, MODEL_ID, InvalidPlan, Task, acquire, add_feedback, charge_call,
                             defer, defer_streak, seconds_to_local_midnight,
-                            load_state, read_plan, ready, redact,
+                            load_state, read_plan, ready, redact, REPEAT_MARK,
                             route, quarantine, safe_path, safe_source, save_atomic, settle)
 from .factory_context import (LARGE_FILE_CHARS, asked_names, failing_names, identifier_tokens, keywords_from, packet,
                               render, scrub_paths)
@@ -110,7 +110,8 @@ UNIT_TEST_RULES = ("The test must import the real functions or classes from the 
                    "async def test functions or @pytest.mark.asyncio; drive async code with asyncio.run(...) inside "
                    "a plain def test function.")
 MARKER_PROBE = gate.GateResult(1, 1, 0, 1, 0, 0, True, '')   # a red result: only the marker can fail it
-REVIEW_OVERHEAD = 1500      # reviewer instructions + verdict format on top of the files
+REVIEW_NOTE_LIMIT = 400     # <id>: what the task's earlier candidates were rejected for, shown to its critics
+REVIEW_OVERHEAD = 1500 + REVIEW_NOTE_LIMIT      # reviewer instructions + verdict format on top of the files
 VIEW_ROOM = 3000            # the least room planned for one file shown as outline + parts (render's floor is lower)
 # what the files of one prompt may take: the reviewer's room besides its diff and instructions, less the coder's text
 FIT_ROOM = channels.PROMPT_LIMIT_CHARS - REVIEW_DIFF_LIMIT - REVIEW_OVERHEAD - 3000
@@ -303,6 +304,15 @@ def fresh_feedback(state: dict, tid: str) -> str | None:
             m = ATTEMPT_TAG.match(text)
             out.append('[%s] %s' % (source, text[m.end():] if m else text))
     return '\n'.join(out) or None
+
+
+def rejected_for(state: dict, tid: str) -> str:
+    """What the task's earlier candidates were rejected for, as its coder was told (fresh_feedback) without the
+    requeue notes and the loop's repeat markers; the newest REVIEW_NOTE_LIMIT characters. <id> (skeptic 20.11): a redo
+    of a rejected test kept the very lines the rejection named and two critics approved it, they never saw it."""
+    lines = [ln for ln in (fresh_feedback(state, tid) or '').split('\n')
+             if ln.strip() and not ln.startswith(('[opus] Retry on factory version', '[gate] ' + REPEAT_MARK))]
+    return redact('\n'.join(lines))[-REVIEW_NOTE_LIMIT:]
 
 
 def large_names(task: Task, files: dict[str, bytes]) -> set[str]:
@@ -607,7 +617,8 @@ REVIEW_LENSES = (
 
 def review_candidate(task: Task, workdir: Path, model: str, invoke, *,
                      baseline: dict[str, bytes] | None = None,
-                     scratch: Path | None = None, lens: str = '', prior: tuple = ()) -> tuple[bool, list[str]]:
+                     scratch: Path | None = None, lens: str = '', prior: tuple = (),
+                     rejected: str = '') -> tuple[bool, list[str]]:
     """A separate call sees an immutable copy and returns ``(approved, reasons)``.
 
     Its opinion never grants DONE. A failed call or an unreadable answer raises ReviewFault
@@ -624,7 +635,9 @@ def review_candidate(task: Task, workdir: Path, model: str, invoke, *,
         earlier = ('Earlier critics of this same candidate said:\n' +
                    ''.join('- ' + redact(str(p))[:600] + '\n' for p in prior) +
                    'Find what they missed or got wrong; do not repeat their remarks.\n') if prior else ''
-        head = ('Review this patch task: ' + redact(task.title) + '.\n' + checks +
+        told = ('Earlier candidates of this task were rejected for:\n' + rejected[-REVIEW_NOTE_LIMIT:] +
+                '\nReject this candidate if it still has a defect named there.\n') if rejected else ''
+        head = ('Review this patch task: ' + redact(task.title) + '.\n' + checks + told +
                 (' The task files are below: small files whole, a large file as its outline and the parts that '
                  'matter. Judge the candidate by its diff and the code shown; never reject it only because some '
                  'code is not shown.\n' if light else
@@ -2189,20 +2202,22 @@ def _pass_inner(tasks, task: Task, state: dict, *, checkpoint: Path, root: Path,
         save_atomic(checkpoint, state)
 
         critics = []      # the models that reviewed this candidate: the next critic is none of them, nor the coder
+        told = rejected_for(state, tid)
 
         def invoke(call_task, directory, preferred, **kwargs):
             return call('review', call_task, lambda _retry: directory, preferred,
                         kwargs['prompt_override'], exclude_model=[ctx['coder_model']] + critics)
         try:
             approved, reasons = timed('review_s', lambda: review_candidate(
-                task, ctx['workdir'], review_model, invoke, baseline=ctx['baseline'], scratch=staging))
+                task, ctx['workdir'], review_model, invoke, baseline=ctx['baseline'], scratch=staging,
+                rejected=told))
             critics.append(calls[-1]['model'])
             said = ['critic 1 %s: %s' % ('approved' if approved else 'rejected', '; '.join(reasons) or 'no remarks')]
             for n in range(1, min(REVIEW_CHAIN, len(REVIEW_LENSES)) if approved else 0):
                 try:     # the sequential chain: another model with its own lens; a missing one shortens it
                     approved, reasons = timed('review_s', lambda: review_candidate(
                         task, ctx['workdir'], review_model, invoke, baseline=ctx['baseline'], scratch=staging,
-                        lens=REVIEW_LENSES[n], prior=tuple(said)))
+                        lens=REVIEW_LENSES[n], prior=tuple(said), rejected=told))
                 except (NoIndependentReviewer, channels.ChannelUnavailable, ReviewFault, ChannelFault):
                     events.append('review_chain_short')
                     approved = True          # the earlier critics approved; no further model now
