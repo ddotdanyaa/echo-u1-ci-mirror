@@ -2053,17 +2053,17 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
     baseline_dir = None
     owned, live, parsed = set(), set(), True
     for other_tid, other in ck.read()['tasks'].items():     # fresh: other workers' candidates and leases are theirs
-        held = other.get('pending_review')
-        if held is not None:
-            if isinstance(held, dict) and isinstance(held.get('workdir'), str):
-                try:
-                    if '\0' in held['workdir']:      # Python 3.13+ resolve() no longer refuses an embedded NUL
-                        raise ValueError('embedded null character')
-                    owned.add(Path(held['workdir']).resolve())
-                except (OSError, ValueError, RuntimeError):
-                    parsed = False
-            else:
-                parsed = False     # a record we cannot read may own a copy: collect nothing this pass
+        for held in (other.get('pending_review'), other.get('candidate')):   # an approved candidate waits for its promote
+            if held is not None:
+                if isinstance(held, dict) and isinstance(held.get('workdir'), str):
+                    try:
+                        if '\0' in held['workdir']:      # Python 3.13+ resolve() no longer refuses an embedded NUL
+                            raise ValueError('embedded null character')
+                        owned.add(Path(held['workdir']).resolve())
+                    except (OSError, ValueError, RuntimeError):
+                        parsed = False
+                else:
+                    parsed = False     # a record we cannot read may own a copy: collect nothing this pass
         if other.get('status') == 'RUNNING' and isinstance(other.get('lease'), str):
             live.add('task-%s-%s' % (other_tid, other['lease'][:8]))
     if not parsed:

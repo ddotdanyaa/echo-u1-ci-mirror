@@ -1,9 +1,10 @@
 # Factory status (generated, structured data only)
 
-Generated: 2026-11-20T07:33:30Z
-Source commit: sha238a85e2ad10
+Generated: 2026-11-20T09:13:04Z
+Source commit: shae082cdd36aeb
 
 ## Commits (sha, time)
+- shae082cdd3 2026-11-20T12:12:45+03:00
 - sha238a85e2 2026-11-20T10:33:14+03:00
 - sha4363ba9b 2026-11-20T09:53:56+03:00
 - sha95474a12 2026-11-20T09:46:00+03:00
@@ -23,7 +24,6 @@ Source commit: sha238a85e2ad10
 - shab326123f 2026-11-20T05:33:52+03:00
 - sha2f5a2915 2026-11-20T05:33:51+03:00
 - sha4c97eb9a 2026-11-20T05:12:59+03:00
-- shab0455c8d 2026-11-20T04:56:19+03:00
 
 ## Funnel
 | step | count |
@@ -43,14 +43,14 @@ Side counters: blocked=6, parked=0, requeued=0
 Tasks now: BLOCKED=6, DONE=28, FAILED=25, READY=3
 Accepted: 0
 Promoted: 13
-Free RAM, GB: 4.24
-Telemetry rows: 4079 recognised, 0 unrecognised
+Free RAM, GB: 3.29
+Telemetry rows: 4253 recognised, 0 unrecognised
 
 ## Spend per model
 | model | calls | tokens_in | tokens_out | usage_unknown | http_429 | errors |
 |---|---|---|---|---|---|---|
-| google/gemini-3.1-flash-lite | 248 | 1478935 | 105913 | 10 | 0 | 10 |
-| google/gemini-3.5-flash-lite | 405 | 2750820 | 117492 | 13 | 0 | 13 |
+| google/gemini-3.1-flash-lite | 266 | 1614944 | 120151 | 10 | 0 | 10 |
+| google/gemini-3.5-flash-lite | 420 | 2860826 | 126095 | 14 | 0 | 14 |
 | google/gemini-3.6-flash | 24 | 69915 | 3702 | 6 | 1 | 6 |
 | google/gemma-4-26b-a4b-it | 48 | 111834 | 28683 | 21 | 0 | 21 |
 | google/gemma-4-31b-it | 73 | 67690 | 3572 | 49 | 0 | 49 |
@@ -60,15 +60,15 @@ Telemetry rows: 4079 recognised, 0 unrecognised
 ## Spans
 | span | rows | calls |
 |---|---|---|
-| answer | 229 | 0 |
-| gate | 761 | 0 |
+| answer | 235 | 0 |
+| gate | 778 | 0 |
 | infra | 92 | 0 |
-| loop | 798 | 0 |
-| other | 223 | 0 |
+| loop | 840 | 0 |
+| other | 242 | 0 |
 | promote | 17 | 0 |
 | review | 165 | 88 |
-| run | 1761 | 781 |
-| triage | 33 | 0 |
+| run | 1847 | 814 |
+| triage | 37 | 0 |
 
 ## Channels (model ids)
 - g-3-1-flash-lite
@@ -93,8 +93,8 @@ Telemetry rows: 4079 recognised, 0 unrecognised
 
 ## Published files
 Modules: 19
-Tests in the cloud: 47
-Tests not in the cloud: 69
+Tests in the cloud: 48
+Tests not in the cloud: 70
 - tests/test_agent_factory.py (backlog-id, email, env-path, key, long-run, owner-name, path, user-path)
 - tests/test_factory_ab.py (backlog-id)
 - tests/test_factory_asked_code.py (dependency)
@@ -140,6 +140,7 @@ Tests not in the cloud: 69
 - tests/test_factory_loop_run.py (key, long-run)
 - tests/test_factory_neighbours.py (dependency)
 - tests/test_factory_owner_list.py (backlog-id, call-word, long-run)
+- tests/test_factory_pool_loop.py (backlog-id)
 - tests/test_factory_pool_runner.py (backlog-id)
 - tests/test_factory_pool_state.py (backlog-id)
 - tests/test_factory_port.py (backlog-id, key)

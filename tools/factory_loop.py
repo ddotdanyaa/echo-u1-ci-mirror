@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import contextlib
 import errno
 import hashlib
 import inspect
@@ -38,10 +39,15 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from tools import agent_factory as F  # noqa: <id>
+from tools import factory_channels as CH  # noqa: <id>
 from tools import factory_process  # noqa: <id>
+from tools import factory_quota as quota_ledger  # noqa: <id>
 
 RUNNER_TIMEOUT_S = int(F.LEASE_LIFETIME_S)  # one runner pass = one lease; not a switch
-MIN_FREE_RAM = 2 * 2 ** 30
+from tools.factory_gate import MIN_FREE_RAM  # noqa: <id>  (one floor for the loop and the gates)
+EST_DEFAULT_BYTES = 300 * 2 ** 20     # a worker's memory before the pool has measured five (job peaks: 36 + 87 MB)
+EST_KEEP, EST_MIN_SAMPLES = 20, 5
+WAIT_CHUNK_S = 3.0                    # real seconds between two looks at the pool while workers run
 STALE_INDEX_LOCK_S = 120
 ES_CONTINUOUS = 0x80000000
 ES_SYSTEM_REQUIRED = 0x00000001
@@ -316,10 +322,88 @@ def load_keys(env_file: Path, channels: Path, missing: list | None = None) -> di
     return result
 
 
+@dataclass
+class Worker:
+    """One runner process the loop started for one claimed task."""
+    slot: int
+    tid: str
+    token: str | None
+    base_sha: str
+    root: Path | None = None
+    owned: object = None
+    out: Path | None = None
+    err: Path | None = None
+    fhs: tuple = ()
+    t_claim: float = 0.0          # time.monotonic() at the claim
+    t_start: float = 0.0          # time.monotonic() at the start of the process
+    k: int = 1                    # live workers when it started (itself included)
+    free_ram: int = 0
+    exps: dict | None = None
+    hint: str = ""
+    peak: int | None = None
+    res: dict | None = None       # the reaped result waiting for its accounting (the state lock was busy)
+
+
+class Pool:
+    """The live workers by slot. ``wait_any`` blocks until one exits or ``timeout`` real seconds pass; tests inject
+    ``wait_fn(workers, timeout)``."""
+
+    def __init__(self, wait_fn=None):
+        self.workers: dict[int, Worker] = {}
+        self.wait_fn = wait_fn
+
+    def free_slot(self) -> int:
+        n = 0
+        while n in self.workers:
+            n += 1
+        return n
+
+    def start(self, w: Worker) -> Worker:
+        self.workers[w.slot] = w
+        return w
+
+    def remove(self, w: Worker) -> None:
+        self.workers.pop(w.slot, None)
+
+    def tids(self) -> set:
+        return {w.tid for w in self.workers.values()}
+
+    def roots(self) -> set:
+        return {w.root for w in self.workers.values() if w.root is not None}
+
+    def finished(self) -> list:
+        return [w for w in self.workers.values() if w.owned is None or w.owned.poll() is not None]
+
+    def wait_any(self, timeout: float) -> list:
+        live = [w for w in self.workers.values() if w.owned is not None]
+        if not live:
+            return self.finished()
+        done = self.finished()
+        if done:
+            return done
+        if self.wait_fn is not None:
+            self.wait_fn(live, timeout)
+        elif os.name == "nt":
+            try:
+                import _winapi
+                handles = [int(w.owned.proc._handle) for w in live[:60]]
+                _winapi.WaitForMultipleObjects(handles, False, int(max(0.0, timeout) * 1000))
+            except Exception:
+                time.sleep(min(timeout, 0.1))
+        else:
+            end = time.monotonic() + timeout
+            while time.monotonic() < end and not self.finished():
+                time.sleep(0.05)
+        return self.finished()
+
+
 class Loop:
+    TXN_WAIT_S = 10.0       # a transaction on the state waits at most this long for the lock (a commit lasts ms)
+    CLAIM_WAIT_S = 2.0      # the claim waits less: a held lock is WAIT state_locked, not a stalled loop
+
     def __init__(self, cfg: Config, *, triage_fn=None, runner_cmd=None, clock=time.time,
                  sleep=time.sleep, power_fn=set_execution_state, free_ram_fn=free_ram_bytes,
-                 extra_env=None, startup_notes=None, rng=None):
+                 extra_env=None, startup_notes=None, rng=None, wait_fn=None):
         if cfg.review_model in (cfg.small_model, cfg.large_model):
             raise ValueError("review model must differ from the code model: " + cfg.review_model)
         self.cfg = cfg
@@ -338,6 +422,13 @@ class Loop:
         self.questions, self.ls_path = d / "opus_questions.md", d / "loop_state.json"
         self.stop, self.brake, self.pidfile = d / "STOP", d / "BRAKE", d / "loop.pid"
         self.stage, self.mirror = d / "stage", d / "src_mirror"
+        self.snap_dir, self.workers_dir = d / "src_snapshots", d / "workers"
+        self.pool = Pool(wait_fn)
+        self._peaks: list = []          # job peaks (bytes) of the last EST_KEEP workers: the admission estimate
+        self._brake_due = None          # a brake the drain of the live workers may still cancel
+        self._infra_mono = 0.0          # when the last infrastructure result was accounted (one incident counts once)
+        self._txn_open = False
+        self._max_k, self._k_sum, self._k_n = 0, 0, 0
         self.run_id = uuid.uuid4().hex[:12]
         self.base_sha = ""
         self._mem_infra = 0
@@ -707,11 +798,10 @@ class Loop:
             self.event("infra", status="skipped", reason="orphan_leases: state locked")
             return
         try:
-            _, state = self.load()
-            expired = F.release_expired(state, time.time())          # past their deadline already: ordinary expiries
-            freed = F.release_expired(state, float("inf"), orphan=True)
+            with self.txn() as (_, state):
+                expired = F.release_expired(state, time.time())      # past their deadline already: ordinary expiries
+                freed = F.release_expired(state, float("inf"), orphan=True)
             if expired or freed:
-                self.save(state)
                 self.event("infra", status="released", reason="orphan_leases", tasks=len(freed),
                            expired=len(expired))
         except Exception as e:                       # an aid: the loop starts anyway, leases expire by time
@@ -753,41 +843,65 @@ class Loop:
             self.event("infra", status="error", reason="lockdir: " + F.redact(str(e))[:200])
 
     # -- state
-    def load(self):
+    # The state changes ONLY here: a transaction (the lock, the plan and the state read FRESH, validated and saved on a
+    # normal exit; an exception writes nothing). Readers take a locked snapshot. The runners write through the same lock.
+    def _ensure_plan(self) -> None:
         if not self.plan_path.exists():
             F.save_atomic(self.plan_path, {"tasks": []})
-        tasks = F.read_plan(json.loads(self.plan_path.read_text(encoding="utf-8")))
-        return tasks, F.load_state(self.ckpt, tasks)
 
-    def save(self, state: dict) -> None:
-        F.save_atomic(self.ckpt, state)
-
-    def note_infra(self, state: dict | None) -> int:
-        if state is None:
-            try:
-                state = self.load()[1]
-            except Exception as e:  # broken plan/checkpoint: fall back to memory
-                self.err("note_infra load", e)
-                try:
-                    state = json.loads(self.ckpt.read_text(encoding="utf-8"))
-                except (OSError, ValueError):
-                    self._mem_infra += 1
-                    return self._mem_infra
-        streak = F.note_infra(state, False)
+    def load(self):
+        """A private copy of (tasks, state), read fresh under the lock; to change the state use ``txn``."""
+        if self._txn_open:
+            raise RuntimeError("load() inside a transaction: use the one the block already holds")
+        self._ensure_plan()
         try:
-            self.save(state)
-        except OSError as e:
-            self.err("note_infra save", e)
-        return max(streak, 0)
+            return F.snapshot(self.ckpt, self.plan_path, self.TXN_WAIT_S)
+        finally:
+            self._lock_journal()
+
+    @contextlib.contextmanager
+    def txn(self, wait_s: float | None = None):
+        """One short transaction on the checkpoint. Not re-entrant: a nested one would wait for its own lock."""
+        if self._txn_open:
+            raise RuntimeError("nested state transaction")
+        self._ensure_plan()
+        self._txn_open = True
+        try:
+            with F.txn(self.ckpt, self.plan_path, wait_s if wait_s is not None else self.TXN_WAIT_S) as pair:
+                yield pair
+        finally:
+            self._txn_open = False
+            self._lock_journal()
+
+    def _lock_journal(self) -> None:
+        """A stale state lock the transaction itself cleared is still an event (the same as clear_stale_lockdir's)."""
+        mine = str(self.ckpt.with_suffix(self.ckpt.suffix + ".lockdir"))
+        keep = []
+        for ev in F.LOCK_EVENTS:
+            if ev.get("event") == "stale_lock_removed" and ev.get("lock") == mine:
+                self.event("infra", status="cleared", reason="stale_lockdir", holder=ev.get("holder", "old"))
+            else:
+                keep.append(ev)
+        F.LOCK_EVENTS[:] = keep
+
+    def _tx(self, fn):
+        """``fn(state)`` in one transaction; its value comes back."""
+        with self.txn() as (_tasks, state):
+            return fn(state)
+
+    def note_infra(self, state: dict | None = None) -> int:
+        try:
+            return max(self._tx(lambda st: F.note_infra(st, False)), 0)
+        except Exception as e:  # broken plan/checkpoint or a busy lock: fall back to memory
+            self.err("note_infra", e)
+            self._mem_infra += 1
+            return self._mem_infra
 
     def _series_ok(self) -> None:
         """A successful RUN, PROMOTE or TRIAGE ends the infrastructure series."""
         self._mem_infra = 0
         try:
-            _, state = self.load()
-            if state.get("infra_streak"):
-                F.note_infra(state, True)
-                self.save(state)
+            self._tx(lambda st: F.note_infra(st, True) if st.get("infra_streak") else None)
         except Exception as e:
             self.err("series reset", e)
 
@@ -796,9 +910,7 @@ class Loop:
         self.brake.unlink(missing_ok=True)
         self._mem_infra = 0
         try:
-            _, state = self.load()
-            F.note_infra(state, True)
-            self.save(state)
+            self._tx(lambda st: F.note_infra(st, True))
         except Exception as e:
             self.err("clear-brake reset", e)
         try:
@@ -816,6 +928,8 @@ class Loop:
         t0 = self.clock()
         try:
             out = self._step()
+        except F.LockBusy:      # the state is locked by a live writer: the same wait as always, no failure
+            out = Outcome(sleep=60, action="WAIT", reason="state_locked")
         except Exception as e:  # a. one error never kills the loop
             reason = "%s: %s" % (type(e).__name__, F.redact(str(e))[:300])
             streak = self.note_infra(None)
@@ -823,7 +937,7 @@ class Loop:
                        base_sha=self.base_sha or None)
             out = Outcome(sleep=60, action="CRASH", reason=reason, status="infra")
             if streak >= self.cfg.max_infra:
-                out = self._brake(streak, out)
+                out = self._brake_or_wait(streak, out)      # live workers finish first: a proof may cancel the brake
         # ONE rule for the brake series. It grows on: NO_RESULT, infra=True, DEAD_CHANNEL reasons.
         # It is reset ONLY by proof that the pipeline works (a model answered without a provider
         # error, the gates/reviewer ran, a real merge). Everything else is neutral: any TRIAGE,
@@ -933,26 +1047,31 @@ class Loop:
             ls["channel_until"] = max(float(ls.get("channel_until", 0)), until)
         self.save_ls(ls)
         if not channel and tid:
-            state = self.load()[1]
-            row = state["tasks"].get(tid)
-            if row is not None and row.get("status") in ("READY", "BLOCKED") or (row and row.get("status") == "READY"):
-                row["not_before"] = max(float(row.get("not_before") or 0), until)
-                self.save(state)
+            def postpone(state):
+                row = state["tasks"].get(tid)
+                if row is not None and row.get("status") in ("READY", "BLOCKED"):
+                    row["not_before"] = max(float(row.get("not_before") or 0), until)
+            self._tx(postpone)
         self.event("infra", task_id=tid or None, status="deferred", reason=self.rs(reason, 60),
                    scope="channel" if channel else "task", key=self.rs(key, 80), delay_s=round(delay, 1),
                    backoff_n=n, retry_at=self._iso(until))
         out.status, out.reason, out.sleep = "deferred", reason, (5 if channel else 1)
         return out
 
+    def _act(self, state, tasks, ls, now) -> dict:
+        wait_s = max(0.0, float(ls.get("channel_until", 0)) - now)
+        free = 1 if (self.pool.workers and not self._capacity(None)) else 0
+        return F.next_action(state, now, wait_s, self._has_more(ls, now), tasks, free=free, skip=self.pool.tids())
+
     def _step(self) -> Outcome:
         cfg, now = self.cfg, self.clock()
         self.base_sha = refresh_mirror(cfg.repo, cfg.branch, self.mirror)
         self.apply_answers()  # Opus answers first: before anything else touches the state
-        tasks, state = self.load()
-        freed = F.release_expired(state, now)
+        with self.txn() as (_tasks, state):       # a lease a live worker still holds is ended by the loop, not freed
+            freed = F.release_expired(state, now, keep=self.pool.tids())
         if freed:
-            self.save(state)
             self.event("infra", status="released", reason="lease_expired:" + ",".join(freed))
+        tasks, state = self.load()
         ls = self.ls()
         ls = self._close_parents(tasks, state, ls)
         if now - float(ls.get("tmp_clean_at", 0)) > 86400 and not any(
@@ -960,18 +1079,18 @@ class Loop:
             ls["tmp_clean_at"] = now          # once a day, only while nothing runs
             self.save_ls(ls)
             self._clean_state_tmp()
-        wait_s = max(0.0, float(ls.get("channel_until", 0)) - now)
-        act = F.next_action(state, now, wait_s, self._has_more(ls, now), tasks)
-        name, why = act["action"], act.get("reason", "")
-        if name == "PROMOTE":
+        done = self.pool.finished()
+        if done:                              # a worker ended: its result is accounted before anything new starts
+            return self._account_done(done[0])
+        act = self._act(state, tasks, ls, now)
+        if act["action"] == "PROMOTE":
             return self._promote(act["task_id"], tasks, state, ls)
-        if name == "RUN" and self._spec_pass(act.get("task_id") or "", tasks, state, ls):
-            tasks, state = self.load()          # the answer was applied or the task parked: choose again
-            ls = self.ls()
-            act = F.next_action(state, now, wait_s, self._has_more(ls, now), tasks)
-            name, why = act["action"], act.get("reason", "")
-        if name == "RUN":
-            return self._run(tasks, state, ls, act.get("task_id") or "")
+        out, act, tasks, state, ls = self._fill(act, tasks, state, ls, now)
+        if out is not None:
+            return out
+        name, why = act["action"], act.get("reason", "")
+        if name == "PROMOTE" and not self.pool.workers:
+            return self._promote(act["task_id"], tasks, state, ls)
         if (name == "WAIT" and why == "channel_cooldown" and float(act.get("wait_s") or 0) >= 300
                 and now - float(ls.get("wait_triage_at", 0)) >= cfg.triage_retry_s
                 and self._has_more(ls, now)
@@ -979,15 +1098,136 @@ class Loop:
             ls["wait_triage_at"] = now  # a long channel wait: triage the next portion meanwhile
             self.save_ls(ls)
             return self._triage(state, tasks, ls, now)
+        if name == "TRIAGE":
+            out = self._triage(state, tasks, ls, now)
+            if not self.pool.workers:
+                return out
+            if out.proof:
+                self._series_ok()              # triage worked while a runner works: then the iteration waits for it
+            return self._await_workers()
+        if self.pool.workers:                  # nothing more to start now: wait for the next worker to end
+            return self._await_workers()
+        if name == "RUN":                      # work is ready but no worker may start: the reason is the wait
+            return Outcome(sleep=60, action="WAIT", reason=self._refused or "not_runnable")
         if name == "WAIT":
             return Outcome(sleep=min(max(float(act.get("wait_s") or 0), 5), 60),
                            action="WAIT", reason=why)
-        if name == "TRIAGE":
-            return self._triage(state, tasks, ls, now)
         if name == "HOLD":
             self._write_questions(tasks, state, ls)
             return Outcome(sleep=cfg.hold_sleep, action="HOLD", reason=why)
         return Outcome(sleep=cfg.done_sleep, action="DONE", reason=why)
+
+    _refused = ""
+
+    def _fill(self, act, tasks, state, ls, now):
+        """Start workers while there is compatible work and room for one more (capacity is checked BEFORE the <id> spec
+        pass: a task that cannot start now costs no model call). (outcome | None, act, tasks, state, ls)."""
+        self._refused = ""
+        admitted, refused, live0 = 0, "", len(self.pool.workers)
+        for _ in range(64):                                 # bounded: every round starts a worker or ends the loop
+            if act["action"] != "RUN":
+                break
+            tid = next((t for t in (act.get("task_ids") or [act.get("task_id")])
+                        if t and t not in self.pool.tids()), "")
+            if not tid:
+                break
+            refused = self._capacity(tasks.get(tid))
+            if refused:
+                break
+            if not self._spec_pass(tid, tasks, state, ls):
+                got = self._admit(tid, tasks, ls)
+                if isinstance(got, Outcome):
+                    self._pool_event(admitted, refused, live0)
+                    return got, act, tasks, state, ls
+                admitted += got
+            tasks, state = self.load()          # the claim changed the state, the loop state: nothing stale is kept
+            ls = self.ls()
+            act = self._act(state, tasks, ls, now)
+        self._refused = refused
+        self._pool_event(admitted, refused, live0)
+        return None, act, tasks, state, ls
+
+    def _pool_event(self, admitted: int, refused: str, live0: int) -> None:
+        live = len(self.pool.workers)
+        if live >= 2 or (refused and live >= 1):
+            est = self._estimate()
+            self.event("pool", status="admitted" if admitted else "held", live=live, admitted=admitted or None,
+                       refused_by=refused or None, free_ram_mb=int(self.free_ram_fn() / 2 ** 20),
+                       est_mb=int(est / 2 ** 20), headroom=self._headroom_seen)
+
+    _headroom_seen = None
+
+    def _ending(self) -> bool:
+        cfg = self.cfg
+        return self.stop.exists() or bool(cfg.until and dt.datetime.fromtimestamp(self.clock()) >= cfg.until)
+
+    def _await_workers(self) -> Outcome:
+        """Workers are live: wait for the next one to end (a short look every WAIT_CHUNK_S: a cooled channel or freed
+        RAM may admit one more). STOP, the deadline or a due brake: no admission, drain every live worker."""
+        while True:
+            if self._ending() or self._brake_due is not None:
+                return self._drain()
+            done = self.pool.wait_any(WAIT_CHUNK_S)
+            if done:
+                return self._account_done(done[0])
+            late = [w for w in self.pool.workers.values()
+                    if w.owned is not None and w.res is None and time.monotonic() - w.t_claim > RUNNER_TIMEOUT_S]
+            if late:
+                return self._account_done(late[0], timed_out=True)
+            tasks, state = self.load()
+            ls = self.ls()
+            now = self.clock()
+            act = self._act(state, tasks, ls, now)
+            if act["action"] == "RUN":
+                out, act, tasks, state, ls = self._fill(act, tasks, state, ls, now)
+                if out is not None:
+                    return out
+
+    def _drain(self) -> Outcome:
+        """No admission: wait for every live worker and account it. A brake that is due waits for the last one, and a
+        proof of work during the drain cancels it."""
+        out = Outcome(action="RUN", reason="drain", status="ok")
+        proof = False
+        while self.pool.workers:
+            done = self.pool.wait_any(WAIT_CHUNK_S)
+            late = [w for w in self.pool.workers.values()
+                    if w.owned is not None and w.res is None and time.monotonic() - w.t_claim > RUNNER_TIMEOUT_S]
+            for w in (done or late):
+                try:
+                    got = self._account(w, timed_out=w not in done)
+                except F.LockBusy:
+                    self.sleep_fn(1.0)          # the result is parked on the worker: look again, the others live on
+                    continue
+                proof = proof or got.proof
+                if got.proof and got.status not in ("infra", "brake"):
+                    self._series_ok()
+                    self._brake_due = None
+                out = got
+        return self._finish_brake(out, proof)
+
+    def _account_done(self, w: Worker, timed_out: bool = False) -> Outcome:
+        out = self._account(w, timed_out=timed_out)
+        if self._brake_due is not None:
+            return self._drain() if self.pool.workers else self._finish_brake(out, out.proof)
+        if self.pool.workers:
+            out.sleep = 0                       # the others are still working: look at them at once
+        return out
+
+    def _finish_brake(self, out: Outcome, proof: bool) -> Outcome:
+        due, self._brake_due = self._brake_due, None
+        if due is None:
+            return out
+        try:
+            streak = int(self.load()[1].get("infra_streak", 0))
+        except Exception as e:
+            self.err("brake check", e)
+            streak = due
+        if streak >= self.cfg.max_infra and not proof:
+            return self._brake(streak, out)
+        out.proof = out.proof or proof
+        if out.proof:
+            out.status = "ok"
+        return out
 
     # -- <id> spec pass: one free model call turns a unit_test row into a spec before the test is written
     SPEC_CODE_MAX = 40000          # all files shown together; a file above LARGE_FILE_CHARS is shown as a view
@@ -1142,8 +1382,11 @@ class Loop:
         from tools import factory_selffix as X
         try:
             ls = self.ls()
-            if self.clock() - float(ls.get("selffix_at") or 0) < self.SELFFIX_EVERY_S:
+            since = self.clock() - float(ls.get("selffix_at") or 0)
+            if since < self.SELFFIX_EVERY_S:
                 return
+            if self.pool.workers and since < 4 * self.SELFFIX_EVERY_S:
+                return          # its pytest is a third one beside the gates' two slots: it waits for an idle pool
             ls["selffix_at"] = self.clock()
             self.save_ls(ls)
             self_dir = self.SELF_DIR
@@ -1415,17 +1658,16 @@ class Loop:
                     if "locked" in str(e) or "RUNNING" in str(e) or "REVIEW" in str(e):
                         raise _Later(str(e)) from e
                     raise
-            tasks, state = self.load()
-            row = state["tasks"][tid]
-            if row["status"] in ("BLOCKED", "FAILED"):
-                F.unblock(state, tid, note or "Opus: повторить попытку")
-                action = "unblocked"
-            else:  # unblock writes the note itself; any other status keeps it as feedback
-                self._drop_pending(row)  # a fresh instruction invalidates the parked review
-                if note:
-                    F.add_feedback(state, tid, "opus", note)
-                action = "amended" if fields else "feedback"
-            self.save(state)
+            with self.txn() as (tasks, state):
+                row = state["tasks"][tid]
+                if row["status"] in ("BLOCKED", "FAILED"):
+                    F.unblock(state, tid, note or "Opus: повторить попытку")
+                    action = "unblocked"
+                else:  # unblock writes the note itself; any other status keeps it as feedback
+                    self._drop_pending(row)  # a fresh instruction invalidates the parked review
+                    if note:
+                        F.add_feedback(state, tid, "opus", note)
+                    action = "amended" if fields else "feedback"
             ls = self.ls()
             if bid and ls["holds"].pop(bid, None) is not None:
                 self.save_ls(ls)
@@ -1471,9 +1713,7 @@ class Loop:
         if not added:
             raise F.InvalidPlan("not added: " + str((getattr(added, "skipped", None) or [{}])[0].get("reason")))
         if note:
-            tasks, state = self.load()
-            F.add_feedback(state, new_id, "opus", note)
-            self.save(state)
+            self._tx(lambda st: F.add_feedback(st, new_id, "opus", note))
         ls = self.ls()
         ls["holds"].pop(bid, None)
         self.save_ls(ls)
@@ -1485,11 +1725,12 @@ class Loop:
     def _park(self, tid: str, reason: str, note: str) -> None:
         """BLOCKED with a whitelisted reason (agent_factory.park): Opus sees it in opus_questions.md."""
         try:
-            tasks, state = self.load()
-            if state["tasks"][tid]["status"] in ("READY", "RUNNING", "REVIEW"):
-                self._drop_pending(state["tasks"][tid])   # its work copy stays in staging otherwise
-                F.park(state, tid, reason, note)
-                self.save(state)
+            with self.txn() as (tasks, state):
+                parked = state["tasks"][tid]["status"] in ("READY", "RUNNING", "REVIEW")
+                if parked:
+                    self._drop_pending(state["tasks"][tid])   # its work copy stays in staging otherwise
+                    F.park(state, tid, reason, note)
+            if parked:
                 self.event("infra", task_id=tid, status="parked", reason=reason)
         except Exception as e:
             self.err("park " + tid, e)
@@ -1501,6 +1742,7 @@ class Loop:
     def _drop_pending(self, row: dict) -> None:
         """Forget a parked review; delete its work copy only when it is STRICTLY inside staging
         (the runner's own check: staging itself, '', '.', outside paths and non-dicts are ignored)."""
+        row.pop("candidate", None)
         pend = row.pop("pending_review", None)
         if not isinstance(pend, dict):
             return
@@ -1544,9 +1786,14 @@ class Loop:
         row = state["tasks"][tid]
         ls.setdefault("rejected", {}).setdefault(tid, []).append(row.get("commit"))
         self.save_ls(ls)
-        row.update(status="READY", attempts=0, commit=None, lease=None, deadline=None)
-        F.add_feedback(state, tid, "opus", note or "rejected by Opus")
-        self.save(state)
+
+        def reset(st):
+            r = st["tasks"][tid]
+            if r["status"] != "PROMOTED":
+                raise F.InvalidPlan("only a PROMOTED task can be rejected (it is %s)" % r["status"])
+            r.update(status="READY", attempts=0, commit=None, lease=None, deadline=None)
+            F.add_feedback(st, tid, "opus", note or "rejected by Opus")
+        self._tx(reset)
         bid = bid or row.get("backlog_id")
         self.event("reject", task_id=tid, backlog_id=bid, status="rejected", reason="rejected_by_coordinator")
         return {"task_id": tid, "backlog_id": bid, "reason": "rejected"}
@@ -1571,23 +1818,23 @@ class Loop:
         if tid:
             if tid not in tasks:
                 raise F.InvalidPlan("unknown task " + tid)
-            row = state["tasks"][tid]
-            if row["status"] in ("RUNNING", "REVIEW"):
-                raise _Later("task is %s" % row["status"])
-            if row["status"] == "DONE":
-                raise F.InvalidPlan("task is already DONE")
-            if row["status"] == "PROMOTED":
-                # a close drops the candidate in ONE answer, its commit kept as rejected the way --reject keeps it (live
-                # 20.11 03:54: the close was refused, the reject after it made the task READY and the loop wrote the same
-                # test again before a second close could come)
-                ls.setdefault("rejected", {}).setdefault(tid, []).append(row.get("commit"))
-                row["commit"] = None
-            row.update(status="DONE", lease=None, deadline=None, blocked_reason=None,
-                       reason="closed_by_opus")
-            self._drop_pending(row)
-            row.pop("not_before", None)
-            F.add_feedback(state, tid, "opus", note or "closed by Opus")
-            self.save(state)
+            with self.txn() as (_t, st):            # the status is checked on the FRESH row, inside the transaction
+                row = st["tasks"][tid]
+                if row["status"] in ("RUNNING", "REVIEW"):
+                    raise _Later("task is %s" % row["status"])
+                if row["status"] == "DONE":
+                    raise F.InvalidPlan("task is already DONE")
+                if row["status"] == "PROMOTED":
+                    # a close drops the candidate in ONE answer, its commit kept as rejected the way --reject keeps it
+                    # (live 20.11 03:54: the close was refused, the reject after it made the task READY and the loop
+                    # wrote the same test again before a second close could come)
+                    ls.setdefault("rejected", {}).setdefault(tid, []).append(row.get("commit"))
+                    row["commit"] = None
+                row.update(status="DONE", lease=None, deadline=None, blocked_reason=None,
+                           reason="closed_by_opus")
+                self._drop_pending(row)
+                row.pop("not_before", None)
+                F.add_feedback(st, tid, "opus", note or "closed by Opus")
         elif not bid:
             raise F.InvalidPlan("close needs a task or a backlog id")
         ls["holds"].pop(bid or "", None)
@@ -1952,54 +2199,247 @@ class Loop:
             return 400
         return max(1, min(R.MAX_MODEL_CALLS, total)) if total else 400
 
-    def _run(self, tasks, state, ls, hint: str = "") -> Outcome:
-        cfg = self.cfg
-        if self.free_ram_fn() < MIN_FREE_RAM:
-            return Outcome(sleep=60, action="WAIT", reason="low_ram")
-        self.clear_stale_lockdir()      # a dead runner's lock must not refuse this pass (restart check 19.11)
-        if self.ckpt.with_suffix(self.ckpt.suffix + ".lockdir").exists():
-            # a live or young holder: the runner would refuse without a result (NO_RESULT counts towards the brake)
-            return Outcome(sleep=60, action="WAIT", reason="state_locked")
-        small, large, review = cfg.small_model, cfg.large_model, cfg.review_model
-        self._run_exps = None
-        if hint:
-            try:
-                self._run_exps = self._task_experiments(hint, tasks.get(hint), ls)
-                coder = self._run_exps["coder_model"]       # <id>: the task's arm is the code model
-                small = large = coder
-                if review == coder:                         # the review model must differ from the code model
-                    review = next(m for m in EXPERIMENTS["coder_model"] if m != coder)
-            except Exception as e:
-                self.err("experiments arm", e)
-        cmd = self.runner_cmd + [
-            "--root", str(self.mirror), "--plan", str(self.plan_path),
-            "--checkpoint", str(self.ckpt), "--staging", str(self.stage),
-            "--small-model", small, "--large-model", large,
-            "--review-model", review, "--channels", str(cfg.channels),
-            "--max-tasks", "1", "--max-attempts", str(cfg.max_attempts),
-            "--max-model-calls", str(self._call_budget()), "--base-sha", self.base_sha,
-            "--port-repo", str(cfg.repo),    # the runner's --root is a plain copy: a port task's old commit lives here
-            "--execute", "--ack-host-access-risk"]
-        if (self._run_exps or {}).get("small_follow_up") in EXPERIMENTS["small_follow_up"]:
-            cmd += ["--small-follow-up", self._run_exps["small_follow_up"]]
-        t0 = self.clock()
-        wall0 = time.time()
+    def _estimate(self) -> int:
+        """What one more worker may need: the <id> of the job peaks of the last EST_KEEP workers (a fixed guess until
+        EST_MIN_SAMPLES are measured)."""
+        peaks = sorted(self._peaks)
+        if len(peaks) < EST_MIN_SAMPLES:
+            return EST_DEFAULT_BYTES
+        return peaks[min(len(peaks) - 1, int(len(peaks) * 0.9))]
+
+    def _capacity(self, task) -> str:
+        """'' when one more worker may start now, else the reason. K is nothing but this: free RAM (the floor, plus what
+        the live workers have not used yet, plus one more estimate) and free quota (first calls that can still be
+        booked beyond those the live workers have not booked). With no live worker only today's rules count."""
+        self._headroom_seen = None
+        free = self.free_ram_fn()
+        if free < MIN_FREE_RAM:
+            return "low_ram"
+        live = list(self.pool.workers.values())
+        if not live:
+            return ""
+        if self._ending() or self._brake_due is not None:
+            return "ending"                      # STOP, the deadline or a due brake: the pool only drains
+        if self.cfg.once:
+            return "once"                        # --once is one pass
         try:
-            proc = factory_process.run_owned(cmd, cwd=str(_ROOT), env={**os.environ, **self.extra_env},
-                                             timeout=RUNNER_TIMEOUT_S)
-            res = self._parse(proc)
-        except subprocess.TimeoutExpired:
-            res = {"status": "NO_RESULT", "error": "runner timeout"}
-            lock = self.ckpt.with_suffix(self.ckpt.suffix + ".lockdir")
+            if (self.ls().get("brake") or {}).get("half_open"):
+                return "brake_trial"             # the half-open brake lets ONE trial pass through
+        except Exception as e:
+            self.err("capacity brake", e)
+        est = self._estimate()
+        pending = 0
+        for w in live:
+            seen = (w.owned.peak_bytes() if w.owned is not None else None) or 0
+            pending += max(0, est - seen)        # the memory a live worker has not used yet is not free
+        if free - pending < MIN_FREE_RAM + est:
+            return "low_ram"
+        try:
+            state = self.load()[1]
+            unbooked = sum(1 for w in live if not (state["tasks"].get(w.tid, {}).get("began") or {}).get("booked"))
+            self._headroom_seen = self._headroom(task, state)
+        except (OSError, ValueError, KeyError, TypeError):
+            return "quota"                       # the quota is unknown: no second worker
+        except Exception as e:
+            self.err("capacity", e)
+            return "quota"
+        return "quota" if self._headroom_seen <= unbooked else ""
+
+    def _headroom(self, task, state) -> int:
+        """First model calls that could be booked now on the code route (0 when the quota is unknown)."""
+        path = Path(self.cfg.channels)
+        configured = json.loads(path.read_text(encoding="utf-8"))["channels"]
+        CH.validate(configured)
+        tokens = int(getattr(task, "estimated_tokens", 0) or 0)
+        order = CH.route_order(configured, "code", 1, tokens) or CH.route_order(configured, "code", 1, 0)
+        env = {**os.environ, **self.extra_env}
+        quota = state.get("channel_quotas") if isinstance(state.get("channel_quotas"), dict) else {}
+        seen = quota_ledger.view(quota, quota_ledger.others(path.resolve().parent / "quota", str(self.ckpt)))
+        live = CH.usable(order, seen, env)
+        if not live:
+            return 0
+        return CH.headroom(order, seen, min(tokens, max(c["tpm"] for c in live)), env)
+
+    def _snapshot(self, head: str) -> Path:
+        """The tree a worker reads: a versioned copy of the mirror (hard links), never swapped under it."""
+        target = self.snap_dir / head[:12]
+        if target.is_dir():
+            return target
+        self.snap_dir.mkdir(parents=True, exist_ok=True)
+        tmp = self.snap_dir / (head[:12] + ".new")
+        shutil.rmtree(tmp, ignore_errors=True)
+
+        def link(src, dst):
             try:
-                (lock / F.LOCK_OWNER).unlink(missing_ok=True)
-                lock.rmdir()  # the runner tree was killed by the job object
-            except FileNotFoundError:
-                pass
-            except OSError as e:
-                self.err("runner lockdir", e)
-        dur = res.get("dur_s") if isinstance(res.get("dur_s"), (int, float)) else max(
-            round(self.clock() - t0, 3), round(time.time() - wall0, 3))
+                os.link(src, dst)
+            except OSError:
+                shutil.copy2(src, dst)
+        shutil.copytree(self.mirror, tmp, copy_function=link)
+        os.replace(tmp, target)
+        return target
+
+    def _prune_snapshots(self) -> None:
+        """Every snapshot but the newest and those a live worker reads goes (one that cannot be deleted waits)."""
+        try:
+            keep = {r.resolve() for r in self.pool.roots()}
+            if self.base_sha:
+                keep.add((self.snap_dir / self.base_sha[:12]).resolve())
+            for d in self.snap_dir.iterdir() if self.snap_dir.is_dir() else ():
+                if d.resolve() in keep:
+                    continue
+                if not d.name.endswith(".dead"):
+                    dead = d.with_name(d.name + ".dead")    # out of the way FIRST: a half-deleted tree is never reused
+                    shutil.rmtree(dead, ignore_errors=True)
+                    try:
+                        os.replace(d, dead)
+                    except OSError:
+                        continue                            # held by a scanner: it waits for the next prune
+                    d = dead
+                shutil.rmtree(d, ignore_errors=True)
+        except OSError as e:
+            self.err("snapshots", e)
+
+    def _unclaim(self, tid: str, token: str) -> None:
+        """The pass never began (its process died or never started): READY again, the attempt back (fenced)."""
+        try:
+            def back(state):
+                row = state["tasks"].get(tid)
+                if row and row.get("status") == "RUNNING" and row.get("lease") == token and "began" not in row:
+                    F.unclaim(state, tid, token)
+            self._tx(back)
+        except F.LockBusy:
+            raise                                  # the claim is still ours: the caller retries (a row held for a lease)
+        except (F.InvalidPlan, OSError) as e:
+            self.err("unclaim " + tid, e)
+
+    def _admit(self, tid: str, tasks, ls):
+        """Claim ``tid`` in one transaction and start its runner. 1 = started, 0 = not runnable any more, an Outcome =
+        the iteration ends here (a locked state is WAIT state_locked; an exhausted budget is today's WAITING_CHANNEL)."""
+        cfg = self.cfg
+        small, large, review = cfg.small_model, cfg.large_model, cfg.review_model
+        exps = None
+        try:
+            exps = self._task_experiments(tid, tasks.get(tid), ls)
+            coder = exps["coder_model"]                       # <id>: the task's arm is the code model
+            small = large = coder
+            if review == coder:                               # the review model must differ from the code model
+                review = next(m for m in EXPERIMENTS["coder_model"] if m != coder)
+        except Exception as e:
+            self.err("experiments arm", e)
+        t_claim = time.monotonic()
+        budget = self._call_budget()
+        base = self.base_sha
+        try:
+            with self.txn(self.CLAIM_WAIT_S) as (tasks2, state):
+                state["max_model_calls"] = budget             # the day's capacity: the loop claims, so the loop writes it
+                token = F.acquire(tasks2, state, tid, now=self.clock(), charge=False)
+        except F.BudgetExhausted:
+            res = {"status": "WAITING_CHANNEL", "reason": "budget_exhausted", "task_id": tid, "task": tid, "calls": [],
+                   "stages": {}, "events": [], "infra": False, "wait_s": round(F.seconds_to_local_midnight(), 1)}
+            return self._account(Worker(slot=-1, tid=tid, token=None, base_sha=base, exps=exps, hint=tid), res=res)
+        except F.LockBusy:
+            return Outcome(sleep=60, action="WAIT", reason="state_locked")
+        except F.InvalidPlan:                                  # no longer runnable (another writer): choose again
+            return 0
+        try:
+            root = self._snapshot(base)
+            fresh = self.ls()
+            fresh["bases"][tid] = base                        # the worker's base, recorded at the claim
+            self.save_ls(fresh)
+            cmd = self.runner_cmd + [
+                "--root", str(root), "--plan", str(self.plan_path),
+                "--checkpoint", str(self.ckpt), "--staging", str(self.stage),
+                "--small-model", small, "--large-model", large,
+                "--review-model", review, "--channels", str(cfg.channels),
+                "--task", tid, "--lease", token, "--max-attempts", str(cfg.max_attempts),
+                "--max-model-calls", str(budget), "--base-sha", base,
+                "--port-repo", str(cfg.repo),    # the runner's --root is a plain copy: a port task's old commit lives here
+                "--execute", "--ack-host-access-risk"]
+            if (exps or {}).get("small_follow_up") in EXPERIMENTS["small_follow_up"]:
+                cmd += ["--small-follow-up", exps["small_follow_up"]]
+            slot = self.pool.free_slot()
+            self.workers_dir.mkdir(parents=True, exist_ok=True)
+            out_p, err_p = self.workers_dir / ("%d.out" % slot), self.workers_dir / ("%d.err" % slot)
+            fho, fhe = out_p.open("wb"), err_p.open("wb")     # truncated: a result is never the previous worker's
+            free = self.free_ram_fn()
+            try:
+                owned = factory_process.start_owned(cmd, cwd=str(_ROOT), env={**os.environ, **self.extra_env},
+                                                    stdout=fho, stderr=fhe)
+            except BaseException:
+                fho.close()
+                fhe.close()
+                raise
+        except BaseException:
+            self._unclaim(tid, token)                         # a spawn failure leaves no claim (as before)
+            raise
+        w = self.pool.start(Worker(slot=slot, tid=tid, token=token, base_sha=base, root=root, owned=owned, out=out_p,
+                                   err=err_p, fhs=(fho, fhe), t_claim=t_claim, t_start=time.monotonic(),
+                                   k=len(self.pool.workers) + 1, free_ram=free, exps=exps, hint=tid))
+        self._max_k = max(self._max_k, len(self.pool.workers))
+        self._k_sum, self._k_n = self._k_sum + w.k, self._k_n + 1
+        return 1
+
+    def _reap(self, w: Worker, timed_out: bool) -> dict:
+        """The worker's result. Its job closes (the whole tree dies); on a timeout the pass is NO_RESULT."""
+        rc = None
+        if w.owned is not None:
+            w.peak = w.owned.peak_bytes()
+            if timed_out:
+                w.owned.kill()
+            else:
+                w.owned.close()
+            rc = w.owned.proc.returncode
+            for fh in w.fhs:
+                try:
+                    fh.close()
+                except OSError:
+                    pass
+        self.pool.remove(w)
+        if w.peak:
+            self._peaks = (self._peaks + [w.peak])[-EST_KEEP:]
+        if timed_out:
+            return {"status": "NO_RESULT", "error": "runner timeout"}
+
+        def read(path):
+            try:
+                return path.read_bytes() if path else b""
+            except OSError:
+                return b""
+        proc = argparse.Namespace(stdout=read(w.out), stderr=read(w.err), returncode=rc)
+        return self._parse(proc)
+
+    def _release_claim(self, w: Worker) -> None:
+        if w.token:
+            self._unclaim(w.tid, w.token)
+
+    def _brake_or_wait(self, streak: int, out: Outcome) -> Outcome:
+        """The brake waits for the live workers (one of them may prove the pipeline works); alone, it brakes now."""
+        if self.pool.workers:
+            self._brake_due = streak
+            return out
+        return self._brake(streak, out)
+
+    def _account(self, w: Worker, timed_out: bool = False, res: dict | None = None) -> Outcome:
+        """Everything the loop does with one finished pass (what ``_run`` did after the runner returned)."""
+        cfg = self.cfg
+        if res is None:
+            res = w.res if w.res is not None else self._reap(w, timed_out)
+        w.res = res
+        try:
+            self._release_claim(w)
+            tasks, state = self.load()
+        except F.LockBusy:
+            if w.slot >= 0 and w.slot not in self.pool.workers:
+                self.pool.start(w)             # the result is kept: the next look accounts it (nothing is lost)
+            raise
+        w.res = None
+        self.pool.remove(w)                    # (a parked worker leaves now)
+        self._prune_snapshots()
+        self._run_exps = w.exps
+        base = w.base_sha
+        ls = self.ls()
+        dur = res.get("dur_s") if isinstance(res.get("dur_s"), (int, float)) else round(
+            time.monotonic() - (w.t_start or time.monotonic()), 3)
         st = res.get("status")
         tid = res.get("task_id") or res.get("task") or ""
         calls = [c for c in (res.get("calls") or []) if isinstance(c, dict)]
@@ -2009,7 +2449,7 @@ class Loop:
         reason = res.get("reason") or res.get("blocked_reason") or res.get("error")
         bid = self._bid(state, tasks, tid)
         self.event("run", task_id=tid or None, backlog_id=bid, dur_s=dur, status=st,
-                   model=self.rs(model), base_sha=self.base_sha, calls=len(calls) or None,
+                   model=self.rs(model), base_sha=base, calls=len(calls) or None,
                    reason=F.redact(str(reason))[:200] if reason else None,
                    attempt=res.get("attempt"), kind=self.rs(res.get("kind")),
                    wait_s=res.get("wait_s"),
@@ -2018,7 +2458,12 @@ class Loop:
                    events=self._events(res.get("events")) or None,
                    reason_detail=self.rs(res.get("reason_detail"), 300),
                    error_type=self.rs(res.get("error_type")),
-                   channel_reason=self.rs(res.get("channel_reason")))
+                   channel_reason=self.rs(res.get("channel_reason")),
+                   worker=w.slot, pid=getattr(w.owned, "pid", None), lease=(w.token or "")[:8] or None, k=w.k,
+                   free_ram_mb=int(w.free_ram / 2 ** 20) or None,
+                   peak_mb=round(w.peak / 2 ** 20, 1) if w.peak else None,
+                   queue_s=round(w.t_start - w.t_claim, 3) if w.t_start else None,
+                   slot_wait_s=(res.get("stages") or {}).get("slot_wait_s"))
         for c in calls:  # one event per model call: run (code/repair) or review
             self.event("review" if c.get("role") == "review" else "run",
                        task_id=tid or None, backlog_id=bid, role=self.rs(c.get("role")),
@@ -2036,21 +2481,21 @@ class Loop:
                        finish_reason=self.rs(c.get("finish_reason")),
                        files_read=[self.rs(str(x)) for x in (c.get("files_read") or [])[:10]] or None,
                        error_class=self.rs(c.get("error_class")), status="error" if c.get(
-                           "error_class") else "ok", base_sha=self.base_sha)
+                           "error_class") else "ok", base_sha=base)
         for name, secs in (res.get("stages") or {}).items():
             span = "gate" if str(name).startswith(("gate", "red_before", "neighbors")) else (
                 "review" if str(name).startswith("review") else "run")
             self.event(span, task_id=tid or None, backlog_id=bid, stage=str(name), dur_s=secs,
-                       status="ok", base_sha=self.base_sha)
+                       status="ok", base_sha=base)
         if res.get("cross_review") is not None:
             self.event("review", task_id=tid or None, status="approved" if res["cross_review"]
-                       else "rejected", model=self.rs(model), base_sha=self.base_sha)
+                       else "rejected", model=self.rs(model), base_sha=base)
         tot = ls["totals"]
         tot["tokens_in"] = tot.get("tokens_in", 0) + (tin or 0)     # unknown usage adds nothing, it is not a zero
         tot["tokens_out"] = tot.get("tokens_out", 0) + (tout or 0)
         tot["seconds"] = round(tot.get("seconds", 0) + (dur or 0), 3)
         if tid:
-            ls["bases"][tid] = self.base_sha
+            ls["bases"][tid] = base
         if str(reason or "").startswith(REJECT_PREFIXES):
             tot["rejected"] = tot.get("rejected", 0) + 1
         wait_s = res.get("wait_s")
@@ -2071,7 +2516,7 @@ class Loop:
             self._learn_from_run(tid, tasks, rkey, res)
             return self._defer_temporary(temp, res, calls, tid, ls, out, wait_s)
         infra = no_result or res.get("infra") is True or rkey in DEAD_CHANNEL or ckey in DEAD_CHANNEL
-        key = tid or hint
+        key = tid or w.hint
         counters = ls.setdefault("no_result", {})
         if infra:
             if no_result and key:
@@ -2089,14 +2534,16 @@ class Loop:
                     out.status, out.reason = "blocked", "runner_no_result"
                     return out                     # neutral: neither a failure nor a proof
             self.save_ls(ls)
-            fresh = self.load()[1]
-            streak = F.note_infra(fresh, False)
-            self.save(fresh)
+            # one incident counts once: a pass that started BEFORE the previous infrastructure result was accounted
+            # failed from the same blip (a flapping proxy fails every live pass at once), so it adds nothing
+            counted = (w.t_start or 0.0) >= self._infra_mono
+            self._infra_mono = time.monotonic()
+            streak = self.note_infra() if counted else int(self.load()[1].get("infra_streak", 0))
             out.sleep, out.status = 60, "infra"
             self.event("infra", task_id=tid or None, status="run_failed", infra_streak=streak,
-                       reason=F.redact(str(reason or st))[:200])
-            if streak >= cfg.max_infra:
-                return self._brake(streak, out)
+                       reason=F.redact(str(reason or st))[:200], same_incident=None if counted else True)
+            if counted and streak >= cfg.max_infra:
+                return self._brake_or_wait(streak, out)
         else:
             self._learn_from_run(tid, tasks, rkey, res)
             out.proof = self._is_proof(res, calls, st, rkey)
@@ -2202,13 +2649,18 @@ class Loop:
                     table.pop(next(iter(table)))
             F.save_atomic(self._mem_path(), mem)
             if repeat and tid in state["tasks"]:
-                row = state["tasks"][tid]
                 note = F.REPEAT_MARK + " " + (words or self._reason_class(rkey))
-                F.add_feedback(state, tid, "gate", note)
-                cur = row.get("tier_floor") if row.get("tier_floor") in TIER_ORDER else TIER_ORDER[0]
-                new = TIER_ORDER[min(TIER_ORDER.index(cur) + 1, len(TIER_ORDER) - 1)]
-                row["tier_floor"] = new
-                self.save(state)
+                marks = {}
+
+                def raise_floor(st):
+                    row = st["tasks"][tid]
+                    F.add_feedback(st, tid, "gate", note)
+                    cur = row.get("tier_floor") if row.get("tier_floor") in TIER_ORDER else TIER_ORDER[0]
+                    new = TIER_ORDER[min(TIER_ORDER.index(cur) + 1, len(TIER_ORDER) - 1)]
+                    row["tier_floor"] = new
+                    marks.update(cur=cur, new=new)
+                self._tx(raise_floor)
+                cur, new = marks["cur"], marks["new"]
                 # the runner does not read tier_floor yet (backlog fac-tier-floor): "requested", never a false "raised"
                 self.event("route", task_id=tid, status="requested", reason="repeated_error",
                            signature=self.rs(sig, 120), tier_from=cur, tier_to=new, applied=False)
@@ -2246,13 +2698,12 @@ class Loop:
         hist: dict = {}
         for label in ls["no_proof"].values():
             hist[label] = hist.get(label, 0) + 1
-        fresh = self.load()[1]
-        fresh["infra_streak"] = max(int(fresh.get("infra_streak", 0)), self.cfg.max_infra)
-        self.save(fresh)
+        self._tx(lambda fresh: fresh.__setitem__("infra_streak", max(int(fresh.get("infra_streak", 0)),
+                                                                     self.cfg.max_infra)))
         out.reason = "%d different tasks failed without any proof of work: %s" % (
             len(ls["no_proof"]), ", ".join("%s x%d" % kv for kv in sorted(hist.items())))
         out.status = "infra"
-        return self._brake(self.cfg.max_infra, out)
+        return self._brake_or_wait(self.cfg.max_infra, out)
 
     @staticmethod
     def _gate_collected(res: dict) -> bool:
@@ -2326,15 +2777,13 @@ class Loop:
             n = ls.setdefault("requeues", {}).get(tid, 0) + 1
             if n >= self.REQUEUE_PARK:  # a third time: stop the circle, ask Opus
                 ls["requeues"].pop(tid, None)
-                F.requeue(state, tid, "нет пакета for-review")
-                self.save(state)
+                self._tx(lambda st: F.requeue(st, tid, "нет пакета for-review"))
                 self.save_ls(ls)
                 self._park(tid, "no_package", "REVIEW without a package %d times" % n)
                 self.event("promote", task_id=tid, status="requeued", reason="no_package_parked")
                 return Outcome(action="PROMOTE", reason="no_package_parked", status="requeued")
             ls["requeues"][tid] = n
-            F.requeue(state, tid, "нет пакета for-review")
-            self.save(state)
+            self._tx(lambda st: F.requeue(st, tid, "нет пакета for-review"))
             ls["bases"].pop(tid, None)
             self.save_ls(ls)
             self.event("promote", task_id=tid, backlog_id=self._bid(state, tasks, tid),
@@ -2370,8 +2819,7 @@ class Loop:
                 done_sha = sha_
                 break
         if done_sha:
-            F.mark_promoted(state, tid, done_sha)
-            self.save(state)
+            self._tx(lambda st: F.mark_promoted(st, tid, done_sha))
             package_done()
             return finish("promoted", "already_merged", commit=done_sha)
         try:
@@ -2379,16 +2827,12 @@ class Loop:
         except Exception as e:  # a package we cannot even read is a package failure
             return self._promote_failed(tid, tasks, state, ls, e, finish)
         if why:
-            row = state["tasks"][tid]
-            row.update(status="BLOCKED", blocked_reason="scope_violation", lease=None,
-                       deadline=None)
-            F.add_feedback(state, tid, "gate", "promote refused: " + why)
-            self.save(state)
+            self._tx(lambda st: self._block_review(st, tid, "scope_violation", "promote refused: " + why))
             shutil.rmtree(src, ignore_errors=True)
             ls["bases"].pop(tid, None)
             self.save_ls(ls)
             return finish("refused", F.redact(why)[:200])
-        moved = ""
+        moved, keep = "", False
         if not base:
             moved = "база не записана"
         elif base != cur:
@@ -2398,10 +2842,15 @@ class Loop:
             hit = sorted(c for c in changed if c.casefold() in mine)
             if hit:
                 moved = "база сдвинулась: " + ", ".join(hit[:5])
+            else:
+                # the factory's own promotes that landed while this pass worked: the candidate was gated without them
+                near = self._own_neighbours(tid, tasks.get(tid), base, cur)
+                if near:
+                    moved, keep = "рядом сдвинулось (свой promote): " + ", ".join(near[:5]), True
         if moved:
-            F.requeue(state, tid, moved)
-            self.save(state)
-            shutil.rmtree(src, ignore_errors=True)  # runner refuses an existing package
+            kept = self._tx(lambda st: self._requeue_review(st, tid, moved, keep))
+            if not kept:
+                shutil.rmtree(src, ignore_errors=True)  # runner refuses an existing package
             ls["bases"].pop(tid, None)
             self.save_ls(ls)
             return finish("requeued", "base_moved" if base else "base_unknown")
@@ -2448,21 +2897,50 @@ class Loop:
                 self.event("infra", status="error", reason="restore: " + F.redact(str(e2))[:200])
             raise
         if no_diff:  # the candidate equals HEAD: nothing to merge, never record a foreign sha
-            row = state["tasks"][tid]
-            row.update(status="BLOCKED", blocked_reason="no_diff", lease=None, deadline=None)
-            F.add_feedback(state, tid, "gate", "promote: candidate equals branch HEAD (no diff)")
-            self.save(state)
+            self._tx(lambda st: self._block_review(st, tid, "no_diff", "promote: candidate equals branch HEAD (no diff)"))
             shutil.rmtree(src, ignore_errors=True)
             ls["bases"].pop(tid, None)
             self.save_ls(ls)
             return finish("no_diff", "no_diff", "no_diff")
         sha = git_run(wt, "rev-parse", "HEAD").strip()
-        F.mark_promoted(state, tid, sha)
-        self.save(state)
+        self._tx(lambda st: F.mark_promoted(st, tid, sha))
         self._clear_requeues(ls, tid)
         ls.get("promote_fail", {}).pop(tid, None)
         package_done()
         return finish("promoted", "promoted", proof=True, commit=sha)
+
+    @staticmethod
+    def _block_review(state, tid, reason, note) -> None:
+        row = state["tasks"][tid]
+        row.update(status="BLOCKED", blocked_reason=reason, lease=None, deadline=None)
+        row.pop("candidate", None)
+        F.add_feedback(state, tid, "gate", note)
+
+    def _requeue_review(self, state, tid, note, keep) -> bool:
+        """REVIEW -> READY. ``keep``: the approved candidate resumes at the gates on the new base, no coder call."""
+        had = isinstance(state["tasks"][tid].get("candidate"), dict)
+        F.requeue(state, tid, note, keep_candidate=keep)
+        return keep and had
+
+    def _own_neighbours(self, tid, task, base: str, cur: str) -> list:
+        """Files of the factory's OWN promotes in base..cur that touch what this candidate was gated against: its tests
+        and their one-hop neighbours, through everything the changed files affect. Two candidates that were built
+        together are tested together by the gates of the second one on the new base."""
+        if task is None:
+            return []
+        log = git_run(self.cfg.repo, "log", "--format=%H %s", base + ".." + cur)
+        own = [x.split(" ", 1)[0] for x in log.splitlines() if x.split(" ", 1)[-1].startswith("factory(")]
+        if not own:
+            return []
+        files = set()
+        for sha in own:
+            files.update(x for x in git_run(self.cfg.repo, "show", "--name-only", "--format=", sha).split("\n") if x)
+        from tools import affected_tests
+        from tools import agent_factory_runner as R
+        graph = affected_tests.Graph(Path(self.mirror))
+        found, _, _ = affected_tests.affected(sorted(files), radius=None, g=graph)
+        mine = set(task.tests) | set(R.neighbor_tests(Path(self.mirror), task)) | set(task.touch_files) | set(task.read_files)
+        return sorted(set(found) & mine) or sorted(files & mine)
 
     def _promote_failed(self, tid, tasks, state, ls, e, finish) -> Outcome:
         """A deterministic failure caused by the package (copy, git add, scope): count per task, park
@@ -2549,11 +3027,14 @@ class Loop:
                 "tokens_in": tot.get("tokens_in", 0), "tokens_out": tot.get("tokens_out", 0),
                 "seconds": tot.get("seconds", 0), "infra_streak": state.get("infra_streak", 0),
                 "last_iteration": self.ts(), "run_id": self.run_id,
-                "iterations": self.iterations}
+                "iterations": self.iterations,
+                "max_workers": self._max_k, "mean_k": round(self._k_sum / self._k_n, 2) if self._k_n else None}
             F.save_atomic(self.stats_path, stats)
             if blocked or stats["quarantine"] or ls["holds"] or any(
                     t.only_opus or not t.privacy_safe for t in tasks.values()):
                 self._write_questions(tasks, state, ls)
+        except F.LockBusy:
+            return                  # a writer holds the state this instant: the numbers wait for the next iteration
         except Exception as e:  # stats must never stop the loop
             self.event("infra", status="error", reason="stats: " + F.redact(str(e))[:200])
 
@@ -2635,6 +3116,14 @@ class Loop:
             self.event("loop", action="REQUEUE", status="ok",
                        reason="version %s: %s" % (_ROOT.name, ",".join(done))[:200])
 
+    def _drain_before_exit(self) -> None:
+        """STOP, the deadline or --once with workers still live: no admission, every worker is accounted first."""
+        if self.pool.workers:
+            try:
+                self._drain()
+            except Exception as e:
+                self.err("drain", e)
+
     def run(self) -> int:
         cfg = self.cfg
         if not self.acquire():
@@ -2659,9 +3148,11 @@ class Loop:
             self._discover_keys()
             while True:
                 if self.stop.exists():
+                    self._drain_before_exit()
                     self.event("loop", action="EXIT", status="stop", reason="STOP")
                     return EXIT_OK
                 if cfg.until and dt.datetime.fromtimestamp(self.clock()) >= cfg.until:
+                    self._drain_before_exit()
                     self.event("loop", action="EXIT", status="deadline", reason="deadline")
                     return EXIT_OK
                 self._selffix()                     # at most once an hour (<id>)
@@ -2671,9 +3162,16 @@ class Loop:
                 if out.code is not None:
                     return out.code
                 if cfg.once:
+                    self._drain_before_exit()
                     return EXIT_OK
-                self._sleep(out.sleep)
+                self._sleep(min(out.sleep, WAIT_CHUNK_S) if self.pool.workers else out.sleep)
         finally:
+            for w in list(self.pool.workers.values()):     # an exit with live workers (an error): their jobs die
+                try:
+                    if w.owned is not None:
+                        w.owned.kill()
+                except Exception as e:
+                    self.err("kill worker", e)
             self._restore_tmp(saved_tmp)
             self.power_fn(ES_CONTINUOUS)
             self.release()
@@ -2711,6 +3209,7 @@ def summary(state_dir, backlog=None, free_ram_fn=free_ram_bytes) -> dict:
     rows = bad = skipped = 0
     claimed, coded, gated, reviewed, promoted_ev, accepted_ev = set(), set(), set(), set(), set(), set()
     requeued = parked_ev = 0
+    ks: list = []
     for fname in TEL_FILES:
         path = root / fname
         try:
@@ -2759,6 +3258,8 @@ def summary(state_dir, backlog=None, free_ram_fn=free_ram_bytes) -> dict:
                                 t["errors"][cls] = t["errors"].get(cls, 0) + 1
                         if tid and role == "code" and not row.get("error_class"):
                             coded.add(tid)
+                    if span == "run" and not role and isinstance(row.get("k"), int) and not isinstance(row.get("k"), bool):
+                        ks.append(row["k"])         # workers live when this pass started (itself included)
                     if tid and span == "run" and not role and st not in (None, "WAITING_CHANNEL", "IDLE", "NO_RESULT"):
                         claimed.add(tid)
                         if st == "REVIEW":
@@ -2831,7 +3332,8 @@ def summary(state_dir, backlog=None, free_ram_fn=free_ram_bytes) -> dict:
             "tasks_now": by_status, "span": spans, "model": models, "status": status_all,
             "accepted": len(accepted | accepted_ev), "promoted": len(promoted),
             "rows_recognized": rows, "unrecognized_rows": bad, "skipped_files": skipped,
-            "free_ram_gb": ram}
+            "free_ram_gb": ram,
+            "workers": {"max": max(ks), "mean_k": round(sum(ks) / len(ks), 2)} if ks else None}
 
 
 def summary_main(argv) -> int:

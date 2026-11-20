@@ -256,7 +256,7 @@ def test_run_calls_runner_and_records_tokens(env):
     loop.step()
     assert env.runs() == 1
     args = env.log.read_text(encoding="utf-8")
-    assert "--execute" in args and "--max-tasks 1" in args
+    assert "--execute" in args and "--task T1 --lease " in args and "--max-tasks" not in args   # the loop claims and hands over
     run = [x for x in env.events() if x["span"] == "run"][-1]
     assert run["task_id"] == "T1" and run["backlog_id"] == "B1"
     assert run["tokens_in"] == 10 and run["tokens_out"] == 3 and run["model"] == "m/x"

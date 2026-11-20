@@ -17,6 +17,7 @@ lists no Gemma free tier; Gemma limits come from the channel file.
 """
 from __future__ import annotations
 
+import copy
 import datetime
 import hashlib
 import json
@@ -307,6 +308,22 @@ def reserve(state, channel, tokens, *, now=None, requests=1):
     group['rpm_times'] = minute_times + [now] * per_minute
     group['minute'] = [(t, n) for t, n in group.get('minute', []) if now - t < 60] + [(now, tokens)]
     return now
+
+
+def headroom(channels, state, tokens, env, *, now=None, requests=1, cap=16) -> int:
+    """How many first calls choose()+reserve() could book right now on ``channels`` (a deep copy of ``state``: nothing
+    is booked). The pool admits one more worker only while this exceeds the workers that have not booked yet."""
+    work = copy.deepcopy(state)
+    now = time.time() if now is None else now
+    found = 0
+    while found < cap:
+        try:
+            pick = choose(channels, work, tokens, env, now=now, requests=requests)
+        except ChannelUnavailable:
+            break
+        reserve(work, pick, tokens, now=now, requests=requests)
+        found += 1
+    return found
 
 
 def reconcile(state, channel, at, reserved, actual, *, requests=1, actual_requests=None):

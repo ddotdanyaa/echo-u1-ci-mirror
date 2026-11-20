@@ -314,16 +314,17 @@ def validate_state(tasks: dict[str, Task], state: dict) -> None:
 
 def ready(tasks: dict[str, Task], state: dict, *, google: bool = True,
           occupied: tuple[str, ...] = (), now: float | None = None) -> list[str]:
-    """Sorted tasks ready to execute, excluding all concurrent writers."""
+    """Sorted tasks ready to execute, mutually compatible. Busy = RUNNING and REVIEW rows (a candidate holds its files
+    until it is promoted). Exclusive = touch_files + tests, reads = read_files: two tasks never share an exclusive
+    file, and one never writes what the other reads."""
     validate_state(tasks, state)
     now = time.time() if now is None else float(now)
     read_in_use = set()
     write_in_use = {p.casefold() for p in occupied}
     for tid, row in state["tasks"].items():
-        if row["status"] == "RUNNING":
-            write_in_use.update(p.casefold() for p in tasks[tid].touch_files)
+        if row["status"] in ("RUNNING", "REVIEW"):
+            write_in_use.update(p.casefold() for p in tasks[tid].touch_files + tasks[tid].tests)
             read_in_use.update(p.casefold() for p in tasks[tid].read_files)
-            read_in_use.update(p.casefold() for p in tasks[tid].tests)
     found = []
     for tid in sorted(tasks, key=lambda t: (tasks[t].priority, t)):
         task = tasks[tid]
@@ -333,8 +334,8 @@ def ready(tasks: dict[str, Task], state: dict, *, google: bool = True,
             continue
         if google and (not task.privacy_safe or task.only_opus):
             continue
-        reads = {p.casefold() for p in task.read_files + task.tests}
-        writes = {p.casefold() for p in task.touch_files}
+        reads = {p.casefold() for p in task.read_files}
+        writes = {p.casefold() for p in task.touch_files + task.tests}
         if (writes & (write_in_use | read_in_use)) or (reads & write_in_use):
             continue
         if all(state["tasks"][dep]["status"] in SATISFIED for dep in task.depends_on):
@@ -408,6 +409,8 @@ def settle(state: dict, tid: str, token: str, *,
     row.pop("began", None)
     row.pop("defer_streak", None)
     row.pop("orphan_releases", None)    # the pass ended: a series of restarts during its passes is over
+    if tests_ok and isinstance(row.get("pending_review"), dict):
+        row["candidate"] = dict(row["pending_review"])   # kept while the row is in REVIEW: a requeue may resume it
     if not tests_ok and strike:
         # A strike is only a candidate failing the gate/reviewer (never a channel fault).
         add_strike(state, tid)
@@ -417,6 +420,8 @@ def settle(state: dict, tid: str, token: str, *,
     elif next_status == "REVIEW":
         row["reviewed_at"] = time.time()
         row["lease_expiries"] = 0
+    if row["status"] != "REVIEW":
+        row.pop("candidate", None)
     return next_status
 
 
@@ -461,7 +466,7 @@ def park(state: dict, tid: str, reason: str, note: str) -> None:
     if row["status"] not in ("READY", "RUNNING", "REVIEW"):
         raise InvalidPlan("only an unsettled task can be parked")
     row.update(status="BLOCKED", blocked_reason=reason, lease=None, deadline=None)
-    for key in ("pending_review", "not_before", "orphan_releases", "began"):
+    for key in ("pending_review", "candidate", "not_before", "orphan_releases", "began"):
         row.pop(key, None)
     add_feedback(state, tid, "gate", note)
 
@@ -559,7 +564,7 @@ def accept(state: dict, tid: str, *, reviewer: str) -> None:
 ORPHAN_FREE_RELEASES = 2   # restarts in a row during one task's passes that are not counted against it
 
 
-def release_expired(state: dict, now: float, *, orphan: bool = False) -> list[str]:
+def release_expired(state: dict, now: float, *, orphan: bool = False, keep=()) -> list[str]:
     """RUNNING with an expired lease goes back to READY: no strike, the attempt is
     NOT refunded. The third expiry of one task blocks it (blocked_reason
     "lease_expired"), so a task that kills its worker cannot loop forever.
@@ -570,6 +575,8 @@ def release_expired(state: dict, now: float, *, orphan: bool = False) -> list[st
     resets the series."""
     freed = []
     for tid, row in state["tasks"].items():
+        if tid in keep:      # a worker of the pool still runs it: the loop ends that pass itself (kill + accounting)
+            continue
         if row["status"] == "RUNNING" and row.get("deadline") is not None and row["deadline"] <= now:
             row.pop("began", None)
             if orphan:
@@ -596,6 +603,7 @@ def mark_promoted(state: dict, tid: str, commit_sha: str) -> None:
     if not isinstance(commit_sha, str) or not re.fullmatch(r"[0-9a-f]{7,40}", commit_sha):
         raise InvalidPlan("commit sha expected")
     row.update(status="PROMOTED", commit=commit_sha)
+    row.pop("candidate", None)
     if row.get("kind") == "unit_test" and row.get("backlog_id"):
         # the sub-task shares the strike key of its main task: its attempts must not eat theirs
         state.get("strikes", {}).pop("bl:" + row["backlog_id"], None)
@@ -616,19 +624,25 @@ def unblock(state: dict, tid: str, note: str) -> None:
                blocked_reason=None, reason=None, lease_expiries=0)
     row.pop("not_before", None)
     row.pop("pending_review", None)
+    row.pop("candidate", None)
     row.pop("defer_streak", None)
     row.pop("orphan_releases", None)
     add_feedback(state, tid, "opus", note)
 
 
-def requeue(state: dict, tid: str, note: str) -> None:
+def requeue(state: dict, tid: str, note: str, keep_candidate: bool = False) -> None:
     """REVIEW -> READY when the integration branch moved after the gate. No strike,
-    the attempt is not spent; the note is kept as gate feedback (redacted)."""
+    the attempt is not spent; the note is kept as gate feedback (redacted).
+    ``keep_candidate``: the approved candidate comes back as the task's pending review: the next pass resumes at the
+    gates on the new base and makes no coder call."""
     row = state["tasks"][tid]
     if row["status"] != "REVIEW":
         raise InvalidPlan("only a reviewed candidate can be requeued")
     row.update(status="READY", attempts=max(0, row["attempts"] - 1))
     row.pop("reviewed_at", None)
+    kept = row.pop("candidate", None)
+    if keep_candidate and isinstance(kept, dict):
+        row["pending_review"] = kept
     add_feedback(state, tid, "gate", note)
 
 
@@ -686,7 +700,7 @@ def note_infra(state: dict, ok: bool) -> int:
 
 def next_action(state: dict, now: float, channel_wait_s: float,
                 backlog_has_more: bool, tasks: dict[str, Task], *,
-                google: bool = True) -> dict:
+                google: bool = True, free: int = 0, skip=()) -> dict:
     """PROMOTE | RUN | WAIT | TRIAGE | HOLD | DONE.
 
     Candidates come only from ready() (same google flag as the runner), so scope
@@ -696,17 +710,20 @@ def next_action(state: dict, now: float, channel_wait_s: float,
     not_before, or a live lease (wait_s >= 5); TRIAGE: nothing runnable and the
     backlog has more; HOLD: only Opus/blocked/failed work is left; DONE otherwise."""
     rows = state["tasks"]
+    skip = set(skip)         # tasks whose worker is still in the pool: the loop has not accounted their pass yet
     review = [(row.get("reviewed_at", 0), tid) for tid, row in rows.items()
-              if row["status"] == "REVIEW"]
+              if row["status"] == "REVIEW" and tid not in skip]
     if review:
         return {"action": "PROMOTE", "task_id": min(review)[1], "reason": "review_pending"}
-    runnable = ready(tasks, state, google=google, now=now)
+    runnable = [t for t in ready(tasks, state, google=google, now=now) if t not in skip]
     if runnable:
         if channel_wait_s > 0:
             return {"action": "WAIT", "wait_s": channel_wait_s, "reason": "channel_cooldown"}
-        return {"action": "RUN", "task_id": runnable[0], "reason": "ready"}
+        return {"action": "RUN", "task_id": runnable[0], "task_ids": runnable, "reason": "ready"}
     delayed = [rows[t].get("not_before", 0) for t in ready(tasks, state, google=google,
                                                             now=float("inf"))]
+    if free > 0 and backlog_has_more and not delayed:
+        return {"action": "TRIAGE", "reason": "no_runnable_tasks"}   # a worker is live and there is room for more work
     deadlines = [r["deadline"] for r in rows.values()
                  if r["status"] == "RUNNING" and r.get("deadline") is not None]
     due = [d for d in delayed + deadlines if d > now]
@@ -807,7 +824,8 @@ def _dir_lock(path: Path, timeout_s: float):
                 try:
                     _drop_lock(lock)
                     ev = {"event": "stale_lock_removed", "lock": str(lock), "age_s": round(age),
-                          "why": "dead_holder" if dead else "old"}
+                          "why": "dead_holder" if dead else "old",
+                          "holder": "dead" if dead else ("anonymous" if owner is None else "old")}
                     LOCK_EVENTS.append(ev)
                     _log.warning("%s", ev)
                     continue
