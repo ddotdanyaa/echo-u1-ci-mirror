@@ -1351,6 +1351,10 @@ def light_attempt(task: Task, workdir: Path, model: str, timeout: int = LIGHT_TI
         text = _LIGHT_THOUGHT.sub('', str(content)).strip()
     except (ValueError, KeyError, IndexError, TypeError, AttributeError):
         return 1, _light_error(None, b'unreadable answer', 'UnreadableAnswer'), b''
+    if not text and choice.get('finish_reason') in ('length', 'max_tokens'):
+        # the whole output limit went into reasoning (Gemma 4, live 20.11: 13 of 16 coder calls since midnight, ~100 s
+        # each; the API refuses a thinking budget or level for it): no answer from this model now, another one is asked
+        return 1, _light_error(None, b'the model used its whole output limit and gave no answer', 'EmptyAnswer'), b''
     usage = data.get('usage') if isinstance(data.get('usage'), dict) else {}
     given = usage.get('prompt_tokens_details') if isinstance(usage.get('prompt_tokens_details'), dict) else {}
     made = usage.get('completion_tokens_details') if isinstance(usage.get('completion_tokens_details'), dict) else {}
@@ -1694,7 +1698,8 @@ def _pass_inner(tasks, task: Task, state: dict, *, checkpoint: Path, root: Path,
             else:
                 done = {'cool_s': info.get('retry_after_s') or 0}
             if kind in ('transient', 'network') and retry == 0:
-                time.sleep(channels.TRANSIENT_RETRY_S)
+                if done.get('action') != 'cool_model':   # a cooled model: the retry takes another model at once
+                    time.sleep(channels.TRANSIENT_RETRY_S)   # (live 20.11: a 503 of Gemma cost ~67 s, 20 s of it here)
                 continue
             raise ChannelFault(info, done.get('cool_s') or 0)
         raise ChannelFault({'kind': 'transient'})  # unreachable guard

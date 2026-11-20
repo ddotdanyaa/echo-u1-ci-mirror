@@ -493,6 +493,9 @@ def _classify_error_event(error: dict):
         if _find(body, 'provider_code') is not None:       # the UPSTREAM provider of one model, not the account
             info['scope'] = 'model'
         return info
+    if status is None and name == 'EmptyAnswer':
+        # HTTP 200 and no answer: the model spent its whole output limit (on reasoning); the model, not the account
+        return _info('transient', None, name, message)
     if status is None and name == 'NetworkError':
         # no HTTP answer at all (the light engine): the machine's network, the same for every channel; the
         # runner counts it towards the brake instead of postponing one task for ever (critic 19.11)
@@ -593,7 +596,7 @@ def apply_failure(state, channel, info, *, env=None, now=None) -> dict:
             return _cool_model(state, channel, now, seconds)
         cool(state, channel, now=now, seconds=seconds)
         return {'action': 'cool', 'cool_s': seconds}
-    if kind == 'transient' and info.get('status') in OVERLOAD_STATUSES:
+    if kind == 'transient' and (info.get('status') in OVERLOAD_STATUSES or info.get('name') == 'EmptyAnswer'):
         # "This model is currently experiencing high demand" (503): the MODEL is overloaded, not the account. Cooled,
         # the retry and the next pass take another channel (live 19.11 18:18-18:20: two passes were deferred on a
         # 503 of gemini-3.5-flash-lite while three other channels idled).
