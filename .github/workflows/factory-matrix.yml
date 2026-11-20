@@ -19,23 +19,23 @@ jobs:
           - shard: 3
             files: 'tests/test_factory_discover.py tests/test_factory_fit_views.py tests/test_factory_gate_chunks.py tests/test_factory_gate_failed.py'
           - shard: 4
-            files: 'tests/test_factory_gate_owner_data.py tests/test_factory_gate_split.py tests/test_factory_light.py tests/test_factory_light_aim.py'
+            files: 'tests/test_factory_gate_owner_data.py tests/test_factory_gate_split.py tests/test_factory_light_aim.py tests/test_factory_light_answers.py'
           - shard: 5
-            files: 'tests/test_factory_light_answers.py tests/test_factory_light_key.py tests/test_factory_light_note_block.py tests/test_factory_light_patterns.py'
+            files: 'tests/test_factory_light_key.py tests/test_factory_light_note_block.py tests/test_factory_light_patterns.py tests/test_factory_lock_owner.py'
           - shard: 6
-            files: 'tests/test_factory_lock_owner.py tests/test_factory_loop.py tests/test_factory_loop_d8a.py tests/test_factory_loop_git2.py'
+            files: 'tests/test_factory_loop.py tests/test_factory_loop_d8a.py tests/test_factory_loop_git2.py tests/test_factory_loop_git3.py'
           - shard: 7
-            files: 'tests/test_factory_loop_git3.py tests/test_factory_loop_git4.py tests/test_factory_loop_git5.py tests/test_factory_loop_holds.py'
+            files: 'tests/test_factory_loop_git4.py tests/test_factory_loop_git5.py tests/test_factory_loop_holds.py tests/test_factory_loop_report2.py'
           - shard: 8
-            files: 'tests/test_factory_loop_report2.py tests/test_factory_loop_report3.py tests/test_factory_loop_report4.py tests/test_factory_loop_report5.py'
+            files: 'tests/test_factory_loop_report3.py tests/test_factory_loop_report4.py tests/test_factory_loop_report5.py tests/test_factory_loop_report6.py'
           - shard: 9
-            files: 'tests/test_factory_loop_report6.py tests/test_factory_loop_spec.py tests/test_factory_near_merge.py tests/test_factory_parse_cache.py'
+            files: 'tests/test_factory_loop_spec.py tests/test_factory_near_merge.py tests/test_factory_parse_cache.py tests/test_factory_patterns.py'
           - shard: 10
-            files: 'tests/test_factory_patterns.py tests/test_factory_pool_k1.py tests/test_factory_quota.py tests/test_factory_red_by_assert.py'
+            files: 'tests/test_factory_pool_k1.py tests/test_factory_quota.py tests/test_factory_red_by_assert.py tests/test_factory_reject_cli.py'
           - shard: 11
-            files: 'tests/test_factory_reject_cli.py tests/test_factory_reject_promote.py tests/test_factory_revive.py tests/test_factory_row_text.py'
+            files: 'tests/test_factory_reject_promote.py tests/test_factory_revive.py tests/test_factory_row_text.py tests/test_factory_selffix_second_repo.py'
           - shard: 12
-            files: 'tests/test_factory_selffix_second_repo.py tests/test_factory_unit_rules_async.py tests/test_factory_view_fill.py'
+            files: 'tests/test_factory_unit_rules_async.py tests/test_factory_view_fill.py'
     name: shard ${{ matrix.shard }}
     runs-on: windows-latest
     timeout-minutes: 25

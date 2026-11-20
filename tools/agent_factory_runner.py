@@ -603,7 +603,10 @@ REVIEW_CHECKS_TEST = (
     'MagicMock in place of the code under test, no assert False, no test that only checks that a name exists, no '
     'hard-coded counts of files or markers in the repository; (4) nothing outside the test file; (5) it does not '
     'replace (monkeypatch, fake) the function inside which the described behaviour happens, read its body and the '
-    'comments at the call; (6) every function is called with the kind of arguments its signature and docstring take.')
+    'comments at the call; (6) every function is called with the kind of arguments its signature and docstring take; '
+    '(7) the defect it asserts is the one the task text names, on input of the kind the project really has: reject '
+    'a test whose defect is the model\'s own guess ("might", "or has spaces/formatting") or whose input the task '
+    'text and the code shown never produce.')
 # (5) and (6), 20.11 02:55: two promoted tests could never be made green by a correct fix. <id> called
 # diagnostics.reason_of(call marks) although it takes an exception or a token (unknown for anything else); <id> replaced
 # controlled_host.say, inside which speech_text turns numbers into words, so the fake always saw digits.
@@ -699,7 +702,11 @@ def review_candidate(task: Task, workdir: Path, model: str, invoke, *,
                    'Find what they missed or got wrong; do not repeat their remarks.\n') if prior else ''
         told = ('Earlier candidates of this task were rejected for:\n' + rejected[-REVIEW_NOTE_LIMIT:] +
                 '\nReject this candidate if it still has a defect named there.\n') if rejected else ''
-        head = ('Review this patch task: ' + redact(task.title) + '.\n' + checks + GATE_PASSED + '\n' + told +
+        # acceptance 20.11 (<id> and six before): the critics saw only the title ("Тест для <id>") and judged "the
+        # described defect" by the test's own comment. They get the task text the coder got (same redaction, same cap).
+        goal = getattr(task, 'goal', '') or ''
+        said_goal = ('Task text (what the coder was asked):\n' + redact(scrub_paths(goal))[:1500] + '\n') if goal else ''
+        head = ('Review this patch task: ' + redact(task.title) + '.\n' + said_goal + checks + GATE_PASSED + '\n' + told +
                 (' The task files are below: small files whole, a large file as its outline and the parts that '
                  'matter. Judge the candidate by its diff and the code shown; never reject it only because some '
                  'code is not shown.\n' if light else

@@ -731,6 +731,72 @@ def _weak_count(text: str, is_py: bool) -> int:
     return count
 
 
+# A loosened check (acceptance 20.11: <id> dropped the ^ of link_check.ID_RE so the priority cell <id> counted as an ID;
+# <id>#2 turned the fail-closed `except: return True` of generator._cancelled into `return False`). Both passed the gate
+# and every critic. Counted, not listed: a regex keeps as many anchors as it had, an error path keeps its result.
+REGEX_CALLS = frozenset(('compile', 'search', 'match', 'fullmatch', 'findall', 'finditer', 'sub', 'subn', 'split'))
+_ANCHOR = re.compile(r'\\[AZzbB]|\\.|\[(?:\\.|[^\]\\])*\]|[\^$]')
+
+
+def _anchors(pattern: str) -> int:
+    """^ $ \\A \\Z \\z \\b \\B outside a character class and not escaped."""
+    return sum(1 for m in _ANCHOR.finditer(pattern)
+               if m.group() in ('^', '$', r'\A', r'\Z', r'\z', r'\b', r'\B'))
+
+
+def _checks_of(text: str):
+    """``(patterns, error_results)`` of a module: regex literals by owner (the assigned name, else ``function#``),
+    each a list in order, and the constant results of each function's except handlers, in order."""
+    tree = ast.parse(text)
+    patterns, errors = {}, {}
+
+    def walk(node, owner, target):
+        for child in ast.iter_child_nodes(node):
+            name, tgt = owner, target
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                name, tgt = owner + '.' + child.name if owner else child.name, None
+            elif isinstance(child, (ast.Assign, ast.AnnAssign)):
+                targets = child.targets if isinstance(child, ast.Assign) else [child.target]
+                if len(targets) == 1 and isinstance(targets[0], ast.Name):
+                    tgt = (owner + '.' if owner else '') + targets[0].id
+            if (isinstance(child, ast.Call) and isinstance(child.func, ast.Attribute)
+                    and child.func.attr in REGEX_CALLS and isinstance(child.func.value, ast.Name)
+                    and child.func.value.id == 're' and child.args and isinstance(child.args[0], ast.Constant)
+                    and isinstance(child.args[0].value, str)):
+                patterns.setdefault(tgt or owner + '#', []).append(child.args[0].value)
+            if isinstance(child, ast.ExceptHandler):
+                for sub in ast.walk(child):
+                    if isinstance(sub, ast.Return) and isinstance(sub.value, ast.Constant):
+                        errors.setdefault(owner, []).append(sub.value.value)
+            walk(child, name, tgt)
+    walk(tree, '', None)
+    return patterns, errors
+
+
+def loosened_checks(old: str, new: str) -> list[str]:
+    """What a code change loosens: a regex that lost anchors, an error path that now returns another constant."""
+    try:
+        old_p, old_e = _checks_of(old)
+        new_p, new_e = _checks_of(new)
+    except (SyntaxError, ValueError, RecursionError):
+        return []
+    out = []
+    # summed per owner: a regex added next to an anchored one (a new `m = re.match(...)` above it) is not a loss
+    for key in sorted(set(old_p) & set(new_p)):
+        before, after = sum(map(_anchors, old_p[key])), sum(map(_anchors, new_p[key]))
+        if after < before:
+            gone = [x for x in old_p[key] if x not in new_p[key]] or old_p[key]
+            came = [x for x in new_p[key] if x not in old_p[key]] or new_p[key]
+            out.append('regex %s lost anchors %d -> %d (%r -> %r): a loosened matcher accepts far more than the '
+                       'test needs; keep the anchor and widen only the part the case needs'
+                       % (key, before, after, gone[0][:80], came[0][:80]))
+    for key in sorted(set(old_e) & set(new_e)):
+        if len(old_e[key]) == len(new_e[key]) and old_e[key] != new_e[key]:
+            out.append('the error path of %s returns %r instead of %r: an except branch decides what happens when '
+                       'the check itself fails; change the normal path instead' % (key, new_e[key], old_e[key]))
+    return out
+
+
 def is_forbidden(path: str, kind=None, named=()):
     """The ONE rule of which paths a candidate may not write: the reason, or None when allowed.
 
@@ -784,6 +850,8 @@ def weakening_check(base_root, cand_files: dict, kind, named=()):
         before, after = _weak_count(old, is_py), _weak_count(new, is_py)
         if after > before:
             out.append(f'{path}: skip/xfail/exit markers grew {before} -> {after}')
+        if is_py and base_exists and not _is_test_file(path):
+            out.extend(f'{path}: {why}' for why in loosened_checks(old, new))
         if kind == 'unit_test' and base_exists and _is_test_file(path) and path.endswith('.py'):
             try:
                 old_checks, old_names = _shape(old)
