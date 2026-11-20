@@ -167,6 +167,21 @@ class _Assigned:
     def __init__(self, name, node):
         self.name, self.decorator_list = name, []
         self.lineno, self.end_lineno = node.lineno, node.end_lineno
+        self.node = node
+
+
+def _uses(node) -> list:
+    """The names a shown definition uses, in source order: the names it calls or reads and the attributes it reaches
+    (self._step() gives '_step'). <id> fills the room left with the definitions these name."""
+    node = getattr(node, 'node', node)
+    found = sorted((sub.lineno, sub.col_offset, sub.id if isinstance(sub, ast.Name) else sub.attr)
+                   for sub in ast.walk(node) if isinstance(sub, (ast.Name, ast.Attribute)))
+    seen, names = set(), []
+    for _, _, name in found:
+        if name not in seen:
+            seen.add(name)
+            names.append(name)
+    return names
 
 
 def _imports(source: str) -> str:
@@ -250,7 +265,7 @@ def _fragments(source: str, keywords: set, room: int, priority: frozenset = froz
     spans = [(n.lineno, n.end_lineno) for n in candidates if n.name in priority]
     candidates.sort(key=lambda n: (0 if n.name in asked else 1 if n.name in priority or any(
         a <= n.lineno and n.end_lineno <= b for a, b in spans) else 2, n.end_lineno - n.lineno, n.lineno))
-    picked, taken, used = [], set(), 0
+    picked, taken, used, shown = [], set(), 0, []
     spans = []        # (start, end, name, part): what is shown; _joined() closes the small gaps between them
     budgets = {}      # a windowed definition: what is left of its FRAGMENT_MAX_CHARS for the gaps
     # the words of each line once: '\bname\b' of a word name is "name is one of the line's words". Live 20.11: a test
@@ -278,6 +293,7 @@ def _fragments(source: str, keywords: set, room: int, priority: frozenset = froz
             spans.append((start, node.end_lineno, node.name, False))
             used += len(piece) + 2
             taken.update(node_lines)
+            shown.append(node)
         else:
             nested = {n.name for n in ast.walk(node) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))} if isinstance(node, ast.AST) else {node.name}
             active_keywords = (plain | (keywords & nested)) or set(keywords)
@@ -320,7 +336,50 @@ def _fragments(source: str, keywords: set, room: int, priority: frozenset = froz
                 picked.append((start, piece))
                 used += piece_len
                 budgets[node.name] = FRAGMENT_MAX_CHARS - piece_len
+                shown.append(node)
+    used = _fill_by_uses(tree, lines, shown, taken, spans, used, room)
     return _joined(spans, lines, max(0, room - used), budgets)
+
+
+def _fill_by_uses(tree, lines, shown, taken, spans, used: int, room: int) -> int:
+    """<id> step 1 (verdict light-view-bound 20.11: 60% of the no-change answers needed code that was not shown while a
+    third of the prompt stayed empty): the room left goes to WHOLE definitions and module constants the shown code
+    uses, the nearer relation first (what a shown part uses, then what those use), each at most FRAGMENT_MAX_CHARS,
+    none already visible or holding a shown part. Returns the room used."""
+    named = {}
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            named.setdefault(node.name, []).append(node)
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+            named.setdefault(node.targets[0].id, []).append(_Assigned(node.targets[0].id, node))
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            named.setdefault(node.target.id, []).append(_Assigned(node.target.id, node))
+    queue, queued = [], set()
+    for node in shown:
+        for name in _uses(node):
+            if name not in queued:
+                queued.add(name)
+                queue.append(name)
+    while queue and used < room:
+        name = queue.pop(0)
+        for node in named.get(name, ()):
+            start = min([node.lineno] + [d.lineno for d in node.decorator_list])
+            node_lines = range(start, node.end_lineno + 1)
+            if any(ln in taken for ln in node_lines):
+                continue
+            body = '\n'.join(lines[start - 1:node.end_lineno])
+            piece = '# %s, lines %d-%d\n%s' % (node.name, start, node.end_lineno, body)
+            if len(body) > FRAGMENT_MAX_CHARS or used + len(piece) + 2 > room:
+                continue
+            spans.append((start, node.end_lineno, node.name, False))
+            used += len(piece) + 2
+            taken.update(node_lines)
+            for sub in _uses(node):
+                if sub not in queued:
+                    queued.add(sub)
+                    queue.append(sub)
+    return used
 
 
 def _joined(spans, lines, spare: int, budgets=None) -> str:

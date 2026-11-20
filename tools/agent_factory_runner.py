@@ -1310,8 +1310,13 @@ def _light_error(status: int | None, raw: bytes, name: str = 'APIError') -> byte
     return (json.dumps({'type': 'error', 'error': {'name': name, 'data': data}}) + '\n').encode('utf-8')
 
 
-def _missing_blocks_note(workdir: Path, blocks) -> str:
-    parts = []
+def _missing_blocks_note(workdir: Path, blocks, shown: str | None = None) -> str:
+    """Per failed block: where its SEARCH missed and the closest real line. First, right after the counts (the note
+    is cut at 300 characters): every definition a failed block aimed at that ``shown`` (the prompt) did not show
+    whole, in the form asked_names reads, so the next candidate and the next pass are shown it first and whole."""
+    from .factory_patterns import aimed_definition
+    parts, asks = [], []
+    seen = {x.strip() for x in (shown or '').replace('\r\n', '\n').split('\n')} if shown is not None else None
     for i, (name, search, replace_text) in enumerate(blocks, 1):
         if not search.strip() or isinstance(search, _FuncTarget):
             continue
@@ -1323,6 +1328,11 @@ def _missing_blocks_note(workdir: Path, blocks) -> str:
             continue
         if _replace_once(text, search, replace_text) is not None:
             continue
+        aim = aimed_definition(text, search) if seen is not None else None
+        if aim and not all(x.strip() in seen for x in aim[1] if x.strip()) and aim[0] not in asks:
+            asks.append(aim[0])
+        if len(parts) >= 2:
+            continue                       # two blocks are named; the aims of the others are still asked for
         where = 'in the file more than once' if len(_line_hits(text, search)) > 1 else 'not in the file'
         have = {x.strip() for x in text.split('\n')}
         wanted = [x.strip() for x in search.split('\n') if x.strip()]
@@ -1335,9 +1345,7 @@ def _missing_blocks_note(workdir: Path, blocks) -> str:
         if close:
             part += ", the closest line there: '%s'" % close[0][:100]
         parts.append(part)
-        if len(parts) >= 2:
-            break
-    return ''.join('; ' + p for p in parts)
+    return ''.join('; ' + p for p in ["function '%s' was not shown whole" % a for a in asks[:3]] + parts)
 
 
 def _light_note(total: int, applied: list, failed: dict, outside: int, text: str) -> str:
@@ -1448,7 +1456,7 @@ def light_attempt(task: Task, workdir: Path, model: str, timeout: int = LIGHT_TI
                       for n in applied)
         note = _light_note(len(blocks) + outside + sum(problems.values()), applied, failed, outside, text)
         if failed.get('SEARCH not found exactly once'):
-            note += _missing_blocks_note(Path(workdir), blocks)
+            note += _missing_blocks_note(Path(workdir), blocks, prompt)
             from .factory_patterns import hints as pattern_hints
             note += ''.join('; ' + h for h in pattern_hints(blocks))
         if not applied:
@@ -2010,6 +2018,13 @@ def _pass_inner(tasks, task: Task, state: dict, *, checkpoint: Path, root: Path,
                     ok, why = gate.accept(base, cand, verdict == 'red')
                 if not ok and why.startswith('env:'):
                     return env_release(why)
+                if not ok and task.kind != 'unit_test' and gate.undecided(base, cand):
+                    # the budget left tests unrun and nothing that ran is red: not this candidate's failure, and the next
+                    # model would spend the same budget again; the third such pass in a row blocks it (ESCALATE)
+                    events.append('gate_undecided:%d' % len(cand.unrun))
+                    report['reason_detail'] = ('%d test(s) of the task were not run here (the gate budget was spent); '
+                                               'nothing that ran is red' % len(cand.unrun))
+                    return release_or_block('gate_unknown', INFRA_DEFER_S)
                 if not ok:
                     return _GateRetry(('gate', 'gate: ' + why[:300], why + '\n' + cand.diag, changed), cand.diag or why,
                                       changed)

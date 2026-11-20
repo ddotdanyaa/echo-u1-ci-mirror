@@ -23,6 +23,9 @@ PATTERNS = (
     ('indent-shift', 'repair', 'one uniform indent added or removed: agent_factory_runner._replace_shifted'),
     ('elided', 'note', "SEARCH shortened with '...': the next attempt is told to copy whole lines"),
     ('guessed-line', 'note', 'a SEARCH line that is nowhere in the file: the note names it and the closest real line'),
+    ('unseen-target', 'note', "a SEARCH aimed at a definition the prompt did not show whole (63 of 96 failed blocks, "
+                              "replay 20.11 07:10): the note asks for it (\"function 'name' was not shown whole\") and "
+                              'the next candidate is shown it first and whole'),
     ('inline-thought', 'repair', 'reasoning written into the answer (<thought>, Gemma 4): every light call asks for '
                                  'none (agent_factory_runner.NO_THOUGHT), a leading block is stripped'),
 )
@@ -195,6 +198,37 @@ def repair(text: str, search: str, replace: str):
         return None
     i, j = span
     return '\n'.join(lines[:i] + replace.split('\n') + lines[j + 1:])
+
+
+HEADER = re.compile(r'^\s*(?:L\d+-\d+ )?(?:async def|def|class)\s+(\w+)')
+AIM_LINES = 2     # without a header line, a definition holding this many of the SEARCH lines is the one aimed at
+
+
+def aimed_definition(text: str, search: str):
+    """(name, lines of its text) of the ONE definition of ``text`` a SEARCH aims at: the one a header line (or an
+    OUTLINE row) of the SEARCH names, else the smallest holding AIM_LINES or more of its lines; None when the SEARCH
+    names a definition the file does not have (invented code) or holds too few of its lines."""
+    try:
+        tree = ast.parse(text)
+    except (SyntaxError, ValueError):
+        return None
+    lines = text.split('\n')
+    nodes = [n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))]
+
+    def body(node):
+        first = min([node.lineno] + [d.lineno for d in node.decorator_list])
+        return lines[first - 1:node.end_lineno]
+    for line in search.split('\n'):
+        m = HEADER.match(line)
+        if m:
+            same = [n for n in nodes if n.name == m.group(1)]
+            return (same[0].name, body(same[0])) if same else None
+    wanted = {x.strip() for x in search.split('\n') if x.strip()}
+    holding = [n for n in nodes if len(wanted & {x.strip() for x in body(n)}) >= AIM_LINES]
+    if not holding:
+        return None
+    best = min(holding, key=lambda n: n.end_lineno - n.lineno)
+    return best.name, body(best)
 
 
 def hints(blocks) -> list:

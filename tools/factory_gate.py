@@ -85,6 +85,7 @@ class GateResult:
     crashed: tuple = ()
     timed_out: tuple = ()    # files / tests cut at the limit that could not be split further, or not run (run_tests)
     env_failed: tuple = ()   # 'classname::name' of red testcases whose every failure is environmental (_env_reason)
+    unrun: tuple = ()        # tests the split budget left unrun (SPENT_DIAG): neither red nor green, never measured
 
 
 # --- laptop rule: at most 2 pytest machine-wide, and only while free RAM > 2 GB ---------------------
@@ -371,6 +372,8 @@ def _merge(parts) -> GateResult:
     environmental, as does a red made only of environmental failures."""
     runs = [r for _, r in parts]
     timed = {n for names, r in parts if _timed_out(r) for n in names}
+    unrun = {n for names, r in parts if _timed_out(r) and r.diag.endswith(SPENT_DIAG.split('%s', 1)[1])
+             for n in names}
     empty = {n for names, r in parts if not r.collected for n in names}
     not_started = next((r.env_reason for r in runs if r.env_reason and not r.collected), '')
     red = [r for r in runs if r.failed or r.errors]
@@ -386,7 +389,7 @@ def _merge(parts) -> GateResult:
                       tuple(sorted({m for r in runs for m in r.missing} | timed | empty)),
                       tuple(sorted({i for r in runs for i in r.failed_ids})),
                       tuple(sorted({c for r in runs for c in r.crashed})), tuple(sorted(timed)),
-                      tuple(sorted({i for r in runs for i in r.env_failed})))
+                      tuple(sorted({i for r in runs for i in r.env_failed})), tuple(sorted(unrun)))
 
 
 def _node(test: str) -> str:
@@ -782,6 +785,19 @@ def accept(base: GateResult, cand: GateResult, red_before_ok: bool):
 def unmeasured(base: GateResult, cand: GateResult) -> tuple:
     """What an accepted candidate was not measured on (accept): cut on both sides, red by the environment on both."""
     return tuple(sorted(set(cand.timed_out) | (set(cand.env_failed) & set(base.env_failed))))
+
+
+def undecided(base: GateResult, cand: GateResult) -> bool:
+    """A candidate accept() refused only because the split budget left tests unrun (live 20.11 07:20, bl_E7_35: ten
+    tests never ran, nothing that ran was red, and three models spent the budget in turn): no red that ran (the
+    environment's red on both sides aside), and every other cut test is cut on the base too. A test the candidate
+    makes hang alone while it ran on the base is its own failure, never undecided."""
+    if not cand.unrun:
+        return False
+    spared = set(cand.env_failed) & set(base.env_failed)
+    if cand.errors or any(i not in spared for i in cand.failed_ids) or cand.failed > len(spared & set(cand.failed_ids)):
+        return False
+    return _within(set(cand.timed_out) - set(cand.unrun), base.timed_out)
 
 
 def accept_unit_test(cand_on_base: GateResult, test_text=None, backlog_id=None):
