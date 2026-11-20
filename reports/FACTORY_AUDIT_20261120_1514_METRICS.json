@@ -1,0 +1,604 @@
+{
+  "snapshot_msk": "2026-11-20T15:14:34.348179+03:00",
+  "scope": "Agent Factory / ECHO, snapshot read-only",
+  "queue": {
+    "counts": {
+      "FAILED": 26,
+      "DONE": 28,
+      "BLOCKED": 9,
+      "READY": 3
+    },
+    "done_reasons": {
+      "closed_by_opus": 28
+    },
+    "active": [],
+    "block_reasons": {
+      "quarantine": 26,
+      "off_path": 2,
+      "gate_unknown": 1,
+      "already_green": 2,
+      "spec_not_testable": 3,
+      "context_too_large": 1
+    },
+    "total": 66,
+    "plan_total": 66
+  },
+  "backlog": {
+    "canonical_section4": 475,
+    "class_counts": {
+      "open": 337,
+      "open_port": 18,
+      "waiting": 45,
+      "unknown": 63,
+      "closed": 12
+    },
+    "port_rows": 18,
+    "private": 34,
+    "by_section": {
+      "4.1": 21,
+      "4.2": 41,
+      "4.3": 20,
+      "4.4": 7,
+      "4.5": 62,
+      "4.8": 8,
+      "4.9": 17,
+      "4.10": 13,
+      "4.11": 16,
+      "4.12": 270
+    },
+    "all_table_rows": 895,
+    "all_table_unique_ids": 749,
+    "all_id_families": {
+      "U": 267,
+      "W": 26,
+      "E": 144,
+      "N": 200,
+      "H": 14,
+      "П": 1,
+      "T": 16,
+      "R": 40,
+      "Ф": 4,
+      "С": 11,
+      "L": 4,
+      "Б": 1,
+      "Н": 8,
+      "В": 3,
+      "МИ": 2,
+      "О": 2,
+      "Х": 1,
+      "М": 1,
+      "Р": 1,
+      "Ц": 2,
+      "Ж": 1
+    },
+    "new_paper_closed_since_0106": []
+  },
+  "night_backlog_baseline": {
+    "time": "2026-11-20T01:06:14+03:00",
+    "rows": 475,
+    "counts": {
+      "open": 337,
+      "open_port": 18,
+      "waiting": 45,
+      "unknown": 63,
+      "closed": 12
+    },
+    "closed_ids": [
+      "R31-5",
+      "U01",
+      "U02",
+      "U03",
+      "U04",
+      "U44",
+      "U45",
+      "U46",
+      "U49",
+      "U51",
+      "U93",
+      "U123"
+    ]
+  },
+  "echo_session_usage": {
+    "night": {
+      "models": {
+        "claude-opus-5-5": [
+          7390,
+          4842901,
+          12790907,
+          1115733289
+        ],
+        "<synthetic>": [
+          0,
+          0,
+          0,
+          0
+        ],
+        "claude-sonnet-5-5": [
+          192,
+          120846,
+          716675,
+          8653604
+        ]
+      },
+      "messages": {
+        "claude-opus-5-5": 3660,
+        "<synthetic>": 3,
+        "claude-sonnet-5-5": 96
+      }
+    },
+    "morning": {
+      "models": {
+        "claude-opus-5-5": [
+          318,
+          151807,
+          789564,
+          74462613
+        ],
+        "claude-sonnet-5-5": [
+          172,
+          136724,
+          459630,
+          26657085
+        ]
+      },
+      "messages": {
+        "claude-opus-5-5": 158,
+        "claude-sonnet-5-5": 84
+      }
+    },
+    "after_mandate": {
+      "models": {
+        "claude-opus-5-5": [
+          1092,
+          372021,
+          1456475,
+          113762745
+        ],
+        "claude-sonnet-5-5": [
+          1116,
+          431260,
+          2643986,
+          75906882
+        ]
+      },
+      "messages": {
+        "claude-opus-5-5": 507,
+        "claude-sonnet-5-5": 558
+      }
+    }
+  },
+  "pool": {
+    "events": 139,
+    "max_live": 3,
+    "admitted_events": 49,
+    "held_low_ram_events": 90,
+    "warning": "event observations, not unique tasks or wall-time fractions"
+  },
+  "public_ci": {
+    "sha": "7573234f46b8a2cfd0cd0ab3fc767457189ab2ca",
+    "run_id": 44731375664,
+    "run_conclusion": "failure",
+    "jobs_passed": 11,
+    "jobs_total": 12,
+    "failing_job": "shard 10",
+    "failed_tests": 8,
+    "error": "FileNotFoundError tests/data/pool_k1_golden.json",
+    "run_started_msk": "2026-11-20T14:54:22+03:00",
+    "run_ended_msk": "2026-11-20T14:55:44+03:00"
+  },
+  "factory_private_head": "4901b1ee936eb5efce4bdc3fd6d8decb63a869d0",
+  "windows": {
+    "night": {
+      "start": "2026-11-19T21:00:00+03:00",
+      "end": "2026-11-20T08:25:00+03:00",
+      "models": {
+        "g-3-5-flash-lite": {
+          "model": "google/gemini-3.5-flash-lite",
+          "calls": 81,
+          "ok": 78,
+          "in": 515543,
+          "out": 21455,
+          "unknown_usage": 3,
+          "errors": {
+            "503": 3
+          },
+          "roles": {
+            "repair": 81
+          }
+        },
+        "g-3-1-flash-lite": {
+          "model": "google/gemini-3.1-flash-lite",
+          "calls": 68,
+          "ok": 65,
+          "in": 359327,
+          "out": 23370,
+          "unknown_usage": 3,
+          "errors": {
+            "503": 3
+          },
+          "roles": {
+            "repair": 64,
+            "review": 4
+          }
+        },
+        "g-gemma-4-31b": {
+          "model": "google/gemma-4-31b-it",
+          "calls": 17,
+          "ok": 6,
+          "in": 20242,
+          "out": 812,
+          "unknown_usage": 11,
+          "errors": {
+            "503": 10,
+            "rate_minute": 1
+          },
+          "roles": {
+            "repair": 8,
+            "review": 9
+          }
+        },
+        "g-gemma-4-26b": {
+          "model": "google/gemma-4-26b-a4b-it",
+          "calls": 11,
+          "ok": 5,
+          "in": 15573,
+          "out": 3634,
+          "unknown_usage": 6,
+          "errors": {
+            "503": 6
+          },
+          "roles": {
+            "repair": 4,
+            "review": 7
+          }
+        },
+        "k2-g-3-6-flash": {
+          "model": "google/gemini-3.6-flash",
+          "calls": 20,
+          "ok": 17,
+          "in": 63235,
+          "out": 3377,
+          "unknown_usage": 3,
+          "errors": {
+            "503": 2,
+            "429": 1
+          },
+          "roles": {
+            "repair": 20
+          }
+        },
+        "k2-g-3-5-flash-lite": {
+          "model": "google/gemini-3.5-flash-lite",
+          "calls": 189,
+          "ok": 188,
+          "in": 1078102,
+          "out": 47118,
+          "unknown_usage": 1,
+          "errors": {
+            "503": 1
+          },
+          "roles": {
+            "repair": 182,
+            "review": 6,
+            "code": 1
+          }
+        },
+        "k2-g-gemma-4-31b": {
+          "model": "google/gemma-4-31b-it",
+          "calls": 22,
+          "ok": 6,
+          "in": 20089,
+          "out": 1114,
+          "unknown_usage": 16,
+          "errors": {
+            "503": 8,
+            "rate_minute": 8
+          },
+          "roles": {
+            "review": 7,
+            "repair": 15
+          }
+        },
+        "k2-g-gemma-4-26b": {
+          "model": "google/gemma-4-26b-a4b-it",
+          "calls": 24,
+          "ok": 19,
+          "in": 88223,
+          "out": 25043,
+          "unknown_usage": 5,
+          "errors": {
+            "503": 4,
+            "transient": 1
+          },
+          "roles": {
+            "review": 9,
+            "repair": 15
+          }
+        },
+        "k2-g-3-1-flash-lite": {
+          "model": "google/gemini-3.1-flash-lite",
+          "calls": 93,
+          "ok": 92,
+          "in": 484529,
+          "out": 30660,
+          "unknown_usage": 1,
+          "errors": {
+            "503": 1
+          },
+          "roles": {
+            "repair": 87,
+            "review": 6
+          }
+        },
+        "or-nemotron-3-ultra": {
+          "model": "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free",
+          "calls": 29,
+          "ok": 29,
+          "in": 153972,
+          "out": 18645,
+          "unknown_usage": 0,
+          "errors": {},
+          "roles": {
+            "repair": 29
+          }
+        },
+        "or-north-mini-code": {
+          "model": "openrouter/cohere/north-mini-code:free",
+          "calls": 19,
+          "ok": 15,
+          "in": 67773,
+          "out": 2081,
+          "unknown_usage": 3,
+          "errors": {
+            "transient": 3,
+            "404": 1
+          },
+          "roles": {
+            "repair": 19
+          }
+        }
+      },
+      "spans": {
+        "triage": 18,
+        "loop": 488,
+        "infra": 52,
+        "answer": 186,
+        "run": 1143,
+        "gate": 530,
+        "reject": 11,
+        "review": 92,
+        "promote": 13,
+        "route": 121,
+        "spec": 4,
+        "discover": 1,
+        "selffix": 7,
+        "experiment": 1,
+        "head": 27
+      },
+      "unique_promoted": 11,
+      "pool_count": 0
+    },
+    "morning": {
+      "start": "2026-11-20T08:25:00+03:00",
+      "end": "2026-11-20T09:56:00+03:00",
+      "models": {
+        "k2-g-3-5-flash-lite": {
+          "model": "google/gemini-3.5-flash-lite",
+          "calls": 30,
+          "ok": 30,
+          "in": 305592,
+          "out": 15716,
+          "unknown_usage": 0,
+          "errors": {},
+          "roles": {
+            "repair": 30
+          }
+        },
+        "g-3-1-flash-lite": {
+          "model": "google/gemini-3.1-flash-lite",
+          "calls": 31,
+          "ok": 31,
+          "in": 259107,
+          "out": 18688,
+          "unknown_usage": 0,
+          "errors": {},
+          "roles": {
+            "repair": 31
+          }
+        },
+        "k2-g-gemma-4-31b": {
+          "model": "google/gemma-4-31b-it",
+          "calls": 6,
+          "ok": 1,
+          "in": 7538,
+          "out": 432,
+          "unknown_usage": 5,
+          "errors": {
+            "rate_minute": 1,
+            "503": 4
+          },
+          "roles": {
+            "repair": 6
+          }
+        },
+        "k2-g-3-1-flash-lite": {
+          "model": "google/gemini-3.1-flash-lite",
+          "calls": 30,
+          "ok": 29,
+          "in": 240722,
+          "out": 19885,
+          "unknown_usage": 1,
+          "errors": {
+            "503": 1
+          },
+          "roles": {
+            "repair": 30
+          }
+        },
+        "g-3-5-flash-lite": {
+          "model": "google/gemini-3.5-flash-lite",
+          "calls": 36,
+          "ok": 36,
+          "in": 316426,
+          "out": 16847,
+          "unknown_usage": 0,
+          "errors": {},
+          "roles": {
+            "repair": 36
+          }
+        },
+        "k2-g-gemma-4-26b": {
+          "model": "google/gemma-4-26b-a4b-it",
+          "calls": 3,
+          "ok": 0,
+          "in": 0,
+          "out": 0,
+          "unknown_usage": 3,
+          "errors": {
+            "transient": 1,
+            "rate_minute": 1,
+            "503": 1
+          },
+          "roles": {
+            "repair": 3
+          }
+        },
+        "g-gemma-4-26b": {
+          "model": "google/gemma-4-26b-a4b-it",
+          "calls": 2,
+          "ok": 1,
+          "in": 4318,
+          "out": 6,
+          "unknown_usage": 1,
+          "errors": {
+            "transient": 1
+          },
+          "roles": {
+            "repair": 2
+          }
+        }
+      },
+      "spans": {
+        "run": 271,
+        "gate": 58,
+        "loop": 84,
+        "infra": 2,
+        "selffix": 2,
+        "answer": 28,
+        "route": 27,
+        "triage": 1,
+        "experiment": 1
+      },
+      "unique_promoted": 0,
+      "pool_count": 0
+    },
+    "after_mandate": {
+      "start": "2026-11-20T09:56:00+03:00",
+      "end": "2026-11-20T15:14:34.348179+03:00",
+      "models": {
+        "g-3-5-flash-lite": {
+          "model": "google/gemini-3.5-flash-lite",
+          "calls": 48,
+          "ok": 48,
+          "in": 400012,
+          "out": 35139,
+          "unknown_usage": 0,
+          "errors": {},
+          "roles": {
+            "repair": 48
+          }
+        },
+        "k2-g-3-1-flash-lite": {
+          "model": "google/gemini-3.1-flash-lite",
+          "calls": 39,
+          "ok": 38,
+          "in": 326189,
+          "out": 28073,
+          "unknown_usage": 1,
+          "errors": {
+            "503": 1
+          },
+          "roles": {
+            "repair": 39
+          }
+        },
+        "k2-g-3-5-flash-lite": {
+          "model": "google/gemini-3.5-flash-lite",
+          "calls": 47,
+          "ok": 45,
+          "in": 366154,
+          "out": 29889,
+          "unknown_usage": 2,
+          "errors": {
+            "503": 2
+          },
+          "roles": {
+            "repair": 47
+          }
+        },
+        "g-3-1-flash-lite": {
+          "model": "google/gemini-3.1-flash-lite",
+          "calls": 40,
+          "ok": 39,
+          "in": 345013,
+          "out": 26038,
+          "unknown_usage": 1,
+          "errors": {
+            "503": 1
+          },
+          "roles": {
+            "repair": 40
+          }
+        },
+        "k2-g-3-6-flash": {
+          "model": "google/gemini-3.6-flash",
+          "calls": 16,
+          "ok": 10,
+          "in": 96864,
+          "out": 7143,
+          "unknown_usage": 6,
+          "errors": {
+            "503": 3,
+            "rate_minute": 3
+          },
+          "roles": {
+            "repair": 16
+          }
+        },
+        "g-3-6-flash": {
+          "model": "google/gemini-3.6-flash",
+          "calls": 15,
+          "ok": 9,
+          "in": 75980,
+          "out": 1661,
+          "unknown_usage": 6,
+          "errors": {
+            "503": 5,
+            "rate_minute": 1
+          },
+          "roles": {
+            "repair": 15
+          }
+        }
+      },
+      "spans": {
+        "run": 480,
+        "gate": 97,
+        "route": 65,
+        "loop": 176,
+        "triage": 14,
+        "answer": 54,
+        "selffix": 5,
+        "pool": 139
+      },
+      "unique_promoted": 0,
+      "pool_count": 139
+    }
+  },
+  "measurement_notes": [
+    "message usage deduplicated by model/message.id",
+    "successful model call is not accepted task",
+    "no exact mapping to Claude Max percentage",
+    "475 is the canonical active-section register, not all historical ID mentions"
+  ]
+}
