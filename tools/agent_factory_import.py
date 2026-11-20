@@ -13,6 +13,7 @@ import unicodedata
 import time
 import json
 import hashlib
+import math
 import re
 import subprocess
 import sys
@@ -1031,7 +1032,182 @@ def _port_task(r: dict, root: Path, all_tests: list) -> dict:
                      "touch_files": touch, "tests": guard[:1], "kind": "code", "port_from": sha}}
 
 
-def triage_portion(backlog_path, head_root, known_backlog_ids, limit, profile_attempts=None, known_parts=None, env_streak=0) -> dict:
+# ---- <id>: candidate files for a row that names no file (deterministic, no model) ----
+SCOPE_K = 5                  # candidates in a hold
+CAND_MIN = 1.0               # the best candidate must reach this score, or the row stays a skip
+STRONG_TAGS = ("id", "git", "sym")   # an owner-words row becomes a hold (for Opus) only with one of these
+BRIDGE_MAX_MODULES = 4       # a .md paragraph naming more modules is a list or a table: it ties no words to a module
+_SCOPE_CACHE: dict = {}      # one entry per root: (HEAD sha, index)
+_WORD = re.compile(r"[A-Za-z_][A-Za-z0-9_]{2,}|[А-Яа-яЁё]{4,}")
+_ROW_IDENT = re.compile(r"`([A-Za-z_][\w.]*)(?:\(\))?`|(?<![\w.])([a-z_][a-z0-9]*_[a-z0-9_]+)(?![\w])")
+_MOD_REF = re.compile(r"(?<![\w])([a-z][a-z0-9_]{3,})(?:\.py)?(?![\w])")
+_STOP = frozenset("""это что как для или при без над под его она они все если чтобы когда после через только тест тесты
+строка строки код файл файлы модуль задача задачи self none true false return
+the and for not with from import def class""".split())
+
+
+def _stem(word: str) -> str:
+    """A Russian word cut to its first letters (база/базу/базы -> баз, законов/закона -> закон); English as is."""
+    w = word.lower().replace("ё", "е")
+    if "а" <= w[:1] <= "я":
+        return w[:5] if len(w) >= 6 else w[:-1]
+    return w
+
+
+def _words(text: str) -> list:
+    """Word stems of a text, identifiers also by their parts (quick_math -> quick_math, quick, math)."""
+    out = []
+    for w in _WORD.findall(text or ""):
+        for part in [w] + (w.strip("_").split("_") if "_" in w.strip("_") else []):
+            if len(part) >= 3 and part.lower() not in _STOP:
+                out.append(_stem(part))
+    return out
+
+
+def _bm25(query, tf, length, df, n, avg) -> float:
+    s = 0.0
+    for w in query:
+        f = tf.get(w, 0)
+        if f:
+            s += math.log(1 + (n - df[w] + .5) / (df[w] + .5)) * f * 2.2 / (f + 1.2 * (.25 + .75 * length / avg))
+    return s
+
+
+def _scope_index(root) -> dict:
+    """What candidate_files ranks by, built once per (root, HEAD).  Files: echo_sync/** and tools/** that may be a
+    scope (never tests, a package __init__ or a gate-protected file).  Per file: the ID tokens of its text, the names
+    it defines (functions, classes, top-level names, attributes, its stem), a word profile of its comments, docstrings
+    and names, and a bridge profile: the words of the paragraphs of the project's own .md files that name it (the
+    Russian backlog meets the English code there).  Plus the files changed by the commits whose message names an ID."""
+    import io
+    import tokenize
+    from collections import Counter
+    root = Path(root)
+    try:
+        head = _git(root, "rev-parse", "HEAD").strip()
+    except ClosedCheckError:
+        head = ""
+    cached = _SCOPE_CACHE.get(str(root))
+    if cached is not None and head and cached[0] == head:
+        return cached[1]
+    paths = id_query._paths(root)
+    src = [p for p in paths if p.endswith(".py") and _is_src(p) and not _protected(p)]
+    srcset = set(src)
+    ids: dict = {}
+    syms: dict = {}
+    code: dict = {}
+    for rel in src:
+        text = id_query._text(root / rel)
+        if text is None:
+            continue
+        for i in set(id_query.TOKEN.findall(text)):
+            ids.setdefault(i, set()).add(rel)
+        names, notes = {PurePosixPath(rel).stem}, []
+        try:
+            tree = ast.parse(text)
+        except (SyntaxError, ValueError):
+            tree = None
+        for n in ast.walk(tree) if tree is not None else ():
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                names.add(n.name)
+                notes.append(ast.get_docstring(n) or "")
+            elif isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store):
+                names.add(n.id)
+            elif isinstance(n, ast.Attribute):
+                names.add(n.attr)
+        if tree is not None:
+            notes.append(ast.get_docstring(tree) or "")
+        try:
+            notes += [t.string for t in tokenize.generate_tokens(io.StringIO(text).readline) if t.type == tokenize.COMMENT]
+        except (tokenize.TokenError, IndentationError, SyntaxError):
+            pass
+        for name in names:
+            syms.setdefault(name, set()).add(rel)
+        code[rel] = Counter(_words(" ".join(notes) + " " + " ".join(sorted(names))))
+    by_stem: dict = {}
+    for p in src:
+        by_stem.setdefault(PurePosixPath(p).stem, []).append(p)
+    unique = {s: ps[0] for s, ps in by_stem.items() if len(ps) == 1 and len(s) >= 4}
+    bridge: dict = {}
+    for rel in paths:
+        if not rel.lower().endswith(".md"):
+            continue
+        for block in re.split(r"\n\s*\n|\n(?=[-*|#] )", id_query._text(root / rel) or ""):
+            block = block[:2000]
+            mods = {unique[m] for m in _MOD_REF.findall(block)
+                    if m in unique and ("_" in m or m + ".py" in block or "`" + m in block)}
+            if not mods or len(mods) > BRIDGE_MAX_MODULES:
+                continue
+            words = set(_words(block))
+            for f in mods:
+                bridge.setdefault(f, Counter()).update(words)
+    git_ids: dict = {}
+    try:
+        log = _git(root, "log", "--name-only", "--format=\x01%s%n%b\x02")
+    except ClosedCheckError:
+        log = ""
+    for block in log.split("\x01"):
+        message, _, files = block.partition("\x02")
+        changed = [f.strip() for f in files.splitlines() if f.strip() in srcset]
+        for i in set(id_query.TOKEN.findall(message)):
+            book = git_ids.setdefault(i, {})
+            for f in changed:
+                book[f] = book.get(f, 0) + 1
+
+    def field(profiles):
+        df = Counter(w for tf in profiles.values() for w in tf)
+        lens = {f: sum(tf.values()) or 1 for f, tf in profiles.items()}
+        return {"tf": profiles, "len": lens, "df": df, "n": max(1, len(profiles)),
+                "avg": (sum(lens.values()) / len(lens)) if lens else 1.0}
+    index = {"src": srcset, "ids": ids, "syms": syms, "git": git_ids, "code": field(code), "bridge": field(bridge)}
+    if head:
+        _SCOPE_CACHE[str(root)] = (head, index)
+    return index
+
+
+def candidate_files(root, bid: str, text: str, k: int = SCOPE_K) -> list:
+    """[(rel, score, tags)] best first: the source files a row that names no file most likely means.  Signals: the
+    row's ID in the file (4, tag id), commits whose message names the ID (2 + 0.5 per commit, at most 4, tag git), a
+    backticked or snake_case name of the row that the file defines (3 each, tag sym), the row's words against the
+    file's comments and names (<id> / 4) and its .md bridge (<id> / 2) (tag doc).  A proposal for the head model,
+    never a scope by itself: the score does not tell code from not-code."""
+    ix = _scope_index(root)
+    memo = ix.setdefault("memo", {})          # per HEAD: an unchanged row is ranked once, not on every portion
+    if (bid, text, k) in memo:
+        return memo[(bid, text, k)]
+    score: dict = {}
+    tags: dict = {}
+
+    def add(rel, pts, tag):
+        if pts <= 0:
+            return
+        score[rel] = score.get(rel, 0.0) + pts
+        if tag not in tags.setdefault(rel, []):
+            tags[rel].append(tag)
+    for rel in ix["ids"].get(bid, ()):
+        add(rel, 4.0, "id")
+    for rel, c in ix["git"].get(bid, {}).items():
+        add(rel, min(4.0, 2.0 + 0.5 * c), "git")
+    sym: dict = {}
+    for m in _ROW_IDENT.finditer(text or ""):
+        raw = m.group(1) or m.group(2)
+        name = raw[:-3] if raw.endswith(".py") else raw.split(".")[-1]     # `law_base.py` -> law_base, `a.b` -> b
+        for rel in ix["syms"].get(name, ()):
+            sym.setdefault(rel, set()).add(name)
+    for rel, names in sym.items():
+        add(rel, 3.0 * len(names), "sym")
+    query = set(_words(text))
+    for key, weight in (("code", 0.25), ("bridge", 0.5)):
+        f = ix[key]
+        for rel, tf in f["tf"].items():
+            add(rel, weight * _bm25(query, tf, f["len"][rel], f["df"], f["n"], f["avg"]), "doc")
+    ranked = sorted(score.items(), key=lambda kv: (-kv[1], kv[0]))[:k]
+    memo[(bid, text, k)] = [(rel, round(sc, 2), list(tags[rel])) for rel, sc in ranked]
+    return [(rel, sc, list(t)) for rel, sc, t in memo[(bid, text, k)]]
+
+
+def triage_portion(backlog_path, head_root, known_backlog_ids, limit, profile_attempts=None, known_parts=None, env_streak=0,
+                   scopes=None) -> dict:
     """K-E.3: next portion of the live backlog as plan tasks (nothing is written).
 
     Returns {"tasks", "holds": [{backlog_id, question}], "stale": [backlog_id],
@@ -1042,6 +1218,11 @@ def triage_portion(backlog_path, head_root, known_backlog_ids, limit, profile_at
     ``profile_attempts`` and stores the new ones), "env_streak": consecutive portions that could not profile for the
     environment (the caller passes the old value back as ``env_streak``; at 5 an event and a hold "ENV-PYTEST" appear), "deferred": [{backlog_id, reason}] (rows left for the next portion by the profiling deadline: NOT skipped,
     so a caller that marks skipped rows as seen does not lose them)} in <id> -> <id> order.
+    - <id>: a public row that names no file and has candidate files (candidate_files) is a hold
+      factory_holds.candidate_question (paths and tags only) instead of a skip; an owner-words row only with a strong
+      signal (its ID in the code, a commit, a name it defines), and that hold goes to Opus; ``scopes`` {backlog_id:
+      {touch_files, note}} are the head model's picks: a row without touch takes their existing, writable source
+      files and goes the normal way (unit_test sub-task, privacy screen, gate rules), the note joins the goal;
     - rows closed at HEAD (``<ID>:`` commit) -> stale; IDs in known_backlog_ids -> skipped; two IDs
       that give the same task id (<id> / <id>) -> both skipped "коллизия id";
     - private rows (<private-marker>/<private-marker>, call records, keys, .env, personal data) are checked FIRST: hold, plus an
@@ -1225,11 +1406,29 @@ def triage_portion(backlog_path, head_root, known_backlog_ids, limit, profile_at
                 out["holds"].append({"backlog_id": bid, "question": pfx + "уточнить область: тест(ы) %s импортируют %d модулей (%s); какие менять?" % (", ".join(tests), len(mods), ", ".join(mods[:6]))})
                 continue
             touch = mods
+        scope_note = ""
+        picked = (scopes or {}).get(bid) if isinstance(scopes, dict) else None
+        if not touch and not private and isinstance(picked, dict):
+            touch = [f for f in picked.get("touch_files") or [] if isinstance(f, str) and _is_src(f)
+                     and _exists(root, f) and not _protected(f)][:MAX_TOUCH]
+            scope_note = " ".join(str(picked.get("note") or "").split())[:300] if touch else ""
         if not touch:
             if private:
                 out["holds"].append(private_hold)
+                continue
+            try:
+                cands = candidate_files(root, bid, r["text"])
+            except Exception as e:     # an index failure must not stop the triage: the row stays a skip
+                cands = []
+                out["events"].append({"backlog_id": bid, "event": "candidates_failed", "reason": ("%s: %s" % (type(e).__name__, e))[:200]})
+            public = _screen(F, bid, r["text"])[1] is None
+            strong = any(t in STRONG_TAGS for _, _, tags in cands for t in tags)
+            if cands and cands[0][1] >= CAND_MIN and (public or strong):
+                from tools import factory_holds
+                out["holds"].append({"backlog_id": bid, "question": factory_holds.candidate_question(r["priority"], cands)})
             else:
-                skip(bid, "нет упомянутых файлов или модулей области")
+                skip(bid, "нет упомянутых файлов или модулей области; " + (
+                    "кандидатов нет" if not cands or cands[0][1] < CAND_MIN else "кандидаты слабые, текст не публичный"))
             continue
         prot = [f for f in touch if _protected(f)]
         if prot:
@@ -1310,6 +1509,8 @@ def triage_portion(backlog_path, head_root, known_backlog_ids, limit, profile_at
             if question:
                 out["holds"].append({"backlog_id": bid, "question": question})
                 continue
+            if scope_note:          # the head's note (checked by the loop like an Opus note) joins the goal
+                text = "%s Указание по области: %s" % (text, scope_note)
         group = []
         base = {"backlog_id": bid, "priority": r["priority"] or "P4", "privacy_safe": not private,
                 "only_opus": private, "read_files": [], "task_type": "patch"}

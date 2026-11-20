@@ -1,6 +1,9 @@
 """<id>/<id>: the free head model answers the mechanical holds (which file to change) so they become tasks without
 Opus. Pure helpers: the kind of a hold question, the paths it names, the prompt, the strict parse of the answer
-and the pick of the holds to ask. The loop wiring is Loop._head_holds."""
+and the pick of the holds to ask. The loop wiring is Loop._head_holds.
+<id>: a row that named no file is a CANDIDATES hold (agent_factory_import.candidate_files: paths and signal tags only,
+never the row text); the head picks files (no test needed: the triage makes the unit_test sub-task) or answers that
+the row is not code (owner process, proxy, server, laptop, phone checks)."""
 from __future__ import annotations
 
 import datetime as dt
@@ -10,13 +13,15 @@ from pathlib import Path
 
 AMBIGUOUS = "локализация неоднозначна"
 SCOPE = "уточнить область"
+CANDIDATES = "выбрать область по кандидатам"
 REPEAT_S = 24 * 3600
 # A pick must fit the light engine (agent_factory_runner.LIGHT_MAX_FILES; the lock test ties the two): live 20.11
 # 02:18-02:23 the head picked all three candidates of <id>, the task went to the Kilo engine and burned its three
 # attempts in two minutes (steps exhausted; Kilo 0 of 4 that night). A change of more files is a skip for Opus.
 MAX_FILES = 2
 NOTE_MAX = 300
-_PATH = re.compile(r"(?<![\w/.-])((?:echo_sync|tests)/[\w./-]*?\.py)(?![\w])")
+_PATH = re.compile(r"(?<![\w/.-])((?:echo_sync|tools|tests)/[\w./-]*?\.py)(?![\w])")
+_PRIO = re.compile(r"\((P\d)\)")
 
 
 def kind_of(question) -> str | None:
@@ -25,14 +30,24 @@ def kind_of(question) -> str | None:
         return "ambiguous"
     if text.startswith(SCOPE):
         return "scope"
+    if text.startswith(CANDIDATES):
+        return "candidates"
     return None
 
 
+def candidate_question(priority, cands) -> str:
+    """The hold of a row that named no file: its backlog priority and the ranked candidates [(path, score, tags)].
+    Paths and tags only: the row text never goes into it (an owner-words row is a hold for Opus as it is)."""
+    prio = " (%s)" % priority if priority else ""
+    return "%s%s: %s; какие менять, или это не код?" % (CANDIDATES, prio, "; ".join(
+        "%s [%s]" % (path, ",".join(tags)) for path, _score, tags in cands))
+
+
 def candidates(question) -> tuple[list, list]:
-    """(echo_sync files, tests) named in the question, in order, without duplicates."""
+    """(source files, tests) named in the question, in order, without duplicates."""
     files, tests = [], []
     for path in _PATH.findall(str(question or "")):
-        bucket = files if path.startswith("echo_sync/") else tests
+        bucket = tests if path.startswith("tests/") else files
         if path not in bucket:
             bucket.append(path)
     return files, tests
@@ -61,6 +76,12 @@ def prompt(bid, goal, question, files, tests, outlines) -> str:
         'Either {"touch_files": [1 to %d paths chosen ONLY from the candidates below], "note": "<one technical '
         'sentence for the coder: what to change and where, no quotes>"}' % MAX_FILES,
         'or {"skip": "<why no candidate fits>"}.',
+    ]
+    if kind_of(question) == "candidates":
+        parts.append('or {"not_code": "<why>"} when the task is not a change of this code: owner process, agents, '
+                     "sessions or branches, proxy or network, server operations, the laptop or Windows, a check on the "
+                     "phone, docs or research. The candidates were found by words and may all be wrong.")
+    parts += [
         "Task %s." % bid,
         "Goal: %s" % goal,
         "Question: %s" % question,
@@ -84,10 +105,13 @@ def _first_object(text):
     return None
 
 
-def parse(answer, files) -> dict | None:
+def parse(answer, files, kind=None) -> dict | None:
     obj = _first_object(str(answer or ""))
     if obj is None:
         return None
+    if kind == "candidates" and "not_code" in obj and "touch_files" not in obj:
+        reason = obj.get("not_code")
+        return {"not_code": " ".join(str(reason).split())[:200]} if isinstance(reason, str) and reason.strip() else None
     if "skip" in obj and "touch_files" not in obj:
         reason = obj.get("skip")
         return {"skip": " ".join(str(reason).split())[:200]} if isinstance(reason, str) else None
@@ -117,10 +141,20 @@ def _age_ok(entry, now) -> bool:
     return now - stamp >= REPEAT_S
 
 
+def _order(item):
+    """The mechanical holds first (they carry a test), by ID as before; then the candidates holds in backlog
+    priority order (<id> first, no priority last), then by ID number (factory_next order, the backlog is not reordered)."""
+    bid, question = item
+    if kind_of(question) != "candidates":
+        return (0, 0, [], bid)
+    m = _PRIO.search(question.split(":", 1)[0])
+    return (1, int(m.group(1)[1]) if m else 9, [(0, int(t), "") if t.isdigit() else (1, 0, t)
+                                                 for t in re.findall(r"\d+|\D+", bid)], bid)
+
+
 def select(holds, done, now, limit=3) -> list:
     out = []
-    for bid in sorted(holds or {}):
-        question = holds[bid]
+    for bid, question in sorted((holds or {}).items(), key=_order):
         if not isinstance(question, str) or kind_of(question) is None:
             continue
         if bid in (done or {}) and not _age_ok(done[bid], now):

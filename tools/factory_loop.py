@@ -286,6 +286,7 @@ class Config:
     triage_idle_sleep: int = 120
     seen_retry_s: int = 21600       # <id>: a skipped/stale backlog row is triaged again after this term, edit or not
     requeue_term_s: int = 3600      # <id>: a FAILED task of a retryable class is given back this long after its last try
+    not_code_term_s: int = 7 * 86400   # <id>: a row the head model called not code is looked at again after this term
 
 
 class _Later(Exception):
@@ -1542,11 +1543,12 @@ class Loop:
         goal, private, unclean = self._backlog_text(bid)
         if private or unclean:
             return record("private")
+        kind = H.kind_of(question)
         files, tests = H.candidates(question)
-        if H.kind_of(question) == "ambiguous" and not tests:
+        if kind == "ambiguous" and not tests:
             own = H.row_test(bid, self.mirror)
             tests = [own] if own else []
-        if not tests or not files:
+        if not files or (not tests and kind != "candidates"):    # <id>: the triage makes a candidates row's test
             return record("no_test")
         outlines = {}
         for rel in files:
@@ -1564,21 +1566,77 @@ class Loop:
         self.save_ls(ls)
         if status != "ok":
             return record("later", model, tokens)
-        picked = H.parse(answer, files)
+        picked = H.parse(answer, files, kind=kind)
         if picked is None:
             return record("invalid", model, tokens)
         if "skip" in picked:
             return record("skip", model, tokens)
+        if "not_code" in picked:
+            return self._book_not_code(bid, picked["not_code"], record, model, tokens)
         try:
             if picked["note"]:
                 self._check_note(picked["note"])
         except F.InvalidPlan:
             return record("invalid", model, tokens)
+        if kind == "candidates":
+            # <id>: no answer file (it needs tests): the next triage takes the pick as the row's scope and makes the
+            # normal unit_test + code pair through every check of the triage
+            ls = self.ls()
+            ls.setdefault("head_scope", {})[bid] = {"touch_files": picked["touch_files"], "note": picked["note"],
+                                                    "at": self.ts()}
+            ls["holds"].pop(bid, None)
+            ls.get("hold_hash", {}).pop(bid, None)
+            ls["seen"].pop(bid, None)
+            ls["triage_empty"] = None
+            self.save_ls(ls)
+            return record("scoped", model, tokens)
         payload = {"backlog_id": bid, "touch_files": picked["touch_files"], "tests": tests}
         if picked["note"]:
             payload["note"] = picked["note"]
         factory_requeue._write_answer(self.dir / "answers", payload, "head-" + bid)
         record("answered", model, tokens)
+
+    def _book_not_code(self, bid, why, record, model, tokens) -> None:
+        """<id>: the head model says the row is not a change of the code (owner process, proxy, server, laptop, phone):
+        the not_code book keeps it with a reason and a term (cfg.not_code_term_s). Unlike ``seen`` it survives backlog
+        edits: only a change of the row's own text (its hash) or the end of the term gives it a fresh look."""
+        try:
+            digest = self._row_hashes("text").get(bid)
+        except Exception as e:
+            self.err("not_code: backlog unreadable", e)
+            digest = None
+        if not digest:      # the model already answered: not "later" (asked again at once), the normal 24 h repeat
+            return record("unbooked", model, tokens)
+        ls = self.ls()
+        ls.setdefault("not_code", {})[bid] = {
+            "hash": digest, "reason": ("не код: " + self._scrub(F.redact(str(why))))[:200],
+            "until": self.clock() + self.cfg.not_code_term_s}
+        ls["holds"].pop(bid, None)
+        ls.get("hold_hash", {}).pop(bid, None)
+        self.save_ls(ls)
+        record("not_code", model, tokens)
+
+    def _not_code_known(self, ls, now) -> set:
+        """Rows of the not_code book whose term is live and whose text is unchanged; the rest leave the book."""
+        book = ls.get("not_code")
+        if not isinstance(book, dict) or not book:
+            return set()
+        try:
+            texts = self._row_hashes("text")
+        except Exception as e:
+            self.err("not_code: backlog unreadable", e)
+            return set(book)                      # cannot compare: keep them known one more triage
+        live = set()
+        for bid, rec in list(book.items()):
+            try:
+                ok = isinstance(rec, dict) and float(rec.get("until") or 0) > now and texts.get(bid) == rec.get("hash")
+            except (TypeError, ValueError):
+                ok = False
+            if ok:
+                live.add(bid)
+            else:
+                book.pop(bid, None)
+        return live
 
     # -- Opus answer box
     ANSWER_MAX_BYTES = 64 * 1024
@@ -2080,6 +2138,7 @@ class Loop:
             self._refresh_profile_attempts(ls)
         known |= set(ls["holds"]) | set(ls["closed"])
         known |= {b for b, rec in ls["seen"].items() if not self._seen_expired(rec, now)}
+        known |= self._not_code_known(ls, now)              # <id>: survives edits until the row's own text changes
         known |= {b for b, rec in (ls.get("parents") or {}).items()
                   if rec.get("children") and all(c in known for c in rec["children"])}   # all parts exist: no re-import
         t0 = self.clock()
@@ -2089,6 +2148,9 @@ class Loop:
             kwargs["profile_attempts"] = dict(ls.get("profile_attempts") or {})
         if _accepts(fn, "known_parts"):
             kwargs["known_parts"] = self._known_parts()
+        scopes = {b: s for b, s in (ls.get("head_scope") or {}).items() if b not in known and isinstance(s, dict)}
+        if scopes and _accepts(fn, "scopes"):
+            kwargs["scopes"] = scopes
         try:
             res = fn(**kwargs)
         except ValueError as e:  # the backlog cannot be parsed: not infrastructure, try after an edit
@@ -2128,6 +2190,20 @@ class Loop:
                 ls["holds"][bid] = self._scrub(F.redact(str(h.get("question", ""))))[:500]
                 new_holds.append(bid)
         self._take_parents(res.get("parents"), ls)
+        if ls.get("head_scope"):
+            # <id>: a picked scope is used up once the triage reported its row (tasks, a hold or a skip); a deferred
+            # row keeps it for the next portion; a row that left the backlog loses it
+            done = {t.get("backlog_id") for t in portion if isinstance(t, dict) and added} | set(new_holds)
+            for key in ("skipped", "stale"):
+                done |= {x.get("backlog_id") if isinstance(x, dict) else x for x in res.get(key) or []}
+            done |= {h.get("backlog_id") for h in res.get("holds") or [] if isinstance(h, dict)}
+            try:
+                rows = set(self._row_hashes("text"))
+            except Exception:
+                rows = None
+            for b in list(ls["head_scope"]):
+                if b in done or (rows is not None and b not in rows):
+                    ls["head_scope"].pop(b, None)
         if isinstance(res.get("profile_attempts"), dict):
             ls.setdefault("profile_attempts", {}).update(res["profile_attempts"])
         for bid in new_holds:
@@ -2335,6 +2411,17 @@ class Loop:
             put(bid, "closed", "закрыта в книге петли")
         for bid, rec in (ls.get("parents") or {}).items():
             put(bid, "parts", "разрезана на %s частей: %s" % (rec.get("parts"), ",".join(rec.get("children") or [])))
+        for bid, rec in (ls.get("not_code") or {}).items():
+            if isinstance(rec, dict):
+                try:
+                    until = self._iso(float(rec.get("until") or now))
+                except (TypeError, ValueError):
+                    until = None
+                put(bid, "not_code", rec.get("reason") or "не код", until)
+        for bid, rec in (ls.get("head_scope") or {}).items():
+            if isinstance(rec, dict):
+                put(bid, "scoped", "область выбрана головной моделью (%s); ждёт триажа" % ", ".join(
+                    str(x) for x in (rec.get("touch_files") or [])[:3]))
         for bid, rec in (ls.get("seen") or {}).items():
             if isinstance(rec, dict):
                 put(bid, "stale" if rec.get("kind") == "stale" else "seen", rec.get("reason"),
