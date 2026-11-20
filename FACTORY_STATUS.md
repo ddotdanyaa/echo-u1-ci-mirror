@@ -1,9 +1,10 @@
 # Factory status (generated, structured data only)
 
-Generated: 2026-11-20T09:58:17Z
-Source commit: shabae3b5dc3514
+Generated: 2026-11-20T11:03:40Z
+Source commit: sha9c4226381f83
 
 ## Commits (sha, time)
+- sha9c422638 2026-11-20T14:03:17+03:00
 - shabae3b5dc 2026-11-20T12:57:58+03:00
 - sha20aca72b 2026-11-20T12:18:35+03:00
 - shae082cdd3 2026-11-20T12:12:45+03:00
@@ -23,7 +24,6 @@ Source commit: shabae3b5dc3514
 - sha5c7a1faf 2026-11-20T06:42:02+03:00
 - sha8aed118c 2026-11-20T06:39:33+03:00
 - shad3953565 2026-11-20T05:37:16+03:00
-- shab326123f 2026-11-20T05:33:52+03:00
 
 ## Funnel
 | step | count |
@@ -43,15 +43,15 @@ Side counters: blocked=7, parked=0, requeued=0
 Tasks now: BLOCKED=7, DONE=28, FAILED=28, READY=3
 Accepted: 0
 Promoted: 13
-Free RAM, GB: 2.2
-Telemetry rows: 4582 recognised, 0 unrecognised
+Free RAM, GB: 2.28
+Telemetry rows: 4705 recognised, 0 unrecognised
 
 ## Spend per model
 | model | calls | tokens_in | tokens_out | usage_unknown | http_429 | errors |
 |---|---|---|---|---|---|---|
-| google/gemini-3.1-flash-lite | 284 | 1757488 | 129525 | 12 | 0 | 12 |
-| google/gemini-3.5-flash-lite | 456 | 3140900 | 153065 | 14 | 0 | 14 |
-| google/gemini-3.6-flash | 33 | 98416 | 4363 | 11 | 1 | 11 |
+| google/gemini-3.1-flash-lite | 293 | 1839829 | 136857 | 12 | 0 | 12 |
+| google/gemini-3.5-flash-lite | 464 | 3203236 | 158022 | 15 | 0 | 15 |
+| google/gemini-3.6-flash | 38 | 117414 | 4376 | 14 | 1 | 14 |
 | google/gemma-4-26b-a4b-it | 48 | 111834 | 28683 | 21 | 0 | 21 |
 | google/gemma-4-31b-it | 73 | 67690 | 3572 | 49 | 0 | 49 |
 | openrouter/cohere/north-mini-code:free | 20 | 69376 | 10273 | 3 | 0 | 4 |
@@ -60,15 +60,15 @@ Telemetry rows: 4582 recognised, 0 unrecognised
 ## Spans
 | span | rows | calls |
 |---|---|---|
-| answer | 271 | 0 |
-| gate | 809 | 0 |
+| answer | 274 | 0 |
+| gate | 817 | 0 |
 | infra | 92 | 0 |
-| loop | 891 | 0 |
-| other | 286 | 0 |
+| loop | 914 | 0 |
+| other | 325 | 0 |
 | promote | 17 | 0 |
 | review | 165 | 88 |
-| run | 2012 | 877 |
-| triage | 39 | 0 |
+| run | 2060 | 899 |
+| triage | 41 | 0 |
 
 ## Channels (model ids)
 - g-3-1-flash-lite
@@ -94,7 +94,7 @@ Telemetry rows: 4582 recognised, 0 unrecognised
 ## Published files
 Modules: 19
 Tests in the cloud: 48
-Tests not in the cloud: 72
+Tests not in the cloud: 73
 - tests/test_agent_factory.py (backlog-id, email, env-path, key, long-run, owner-name, path, user-path)
 - tests/test_factory_ab.py (backlog-id)
 - tests/test_factory_asked_code.py (dependency)
@@ -142,6 +142,7 @@ Tests not in the cloud: 72
 - tests/test_factory_neighbours.py (dependency)
 - tests/test_factory_no_effect.py (dependency)
 - tests/test_factory_owner_list.py (backlog-id, call-word, long-run)
+- tests/test_factory_path.py (dependency)
 - tests/test_factory_pool_loop.py (backlog-id)
 - tests/test_factory_pool_runner.py (backlog-id)
 - tests/test_factory_pool_state.py (backlog-id)

@@ -361,16 +361,22 @@ def _base_key(base_sha, task: Task, baseline: dict) -> str | None:
     return h.hexdigest()
 
 
-def _held_base(row: dict, key: str | None):
+def _held_base(row: dict, key: str | None, kind: str | None = None):
     """The red base kept on the row for this key while it is fresh; None when absent, stale, foreign or unreadable
-    (a damaged record only costs a new measurement)."""
+    (a damaged record only costs a new measurement). A code task's record must carry the path of its failing tests
+    (GateResult.path; a record written before the trace existed is measured once more)."""
     held = row.get('base_red')
     if not key or not isinstance(held, dict) or held.get('key') != key:
         return None
     try:
         if not 0 <= _now() - float(held['at']) < BASE_CACHE_S:
             return None
-        return gate.GateResult(**{k: tuple(v) if isinstance(v, list) else v for k, v in held['result'].items()})
+        if kind == 'code' and 'path' not in held['result']:
+            return None
+        fields = {k: tuple(v) if isinstance(v, list) else v for k, v in held['result'].items()}
+        if 'path' in fields:
+            fields['path'] = tuple(tuple(p) for p in fields['path'])
+        return gate.GateResult(**fields)
     except (TypeError, ValueError, KeyError, AttributeError):
         return None
 
@@ -631,6 +637,17 @@ class _GateRetry:
 NO_EFFECT_NOTE = ('\nThe previous change had NO effect on the failing test: it fails exactly as it did before the '
                   'change, so the code it edited is not on the path this test checks. Find where the asserted '
                   'behaviour is decided and change that place.')
+# Path-checked scope (live 20.11 12:19 on: 11 of 20 passes no_effect, 0 promotions): the red-before run of a code task
+# records the functions its failing tests ran (GateResult.path). Those in the task's files are shown first and whole
+# (at most PATH_FOCUS_MAX names); those outside are named, and a CANNOT or an edit block naming one of them widens the
+# task by its module (the loop amends touch_files); the NO_EFFECT_BLOCK_AFTER-th no-effect on one base blocks the task
+# with that list for Opus instead of more passes.
+OFF_PATH_NOTE = ('\nThe failing test also runs, outside the files you may change: %s. If the asserted behaviour is '
+                 'decided there, answer CANNOT: <that name>.')
+PATH_FOCUS_MAX = 12
+OFF_PATH_SHORT = 8
+OFF_PATH_WAIT_S = 30
+NO_EFFECT_BLOCK_AFTER = 2
 _ADDRESS = re.compile(r'0x[0-9A-Fa-f]{4,}')
 _WORKDIR = re.compile(r'task-[\w.-]+')
 _SECONDS = re.compile(r'\b\d+(?:\.\d+)?s\b')
@@ -763,11 +780,12 @@ def port_focus(repo: Path, task: Task) -> frozenset:
 def build_coder_prompt(task: Task, visible: dict[str, bytes], feedback: str | None = None,
                        prev_diff: str = '', *, goal: str | None = None, failing: str = '',
                        light: bool = False, asked: frozenset = frozenset(), reference: str = '',
-                       focus: frozenset = frozenset()) -> str:
+                       focus: frozenset = frozenset(), off_path=()) -> str:
     """The ONE builder of the coder prompt (used by the pass and by model_attempt's default). ``light``: the
     prompt of the light engine, which has no tools: no read/grep instructions (live 19.11 17:48-17:50:
     with them the model answered "CANNOT: requires access outside the provided files"). ``asked``: definitions
-    a model of this pass asked to see; with the ones the feedback names (asked_names) they are shown first."""
+    a model of this pass asked to see; with the ones the feedback names (asked_names) they are shown first.
+    ``off_path``: functions the failing test runs outside the task's files (OFF_PATH_NOTE)."""
     asked = frozenset(asked) | asked_names(feedback or '')
     targets = visible_targets(task)
     if task.kind == 'unit_test':
@@ -796,6 +814,8 @@ def build_coder_prompt(task: Task, visible: dict[str, bytes], feedback: str | No
         core += "\nTask text:\n" + redact(scrub_paths(goal))[:1500]
     if failing and task.kind != 'unit_test':
         core += "\nFailing on the base now (must pass after your change):\n" + redact(failing)[:1500]
+    if off_path and task.kind != 'unit_test':
+        core += OFF_PATH_NOTE % ', '.join(off_path)
     if reference and task.kind != 'unit_test':
         # a port task: the behaviour was built before on an old branch, in the code's old layout (live 20.11: 35 open
         # rows say so, their guard tests are red on the head of the unified code)
@@ -975,6 +995,36 @@ def light_rules(task: Task, workdir=None) -> str:
             + first + "\n<<<<<<< SEARCH\n(old lines)\n=======\n(new lines)\n>>>>>>> REPLACE"
             + "\nor, for a whole function shown whole:\nREPLACE FUNCTION " + first + " " + name + "\n```python\n"
             "def " + leaf + "(...):\n    (the whole new definition, every line)\n```")
+
+
+def path_trace(task: Task) -> tuple:
+    """The source prefixes whose functions the red-before run records for a code task: the top folder of each touch
+    file (a top-level file: itself); () for any other kind."""
+    if task.kind != 'code':
+        return ()
+    return tuple(sorted({f.split('/', 1)[0] + '/' if '/' in f else f for f in task.touch_files}))
+
+
+def cannot_names(payload: str) -> list:
+    """The names a CANNOT answer gives: a lone word as it is (``CANNOT: provider``); in a sentence only the code-like
+    words (with ``_``, ``.``, ``/`` or an inner capital), so prose (``requires access outside the files``) never
+    matches a same-named function of the path by accident."""
+    words = re.findall(r'[\w./-]+', payload or '')
+    if len(words) <= 1:
+        return words
+    return [w for w in words if any(c in w for c in '_./') or any(c.isupper() for c in w[1:])]
+
+
+def outside_names(text: str, allowed: tuple) -> list:
+    """The file names an answer's edit blocks aimed at outside ``allowed`` (file-name lines, REPLACE FUNCTION paths)."""
+    names = []
+    for line in (text or '').replace('\r\n', '\n').split('\n'):
+        s = line.strip()
+        head = _FUNC_HEAD.fullmatch(_func_clean(s)) if _FUNC_START.match(_func_clean(s)) else None
+        name = head.group(1) if head else s
+        if name and not name.startswith('```') and _light_target(name, allowed) == '':
+            names.append(name.strip('`*#:').strip().replace(chr(92), '/'))
+    return names
 
 
 def engine_for(role: str, task: Task) -> str:
@@ -1784,8 +1834,9 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
             return block(reason, 'postponed %d times in a row' % ESCALATE_AFTER, infra=reason in INFRA_DEFERS)
         return release(reason, seconds)
 
-    def reject(source: str, reason: str, text: str, names=()) -> dict:
-        """A candidate failed a gate or the reviewer: feedback + previous diff + a strike."""
+    def reject(source: str, reason: str, text: str, names=(), mark=None) -> dict:
+        """A candidate failed a gate or the reviewer: feedback + previous diff + a strike. ``mark(row)``: one more
+        change of the row in the same commit."""
         reason = scrub(redact(reason))[:300]
         text = scrub(text)
         # NOTE: the previous diff below is deliberately NOT scrubbed: it is the user's own code under
@@ -1802,6 +1853,8 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
 
         def apply(state, row):
             add_feedback(state, tid, source, '[attempt %d] %s' % (attempt, text))
+            if mark is not None:
+                mark(row)
             status = settle(state, tid, token, tests_ok=False, evidence=_digest(reason, text),
                             max_attempts=max_attempts)
             row.pop('pending_review', None)
@@ -2146,7 +2199,7 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
         # the same commit with the same tests and files is reused (base_red): it cannot change, and with a hanging
         # test file it cost 70 s every pass (live 20.11 05:25-05:37).
         key = _base_key(base_sha, task, ctx['baseline'])
-        held = _held_base(row, key)
+        held = _held_base(row, key, task.kind)
         if held is not None:
             verdict, base = 'red', held
             events.append('base_reused')
@@ -2154,7 +2207,7 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
             verdict, base = timed('red_before_s', lambda: gate.red_before(
                 base_root() if task.kind != 'unit_test' else root, task.tests, GATE_TIMEOUT_S, task.kind,
                 wait_s=(min(RED_BEFORE_WAIT_S, max(0.0, slot['left'])) if slot['armed'] else RED_BEFORE_WAIT_S),
-                workdir=gate_tmp))
+                workdir=gate_tmp, **({'trace': path_trace(task)} if path_trace(task) else {})))
             keep_red = (key and verdict == 'red' and not base.env_reason and task.kind != 'unit_test')
 
             def note_base(state, row):
@@ -2170,6 +2223,64 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
         if verdict == 'unknown':
             report['reason_detail'] = scrub(redact(base.diag))[:300]
             return release_or_block('gate_unknown', INFRA_DEFER_S)
+
+        # the path of the failing tests: on it in the task's files (shown first) / outside them (named, checked)
+        on_mods, off_mods = gate.path_split(getattr(base, 'path', ()), task.touch_files) if task.kind == 'code' \
+            else ({}, {})
+        try:
+            off_short = gate.off_path_short(off_mods, root, task.tests, OFF_PATH_SHORT, base.failed_ids) \
+                if off_mods else []
+            ranked_on = gate.rank_path(on_mods, root, task.tests, base.failed_ids) if on_mods else []
+        except Exception:  # noqa: BLE001 - an order of names only: without it the lists stay unsorted
+            off_short = ['%s.%s' % (m.rsplit('/', 1)[-1].rsplit('.', 1)[0], q)
+                         for m, qs in off_mods.items() for q in qs][:OFF_PATH_SHORT]
+            ranked_on = [(m, q) for m, qs in on_mods.items() for q in qs]
+        leaves = [q.rpartition('.')[2] for _, q in ranked_on]
+        path_focus = frozenset([n for n in dict.fromkeys(leaves)
+                                if identifier_tokens(n) == {n} and not n.startswith('__')][:PATH_FOCUS_MAX])
+        held_ne = row.get('no_effect')
+        prior_ne = (held_ne['n'] if key and isinstance(held_ne, dict) and held_ne.get('key') == key
+                    and type(held_ne.get('n')) is int else 0)
+
+        def no_effects() -> int:
+            return prior_ne + events.count('no_effect')
+
+        def no_effect_block() -> dict | None:
+            """The NO_EFFECT_BLOCK_AFTER-th change without effect on one base, with a path to show: BLOCKED for Opus
+            with the functions the failing test runs outside the task (more passes would only repeat it)."""
+            if not off_short or no_effects() < NO_EFFECT_BLOCK_AFTER:
+                return None
+            return block('off_path', 'the change had no effect %d times on the same base; the failing test runs '
+                         'outside the task files: %s' % (no_effects(), ', '.join(off_short)))
+
+        def scope_signal():
+            """(module, name) when the last coder answer named a function of the failing test's path outside the task:
+            a CANNOT name, or the file of an edit block outside the task; None otherwise."""
+            if not off_mods:
+                return None
+            note, text = ctx.get('light_note') or '', ctx.get('last_text') or ''
+            said = re.search(r'CANNOT:\s*(.*)', note) or re.search(r'(?im)^\W*CANNOT:\s*(.*)$', text)
+            names = cannot_names(said.group(1)) if said else []
+            if 'outside the task' in note:           # the light engine's count of blocks for other files
+                names += outside_names(text, tuple(task.touch_files))
+            for name in names:
+                module = gate.path_lookup(off_mods, name)
+                if module:
+                    return module, name
+            return None
+
+        def widen(module: str, name: str) -> dict:
+            """The task's scope misses a module the failing test runs and the model named: the loop adds it to
+            touch_files (report scope_add, no strike); over LIGHT_MAX_FILES or a forbidden path: BLOCKED for Opus."""
+            why = gate.is_forbidden(module, task.kind) or (
+                'more than %d files' % LIGHT_MAX_FILES if len(task.touch_files) + 1 > LIGHT_MAX_FILES else '')
+            if why:
+                return block('off_path', '%s (%s) runs in the failing test outside the task; it cannot be added: %s'
+                             % (module, name, why))
+            events.append('scope_add:' + module)
+            report['scope_add'] = [module]
+            report['reason_detail'] = scrub(redact('%s (%s) runs in the failing test outside the task' % (module, name)))
+            return release('off_path', OFF_PATH_WAIT_S)
 
         def red_on(model) -> None:
             """<id>: the test ids the candidate of ``model`` was red on, for the loop's audit of a factory test."""
@@ -2327,11 +2438,11 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                 events.append('port_reference:%d' % len(reference))
             elif task.port_from and task.kind != 'unit_test':
                 events.append('port_reference_missing')      # a lost example shows in the telemetry, never silently
-            focus = port_focus(port_repo or root, task) if reference else frozenset()
+            focus = (port_focus(port_repo or root, task) if reference else frozenset()) | path_focus
             def make_prompt(asked=frozenset()):
                 return build_coder_prompt(task, visible, feedback, prev_diff, failing=scrub(failing),
                                           light=engine_for(role, task) == 'light',   # the same rule call() applies
-                                          asked=asked, reference=reference, focus=focus)
+                                          asked=asked, reference=reference, focus=focus, off_path=tuple(off_short))
             prompt = make_prompt()
             chosen = route(task, small_model=small_model, large_model=large_model, fallback=attempt > 1)
 
@@ -2369,7 +2480,8 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                 output = scrub(redact(failure.diag))[:TOURNAMENT_OUTPUT_LIMIT]
                 diff = unified_diff(ctx['baseline'], ctx['workdir'], failure.changed, DIFF_LIMIT)
                 room = channels.PROMPT_LIMIT_CHARS - len(prompt)
-                lead = NO_EFFECT_NOTE if getattr(failure, 'no_effect', False) else ''
+                lead = (NO_EFFECT_NOTE + (OFF_PATH_NOTE % ', '.join(off_short) if off_short else '')
+                        if getattr(failure, 'no_effect', False) else '')
                 for part in (TOURNAMENT_DIFF_NOTE % diff if diff else '', ''):
                     note = lead + TOURNAMENT_GATE_NOTE % output + part
                     if len(note) <= room:
@@ -2407,6 +2519,9 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                 ctx['coder_model'] = calls[-1]['model']
                 if event_summary(out)['finish_reason'] in ('length', 'max_tokens'):
                     events.append('output_truncated')
+                signal = scope_signal()
+                if signal:                           # it named code of the failing path outside the task
+                    return widen(*signal)
                 if k + 1 >= size:
                     break                            # the tournament is full: this candidate stands
                 why = unusable()
@@ -2422,6 +2537,9 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                     break                            # passed, or a final result (environment, unknown neighbour, ...)
                 gate_failed.append(ctx['coder_model'])
                 red_on(ctx['coder_model'])
+                blocked = no_effect_block() if decision.no_effect else None
+                if blocked is not None:
+                    return blocked                   # the second change without effect on this base
                 events.append('tournament_gate_retry_%d' % (k + 1))
                 next_note = gate_note(decision)
             if size > 1:
@@ -2439,7 +2557,12 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
         if isinstance(decision, _GateRetry):
             if ctx.get('gate_red'):                  # <id>: which test ids each red model failed on (the loop's audit)
                 report['gate_red'] = ctx['gate_red']
-            return reject(*decision.reject_args)     # the pass ends on its last gate failure: ONE rejection
+            blocked = no_effect_block() if decision.no_effect else None
+            if blocked is not None:
+                return blocked
+            seen_ne = no_effects()
+            mark = (lambda r: r.__setitem__('no_effect', {'key': key, 'n': seen_ne})) if key and seen_ne else None
+            return reject(*decision.reject_args, mark=mark)   # the pass ends on its last gate failure: ONE rejection
         if isinstance(decision, dict):
             return decision
         changed, receipt = decision

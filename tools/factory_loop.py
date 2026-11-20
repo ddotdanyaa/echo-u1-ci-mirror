@@ -52,7 +52,7 @@ STALE_INDEX_LOCK_S = 120
 ES_CONTINUOUS = 0x80000000
 ES_SYSTEM_REQUIRED = 0x00000001
 # Channel-wide reasons stop every task; everything else is the task's own not_before.
-from tools.agent_factory_runner import ESCALATE_AFTER, INFRA_CHANNEL_REASONS, INFRA_DEFERS  # noqa: <id>
+from tools.agent_factory_runner import ESCALATE_AFTER, INFRA_CHANNEL_REASONS, INFRA_DEFERS, LIGHT_MAX_FILES  # noqa: <id>
 from tools.agent_factory_runner import _light_post  # noqa: <id>  (the <id> spec pass; tests replace this name)
 from tools import factory_ab  # noqa: <id>
 
@@ -120,6 +120,7 @@ BRAKE_SPAN_S, BRAKE_MAX_S = 1800, 7200          # the brake has a term; a failed
 TIER_ORDER = ("small", "main", "escalation")
 ERROR_MEMORY_MAX = 200
 BEFORE_MODEL = frozenset(("already_green", "context_too_large", "scope_violation", "no_diff"))
+SCOPE_MAX_FILES = LIGHT_MAX_FILES   # a task widened beyond it would leave the light engine
 CLEANUP_EVENTS = ("stale_baseline_kept", "pending_copy_kept")
 TELEMETRY_MAX_BYTES = 20 * 1024 * 1024
 REJECT_PREFIXES = ("gate:", "weakening:", "review:")  # a real rejection, not a deferral
@@ -2464,6 +2465,8 @@ class Loop:
                    peak_mb=round(w.peak / 2 ** 20, 1) if w.peak else None,
                    queue_s=round(w.t_start - w.t_claim, 3) if w.t_start else None,
                    slot_wait_s=(res.get("stages") or {}).get("slot_wait_s"))
+        if tid and res.get("scope_add"):
+            self._scope_add(tid, tasks, res["scope_add"])
         for c in calls:  # one event per model call: run (code/repair) or review
             self.event("review" if c.get("role") == "review" else "run",
                        task_id=tid or None, backlog_id=bid, role=self.rs(c.get("role")),
@@ -2681,6 +2684,34 @@ class Loop:
         vals = [cls._num(c, *names) for c in calls]
         vals = [v for v in vals if v is not None]
         return sum(vals) if vals else None
+
+    def _scope_add(self, tid: str, tasks: dict, add) -> None:
+        """The runner's path check found a module the failing test runs outside the task, and the model named it
+        (report scope_add): the plan row gains it, so the next pass measures the base and its path again (the staged
+        files change the base key). Refused (event scope_add_refused): an unknown task, a forbidden path, more than
+        SCOPE_MAX_FILES files, a task that is RUNNING/REVIEW again or a locked plan."""
+        from tools import factory_gate
+        t = tasks.get(tid)
+        old = list(t.touch_files) if t else []
+        new = old + [p for p in dict.fromkeys(add if isinstance(add, list) else [])
+                     if isinstance(p, str) and p not in old]
+        why = "" if t else "unknown task"
+        if not why and len(new) == len(old):
+            return
+        if not why and len(new) > SCOPE_MAX_FILES:
+            why = "more than %d files" % SCOPE_MAX_FILES
+        for path in ([] if why else new[len(old):]):
+            why = why or (factory_gate.is_forbidden(path, t.kind) or "")
+        if not why:
+            try:
+                F.amend_task(self.plan_path, tid, touch_files=new)
+            except (F.InvalidPlan, F.LockBusy, OSError) as e:   # the same refusals an answer meets (line of apply)
+                why = "%s: %s" % (type(e).__name__, str(e))
+        if why:
+            self.event("run", task_id=tid, status="scope_add_refused", reason=F.redact(why)[:200],
+                       events=["scope_add_refused"])
+        else:
+            self.event("run", task_id=tid, status="scope_add", events=["scope_add:" + p for p in new[len(old):]])
 
     @staticmethod
     def _ran_model_or_gate(res: dict, calls: list, st, rkey: str) -> bool:

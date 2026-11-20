@@ -87,6 +87,7 @@ class GateResult:
     env_failed: tuple = ()   # 'classname::name' of red testcases whose every failure is environmental (_env_reason)
     unrun: tuple = ()        # tests the split budget left unrun (SPENT_DIAG): neither red nor green, never measured
     slot_wait_s: float = 0.0  # seconds this run WAITED for a pytest slot / free RAM (not the run time): the runner's budget
+    path: tuple = ()          # sorted (relpath, qualname, line) of source functions the FAILING tests ran (run with trace)
 
 
 # --- laptop rule: at most 2 pytest machine-wide, and only while free RAM > 2 GB ---------------------
@@ -312,16 +313,23 @@ def _within(names, labels) -> bool:
     return all(n in labels or any(n.startswith(label + '::') for label in labels) for n in names)
 
 
-def run_tests(root, tests, timeout_s, workdir=None, wait_s=None, hung=(), budget_s=None) -> GateResult:
+def _traced(trace) -> dict:
+    """The ``trace`` keyword only when there is one: a run without it calls exactly as before (and fakes of these
+    functions that take no trace keep working)."""
+    return {'trace': tuple(trace)} if trace else {}
+
+
+def run_tests(root, tests, timeout_s, workdir=None, wait_s=None, hung=(), budget_s=None, trace=()) -> GateResult:
     """Run ``tests`` in ``root``: one pytest call (_run_once) of at most ``timeout_s``. A call cut at the limit goes on
     in smaller calls (_fit), so a slow or a hanging test no longer hides the verdict of the others (live 20.11: three
     tasks stayed unknown or unacceptable on every pass: one test waits on a speech process, other files need more
     than 30 s under load). ``hung``: what was cut on the base (files or single tests): the run then starts file by
     file, a test of that list runs alone and its file runs without it (the joint call would only spend the limit
-    again). The continuation spends at most ``budget_s`` (SPLIT_BUDGET_S) seconds."""
+    again). The continuation spends at most ``budget_s`` (SPLIT_BUDGET_S) seconds. ``trace``: source prefixes whose
+    functions the failing tests ran are recorded in GateResult.path (the verdict never depends on it)."""
     deadline = time.monotonic() + (SPLIT_BUDGET_S if budget_s is None else budget_s)
     if not hung:
-        parts = _fit(root, list(tests), timeout_s, workdir, wait_s, deadline, first=True)
+        parts = _fit(root, list(tests), timeout_s, workdir, wait_s, deadline, first=True, **_traced(trace))
     else:
         singles = [h for h in dict.fromkeys(hung) if '::' in h and _within([h], tests)][:HUNG_ALONE_MAX]
         parts = []
@@ -329,13 +337,13 @@ def run_tests(root, tests, timeout_s, workdir=None, wait_s=None, hung=(), budget
             mine = [t for t in tests if t.split('::', 1)[0] == f and t not in singles]
             if mine:
                 parts += _fit(root, mine, timeout_s, workdir, wait_s, deadline, first=True,
-                              deselect=[h for h in singles if _within([h], mine)])
+                              deselect=[h for h in singles if _within([h], mine)], **_traced(trace))
         for h in singles:
-            parts += _fit(root, [h], timeout_s, workdir, wait_s, deadline, first=True)
+            parts += _fit(root, [h], timeout_s, workdir, wait_s, deadline, first=True, **_traced(trace))
     return parts[0][1] if len(parts) == 1 else _merge(parts)
 
 
-def _fit(root, tests, timeout_s, workdir, wait_s, deadline, first=False, deselect=()) -> list:
+def _fit(root, tests, timeout_s, workdir, wait_s, deadline, first=False, deselect=(), trace=()) -> list:
     """[(names, GateResult)] for ``tests``: one call; a call cut at the limit goes on. Its progress names the test that
     was running (it runs alone, last: cut alone, it hangs here and is timed out) and how many finished (the others
     run in chunks of SPLIT_SHARE of that count, each chunk the same way). Without progress (cut while collecting) a
@@ -343,7 +351,8 @@ def _fit(root, tests, timeout_s, workdir, wait_s, deadline, first=False, deselec
     if not first and time.monotonic() >= deadline:
         return [(tuple(tests), _failure(-1, SPENT_DIAG % timeout_s))]
     seen = {}
-    result = _run_once(root, tests, timeout_s, workdir=workdir, wait_s=wait_s, progress=seen, deselect=deselect)
+    result = _run_once(root, tests, timeout_s, workdir=workdir, wait_s=wait_s, progress=seen, deselect=deselect,
+                       **_traced(trace))
     if not _timed_out(result):
         return [(tuple(tests), result)]
     items, started = seen.get('items') or [], seen.get('started') or []
@@ -353,12 +362,12 @@ def _fit(root, tests, timeout_s, workdir, wait_s, deadline, first=False, deselec
         size = max(1, int(done * SPLIT_SHARE)) if done else len(others)
         parts = []
         for k in range(0, len(others), size):
-            parts += _fit(root, others[k:k + size], timeout_s, workdir, wait_s, deadline)
-        return parts + _fit(root, [suspect], timeout_s, workdir, wait_s, deadline)
+            parts += _fit(root, others[k:k + size], timeout_s, workdir, wait_s, deadline, **_traced(trace))
+        return parts + _fit(root, [suspect], timeout_s, workdir, wait_s, deadline, **_traced(trace))
     files = list(dict.fromkeys(t.split('::', 1)[0] for t in tests))
     if len(files) > 1:
         return [p for f in files for p in _fit(root, [t for t in tests if t.split('::', 1)[0] == f], timeout_s,
-                                               workdir, wait_s, deadline, deselect=deselect)]
+                                               workdir, wait_s, deadline, deselect=deselect, **_traced(trace))]
     return [(tuple(items) if len(items) == 1 else tuple(tests), result)]
 
 
@@ -403,24 +412,26 @@ def _merge(parts) -> GateResult:
                       tuple(sorted({i for r in runs for i in r.failed_ids})),
                       tuple(sorted({c for r in runs for c in r.crashed})), tuple(sorted(timed)),
                       tuple(sorted({i for r in runs for i in r.env_failed})), tuple(sorted(unrun)),
-                      round(sum(r.slot_wait_s for r in runs), 3))
+                      round(sum(r.slot_wait_s for r in runs), 3), path=tuple(sorted({p for r in runs for p in r.path})))
 
 
 def _node(test: str) -> str:
     return _rel(test.split('::', 1)[0]) + ('::' + test.split('::', 1)[1] if '::' in test else '')
 
 
-def _run_once(root, tests, timeout_s, workdir=None, wait_s=None, progress=None, deselect=()) -> GateResult:
+def _run_once(root, tests, timeout_s, workdir=None, wait_s=None, progress=None, deselect=(), trace=()) -> GateResult:
     """One pytest call, and how long it waited for its slot (GateResult.slot_wait_s)."""
     waits: list = []
-    result = _run_once_raw(root, tests, timeout_s, workdir, wait_s, progress, deselect, waits)
+    result = _run_once_raw(root, tests, timeout_s, workdir, wait_s, progress, deselect, waits, trace)
     return replace(result, slot_wait_s=round(sum(waits), 3)) if waits else result
 
 
-def _run_once_raw(root, tests, timeout_s, workdir, wait_s, progress, deselect, waits) -> GateResult:
+def _run_once_raw(root, tests, timeout_s, workdir, wait_s, progress, deselect, waits, trace=()) -> GateResult:
     """Run ``tests`` (pytest node ids / files / dirs) in ``root`` in one pytest call; the verdict comes from JUnit XML.
     ``deselect``: node ids left out of the call. ``progress`` (a dict) receives what a call cut at the limit did: the
-    collected names in run order ('items') and the started ones ('started')."""
+    collected names in run order ('items') and the started ones ('started'). ``trace`` (source prefixes): the profile
+    plugin rides in the same call and GateResult.path gets the functions the failing tests ran; any fault of it
+    (no file, a broken file, a timeout) leaves path empty, never the verdict changed."""
     root = Path(root)
     for t in [*tests, *deselect]:
         raw = t.split('::', 1)[0]
@@ -442,6 +453,15 @@ def _run_once_raw(root, tests, timeout_s, workdir, wait_s, progress, deselect, w
             plugin = ['-p', PROGRESS_PLUGIN]
         except OSError:
             pass      # without progress a cut call goes on file by file only
+        profile = Path(d) / 'profile.json'
+        if trace and plugin:
+            try:
+                (Path(d) / 'plug' / (PROFILE_PLUGIN + '.py')).write_text(_PROFILE_PLUGIN, encoding='utf-8')
+                env.update(FACTORY_PROFILE_ROOT=str(root), FACTORY_PROFILE_OUT=str(profile),
+                           FACTORY_PROFILE_PREFIXES='|'.join(trace))
+                plugin += ['-p', PROFILE_PLUGIN]
+            except OSError:
+                pass  # no trace: the verdict as without it
         args = [sys.executable, '-m', 'pytest', '-q', '--tb=short', '-p', 'no:cacheprovider', *plugin,
                 '--rootdir=' + str(root), '--basetemp=' + str(Path(d) / 'bt'),
                 '--junitxml=' + str(xml), *['--deselect=' + _node(t) for t in deselect], *tests]
@@ -462,6 +482,7 @@ def _run_once_raw(root, tests, timeout_s, workdir, wait_s, progress, deselect, w
             cases = list(ET.parse(xml).getroot().iter('testcase'))
         except (OSError, ET.ParseError):
             return _failure(run.returncode, 'no readable JUnit XML: ' + tail)
+        path = _failing_path(profile) if trace else ()
     failed = sum(1 for c in cases if c.find('failure') is not None)
     errors = sum(1 for c in cases if c.find('error') is not None and c.find('failure') is None)
     skipped = sum(1 for c in cases if c.find('skipped') is not None)
@@ -499,7 +520,22 @@ def _run_once_raw(root, tests, timeout_s, workdir, wait_s, progress, deselect, w
                       tuple(missing),
                       tuple(sorted('%s::%s' % (c.get('classname', ''), c.get('name', '')) for c in cases
                                    if c.find('failure') is not None or c.find('error') is not None)),
-                      tuple(sorted(crashed)), (), tuple(sorted(env_ids)))
+                      tuple(sorted(crashed)), (), tuple(sorted(env_ids)), path=path)
+
+
+PROFILE_PLUGIN = 'factory_profile_plugin'
+PATH_MAX = 5000      # entries of GateResult.path kept (it rides in the state's base_red record)
+
+
+def _failing_path(profile) -> tuple:
+    """The union of the functions the failed / erroring tests of a profile file ran; () on any fault."""
+    try:
+        data = json.loads(Path(profile).read_text(encoding='utf-8'))
+        found = {(str(c[0]), str(c[1]), int(c[2])) for v in data['tests'].values()
+                 if isinstance(v, dict) and v.get('outcome') in ('failed', 'error') for c in v.get('calls') or ()}
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, IndexError):
+        return ()
+    return tuple(sorted(found))[:PATH_MAX]
 
 
 def _exception_text(node) -> str:
@@ -590,15 +626,15 @@ def candidate_import(result: GateResult, base_root, tree, changed) -> GateResult
 EMPTY_BASE = GateResult(0, 0, 0, 0, 0, 0, True, 'unit_test: no base tests')
 
 
-def red_before(base_root, tests, timeout_s, kind=None, wait_s=None, workdir=None):
-    """``(verdict, GateResult)``, verdict in red | green | unknown.
+def red_before(base_root, tests, timeout_s, kind=None, wait_s=None, workdir=None, trace=()):
+    """``(verdict, GateResult)``, verdict in red | green | unknown. ``trace``: see run_tests (GateResult.path).
 
     red: at least one task test fails on the base (not by a missing module/data: that is unknown). green: junit_ok and nothing red (the task is
     already done). unknown: timeout, no XML, no file: never read as green. unit_test: red at once.
     """
     if kind == 'unit_test':
         return 'red', EMPTY_BASE
-    result = run_tests(base_root, tests, timeout_s, workdir=workdir, wait_s=wait_s)
+    result = run_tests(base_root, tests, timeout_s, workdir=workdir, wait_s=wait_s, **_traced(trace))
     if result.failed + result.errors > 0:
         # a file killed at the limit (run_tests) is not a doubt about the red of the files that ran
         only_timed_out = bool(result.timed_out) and _within(result.missing, result.timed_out)
@@ -1070,3 +1106,124 @@ def rank_modules(outcomes: dict, calls: dict, targets=None):
         mods.append((rel, top, sum(1 for x in items if x[2] >= top - 1e-9)))
     mods.sort(key=lambda m: (-m[1], -m[2], m[0]))
     return mods, leaders
+
+
+# ---- path-checked scope: what the failing tests of a code task ran (GateResult.path), split by the task's files ----
+# Live 20.11 12:19 on: 11 of 20 passes had no effect (the model edited code the failing test never runs). Ranking modules
+# by passing siblings (rank_modules) gave noise on the real tree (<id>: settings/timers first, <id>/<id>: no passing
+# sibling); the path cannot pick a module by itself, it only CHECKS a module a model names (path_lookup).
+
+def path_split(path, touch_files) -> tuple[dict, dict]:
+    """``(on, off)``: {module: sorted qualnames} of the functions in ``path`` inside / outside ``touch_files``."""
+    own = set(touch_files)
+    on: dict = {}
+    off: dict = {}
+    for rel, qual, _line in path or ():
+        (on if rel in own else off).setdefault(rel, set()).add(qual)
+    return ({k: sorted(v) for k, v in sorted(on.items())}, {k: sorted(v) for k, v in sorted(off.items())})
+
+
+def _stem(rel: str) -> str:
+    return rel.rsplit('/', 1)[-1].rsplit('.', 1)[0]
+
+
+def path_lookup(off: dict, name: str):
+    """The module of ``off`` that ``name`` (a CANNOT name or the file of an edit block) means: a file path, an exact
+    qualname, ``stem.qualname`` or a leaf found in exactly one module; None when absent or ambiguous."""
+    name = (name or '').strip().strip('`\'"*()[]:;,').replace(chr(92), '/')
+    while name.startswith('./'):
+        name = name[2:]
+    if not name or not off:
+        return None
+    if name.endswith('.py'):
+        hits = [m for m in off if m == name or m.endswith('/' + name)]
+        return hits[0] if len(hits) == 1 else None
+    # a dotted name is exact; a bare one is a leaf (``_fits`` of one module and ``FastText._fits`` of another: ambiguous)
+    exact = [m for m, quals in off.items() if '.' in name
+             and (name in quals or any(name == _stem(m) + '.' + q for q in quals))]
+    if exact:
+        return exact[0] if len(exact) == 1 else None
+    leaf = name.rpartition('.')[2]
+    hits = [m for m, quals in off.items() if any(q.rpartition('.')[2] == leaf for q in quals)]
+    return hits[0] if len(hits) == 1 else None
+
+
+_WORD = re.compile(r'[A-Za-z_]\w*')
+
+
+def _words(text: str) -> set:
+    """Lower-case identifier words of a text, with the parts of snake_case names (4+ letters)."""
+    out = set()
+    for w in _WORD.findall(text or ''):
+        w = w.lower()
+        if len(w) >= 3:
+            out.add(w)
+        out.update(p for p in w.split('_') if len(p) >= 4)
+    return out
+
+
+def _test_words(base_root, test_files, failed=()) -> set:
+    """Identifiers and string literals of the failing test functions (``failed``: their ids), else of the whole files."""
+    names = {f.rsplit('::', 1)[-1].split('[', 1)[0] for f in failed or ()}
+    words: set = set()
+    for rel in test_files or ():
+        try:
+            tree = ast.parse(Path(base_root).joinpath(*rel.split('::', 1)[0].split('/')).read_text(
+                encoding='utf-8', errors='replace'))
+        except (OSError, SyntaxError, ValueError):
+            continue
+        funcs = [n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+                 and n.name in names] or [tree]
+        for f in funcs:
+            for node in ast.walk(f):
+                if isinstance(node, ast.Name):
+                    words |= _words(node.id)
+                elif isinstance(node, ast.Attribute):
+                    words |= _words(node.attr)
+                elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+                    words |= _words(node.value)
+    return words - {'self', 'test', 'tests', 'assert', 'none', 'true', 'false', 'return'}
+
+
+def _def_sources(text: str) -> dict:
+    """{qualname: source} of every function of a module (methods as Class.method)."""
+    try:
+        tree = ast.parse(text)
+    except (SyntaxError, ValueError):
+        return {}
+    lines = text.splitlines()
+    out = {}
+
+    def walk(node, prefix):
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                qual = prefix + child.name
+                if not isinstance(child, ast.ClassDef):
+                    out[qual] = '\n'.join(lines[child.lineno - 1:getattr(child, 'end_lineno', child.lineno)])
+                walk(child, qual + '.')
+    walk(tree, '')
+    return out
+
+
+def rank_path(funcs: dict, base_root, test_files, failed=()) -> list:
+    """``[(module, qualname)]`` of {module: [qualnames]}, the ones whose source shares the most words with the failing
+    tests first (an ORDER for a short list, never a decision); a module that cannot be read scores 0."""
+    want = _test_words(base_root, test_files, failed)
+    scored = []
+    for rel, quals in funcs.items():
+        try:
+            sources = _def_sources(Path(base_root).joinpath(*rel.split('/')).read_text(encoding='utf-8',
+                                                                                      errors='replace'))
+        except OSError:
+            sources = {}
+        for q in quals:
+            scored.append((-len(want & _words(sources.get(q, '') or q)), rel, q))
+    return [(rel, q) for _, rel, q in sorted(scored)]
+
+
+def off_path_short(off: dict, base_root, test_files, k: int = 8, failed=()) -> list:
+    """The first ``k`` off-path functions as ``stem.qualname`` (rank_path order). Dunders are left out: a constructor
+    shares the most words with any test (live <id>: ``ControlledMedia.__init__`` ranked first) and names no decision."""
+    ranked = [(rel, q) for rel, q in rank_path(off, base_root, test_files, failed)
+              if not q.rpartition('.')[2].startswith('__')]
+    return ['%s.%s' % (_stem(rel), q) for rel, q in ranked[:k]]
