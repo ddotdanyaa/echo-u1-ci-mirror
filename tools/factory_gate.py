@@ -861,6 +861,11 @@ def _parse_py(text: str):
         return None
 
 
+class _Names(frozenset):
+    """The identifier set of the base tree; ``words`` also holds every word inside any string literal."""
+    words = frozenset()
+
+
 def symbol_index(base_root):
     """``(names, modules)`` of the base tree, cached per root while no .py file changes. names: every identifier the
     non-test source defines or mentions (identifier-shaped string literals too: getattr tables, __slots__, namedtuple
@@ -884,7 +889,7 @@ def symbol_index(base_root):
     cached = _INDEX.get(key)
     if cached and cached[0] == signature:
         return cached[1]
-    found = set()
+    found, words = set(), set()
     for path, _, _ in files:
         try:
             tree = _parse_py(path.read_text(encoding='utf-8', errors='replace'))
@@ -894,6 +899,8 @@ def symbol_index(base_root):
             continue
         in_tests = path.relative_to(root).parts[0] == 'tests'
         for n in ast.walk(tree):
+            if isinstance(n, ast.Constant) and isinstance(n.value, str):
+                words.update(_WORD.findall(n.value))
             if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                 found.add(n.name)
             elif isinstance(n, ast.alias):
@@ -916,7 +923,9 @@ def symbol_index(base_root):
                 found.add(n.arg)
             elif isinstance(n, ast.Constant) and isinstance(n.value, str) and _IDENT.match(n.value):
                 found.add(n.value)
-    result = (frozenset(found), frozenset(modules))
+    names_out = _Names(found)
+    names_out.words = frozenset(words)
+    result = (names_out, frozenset(modules))
     _INDEX[key] = (signature, result)
     return result
 
@@ -998,7 +1007,85 @@ def _lookup_keys(node) -> list:
     return keys
 
 
-def _guessed_key_hits(tree, known) -> list:
+def _key_lookups(expr, loop_var=None) -> list:
+    """``[(key_or_None, node)]`` for the lookups inside one expression that are compared to something:
+    ``'k' in x``, ``x['k'] == v``, ``x.get('k') is v``. With ``loop_var`` a lookup by that loop variable is reported
+    with ``None`` as its key."""
+    def keyof(node):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return node.value
+        if loop_var and isinstance(node, ast.Name) and node.id == loop_var:
+            return None
+        return False
+
+    found = []
+    for n in ast.walk(expr):
+        cand = None
+        if isinstance(n, ast.Compare) and len(n.ops) == 1 and isinstance(n.ops[0], ast.In):
+            cand = keyof(n.left)
+        elif isinstance(n, ast.Subscript) and isinstance(getattr(n, '_up', None), ast.Compare):
+            cand = keyof(n.slice)
+        elif isinstance(n, ast.Call) and n.args and isinstance(n.func, ast.Attribute) and n.func.attr == 'get' \
+                and isinstance(getattr(n, '_up', None), ast.Compare):
+            cand = keyof(n.args[0])
+        if cand is not False and not _negated(n):
+            found.append((cand, n))
+    return found
+
+
+def _word_counts(nodes) -> 'Counter':
+    from collections import Counter
+    out = Counter()
+    for node in nodes:
+        for n in ast.walk(node):
+            if isinstance(n, ast.Constant) and isinstance(n.value, str):
+                out.update(_WORD.findall(n.value))
+    return out
+
+
+def _unknown_membership_hits(tree, known, words) -> list:
+    """Rule G, membership form: an assert of ``'k' in x`` / ``x['k']`` / ``x.get('k')`` compared to a value, directly
+    or through a for-loop over a tuple/list of string constants, where the key is identifier-shaped, occurs nowhere in
+    the base tree and nowhere else in the test file (a key the test builds in a fixture is fine). A loop is hollow
+    when at least half of its constants are such unknown keys."""
+    # words of every string the test holds, except docstrings and assert messages (prose, not data)
+    prose = {id(n.value) for n in ast.walk(tree) if isinstance(n, ast.Expr) and isinstance(n.value, ast.Constant)}
+    prose |= {id(n.msg) for n in ast.walk(tree) if isinstance(n, ast.Assert) and n.msg is not None}
+    total = _word_counts([n for n in ast.walk(tree) if isinstance(n, ast.Constant) and id(n) not in prose])
+    out = []
+    for loop in ast.walk(tree):
+        if not (isinstance(loop, ast.For) and isinstance(loop.target, ast.Name)
+                and isinstance(loop.iter, (ast.Tuple, ast.List)) and loop.iter.elts
+                and all(isinstance(e, ast.Constant) and isinstance(e.value, str) for e in loop.iter.elts)):
+            continue
+        consts = [e.value for e in loop.iter.elts]
+        used = any(k is None for st in loop.body for a in ast.walk(st) if isinstance(a, ast.Assert)
+                   for k, _ in _key_lookups(a.test, loop.target.id))
+        inside = _word_counts([loop.iter])
+        unknown = [k for k in dict.fromkeys(consts)
+                   if _IDENT.match(k) and k not in known and k not in words and total[k] == inside[k]]
+        if used and unknown and 2 * sum(1 for c in consts if c in unknown) >= len(consts):
+            out.append(('G', 'line %d loops over keys (%s) and asserts each is looked up, but %d of %d keys occur '
+                             'nowhere in the project: the keys are guessed. Look the keys up in the code and assert '
+                             'the exact ones it holds' % (loop.lineno, ', '.join(repr(k) for k in dict.fromkeys(consts)),
+                                                          sum(1 for c in consts if c in unknown), len(consts))))
+    for assertion in ast.walk(tree):
+        if not isinstance(assertion, ast.Assert):
+            continue
+        test = assertion.test
+        if isinstance(test, ast.BoolOp) and isinstance(test.op, ast.Or):
+            continue
+        inside = _word_counts([test])
+        bad = [k for k, _ in _key_lookups(test) if k and _IDENT.match(k) and k not in known and k not in words
+               and total[k] == inside[k]]
+        if bad:
+            out.append(('G', 'line %d asserts a lookup by key (%s), but none of these keys occurs in the project: '
+                             'the keys are guessed. Look the key up in the code and assert the exact one it holds'
+                        % (assertion.lineno, ', '.join(repr(k) for k in dict.fromkeys(bad)))))
+    return out
+
+
+def _guessed_key_hits(tree, known, words=frozenset()) -> list:
     """Rule G: an assert that ORs two or more lookups by string key (``d.get('a') is True or d.get('b') is True``,
     ``x['a'] or x['b']``) where none of the keys occurs anywhere in the base tree (``known``: its identifiers and
     identifier-shaped string literals) nor elsewhere in the test itself: the author guessed the key names and the
@@ -1006,7 +1093,10 @@ def _guessed_key_hits(tree, known) -> list:
     the index, so such an assert is left alone."""
     from collections import Counter
     everywhere = Counter(n.value for n in ast.walk(tree) if isinstance(n, ast.Constant) and isinstance(n.value, str))
-    out = []
+    for parent in ast.walk(tree):
+        for child in ast.iter_child_nodes(parent):
+            child._up = parent
+    out = list(_unknown_membership_hits(tree, known, words))
     for assertion in ast.walk(tree):
         if not isinstance(assertion, ast.Assert):
             continue
@@ -1078,7 +1168,7 @@ def _hollow(text: str, names, modules) -> list:
                              'does, not grep its source' % n.lineno))
 
     if names:
-        out.extend(_guessed_key_hits(tree, known))
+        out.extend(_guessed_key_hits(tree, known, getattr(names, 'words', frozenset())))
 
     def tests_in(body, cls=None):
         for node in body:
@@ -1108,7 +1198,9 @@ def hollow_test_reasons(base_root, path, old: str, new: str, extra_names=()) -> 
     ``extra_names``: what the candidate's other changed files define."""
     names, modules = symbol_index(base_root)
     if names:
-        names = names | frozenset(extra_names)
+        indexed = getattr(names, 'words', frozenset())
+        names = _Names(names | frozenset(extra_names))
+        names.words = indexed
     new_hits = _hollow(new or '', names, modules)
     if not old:
         return [why for _, why in new_hits]

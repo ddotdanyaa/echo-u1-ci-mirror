@@ -220,5 +220,75 @@ def test_rule_g_flags_no_accepted_factory_test():
         if t is None:
             continue
         known = names | fg._defined_names(p.read_text(encoding="utf-8", errors="replace"))
-        hits += [(p.name, w) for _, w in fg._guessed_key_hits(t, known)]
+        hits += [(p.name, w) for _, w in fg._guessed_key_hits(t, known, getattr(names, 'words', frozenset()))]
     assert hits == []
+
+
+# ---- rule G, membership form: loops and single lookups over keys the code never mentions ----------------------
+
+LOOP_GUESSED = (
+    "from echo_sync import call_trace\n"
+    "\n"
+    "def test_stages():\n"
+    "    stages = call_trace.CallTrace().record({})\n"
+    "    for stage_key in ('evidence', 'recognition', 'admission', 'approval', 'record', 'call_id'):\n"
+    "        assert stage_key in stages\n"
+)
+
+OR_GET = (
+    "from echo_sync import call_trace\n"
+    "\n"
+    "def test_state():\n"
+    "    state = call_trace.CallTrace().record({})\n"
+    "    assert state.get('persistent') is True or state.get('persistent_routing') is True "
+    "or state.get('persistent_mode') is True\n"
+)
+
+
+def test_loop_over_mostly_unknown_keys_is_rejected(tmp_path):
+    v = check(base(tmp_path), LOOP_GUESSED)
+    assert v and any("loops over keys" in x and "'evidence'" in x and "4 of 6" in x for x in v), v
+
+
+def test_or_of_get_calls_on_unknown_keys_is_rejected(tmp_path):
+    v = check(base(tmp_path), OR_GET)
+    assert v and any("guessed" in x and "'persistent'" in x for x in v), v
+
+
+def test_single_membership_on_an_unknown_key_is_rejected(tmp_path):
+    root = base(tmp_path)
+    for stmt in ("assert 'browser_fp' in d", "assert d['browser_fp'] == 3", "assert d.get('browser_fp') is True"):
+        text = ("from echo_sync import call_trace\n\ndef test_m():\n"
+                "    d = call_trace.CallTrace().record({})\n    " + stmt + "\n")
+        v = check(root, text)
+        assert v and any("'browser_fp'" in x for x in v), (stmt, v)
+
+
+def test_membership_in_keys_the_test_builds_is_fine(tmp_path):
+    root = base(tmp_path)
+    loop = ("def test_m():\n    d = {'evidence': 1, 'recognition': 2, 'admission': 3}\n"
+            "    for k in ('evidence', 'recognition', 'admission'):\n        assert k in d\n")
+    assert check(root, loop) == []
+    single = "def test_m():\n    d = {'browser_fp': 1}\n    assert d['browser_fp'] == 1\n    assert 'browser_fp' in d\n"
+    assert check(root, single) == []
+
+
+def test_membership_in_keys_the_code_has_is_fine(tmp_path):
+    root = base(tmp_path)
+    loop = ("from echo_sync import call_trace\n\ndef test_m():\n    d = call_trace.CallTrace().record({})\n"
+            "    for k in ('directory', 'call_id', 'record', 'wake_gone'):\n        assert k in d\n")
+    assert check(root, loop) == []
+    assert check(root, "def test_m():\n    d = {}\n    assert d.get('call_id') == 1\n"
+                       "    assert 'on_wake_tick' in d\n") == []
+    # absence is not a guess
+    assert check(root, "def test_m():\n    d = {}\n    assert 'browser_fp' not in d\n"
+                       "    assert d.get('browser_fp') is None\n") == []
+
+
+def test_membership_in_a_word_the_code_prints_is_fine(tmp_path):
+    root = base(tmp_path)
+    (root / "echo_sync" / "call_trace.py").write_text(
+        SRC + "\nLOG = 'portion taken after_veto here'\n", encoding="utf-8")
+    text = "def test_m(caplog):\n    assert 'after_veto' in caplog.text\n"
+    assert check(root, text) == []
+    assert check(root, text.replace("after_veto", "after_nothing"))

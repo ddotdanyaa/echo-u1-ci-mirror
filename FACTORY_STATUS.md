@@ -1,9 +1,10 @@
 # Factory status (generated, structured data only)
 
-Generated: 2026-11-20T21:27:43Z
-Source commit: sha46cd666c0bcc
+Generated: 2026-11-20T21:30:53Z
+Source commit: sha775a56695e66
 
 ## Commits (sha, time)
+- sha775a5669 2026-11-21T00:29:42+03:00
 - sha46cd666c 2026-11-21T00:27:07+03:00
 - sha8fecc977 2026-11-21T00:20:03+03:00
 - sha85d04614 2026-11-20T23:41:52+03:00
@@ -23,7 +24,6 @@ Source commit: sha46cd666c0bcc
 - shad326bd73 2026-11-20T16:31:24+03:00
 - sha65516f8e 2026-11-20T16:30:41+03:00
 - shab4fbb508 2026-11-20T15:44:25+03:00
-- sha4901b1ee 2026-11-20T14:53:26+03:00
 
 ## Funnel
 | step | count |
@@ -43,8 +43,8 @@ Side counters: blocked=0, parked=0, requeued=2
 Tasks now: DONE=32, FAILED=49, READY=13
 Accepted: 0
 Promoted: 24
-Free RAM, GB: 2.74
-Telemetry rows: 7956 recognised, 0 unrecognised
+Free RAM, GB: 4.03
+Telemetry rows: 7959 recognised, 0 unrecognised
 
 ## Spend per model
 | model | calls | tokens_in | tokens_out | usage_unknown | http_429 | errors |
@@ -63,7 +63,7 @@ Telemetry rows: 7956 recognised, 0 unrecognised
 | answer | 354 | 0 |
 | gate | 1331 | 0 |
 | infra | 127 | 0 |
-| loop | 1507 | 0 |
+| loop | 1510 | 0 |
 | other | 868 | 0 |
 | promote | 33 | 0 |
 | review | 545 | 291 |
