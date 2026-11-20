@@ -1,0 +1,498 @@
+{
+  "baseline_msk": "2026-11-20T15:14:34.348179+03:00",
+  "snapshot_msk": "2026-11-20T18:35:41.266474+03:00",
+  "head": "e502ceb78347ed3f3712966d119ba5eac8be2a5f",
+  "worktree_dirty": true,
+  "queue": {
+    "counts": {
+      "FAILED": 35,
+      "DONE": 28,
+      "BLOCKED": 1,
+      "RUNNING": 1,
+      "READY": 1
+    },
+    "total": 66,
+    "done_reasons": {
+      "closed_by_opus": 28
+    },
+    "active": [
+      [
+        "bl_U146",
+        "RUNNING"
+      ]
+    ],
+    "blocks": {
+      "quarantine": 31,
+      "escalated:off_path": 2,
+      "off_path": 1,
+      "escalated:already_green": 2
+    }
+  },
+  "backlog": {
+    "total": 475,
+    "counts": {
+      "open": 337,
+      "open_port": 18,
+      "waiting": 45,
+      "unknown": 63,
+      "closed": 12
+    },
+    "closed_ids": [
+      "R31-5",
+      "U01",
+      "U02",
+      "U03",
+      "U04",
+      "U44",
+      "U45",
+      "U46",
+      "U49",
+      "U51",
+      "U93",
+      "U123"
+    ],
+    "new_closed": []
+  },
+  "stats": {
+    "accepted": 0,
+    "blocked": 1,
+    "blocked_by_reason": {
+      "off_path": 1
+    },
+    "infra_streak": 0,
+    "iterations": 10,
+    "last_iteration": "2026-11-20T18:20:32+03:00",
+    "max_workers": 3,
+    "mean_k": 2.1,
+    "opus_questions": 58,
+    "promoted": 0,
+    "quarantine": 31,
+    "rejected": 522,
+    "run_id": "af9e37d94b96",
+    "seconds": 50128.994,
+    "tokens_in": 6474088,
+    "tokens_out": 518022
+  },
+  "period_events": {
+    "count": 437,
+    "spans": {
+      "loop": 95,
+      "triage": 8,
+      "selffix": 3,
+      "answer": 11,
+      "pool": 95,
+      "run": 139,
+      "gate": 55,
+      "infra": 5,
+      "review": 17,
+      "route": 5,
+      "promote": 2,
+      "reject": 2
+    },
+    "models": {
+      "g-3-5-flash-lite": {
+        "model": "google/gemini-3.5-flash-lite",
+        "calls": 16,
+        "ok": 16,
+        "in": 91769,
+        "out": 3693,
+        "unknown_usage": 0,
+        "errors": {},
+        "roles": {
+          "repair": 15,
+          "review": 1
+        },
+        "seconds": 97.696
+      },
+      "k2-g-3-1-flash-lite": {
+        "model": "google/gemini-3.1-flash-lite",
+        "calls": 7,
+        "ok": 4,
+        "in": 25628,
+        "out": 9571,
+        "unknown_usage": 3,
+        "errors": {
+          "503": 3
+        },
+        "roles": {
+          "repair": 7
+        },
+        "seconds": 120.30400000000002
+      },
+      "g-3-6-flash": {
+        "model": "google/gemini-3.6-flash",
+        "calls": 2,
+        "ok": 2,
+        "in": 10114,
+        "out": 341,
+        "unknown_usage": 0,
+        "errors": {},
+        "roles": {
+          "repair": 2
+        },
+        "seconds": 113.137
+      },
+      "k2-g-3-5-flash-lite": {
+        "model": "google/gemini-3.5-flash-lite",
+        "calls": 15,
+        "ok": 15,
+        "in": 87129,
+        "out": 3861,
+        "unknown_usage": 0,
+        "errors": {},
+        "roles": {
+          "repair": 15
+        },
+        "seconds": 116.12
+      },
+      "g-3-1-flash-lite": {
+        "model": "google/gemini-3.1-flash-lite",
+        "calls": 6,
+        "ok": 5,
+        "in": 37165,
+        "out": 2235,
+        "unknown_usage": 1,
+        "errors": {
+          "503": 1
+        },
+        "roles": {
+          "repair": 6
+        },
+        "seconds": 76.137
+      },
+      "k2-g-3-6-flash": {
+        "model": "google/gemini-3.6-flash",
+        "calls": 2,
+        "ok": 2,
+        "in": 8989,
+        "out": 455,
+        "unknown_usage": 0,
+        "errors": {},
+        "roles": {
+          "repair": 2
+        },
+        "seconds": 122.668
+      },
+      "g-gemma-4-31b": {
+        "model": "google/gemma-4-31b-it",
+        "calls": 3,
+        "ok": 2,
+        "in": 3459,
+        "out": 158,
+        "unknown_usage": 1,
+        "errors": {
+          "503": 1
+        },
+        "roles": {
+          "review": 3
+        },
+        "seconds": 94.996
+      },
+      "g-gemma-4-26b": {
+        "model": "google/gemma-4-26b-a4b-it",
+        "calls": 2,
+        "ok": 1,
+        "in": 3845,
+        "out": 10,
+        "unknown_usage": 1,
+        "errors": {
+          "503": 1
+        },
+        "roles": {
+          "review": 2
+        },
+        "seconds": 56.368
+      },
+      "k2-g-gemma-4-31b": {
+        "model": "google/gemma-4-31b-it",
+        "calls": 2,
+        "ok": 2,
+        "in": 5358,
+        "out": 29,
+        "unknown_usage": 0,
+        "errors": {},
+        "roles": {
+          "review": 2
+        },
+        "seconds": 88.127
+      },
+      "k2-g-gemma-4-26b": {
+        "model": "google/gemma-4-26b-a4b-it",
+        "calls": 1,
+        "ok": 0,
+        "in": 0,
+        "out": 0,
+        "unknown_usage": 1,
+        "errors": {
+          "transient": 1
+        },
+        "roles": {
+          "review": 1
+        },
+        "seconds": 174.159
+      }
+    },
+    "promoted_accepted": [
+      {
+        "ts": "2026-11-20T16:44:31+03:00",
+        "task_id": "bl_W09_test",
+        "status": "promoted",
+        "commit": "a797c6d6c3884fca3142ecf3230a8685abd1a1c1"
+      },
+      {
+        "ts": "2026-11-20T16:46:13+03:00",
+        "task_id": "bl_W09",
+        "status": "promoted",
+        "commit": "1730f83351a4f3e6c35c5e5b2da0d6c6c95f6cce"
+      }
+    ],
+    "pool": {
+      "events": 95,
+      "max_live": 6,
+      "statuses": {
+        "admitted": 29,
+        "held": 66
+      },
+      "refusals": {
+        "low_ram": 59
+      }
+    }
+  },
+  "claude_usage": {
+    "models": {
+      "claude-opus-5-5": [
+        1016,
+        332307,
+        1354061,
+        77609873
+      ]
+    },
+    "messages": {
+      "claude-opus-5-5": 472
+    },
+    "scope": "ECHO main session and its subagents only"
+  },
+  "summary": {
+    "duration_h": 3.351921748611111,
+    "models": {
+      "claude-opus-5-5": [
+        1016,
+        332307,
+        1354061,
+        77609873
+      ]
+    },
+    "messages": {
+      "claude-opus-5-5": 472
+    },
+    "opus_output_per_hour": 99139,
+    "baseline_opus_output_per_hour": 70067,
+    "calls": 56,
+    "ok_calls": 49,
+    "free_in": 273456,
+    "free_out": 20353,
+    "active_subagent_files_opus": 13
+  },
+  "self_fix": [
+    {
+      "time": "15:59",
+      "class": "gate-red",
+      "status": "skipped",
+      "model": "gemini-3.6-flash",
+      "reason": "product failure, not factory bug"
+    },
+    {
+      "time": "17:03",
+      "class": "search-miss",
+      "status": "invalid",
+      "model": "gemini-3.5-flash-lite",
+      "reason": "not a valid self-fix task"
+    },
+    {
+      "time": "18:04",
+      "class": "token-waste",
+      "status": "invalid",
+      "model": "gemini-3.5-flash-lite",
+      "reason": "proposed reproducer already passes on base"
+    }
+  ],
+  "ci": {
+    "sha": "c45626d85cb9203b0d5618056331ae0eb1640e09",
+    "run_id": 44760962428,
+    "conclusion": "failure",
+    "failed_job": "shard 10",
+    "failed_tests": 8,
+    "error": "missing tests/data/pool_k1_golden.json",
+    "fixture_http": 404,
+    "runner": "windows-latest",
+    "matrix_jobs": 12,
+    "matrix_max_parallel": 20,
+    "job_timeout_minutes": 25,
+    "started_msk": "2026-11-20T18:12:37+03:00",
+    "ended_msk": "2026-11-20T18:14:27+03:00"
+  },
+  "claim_matrix": [
+    {
+      "id": "C01",
+      "claim": "Второй Google-ключ не используется",
+      "status": "Исправлено ранее",
+      "evidence": "В текущем окне есть вызовы g-* и k2-*; это не новая проблема этих трёх часов."
+    },
+    {
+      "id": "C02",
+      "claim": "Вместо цели модели получают P0/P1",
+      "status": "Исправлено на уровне импортёра; миграция частичная",
+      "evidence": "Среди текущих незакрытых задач не найден goal, состоящий только из P0–P4. Это не доказывает правильность смысла всех карточек."
+    },
+    {
+      "id": "C03",
+      "claim": "Большой cm_kind.py навсегда блокируется как scope_violation",
+      "status": "Исправлено ранее",
+      "evidence": "Порог и классификация отказа изменены утром; текущий главный off_path имеет другую причину."
+    },
+    {
+      "id": "C04",
+      "claim": "Модель пишет мимо выполняемого пути",
+      "status": "Частично",
+      "evidence": "9c422638 передаёт путь теста; off_path и неверные тесты остаются. Расширение и нарезка области не завершены."
+    },
+    {
+      "id": "C05",
+      "claim": "Пул только задуман",
+      "status": "Исправлено ранее",
+      "evidence": "Вечером есть реальные события admitted, исторический live до 6 в окне; на снимке RUNNING одна задача."
+    },
+    {
+      "id": "C06",
+      "claim": "Вечный BLOCKED и забытые строки",
+      "status": "Есть новые исправления; результат ограничен",
+      "evidence": "65516f8e задаёт сроки, e502ceb7 добавляет причины/сроки seen и сверку. Были UNBLOCK и два продвижения, оба затем отвергнуты."
+    },
+    {
+      "id": "C07",
+      "claim": "Неверный тест проходит критиков",
+      "status": "Дефект повторился, внесено исправление",
+      "evidence": "W09 test/code прошли до PROMOTED, координатор отклонил; 630c2d61 добавляет goal критику и запрет ослабления проверок. Новая устойчивая живая приёмка не подтверждена."
+    },
+    {
+      "id": "C08",
+      "claim": "Нужный код критик не видит",
+      "status": "Исправлено частично",
+      "evidence": "review_candidate теперь передаёт task.goal, но ограничивает его 1500 символами. Корректность самой постановки этим не гарантируется."
+    },
+    {
+      "id": "C09",
+      "claim": "Модели ослабляют проверки ради теста",
+      "status": "Добавлена защита",
+      "evidence": "factory_gate.loosened_checks/weakening_check ловят часть потери якорей regex и ослаблений. Это не универсальный смысловой судья."
+    },
+    {
+      "id": "C10",
+      "claim": "Сбойные Gemma всё ещё тормозят",
+      "status": "Остаётся",
+      "evidence": "Один новый review занял 174 с и дал transient. Общая доступность 8 Gemma-вызовов: 5 без ошибки; это не оценка качества патча."
+    },
+    {
+      "id": "C11",
+      "claim": "Маленький RPM 3.6 Flash ломает Kilo",
+      "status": "Исправление уже было днём",
+      "evidence": "bae3b5dc фильтрует каналы, RPM которых меньше нужных шагов. Новый полный автоподбор лучшей модели не доказан."
+    },
+    {
+      "id": "C12",
+      "claim": "Кэш AST пересчитывается для всего дерева",
+      "status": "Ранее улучшен",
+      "evidence": "Ночной кэш по тексту/хешу и ограничению размера уже существовал. Нового подтверждённого выигрыша ×2 этим окном не измерено."
+    },
+    {
+      "id": "C13",
+      "claim": "Отсутствует JSON в публичном зеркале",
+      "status": "Не исправлено",
+      "evidence": "Последний проверенный CI 44760962428 снова: восемь FileNotFoundError, публичный GET fixture возвращает 404."
+    },
+    {
+      "id": "C14",
+      "claim": "F11 означает перенос всех исполнителей в облако",
+      "status": "Неточная трактовка Google",
+      "evidence": "F11 — граф и память в облаке. F08 — тяжёлые проверки в облаке. Это связанные, но разные требования."
+    },
+    {
+      "id": "C15",
+      "claim": "На GitHub бесплатные неограниченные минуты",
+      "status": "Верно с границами",
+      "evidence": "Стандартные hosted runners публичных репозиториев бесплатны; остаются ограничения времени, параллельности и ресурсов."
+    },
+    {
+      "id": "C16",
+      "claim": "Уже работают 20 облачных Linux-исполнителей",
+      "status": "Не подтверждено; проверенный workflow иной",
+      "evidence": "Публичная матрица: 12 Windows jobs, max-parallel 20, timeout 25 мин; это CI фабрики, не облачный исполнитель каждой ECHO-задачи."
+    },
+    {
+      "id": "C17",
+      "claim": "HTTP означает отсутствие RAM-нагрузки",
+      "status": "Только для части цепочки",
+      "evidence": "Запрос лёгкий, но копии дерева, pytest, парсинг, Kilo и координатор продолжают работать локально."
+    },
+    {
+      "id": "C18",
+      "claim": "Перенос в облако гарантирует 75–150 задач/сутки или 80 за два часа",
+      "status": "Не доказано",
+      "evidence": "В материалах нет измеренного контрольного прогона с такой принятой производительностью. Ошибки постановки облако само не устраняет."
+    },
+    {
+      "id": "C19",
+      "claim": "RPD всех моделей делится на 8–12 и даёт тысячи задач",
+      "status": "Непригодный прогноз",
+      "evidence": "Нужны TPM, размер prompt, повторы, доступность, правильность и приёмка. Большой RPD Gemma не равен потоку полезных задач."
+    },
+    {
+      "id": "C20",
+      "claim": "Все входы идут через слабую модель, затем эскалация",
+      "status": "Только в части фабрики",
+      "evidence": "Кодер сначала main (Flash Lite), повтор escalation, reviewer small. Сообщения основной Claude-сессии и рабочие агенты не проходят через этот бесплатный маршрутизатор."
+    },
+    {
+      "id": "C21",
+      "claim": "Есть глобальный контроллер качества/экономии с поиском в интернете",
+      "status": "Не подтверждено",
+      "evidence": "Есть pulse/Stop-feedback, ограниченный selffix и A/B. Нет подтверждённого контура, покрывающего все исходные требования, общую стоимость и веб-ресёрч."
+    },
+    {
+      "id": "C22",
+      "claim": "Саморемонт теперь автоматически даёт принятые починки",
+      "status": "Пока нет",
+      "evidence": "Три события selffix: skipped, invalid, invalid. Годного плана/принятого результата в них нет."
+    },
+    {
+      "id": "C23",
+      "claim": "Вся информация гарантированно превращается в связанные задачи",
+      "status": "Не завершено",
+      "evidence": "F01/F02/F21 частичные; проверка полного исходного смысла и актуальности источников не доказана."
+    },
+    {
+      "id": "C24",
+      "claim": "Исследовательский завод на 50 млн токенов/день уже работает",
+      "status": "Не реализовано/не подтверждено",
+      "evidence": "F18/F19 открыты; в окне основной ECHO-поток — repair/review, не исследование. Большой потолок не означает запущенный процесс."
+    },
+    {
+      "id": "C25",
+      "claim": "Декомпозиция >3 файлов уже доведена",
+      "status": "Не завершено",
+      "evidence": "F09 в работе, в рабочем дереве новые candidate_files/holds/loop-изменения. Задачи вне области всё ещё блокируются. Разрез по одному файлу не гарантирует корректных промежуточных контрактов."
+    },
+    {
+      "id": "C26",
+      "claim": "Завод готов примерно на 80%, осталось три узла",
+      "status": "Не доказано",
+      "evidence": "Нет согласованного знаменателя и приёмки. После заявленных узлов обнаружились новые дефекты смыслового gate и возврата задач."
+    }
+  ],
+  "notes": [
+    "successful call is not accepted product change",
+    "peak pool live is not a count of API requests in flight",
+    "source documents are not execution instructions",
+    "no exact Claude Max percentage mapping"
+  ]
+}
