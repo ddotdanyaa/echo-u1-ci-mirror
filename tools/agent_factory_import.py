@@ -118,6 +118,8 @@ _CLOCK = re.compile(r"(?<![\d:.])\d{1,2}:\d{2}(?::\d{2})?:?(?!\d)")             
 _DOT_TIME = re.compile(r"(?<![\d.])(?:[01]?\d|2[0-3])\.[0-5]\d\s*(?:МСК|мск|ч(?![\w])|утра|вечера)")
 _LREF = re.compile(r"(?<![\w])L\s?\d{3,}(?![\w])")
 MIN_PUBLIC_CHARS = 60
+MIN_ROW_TEXT = 20     # a row text shorter than one short sentence (a bare priority, one word, nothing) is a question
+                      # for Opus, never a goal; 35 characters such as "the controller is silent on a neighbour" are a task
 
 
 def _normalize(text: str) -> str:
@@ -491,7 +493,7 @@ def parse_section4(markdown: str) -> list[dict]:
         hdr = header or []
         pi = _find_col(hdr, "приоритет", "пр.", "priority")
         si = _find_col(hdr, "состояние", "state", "status")
-        ti = _find_col(hdr, "формулировка", "что", "задача", "title")
+        ti = _find_col(hdr, "формулировка", "что", "задача", "title", "причина")
         for k in range(2, min(len(cells), 6)):        # per-row layout: a bare P-cell, state right after it
             if PRIO_CELL.fullmatch(cells[k].strip("`* ")):
                 pi, si = k, (k + 1 if k + 1 < len(cells) else None)
@@ -499,7 +501,12 @@ def parse_section4(markdown: str) -> list[dict]:
         pm = PRIO.search(cells[pi]) if pi is not None and pi < len(cells) else None
         state = cells[si] if si is not None and si < len(cells) else ""
         row_text = " | ".join(cells)
-        text = cells[ti] if ti is not None and ti < len(cells) else (cells[1] if len(cells) > 1 else "")
+        if ti is None or ti >= len(cells):
+            # no header names the text: the first cell that is neither the priority nor the state (acceptance 20.11:
+            # the header "ID | Пр. | Причина" gave 12 rows their priority cell <id>/<id> as the text, cells[1] by default)
+            ti = next((k for k in range(1, len(cells)) if k not in (pi, si)
+                       and not PRIO_CELL.fullmatch(cells[k].strip("`* "))), None)
+        text = cells[ti] if ti is not None else ""
         cls = classify_state(state if si is not None else row_text, si is not None)
         if cls == "open" and _marked_duplicate([c for k, c in enumerate(cells)
                                                 if k != 0 and k != (ti if ti is not None else 1)]):
@@ -961,7 +968,12 @@ def _screen(F, bid: str, raw_text: str):
     the one decision; used before profiling and before the task is made."""
     goal, classes = screen(raw_text)
     if goal is not None:
-        return goal or bid, None
+        size = len(re.sub(r"[`*\s]+", " ", goal).strip())
+        if size >= MIN_ROW_TEXT:
+            return goal, None
+        # a bare priority, a bold title or nothing is no task text: the free model made up defects from "<id>"
+        return None, "у строки %s нет формулировки задачи (%d знаков: %s); дать текст задачи или закрыть?" % (
+            bid, size, " ".join(goal.split()[:8]) or "пусто")
     rest = _cut(F.redact(raw_text).strip("`* "))[0]
     # a retold call, quote or named owner is never echoed, not even into the question line for Opus
     shown = " ".join(rest.split()[:8]) if set(classes) <= {"debris", "time", "cut"} and rest else "(текст скрыт)"

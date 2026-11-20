@@ -7,6 +7,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 from tools import factory_classes
@@ -119,12 +120,18 @@ def materialize(plan, src_root, self_dir, stamp, base_sha, cls='x'):
 
 def red_on_base(tree, test_file, python, timeout=30):
     env = dict(os.environ, PYTHONUTF8='1')
+    # pytest's own temp dirs stay next to the tree, never in the profile's %TEMP%: their paths reach a model through
+    # the test output (the lock test_every_pytest_argv_the_factory_builds_is_cache_free_and_has_a_basetemp)
+    holder = tempfile.mkdtemp(prefix='selffix-bt-', dir=str(Path(tree).parent))
     try:
-        done = subprocess.run([str(python), '-B', '-m', 'pytest', '-q', '-p', 'no:cacheprovider', test_file],
+        done = subprocess.run([str(python), '-B', '-m', 'pytest', '-q', '-p', 'no:cacheprovider',
+                               '--basetemp=' + str(Path(holder) / 'bt'), test_file],
                               cwd=str(tree), env=env, capture_output=True, text=True, encoding='utf-8',
                               errors='replace', timeout=timeout)
     except subprocess.TimeoutExpired:
         return False, 'timeout'
+    finally:
+        shutil.rmtree(holder, ignore_errors=True)
     text = (done.stdout or '') + (done.stderr or '')
     if done.returncode != 1:
         return False, f"rc={done.returncode}\n{text[-1500:]}"
