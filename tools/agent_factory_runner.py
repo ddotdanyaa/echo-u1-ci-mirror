@@ -83,6 +83,17 @@ def kilo_config(provider: str, auth_env: str, steps: int) -> dict:
                                   'steps': steps or PROVIDER_STEPS}}}
 
 
+def _kilo_fits(order: list, steps: int, events: list) -> list:
+    """The channels a Kilo run of ``steps`` steps can use: Kilo sends its steps back to back, so a channel whose
+    rpm is below them answers 429 inside the run and Kilo sleeps there until the idle ceiling (live 20.11 12:25-12:44:
+    three 3.6 Flash calls at rpm 5, 180 s each, no step, a strong-model request of the day spent). Such channels go
+    out of the order; when none is left the order stays whole (a slow channel is better than no channel)."""
+    fit = [c for c in order if not (type(c.get('rpm')) is int and c['rpm'] < steps)]
+    if fit and len(fit) < len(order) and 'low_rpm_skipped' not in events:
+        events.append('low_rpm_skipped')
+    return fit or order
+
+
 def requests_for(steps: int) -> int:
     """Provider requests of one multi-step call: every step plus the final answer after the tool limit."""
     return steps + 1
@@ -1826,6 +1837,8 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                                                  skip_tiers=skip_tiers)
                 if not order:
                     raise NoIndependentReviewer()
+                if not light:
+                    order = _kilo_fits(order, steps, events)
 
                 def book(state, row):
                     """View + usable + choose + charge + reserve + publish: ONE commit on the fresh state, so two workers
