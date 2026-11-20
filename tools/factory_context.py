@@ -174,8 +174,19 @@ def _imports(source: str) -> str:
                      if isinstance(n, (ast.Import, ast.ImportFrom)))[:1500]
 
 
+# The code a model asked for: 'CANNOT: name' (the light rules ask for exactly that) and the runner's own refusal
+# "function 'name' was not shown whole". Live 20.11 03:18, one task: three candidates answered CANNOT:
+# _last_clause_question (28 lines of a 145 KB file) while smaller functions the task text names filled the room.
+_ASKED = re.compile(r"CANNOT:\s*([A-Za-z_][\w.]*)|function '([A-Za-z_][\w.]*)' was not shown whole")
+
+
+def asked_names(text: str) -> frozenset:
+    """Names of the definitions a model asked to see in ``text`` (Class.method gives the method)."""
+    return frozenset((a or b).split('.')[-1] for a, b in _ASKED.findall(text or ''))
+
+
 def _fragments(source: str, keywords: set, room: int, priority: frozenset = frozenset(),
-               tools: bool = True) -> str:
+               tools: bool = True, asked: frozenset = frozenset()) -> str:
     """Selected definitions as they are. Python fragments are deliberately NOT redacted: redaction could
     corrupt code, and secrets never enter the work copy (forbidden paths, .env). Non-.py heads are redacted."""
     try:
@@ -195,10 +206,15 @@ def _fragments(source: str, keywords: set, room: int, priority: frozenset = froz
             name = node.target.id
             if name in keywords:
                 candidates.append(_Assigned(name, node))
+    # what the model asked for (nested ones too) before anything else, whole when the room allows
+    listed = {id(n) for n in candidates}
+    candidates += [n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+                   and n.name in asked and id(n) not in listed]
     # names from the task title / goal / feedback first, names only the test mentions after them;
     # a method the title names is taken BEFORE the class the test names (no nesting loss)
     spans = [(n.lineno, n.end_lineno) for n in candidates if n.name in priority]
-    candidates.sort(key=lambda n: (0 if n.name in priority or any(a <= n.lineno and n.end_lineno <= b for a, b in spans) else 1, n.end_lineno - n.lineno, n.lineno))
+    candidates.sort(key=lambda n: (0 if n.name in asked else 1 if n.name in priority or any(
+        a <= n.lineno and n.end_lineno <= b for a, b in spans) else 2, n.end_lineno - n.lineno, n.lineno))
     picked, taken, used = [], set(), 0
     spans = []        # (start, end, name, part): what is shown; _joined() closes the small gaps between them
     budgets = {}      # a windowed definition: what is left of its FRAGMENT_MAX_CHARS for the gaps
@@ -209,7 +225,7 @@ def _fragments(source: str, keywords: set, room: int, priority: frozenset = froz
             continue
         full_body = '\n'.join(lines[start - 1:node.end_lineno])
         piece = '# %s, lines %d-%d\n%s' % (node.name, start, node.end_lineno, full_body)
-        if len(full_body) <= FRAGMENT_MAX_CHARS and used + len(piece) + 2 <= room:
+        if (len(full_body) <= FRAGMENT_MAX_CHARS or node.name in asked) and used + len(piece) + 2 <= room:
             picked.append((start, piece))
             spans.append((start, node.end_lineno, node.name, False))
             used += len(piece) + 2
@@ -291,24 +307,28 @@ def _joined(spans, lines, spare: int, budgets=None) -> str:
 
 
 def large_view(name: str, source: str, keywords: set, room: int, priority: frozenset = frozenset(),
-               hint: str = READ_HINT, tools: bool = True) -> str:
-    """Outline + the definitions whose names are mentioned, within ``room`` characters."""
+               hint: str = READ_HINT, tools: bool = True, asked: frozenset = frozenset()) -> str:
+    """Outline + the definitions whose names are mentioned, within ``room`` characters; a definition of this file
+    the model ``asked`` for first, with the outline cut to a quarter of the room to make room for it."""
     lines = len(_lines(source))
     head = 'FILE %s (LARGE: %d lines, %d chars; outline and selected parts only)\n%s' % (
         name, lines, len(source), hint)
     if name.endswith('.py'):
         imports = _imports(source)
-        toc = outline(source, min(OUTLINE_MAX_CHARS, max(300, room // 2)), tools)
+        here = any(re.search(r'\b(?:def|class)\s+%s\b' % re.escape(a), source) for a in asked)
+        toc = outline(source, min(OUTLINE_MAX_CHARS, max(300, room // (4 if here else 2))), tools)
         body = head + ('\nIMPORTS\n' + imports if imports else '') + '\nOUTLINE\n' + toc
-        frag = _fragments(source, keywords, max(0, room - len(body) - 40), priority, tools)
+        frag = _fragments(source, keywords, max(0, room - len(body) - 40), priority, tools, asked)
         return body + ('\nSELECTED PARTS\n' + frag if frag else '')
     return head + '\nHEAD OF THE FILE\n' + redact(source)[:max(300, min(3000, room - len(head) - 40))]
 
 
 def render(files: dict, targets: dict, *, large: set, keywords: set, budget_chars: int,
-           small_tokens: int, priority: frozenset = frozenset(), hint: str = READ_HINT, tools: bool = True) -> str:
+           small_tokens: int, priority: frozenset = frozenset(), hint: str = READ_HINT, tools: bool = True,
+           asked: frozenset = frozenset()) -> str:
     """Prompt body: small files whole (as ``packet`` does), large ones as outline + fragments. ``tools=False``
-    for a reader without a read tool (the light engine): no "read it" instructions anywhere in the body."""
+    for a reader without a read tool (the light engine): no "read it" instructions anywhere in the body.
+    ``asked``: definitions the model asked to see (asked_names), shown first."""
     small = {n: v for n, v in files.items() if n not in large}
     sections = [packet(small, targets, max_tokens=small_tokens)] if small else []
     used = sum(len(s) for s in sections)
@@ -327,7 +347,7 @@ def render(files: dict, targets: dict, *, large: set, keywords: set, budget_char
                 if cut is not None and len(cut) <= room:
                     sections.append('FILE %s (slice %s of a large file)\n%s' % (n, targets[n], cut))
                     continue
-            sections.append(large_view(n, text, keywords, room, priority, hint, tools))
+            sections.append(large_view(n, text, keywords, room, priority, hint, tools, asked))
     elif used > budget_chars:
         raise InvalidPlan('context exceeds the prompt budget; split the task')
     return '\n\n'.join(sections)

@@ -89,4 +89,64 @@ def test_the_test_critic_checks_the_real_function_and_its_arguments():
 
 def test_every_pattern_has_an_id_a_kind_and_a_description():
     assert {row[1] for row in P.PATTERNS} <= {'repair', 'note'}
-    assert {'view-line', 'reflow', 'elided'} <= {row[0] for row in P.PATTERNS}
+    assert {'view-line', 'reflow', 'elided', 'outline-row'} <= {row[0] for row in P.PATTERNS}
+
+
+# outline-row (live 20.11 03:13-03:16, <id> and <id>: '<id> def _open_question(...' and the same row without
+# its label were the SEARCH of 3 of 10 missed blocks): a row of the view's OUTLINE is no line of the file
+GATE = ("class Gate:\n"
+        "    def _open_question(self, turn, decision, *, tail=False, whole='',\n"
+        "                       utterance=False) -> bool:\n"
+        "        \"\"\"Open (a, b).\"\"\"\n"
+        "        return tail\n"
+        "\n"
+        "    def close(self):\n"
+        "        return None\n")
+
+
+def _row(name, source=GATE):
+    from tools import factory_context as X
+    return next(r for r in X.outline(source).split('\n') if ' %s(' % name in r).strip()
+
+
+def test_an_outline_row_in_search_and_replace_is_the_real_header_of_its_definition():
+    row = _row('_open_question')
+    assert row.startswith('L2-5 def _open_question(')                    # the view's own row, label and all
+    body = '\n        """Open (a, b)."""\n        return '
+    new = P.repair(GATE, row + body + 'tail', row + body + 'not tail')
+    assert new == GATE.replace('return tail', 'return not tail')
+    unlabeled = row.split(' ', 1)[1]                                       # the model dropped the label itself
+    assert P.repair(GATE, '    ' + unlabeled + body + 'tail', '    ' + unlabeled + body + 'tail and 1') == \
+        GATE.replace('return tail', 'return tail and 1')
+
+
+def test_a_changed_signature_written_as_an_outline_row_is_never_put_into_the_file():
+    row = _row('_open_question')
+    assert P.repair(GATE, row + '\n        """Open (a, b)."""', 'L2-5 def _open_question(self)\n        """x"""') is None
+    assert P.repair(GATE, row, row + '\n' + _row('close')) is None        # a row SEARCH has not
+
+
+def test_a_row_that_replace_does_not_keep_names_the_whole_function_and_is_not_expanded():
+    """Live 20.11 probe of the kept answers: SEARCH '<id> def provider(self, event)' with a whole new function as
+    REPLACE, SEARCH 'def who_closed(error, closing)' with 'def who_closed(error, closing, marks=None)': expanding only
+    the header left the old body behind, 2 of 11 such edits did not compile."""
+    row = _row('close')
+    whole = '    def close(self):\n        return 0'
+    assert P.repair(GATE, row, whole) is None
+    assert P.repair(GATE, row.split(' ', 1)[1], 'def close(self, now=None)') is None
+    hint = P.hints([('a.py', 'def who_closed(error, closing)', 'def who_closed(error, closing, marks=None)')])
+    assert len(hint) == 1 and 'REPLACE FUNCTION who_closed' in hint[0]
+
+
+def test_a_row_names_one_definition_or_nothing_is_expanded():
+    two = GATE + "\n\nclass Other:\n    def close(self):\n        return 1\n"
+    row = _row('close', two)                                                # '<id> def close(self)'
+    assert P.repair(two, row + '\n        return None', row + '\n        return 0') == two.replace(
+        'return None', 'return 0')                                          # the label picks Gate.close
+    assert P.repair(two, 'def close(self)\n        return None', 'def close(self)\n        return 0') is None
+    assert P.expand_outline_rows('x = (\n', 'L1-2 def f()', 'y') == ('L1-2 def f()', 'y')   # no parse: unchanged
+
+
+def test_the_hint_names_an_outline_row_and_what_to_do():
+    hint = P.hints([('a.py', 'L2-5 def f(a)\n    return a', 'x')])
+    assert len(hint) == 1 and 'OUTLINE' in hint[0] and 'REPLACE FUNCTION f' in hint[0]

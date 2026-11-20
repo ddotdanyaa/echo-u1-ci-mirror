@@ -33,7 +33,7 @@ from .agent_factory import (BudgetExhausted, DEFER_REASONS, LEASE_LIFETIME_S, LO
                             defer, defer_streak, seconds_to_local_midnight,
                             load_state, read_plan, ready, redact,
                             route, quarantine, safe_path, safe_source, save_atomic, settle)
-from .factory_context import (LARGE_FILE_CHARS, identifier_tokens, keywords_from, packet, render,
+from .factory_context import (LARGE_FILE_CHARS, asked_names, identifier_tokens, keywords_from, packet, render,
                               scrub_paths)
 from .factory_process import kilo_argv, run_owned
 from . import affected_tests
@@ -536,6 +536,8 @@ TOURNAMENT_NOTE = ('\nAnother model already tried this task in this pass and its
 TOURNAMENT_GATE_NOTE = ('\nAnother model already tried this task in this pass; its change was applied and the tests '
                         'failed. Do not repeat that mistake.\nFailing test output:\n%s\n')
 TOURNAMENT_DIFF_NOTE = '\nIts diff (do not repeat it):\n%s\n'
+# live 20.11 03:18, one task: three candidates in a row answered CANNOT: _last_clause_question to the same view
+TOURNAMENT_ASKED_NOTE = 'The code it asked for (%s) is shown above now: edit it.\n'
 TOURNAMENT_OUTPUT_LIMIT = 1500
 
 
@@ -626,10 +628,12 @@ def review_candidate(task: Task, workdir: Path, model: str, invoke, *,
 
 def build_coder_prompt(task: Task, visible: dict[str, bytes], feedback: str | None = None,
                        prev_diff: str = '', *, goal: str | None = None, failing: str = '',
-                       light: bool = False) -> str:
+                       light: bool = False, asked: frozenset = frozenset()) -> str:
     """The ONE builder of the coder prompt (used by the pass and by model_attempt's default). ``light``: the
     prompt of the light engine, which has no tools: no read/grep instructions (live 19.11 17:48-17:50:
-    with them the model answered "CANNOT: requires access outside the provided files")."""
+    with them the model answered "CANNOT: requires access outside the provided files"). ``asked``: definitions
+    a model of this pass asked to see; with the ones the feedback names (asked_names) they are shown first."""
+    asked = frozenset(asked) | asked_names(feedback or '')
     targets = visible_targets(task)
     if task.kind == 'unit_test':
         # its own test file is the one file it writes: never "read-only" or "do not modify tests" (critic 19.11)
@@ -666,12 +670,12 @@ def build_coder_prompt(task: Task, visible: dict[str, bytes], feedback: str | No
         core += "\nThe previous candidate was rejected. Feedback:\n" + redact(feedback)
     tests_text = ' '.join(visible[n].decode('utf-8', 'replace') for n in task.tests if n in visible)
     priority = frozenset(keywords_from(task.title, strict=False) | identifier_tokens(feedback or '')
-                         | identifier_tokens(goal or ''))
+                         | identifier_tokens(goal or '') | asked)
     words = priority | keywords_from(tests_text, prev_diff, feedback)
     budget = channels.PROMPT_LIMIT_CHARS - REVIEW_OVERHEAD - len(core) - (2500 if prev_diff else 0) - 60
     core += '\n' + render(visible, targets, large=large_names(task, visible), keywords=words,
                           budget_chars=budget, small_tokens=max(task.context_budget, budget), priority=priority,
-                          **({'hint': LIGHT_HINT, 'tools': False} if light else {}))
+                          asked=asked, **({'hint': LIGHT_HINT, 'tools': False} if light else {}))
     room = channels.PROMPT_LIMIT_CHARS - len(core) - 200
     if prev_diff and room > 300:
         core += "\nDiff of the rejected candidate (do not repeat its mistake):\n" + prev_diff[:room]
@@ -1996,8 +2000,11 @@ def _pass_inner(tasks, task: Task, state: dict, *, checkpoint: Path, root: Path,
             if small_total + REVIEW_DIFF_LIMIT + REVIEW_OVERHEAD > channels.PROMPT_LIMIT_CHARS:
                 raise PromptTooLarge('coder+review prompts cannot both fit')
             failing = (', '.join(base.failed_ids) + '\n' + base.diag).strip() if task.kind == 'code' else ''
-            prompt = build_coder_prompt(task, visible, feedback, prev_diff, failing=scrub(failing),
-                                        light=engine_for(role, task) == 'light')   # the same rule call() applies
+            def make_prompt(asked=frozenset()):
+                return build_coder_prompt(task, visible, feedback, prev_diff, failing=scrub(failing),
+                                          light=engine_for(role, task) == 'light',   # the same rule call() applies
+                                          asked=asked)
+            prompt = make_prompt()
             chosen = route(task, small_model=small_model, large_model=large_model, fallback=attempt > 1)
 
             def dir_for(retry: int) -> Path:
@@ -2043,13 +2050,15 @@ def _pass_inner(tasks, task: Task, state: dict, *, checkpoint: Path, root: Path,
 
             size = TOURNAMENT_SIZE if configured and engine_for(role, task) == 'light' else 1
             tried, k_prompt, held, gate_failed, next_note = [], prompt, None, [], ''
+            asked = frozenset()      # code an earlier candidate of this pass asked for: every later one is shown it
             for k in range(size):
                 if k:
                     held = (ctx['workdir'], ctx['baseline'])
                     tried.append(ctx['coder_model'])
-                    k_prompt = prompt + next_note
+                    view = make_prompt(asked) if asked else prompt
+                    k_prompt = view + next_note
                     if len(k_prompt) > channels.PROMPT_LIMIT_CHARS:
-                        k_prompt = prompt
+                        k_prompt = view
                     ctx['workdir'] = staging / ('%s-cand-%d' % (prefix, k))
                     shutil.rmtree(ctx['workdir'], ignore_errors=True)
                     ctx['baseline'] = prepare(root, task, ctx['workdir'])
@@ -2074,6 +2083,10 @@ def _pass_inner(tasks, task: Task, state: dict, *, checkpoint: Path, root: Path,
                 why = unusable()
                 if why:                              # mechanically unusable: the next model hears why
                     next_note = TOURNAMENT_NOTE % scrub(redact(why))[:300]
+                    wanted = asked_names(why) - asked
+                    if wanted:                       # it asked for code: the next view shows that code first
+                        asked |= wanted
+                        next_note += TOURNAMENT_ASKED_NOTE % ', '.join(sorted(wanted))
                     continue
                 decision = run_gates()               # usable: the deterministic gates decide
                 if not isinstance(decision, _GateRetry):

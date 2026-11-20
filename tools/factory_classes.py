@@ -4,9 +4,9 @@ import re
 from datetime import datetime
 
 CLASSES = (
-    ('search-miss', r'SEARCH not found|SEARCH is not in the file', 'the coder could not copy the code it had to edit', 'ERROR_PATTERNS repairs, the exact missing line in the note, a wider view of the file'),
+    ('search-miss', r'SEARCH not found|SEARCH is not in the file', 'the coder could not copy the code it had to edit', 'ERROR_PATTERNS repairs (a row of the outline kept in SEARCH and REPLACE stands for the real header), the exact missing line in the note, a wider view of the file'),
     ('no-edit-block', r'had no SEARCH/REPLACE edit block', 'the coder answered without an edit block', 'the format rules and an example in the retry note'),
-    ('cannot', r'answered CANNOT', 'the task is not a code change for this model', 'the spec stage rewrites the task as an exact change with a failing test'),
+    ('cannot', r'answered CANNOT', 'the coder asked for code it was not shown (CANNOT: name)', 'the code a model asks for is shown first and whole, to the next candidate of the pass too; the spec stage rewrites a task that is no code change'),
     ('test-hang', r'timeout after \d+ ?s|process tree killed', 'the written test hangs: it waits on a device, a network or a sleep', 'the example test of the same code shows its fakes and fixtures; never wait on real audio, network or time'),
     ('weak-test', r'stub|does not actually verify|MagicMock|не ловит дефект|green on the old code|already pass', 'the written test does not catch the defect', 'the second critic lens and the red-by-assert gate; the spec stage writes the test'),
     ('test-crash', r'crashes before its assertion|collection|does not compile|SyntaxError|ImportError|AttributeError', 'the test or the candidate breaks before any check', 'the test sees the reason and traceback in the note'),
