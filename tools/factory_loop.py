@@ -2793,7 +2793,9 @@ class Loop:
                        finish_reason=self.rs(c.get("finish_reason")),
                        files_read=[self.rs(str(x)) for x in (c.get("files_read") or [])[:10]] or None,
                        error_class=self.rs(c.get("error_class")), status="error" if c.get(
-                           "error_class") else "ok", base_sha=base)
+                           "error_class") else "ok", base_sha=base,
+                       # the channel cooled after this call: why and for how long (factory_channels.note_outcome)
+                       cool_reason=self.rs(c.get("cool_reason")), cool_s=self._num(c, "cool_s"))
         for name, secs in (res.get("stages") or {}).items():
             span = "gate" if str(name).startswith(("gate", "red_before", "neighbors")) else (
                 "review" if str(name).startswith("review") else "run")
@@ -3093,7 +3095,7 @@ class Loop:
                 or rkey in BEFORE_MODEL or blocked in BEFORE_MODEL):
             return False
         return bool(calls) or rkey.startswith(REJECT_PREFIXES) or rkey in (
-            "gate_unknown", "reviewer_failed", "no_independent_reviewer", "provider_error")
+            "gate_unknown", "reviewer_failed", "no_independent_reviewer", "provider_error", "review_chain_short")
 
     def _spread_brake(self, ls: dict, out: Outcome) -> Outcome:
         """K different tasks failed without any proof of work: the same BRAKE path, with the causes."""

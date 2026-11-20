@@ -527,7 +527,7 @@ def quarantine(state: dict, tid: str, token: str, *, reason: str, now: float | N
                "provider_unavailable", "unsafe_windows_launcher",
                "worker_exception", "scope_violation", "already_green",
                "context_too_large", "no_independent_reviewer", "gate_unknown",
-               "provider_error", "no_diff", "reviewer_failed", "off_path"}
+               "provider_error", "no_diff", "reviewer_failed", "off_path", "review_chain_short"}
     if reason not in allowed:
         raise InvalidPlan("unknown quarantine reason")
     fence(state, tid, token)
@@ -543,6 +543,7 @@ DEFER_REASONS = frozenset(("rate_minute", "rate_day", "transient", "network", "r
                            "balance", "model_missing",
                            "provider_error", "gate_unknown", "no_independent_reviewer",
                            "channel_wait", "reviewer_failed", "budget_exhausted", "os_error",
+                           "review_chain_short",   # one critic approved, no other model now: the candidate waits
                            "env_shortage",    # no slot / RAM: never a strike, never a block
                            "off_path"))      # the failing test runs a module outside the task: the loop widens it
 

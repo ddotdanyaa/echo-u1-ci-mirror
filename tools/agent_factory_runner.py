@@ -108,7 +108,8 @@ REVIEW_DIFF_LIMIT = 6000
 INFRA_DEFERS = frozenset(("key_invalid", "balance", "model_missing"))  # real infrastructure faults
 
 
-ESCALATE = frozenset(("gate_unknown", "provider_error", "no_independent_reviewer", "reviewer_failed"))
+ESCALATE = frozenset(("gate_unknown", "provider_error", "no_independent_reviewer", "reviewer_failed",
+                      "review_chain_short"))
 ESCALATE_AFTER = 3          # the same postponement this many times in a row becomes BLOCKED
 INFRA_CHANNEL_REASONS = frozenset(("dead", "no_key", "no_channels", "reservation_exceeds_tpm"))
 REVIEW_HINT = ("The file is large: read the places you need with the read tool by line numbers from the "
@@ -614,8 +615,9 @@ REVIEW_CHECKS_TEST = (
 # asks up to TOURNAMENT_SIZE coders, each a different model, and every next one is told why the previous one failed;
 # the first candidate that passes the mechanical checks (it changes the files, compiles, weakens no check) goes to the
 # gate. Then REVIEW_CHAIN critics of different models review it one after another, each with its own lens; the
-# first rejection ends the chain (the owner's cap is 4 rounds). A missing further model shortens the tournament or
-# the chain, never fails the pass.
+# first rejection ends the chain (the owner's cap is 4 rounds). A missing further model shortens the tournament, never
+# fails the pass; a chain cut short never approves: the candidate stays pending for the next pass (review_chain_short,
+# ESCALATE_AFTER in a row is BLOCKED).
 TOURNAMENT_SIZE = 3
 TOURNAMENT_NOTE = ('\nAnother model already tried this task in this pass and its answer could not be used: %s. Do not '
                    'repeat that mistake: copy every SEARCH line exactly from the code shown above, or give REPLACE FUNCTION '
@@ -1808,8 +1810,22 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
         return bool(ck.read()['tasks'][tid].get('pending_review'))
 
     def set_pending(state, row) -> None:
+        old = row.get('pending_review') if isinstance(row.get('pending_review'), dict) else {}
         row['pending_review'] = dict(workdir=str(ctx['workdir']), baseline_digest=baseline_digest,
                                      coder_model=ctx['coder_model'])
+        short = old.get('chain_short')
+        if old.get('workdir') == str(ctx['workdir']) and type(short) is int and short > 0:
+            row['pending_review']['chain_short'] = short     # the same candidate: its short chains keep counting
+
+    def chain_short(state, row) -> int:
+        """One more chain of this candidate cut short; counted on the candidate itself, so a channel_wait between two
+        short chains does not reset the term the way it resets defer_streak."""
+        pend = row.get('pending_review')
+        if not isinstance(pend, dict):
+            return ESCALATE_AFTER
+        prior = pend.get('chain_short')
+        pend['chain_short'] = (prior if type(prior) is int and prior > 0 else 0) + 1
+        return pend['chain_short']
 
     def timed(name: str, fn):
         t0 = time.monotonic()
@@ -1996,6 +2012,18 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                         fact = 0         # no HTTP answer: the request never reached the provider's quota
                     channels.reconcile(state['channel_quotas'], selected, at, tokens, charged,
                                        requests=booked, actual_requests=fact)
+                    # the series of failed calls of this channel: 'ok' with the whole output limit spent and no word
+                    # of answer is a failure too (live 20.11: ~174 s each); no connection at all is the laptop's net,
+                    # a task too big for the channel is the task's problem
+                    empty = (info['kind'] == 'ok' and summary['finish_reason'] in ('length', 'max_tokens')
+                             and not (summary['text'] or '').strip())
+                    if info['kind'] not in ('network', 'too_big'):
+                        streak = channels.note_outcome(
+                            state['channel_quotas'], selected,
+                            not empty and (info['kind'] == 'ok' or (info['kind'] == 'unknown' and code == 0)),
+                            channels=configured)
+                        if streak.get('reason'):
+                            info['streak_cool'] = streak
                     if ledger is not None:
                         quota_ledger.publish(ledger, str(checkpoint), state['channel_quotas'])
                 return info
@@ -2015,7 +2043,9 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                           'tool_events': summary['tool_events'], 'steps': summary['steps'],
                           'last_step_tools': summary['last_step_tools'],
                           'finish_reason': summary['finish_reason'], 'files_read': summary['files_read'],
-                          'provider_error': info['kind'] not in ('ok', 'unknown') or summary['provider_error']})
+                          'provider_error': info['kind'] not in ('ok', 'unknown') or summary['provider_error'],
+                          'cool_reason': info.get('streak_cool', {}).get('reason'),
+                          'cool_s': info.get('streak_cool', {}).get('cool_s')})
             ctx['last_text'] = summary['text']
             kind = info['kind']
             if kind == 'ok' or (kind == 'unknown' and code == 0):
@@ -2032,7 +2062,7 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
             else:
                 done = {'cool_s': info.get('retry_after_s') or 0}
             if kind in ('transient', 'network') and retry == 0:
-                if done.get('action') != 'cool_model':   # a cooled model: the retry takes another model at once
+                if done.get('action') != 'cool_model' and not info.get('streak_cool'):   # cooled: the retry takes another one at once
                     time.sleep(channels.TRANSIENT_RETRY_S)   # (live 20.11: a 503 of Gemma cost ~67 s, 20 s of it here)
                 continue
             raise ChannelFault(info, done.get('cool_s') or 0)
@@ -2601,9 +2631,16 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                         task, ctx['workdir'], review_model, invoke, baseline=ctx['baseline'], scratch=staging,
                         lens=REVIEW_LENSES[n], prior=tuple(said), rejected=told))
                 except (NoIndependentReviewer, channels.ChannelUnavailable, ReviewFault, ChannelFault):
+                    # no further model now: one critic never approves alone (live 20.11 16:46, <id> approved by one
+                    # critic, its commit rejected 4 min later). The candidate stays pending, the chain starts again
+                    # on a later pass; the same postponement ESCALATE_AFTER times in a row is BLOCKED (the term).
                     events.append('review_chain_short')
-                    approved = True          # the earlier critics approved; no further model now
-                    break
+                    report['critics'] = list(critics)
+                    report['critiques'] = [scrub(redact(s))[:300] for s in said]
+                    report['pending_review'] = True
+                    if ck.commit(chain_short) >= ESCALATE_AFTER:   # the term of the candidate, whatever came between
+                        return block('review_chain_short', 'review chain cut short %d times' % ESCALATE_AFTER)
+                    return release_or_block('review_chain_short', INFRA_DEFER_S)
                 critics.append(calls[-1]['model'])
                 events.append('review_chain_%d' % (n + 1))
                 said.append('critic %d %s: %s' % (n + 1, 'approved' if approved else 'rejected',

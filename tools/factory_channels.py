@@ -49,6 +49,12 @@ OVERLOAD_COOL_S = 120          # long enough for the retry and the next pass to 
 OVERLOAD_COOL_MAX_S = 900      # a model that stays overloaded is tried 4 times an hour, not 30 (live 19.11: Gemma 4
                                # answered 503 to 11 of 17 reviews, each refusal took 0.6-43 s)
 OVERLOAD_FORGET_S = 1800       # no overload of the model for half an hour: the next one starts a new series
+# A channel whose last STREAK_FAILS calls all failed (any kind, the hours between them do not matter) is cooled for
+# STREAK_COOL_S, doubled for every further failure of the series, at most STREAK_COOL_MAX_S; a successful call ends the
+# series (live 20.11: g-gemma-4-31b failed 9 calls in a row over 5 h, 1317 s went into calls after 3 failures in a row)
+STREAK_FAILS = 3
+STREAK_COOL_S = 600
+STREAK_COOL_MAX_S = 14400
 TIERS = ('small', 'main', 'escalation')
 # The day of a provider's daily quota (requests per day): Google AI Studio resets at midnight Pacific (the page
 # above), OpenRouter's free models at 00:00 UTC (live 19.11 20:03: its 429 free-models-per-day carries
@@ -643,6 +649,53 @@ def _overload_seconds(state, model, now) -> int:
     series = int(last[0]) + 1 if len(last) == 2 and 0 <= now - last[1] < OVERLOAD_FORGET_S else 1
     table[model] = [series, now]
     return min(OVERLOAD_COOL_MAX_S, OVERLOAD_COOL_S * 2 ** min(series - 1, 8))
+
+
+def note_outcome(state, channel, ok, *, now=None, channels=()) -> dict:
+    """Count the failed calls of ``channel`` in a row (kept in its quota group, per channel); the STREAK_FAILS-th and
+    every further one cools it through cool() -- or only its model through _cool_model() when ``channels`` shows other
+    models in the same group. A successful call ends the series. Returns what was done, with the reason."""
+    now = time.time() if now is None else now
+    group = state.setdefault(channel['group'], {})
+    table = group.get('fail_streak') if isinstance(group.get('fail_streak'), dict) else {}
+    group['fail_streak'] = table
+    if ok:
+        table.pop(channel['id'], None)
+        return {'action': 'none', 'cool_s': 0}
+    prior = table.get(channel['id'])
+    n = (prior if type(prior) is int and prior > 0 else 0) + 1
+    table[channel['id']] = n
+    if n < STREAK_FAILS:
+        return {'action': 'none', 'cool_s': 0}
+    seconds = min(STREAK_COOL_MAX_S, STREAK_COOL_S * 2 ** min(n - STREAK_FAILS, 8))
+    if channels and not _other_route(state, channel, channels, now):
+        seconds = STREAK_COOL_S     # no other model is free now: never park the whole factory for hours on a series
+    if any(c.get('group') == channel['group'] and c.get('model') != channel['model'] for c in channels):
+        out = _cool_model(state, channel, now, seconds)
+    else:
+        cool(state, channel, now=now, seconds=seconds)
+        out = {'action': 'cool', 'cool_s': seconds}
+    out['reason'] = 'fail_streak'
+    return out
+
+
+def _other_route(state, channel, channels, now) -> bool:
+    """Some channel of ANOTHER model is neither cooled nor marked dead now (key and quotas are choose()'s business)."""
+    dead = state.get('dead') if isinstance(state.get('dead'), dict) else {}
+    for other in channels:
+        if other.get('model') == channel['model'] or 'group' not in other:
+            continue
+        mark = dead.get(other.get('id'))
+        if isinstance(mark, dict):
+            until = _dead_until(mark)
+            if until is None or until > now:
+                continue
+        group = state.get(other['group']) if isinstance(state.get(other['group']), dict) else {}
+        until = group.get('cool_until', 0)
+        until = until if isinstance(until, (int, float)) and not isinstance(until, bool) else 0
+        if max(until, _model_cool(state, other)) <= now:
+            return True
+    return False
 
 
 def _cool_model(state, channel, now, seconds) -> dict:
