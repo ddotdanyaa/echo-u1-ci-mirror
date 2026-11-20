@@ -706,9 +706,31 @@ def port_reference(root: Path, task: Task) -> str:
         return ''
 
 
+PORT_FOCUS_MAX = 8     # how many of the functions the old commit changed the coder's view asks for first
+
+
+def port_focus(repo: Path, task: Task) -> frozenset:
+    """The functions the old-branch commit of a port task changed, as names the coder's view shows first (whole when the
+    room allows): the model edits their present versions, not whatever a stale suspect list names (live 20.11 09:34: the
+    view showed ``_continuation`` of another module while ``_fast_release``, the function the commit changed, was only in
+    the outline). Identifier-like names only: ``tick`` or ``release`` would pull every method of that name, a dunder
+    every constructor. Empty for any other task and on any fault."""
+    sha = getattr(task, 'port_from', '')
+    if not sha or task.kind == 'unit_test':
+        return frozenset()
+    try:
+        from . import factory_port
+        names = factory_port.changed_names(repo, sha)
+    except Exception:  # noqa: BLE001
+        return frozenset()
+    own = [n for n in names if identifier_tokens(n) == {n} and not n.startswith('__')]
+    return frozenset(own[:PORT_FOCUS_MAX])
+
+
 def build_coder_prompt(task: Task, visible: dict[str, bytes], feedback: str | None = None,
                        prev_diff: str = '', *, goal: str | None = None, failing: str = '',
-                       light: bool = False, asked: frozenset = frozenset(), reference: str = '') -> str:
+                       light: bool = False, asked: frozenset = frozenset(), reference: str = '',
+                       focus: frozenset = frozenset()) -> str:
     """The ONE builder of the coder prompt (used by the pass and by model_attempt's default). ``light``: the
     prompt of the light engine, which has no tools: no read/grep instructions (live 19.11 17:48-17:50:
     with them the model answered "CANNOT: requires access outside the provided files"). ``asked``: definitions
@@ -746,7 +768,8 @@ def build_coder_prompt(task: Task, visible: dict[str, bytes], feedback: str | No
         # rows say so, their guard tests are red on the head of the unified code)
         core += ("\nThis behaviour was built before on an old branch, in the old layout of the code (commit " +
                  str(getattr(task, 'port_from', '')) + "). Its diff below is a reference, not a patch: files, names "
-                 "and lines differ here. Bring the same behaviour into the files you may change:\n" +
+                 "and lines differ here, so copy every SEARCH line from the current files shown further below, never "
+                 "from this diff. Bring the same behaviour into the files you may change:\n" +
                  redact(scrub_paths(reference))[:REFERENCE_MAX])
     if task.kind == 'unit_test':
         core += (" Write the test so that it FAILS on the current code because of the described "
@@ -758,7 +781,8 @@ def build_coder_prompt(task: Task, visible: dict[str, bytes], feedback: str | No
     tests_text = ' '.join(visible[n].decode('utf-8', 'replace') for n in task.tests if n in visible)
     tests_shown = {n: visible[n] for n in task.tests if n in visible}
     priority = frozenset(keywords_from(task.title, strict=False) | identifier_tokens(feedback or '')
-                         | identifier_tokens(goal or '') | asked | failing_names(failing, tests_shown))
+                         | identifier_tokens(goal or '') | asked | failing_names(failing, tests_shown)
+                         | frozenset(focus))
     words = priority | keywords_from(tests_text, prev_diff, feedback)
     budget = channels.PROMPT_LIMIT_CHARS - REVIEW_OVERHEAD - len(core) - (2500 if prev_diff else 0) - 60
     core += '\n' + render(visible, targets, large=large_names(task, visible), keywords=words,
@@ -2146,10 +2170,11 @@ def _pass_inner(tasks, task: Task, state: dict, *, checkpoint: Path, root: Path,
                 events.append('port_reference:%d' % len(reference))
             elif task.port_from and task.kind != 'unit_test':
                 events.append('port_reference_missing')      # a lost example shows in the telemetry, never silently
+            focus = port_focus(port_repo or root, task) if reference else frozenset()
             def make_prompt(asked=frozenset()):
                 return build_coder_prompt(task, visible, feedback, prev_diff, failing=scrub(failing),
                                           light=engine_for(role, task) == 'light',   # the same rule call() applies
-                                          asked=asked, reference=reference)
+                                          asked=asked, reference=reference, focus=focus)
             prompt = make_prompt()
             chosen = route(task, small_model=small_model, large_model=large_model, fallback=attempt > 1)
 
