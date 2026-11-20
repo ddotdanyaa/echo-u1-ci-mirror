@@ -70,6 +70,14 @@ class BudgetExhausted(InvalidPlan):
     """The daily model-call budget is spent (resets at local midnight)."""
 
 
+class LockBusy(InvalidPlan, OSError):
+    """The state lock stayed with a live holder past the wait."""
+
+
+class StaleLease(InvalidPlan):
+    """The row's lease is not the caller's any more: it expired and was released, or the pass was settled elsewhere."""
+
+
 class InputTooLarge(InvalidPlan):
     """A source over SOURCE_MAX_BYTES: a resource limit (the task blocks as context_too_large), never a scope violation."""
 
@@ -288,6 +296,11 @@ def validate_state(tasks: dict[str, Task], state: dict) -> None:
                 raise InvalidPlan("RUNNING task has no verifiable lease/deadline")
         elif row.get("lease") is not None or row.get("deadline") is not None:
             raise InvalidPlan("inactive task still holds lease")
+        began = row.get("began")
+        if began is not None and (row["status"] != "RUNNING" or not isinstance(began, dict)
+                                  or type(began.get("pid")) is not int or type(began.get("booked")) is not int
+                                  or began["booked"] < 0):
+            raise InvalidPlan("began belongs to a running task only")
     if type(state.get("max_model_calls")) is not int or type(state.get("model_calls")) is not int:
         raise InvalidPlan("invalid budget")
     if state["max_model_calls"] < 0 or state["model_calls"] < 0:
@@ -354,6 +367,29 @@ def acquire(tasks: dict[str, Task], state: dict, tid: str, *,
     return token
 
 
+def fence(state: dict, tid: str, token: str) -> None:
+    """The lease of ``tid`` is still ``token``'s: the row is RUNNING under it. StaleLease otherwise (the lease expired and
+    was released, or another writer settled the pass): a stale pass writes nothing."""
+    row = state["tasks"].get(tid)
+    if not isinstance(row, dict) or row.get("status") != "RUNNING" or row.get("lease") != token:
+        raise StaleLease("stale/foreign lease")
+
+
+def begin(state: dict, tid: str, token: str, pid: int) -> None:
+    """The pass of ``token`` started its work in process ``pid``: from here its lease stays until the pass ends."""
+    fence(state, tid, token)
+    state["tasks"][tid]["began"] = {"pid": int(pid), "booked": 0}
+
+
+def unclaim(state: dict, tid: str, token: str) -> None:
+    """The exact inverse of acquire(charge=False) for a pass that died before it began: READY, the attempt back."""
+    fence(state, tid, token)
+    row = state["tasks"][tid]
+    if "began" in row:
+        raise InvalidPlan("the pass began: its lease stays until it ends")
+    row.update(status="READY", attempts=max(0, row["attempts"] - 1), lease=None, deadline=None)
+
+
 def settle(state: dict, tid: str, token: str, *,
            tests_ok: bool, evidence: str, max_attempts: int = 2,
            strike: bool = True) -> str:
@@ -362,14 +398,14 @@ def settle(state: dict, tid: str, token: str, *,
     A red result is a strike by backlog_id unless strike=False (channel/provider
     faults are not the candidate's fault). If the task's backlog_id is already
     quarantined when it settles, it ends FAILED(quarantine) even when green."""
+    fence(state, tid, token)
     row = state["tasks"][tid]
-    if row["status"] != "RUNNING" or row["lease"] != token:
-        raise InvalidPlan("stale/foreign lease")
     if not isinstance(evidence, str) or not re.fullmatch(r"[0-9a-f]{64}", evidence):
         raise InvalidPlan("expected SHA256 digest of local test receipt")
     next_status = ("REVIEW" if tests_ok else
                    ("READY" if row["attempts"] < max_attempts else "FAILED"))
     row.update(status=next_status, lease=None, deadline=None, evidence=evidence)
+    row.pop("began", None)
     row.pop("defer_streak", None)
     row.pop("orphan_releases", None)    # the pass ended: a series of restarts during its passes is over
     if not tests_ok and strike:
@@ -425,7 +461,7 @@ def park(state: dict, tid: str, reason: str, note: str) -> None:
     if row["status"] not in ("READY", "RUNNING", "REVIEW"):
         raise InvalidPlan("only an unsettled task can be parked")
     row.update(status="BLOCKED", blocked_reason=reason, lease=None, deadline=None)
-    for key in ("pending_review", "not_before", "orphan_releases"):
+    for key in ("pending_review", "not_before", "orphan_releases", "began"):
         row.pop(key, None)
     add_feedback(state, tid, "gate", note)
 
@@ -442,11 +478,11 @@ def quarantine(state: dict, tid: str, token: str, *, reason: str) -> None:
                "provider_error", "no_diff", "reviewer_failed"}
     if reason not in allowed:
         raise InvalidPlan("unknown quarantine reason")
+    fence(state, tid, token)
     row = state["tasks"][tid]
-    if row["status"] != "RUNNING" or row["lease"] != token:
-        raise InvalidPlan("stale/foreign lease")
     row.pop("pending_review", None)  # a blocked task must not resume a stale candidate
     row.pop("orphan_releases", None)
+    row.pop("began", None)
     row.update(status="BLOCKED", lease=None, deadline=None,
                blocked_reason=reason,
                evidence=sha256(reason.encode("utf-8")).hexdigest())
@@ -466,9 +502,9 @@ def defer(state: dict, tid: str, token: str, reason: str, seconds: float, *,
     for a candidate that failed a gate. ``reason`` must be whitelisted (no free text)."""
     if reason not in DEFER_REASONS:
         raise InvalidPlan("unknown defer reason")
+    fence(state, tid, token)
     row = state["tasks"][tid]
-    if row["status"] != "RUNNING" or row["lease"] != token:
-        raise InvalidPlan("stale/foreign lease")
+    row.pop("began", None)
     now = time.time() if now is None else float(now)
     streak = row.get("defer_streak")
     if not isinstance(streak, dict):
@@ -535,6 +571,7 @@ def release_expired(state: dict, now: float, *, orphan: bool = False) -> list[st
     freed = []
     for tid, row in state["tasks"].items():
         if row["status"] == "RUNNING" and row.get("deadline") is not None and row["deadline"] <= now:
+            row.pop("began", None)
             if orphan:
                 series = row.get("orphan_releases")
                 row["orphan_releases"] = (series if type(series) is int and series > 0 else 0) + 1
@@ -692,9 +729,66 @@ def next_action(state: dict, now: float, channel_wait_s: float,
     return {"action": "DONE", "reason": "nothing_left"}
 
 
+def pid_alive(pid: int) -> bool:
+    """Liveness without touching the process. os.kill(pid, 0) is NOT used on Windows."""
+    if pid == os.getpid():
+        return True
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes as W
+        k = ctypes.WinDLL("kernel32", use_last_error=True)
+        k.OpenProcess.restype = W.HANDLE
+        k.OpenProcess.argtypes = [W.DWORD, W.BOOL, W.DWORD]
+        k.GetExitCodeProcess.argtypes = [W.HANDLE, ctypes.POINTER(W.DWORD)]
+        k.CloseHandle.argtypes = [W.HANDLE]
+        handle = k.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return ctypes.get_last_error() == 5  # access denied: it exists
+        code = W.DWORD()
+        ok = k.GetExitCodeProcess(handle, ctypes.byref(code))
+        k.CloseHandle(handle)
+        return bool(ok) and code.value == 259  # STILL_ACTIVE
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _lock_owner(lock: Path) -> int | None:
+    """The pid the holder wrote into its lockdir, or None (no file yet, or not a pid)."""
+    try:
+        return int((lock / LOCK_OWNER).read_text(encoding="ascii").strip())
+    except (OSError, ValueError):
+        return None
+
+
+LOCK_DROP_RETRY_S = 2.0
+
+
+def _drop_lock(lock: Path) -> None:
+    """Remove the lockdir. On Windows a waiter that reads the owner file at that moment holds it open (no
+    FILE_SHARE_DELETE), so unlink/rmdir fail with a sharing violation: retry briefly instead of leaking the lock."""
+    deadline = time.monotonic() + LOCK_DROP_RETRY_S
+    while True:
+        try:
+            (lock / LOCK_OWNER).unlink(missing_ok=True)
+            lock.rmdir()
+            return
+        except PermissionError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.01)
+
+
 @contextlib.contextmanager
 def _dir_lock(path: Path, timeout_s: float):
-    """Same lockdir convention as the checkpoint: <file>.lockdir, exclusive mkdir."""
+    """Same lockdir convention as the checkpoint: <file>.lockdir, exclusive mkdir. The holder writes its pid into it:
+    a lock whose holder is dead is cleared at once, any other after LOCK_STALE_S (a commit lasts milliseconds)."""
     lock = path.with_suffix(path.suffix + ".lockdir")
     lock.parent.mkdir(parents=True, exist_ok=True)
     deadline = time.monotonic() + timeout_s
@@ -707,27 +801,83 @@ def _dir_lock(path: Path, timeout_s: float):
                 age = time.time() - lock.stat().st_mtime
             except OSError:
                 age = 0.0
-            if age > LOCK_STALE_S:
+            owner = _lock_owner(lock)
+            dead = owner is not None and not pid_alive(owner)
+            if dead or age > LOCK_STALE_S:
                 try:
-                    lock.rmdir()
-                    ev = {"event": "stale_lock_removed", "lock": str(lock), "age_s": round(age)}
+                    _drop_lock(lock)
+                    ev = {"event": "stale_lock_removed", "lock": str(lock), "age_s": round(age),
+                          "why": "dead_holder" if dead else "old"}
                     LOCK_EVENTS.append(ev)
                     _log.warning("%s", ev)
                     continue
                 except OSError as e:
                     _log.warning("stale lock %s not removed: %s", lock, e)
             if time.monotonic() >= deadline:
-                raise InvalidPlan("plan is locked by another writer")
+                raise LockBusy("plan is locked by another writer")
             time.sleep(0.05)
+    with contextlib.suppress(OSError):
+        (lock / LOCK_OWNER).write_text(str(os.getpid()), encoding="ascii")
     try:
         yield
     finally:
         try:
-            lock.rmdir()
+            _drop_lock(lock)
         except OSError as e:
             LOCK_EVENTS.append({"event": "lock_release_failed", "lock": str(lock),
                                 "reason": str(e)[:200]})
             _log.warning("lock %s not released: %s", lock, e)
+
+
+@contextlib.contextmanager
+def txn(checkpoint: Path, plan: Path, timeout_s: float = LOCK_STALE_S + 10):
+    """One short transaction on the checkpoint: lock it, read the plan and the state FRESH (the plan grows while a pass
+    works), hand them to the block, validate and save on a normal exit. A block that raises writes nothing. Passes
+    change the state only through this: the lease protects the task, the lock only the commit."""
+    checkpoint, plan = Path(checkpoint), Path(plan)
+    with _dir_lock(checkpoint, timeout_s):
+        tasks = read_plan(json.loads(plan.read_text(encoding="utf-8")))
+        state = load_state(checkpoint, tasks)
+        yield tasks, state
+        validate_state(tasks, state)
+        save_atomic(checkpoint, state)
+
+
+def claim(checkpoint: Path, plan: Path, tid: str | None = None):
+    """One transaction: the task ``tid`` (else the first ready one) goes RUNNING under a fresh lease; no model call is
+    charged (the call is charged when it is made). (task id, token), or None when nothing is ready."""
+    with txn(checkpoint, plan) as (tasks, state):
+        choices = [t for t in ready(tasks, state) if tid is None or t == tid]
+        if not choices:
+            return None
+        return choices[0], acquire(tasks, state, choices[0], charge=False)
+
+
+def snapshot(checkpoint: Path, plan: Path, timeout_s: float = LOCK_STALE_S + 10):
+    """(tasks, state) read FRESH under the lock and handed out as private copies, nothing saved. Readers go through
+    the lock too: on Windows a lock-free read makes the writer's os.replace fail."""
+    checkpoint, plan = Path(checkpoint), Path(plan)
+    with _dir_lock(checkpoint, timeout_s):
+        tasks = read_plan(json.loads(plan.read_text(encoding="utf-8")))
+        return tasks, load_state(checkpoint, tasks)
+
+
+class Lease:
+    """A pass's handle on the checkpoint: the lease protects the task, the lock only each commit. ``commit(fn)`` = one
+    transaction on the FRESH state: the lease is checked first (StaleLease writes nothing), then ``fn(state, row)``
+    changes the state and the row of the pass's task, then the state is validated and saved. ``read()`` = a fresh
+    private copy of the state (no save)."""
+
+    def __init__(self, checkpoint: Path, plan: Path, tid: str, token: str):
+        self.checkpoint, self.plan, self.tid, self.token = Path(checkpoint), Path(plan), tid, token
+
+    def commit(self, fn):
+        with txn(self.checkpoint, self.plan) as (_tasks, state):
+            fence(state, self.tid, self.token)
+            return fn(state, state["tasks"][self.tid])
+
+    def read(self) -> dict:
+        return snapshot(self.checkpoint, self.plan)[1]
 
 
 def append_tasks(plan_path: Path, tasks: list[dict], *,

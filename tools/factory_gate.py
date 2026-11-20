@@ -86,6 +86,7 @@ class GateResult:
     timed_out: tuple = ()    # files / tests cut at the limit that could not be split further, or not run (run_tests)
     env_failed: tuple = ()   # 'classname::name' of red testcases whose every failure is environmental (_env_reason)
     unrun: tuple = ()        # tests the split budget left unrun (SPENT_DIAG): neither red nor green, never measured
+    slot_wait_s: float = 0.0  # seconds this run WAITED for a pytest slot / free RAM (not the run time): the runner's budget
 
 
 # --- laptop rule: at most 2 pytest machine-wide, and only while free RAM > 2 GB ---------------------
@@ -159,6 +160,16 @@ def _take_slot(dirs):
     return None
 
 
+class _Slot(str):
+    """What pytest_slot yields: '' (the run may start) or the reason it may not; ``waited`` = seconds spent waiting."""
+    waited = 0.0
+
+    def __new__(cls, why, waited):
+        self = super().__new__(cls, why)
+        self.waited = float(waited)
+        return self
+
+
 @contextmanager
 def pytest_slot(wait_s=None):
     """Hold one of the shared pytest slots while free RAM > 2 GB.  Yields '' when the run may start, else the
@@ -167,7 +178,8 @@ def pytest_slot(wait_s=None):
     dirs = list(SLOT_DIRS)
     if not dirs:                      # a gate with no slots would run unbounded: never silently
         raise RuntimeError('SLOT_DIRS is empty: the pytest slots are not configured')
-    deadline = _clock() + (SLOT_WAIT_S if wait_s is None else wait_s)
+    start = _clock()
+    deadline = start + (SLOT_WAIT_S if wait_s is None else wait_s)
     held, why = None, 'no free pytest slot'
     while True:
         free = _free_ram()
@@ -181,6 +193,7 @@ def pytest_slot(wait_s=None):
         if _clock() >= deadline:
             break
         _sleep(SLOT_POLL_S)
+    waited = max(0.0, _clock() - start)
     stop = threading.Event()
     beat = None
     if held:
@@ -193,7 +206,7 @@ def pytest_slot(wait_s=None):
         beat = threading.Thread(target=_beat, name='pytest-slot-heartbeat', daemon=True)
         beat.start()
     try:
-        yield '' if held else why
+        yield _Slot('' if held else why, waited)
     finally:
         stop.set()
         if beat:
@@ -389,7 +402,8 @@ def _merge(parts) -> GateResult:
                       tuple(sorted({m for r in runs for m in r.missing} | timed | empty)),
                       tuple(sorted({i for r in runs for i in r.failed_ids})),
                       tuple(sorted({c for r in runs for c in r.crashed})), tuple(sorted(timed)),
-                      tuple(sorted({i for r in runs for i in r.env_failed})), tuple(sorted(unrun)))
+                      tuple(sorted({i for r in runs for i in r.env_failed})), tuple(sorted(unrun)),
+                      round(sum(r.slot_wait_s for r in runs), 3))
 
 
 def _node(test: str) -> str:
@@ -397,6 +411,13 @@ def _node(test: str) -> str:
 
 
 def _run_once(root, tests, timeout_s, workdir=None, wait_s=None, progress=None, deselect=()) -> GateResult:
+    """One pytest call, and how long it waited for its slot (GateResult.slot_wait_s)."""
+    waits: list = []
+    result = _run_once_raw(root, tests, timeout_s, workdir, wait_s, progress, deselect, waits)
+    return replace(result, slot_wait_s=round(sum(waits), 3)) if waits else result
+
+
+def _run_once_raw(root, tests, timeout_s, workdir, wait_s, progress, deselect, waits) -> GateResult:
     """Run ``tests`` (pytest node ids / files / dirs) in ``root`` in one pytest call; the verdict comes from JUnit XML.
     ``deselect``: node ids left out of the call. ``progress`` (a dict) receives what a call cut at the limit did: the
     collected names in run order ('items') and the started ones ('started')."""
@@ -426,6 +447,7 @@ def _run_once(root, tests, timeout_s, workdir=None, wait_s=None, progress=None, 
                 '--junitxml=' + str(xml), *['--deselect=' + _node(t) for t in deselect], *tests]
         try:
             with pytest_slot(wait_s) as why:
+                waits.append(float(getattr(why, 'waited', 0.0) or 0.0))
                 if why:
                     return replace(_failure(-1, NOT_STARTED + why), env_reason='pytest slot: ' + why)
                 run = run_owned(args, cwd=str(root), env=env, timeout=timeout_s)

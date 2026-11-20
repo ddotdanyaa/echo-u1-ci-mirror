@@ -25,15 +25,16 @@ import subprocess
 import sys
 import tempfile
 import time
+import logging
 import urllib.error
 import urllib.request
 import dataclasses
 from dataclasses import replace
 
-from .agent_factory import (BudgetExhausted, DEFER_REASONS, LEASE_LIFETIME_S, LOCK_OWNER, MODEL_ID, InputTooLarge, InvalidPlan, Task, acquire, add_feedback, charge_call,
-                            defer, defer_streak, seconds_to_local_midnight,
-                            load_state, read_plan, ready, redact, REPEAT_MARK,
-                            route, quarantine, safe_path, safe_source, save_atomic, settle)
+from .agent_factory import (BudgetExhausted, DEFER_REASONS, LEASE_LIFETIME_S, MODEL_ID, InputTooLarge, InvalidPlan, Lease,
+                            LockBusy, StaleLease, Task, add_feedback, begin, charge_call, claim, defer, defer_streak,
+                            seconds_to_local_midnight, read_plan, ready, redact, REPEAT_MARK, route, quarantine,
+                            safe_path, safe_source, settle, snapshot, txn, unclaim)
 from .factory_context import (LARGE_FILE_CHARS, asked_names, failing_names, identifier_tokens, keywords_from, packet,
                               render, scrub_paths)
 from .factory_process import kilo_argv, run_owned
@@ -42,6 +43,7 @@ from . import factory_channels as channels
 from . import factory_gate as gate
 from . import factory_quota as quota_ledger
 
+_log = logging.getLogger(__name__)
 ENV_ALLOW = ("PATH", "PATHEXT", "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC", "LANG")
 POLICY_FILE = "kilo.jsonc"
 PROVIDER_STEPS = 8   # coder: outline -> read by lines -> grep -> edit needs room (3 was too few)
@@ -1534,98 +1536,144 @@ def _counts(result) -> dict | None:
                 failed=result.failed + result.errors, skipped=result.skipped)
 
 
-def once(*, root: Path, plan: Path, checkpoint: Path, staging: Path,
+def once(**kwargs) -> dict:
+    """One pass on ONE task (arguments: see ``_once``). A lease that was claimed (handed in, or taken here) and that
+    the pass never began to use -- an early return or a raise before ``_pass`` -- goes back to READY (unclaim, the
+    attempt back) instead of being held until it expires and counted as an expiry."""
+    box: dict = {}
+    if kwargs.get('lease') is not None and kwargs.get('task_id'):
+        box['claim'] = (kwargs['task_id'], kwargs['lease'])
+    try:
+        result = _once(_box=box, **kwargs)
+    except BaseException:
+        _drop_claim(kwargs, box)
+        raise
+    _drop_claim(kwargs, box)
+    return result
+
+
+def _drop_claim(kwargs: dict, box: dict) -> None:
+    if box.get('passed') or not box.get('claim'):
+        return
+    tid, token = box['claim']
+    try:
+        Lease(kwargs['checkpoint'], kwargs['plan'], tid, token).commit(lambda s, r: unclaim(s, tid, token))
+    except Exception as error:   # noqa: BLE001 - best effort: a stale/began/busy lease is released by its expiry
+        _log.warning('lease of %s not returned: %s', tid, error)
+
+
+def _once(*, root: Path, plan: Path, checkpoint: Path, staging: Path,
          small_model: str, large_model: str, execute: bool = False,
          acknowledge: bool = False, review_model: str | None = None,
          channel_config: Path | None = None, max_attempts: int = 2,
          max_model_calls: int | None = None, base_sha: str | None = None,
-         small_follow_up: bool = True, port_repo: Path | None = None) -> dict:
+         small_follow_up: bool = True, port_repo: Path | None = None,
+         task_id: str | None = None, lease: str | None = None, _box: dict | None = None) -> dict:
+    """One pass on ONE task. ``task_id`` + ``lease``: the loop (or the pool) claimed the task and hands over its lease
+    token; without a lease the pass claims the task itself (``task_id``, else the first ready one). There is no lock
+    over the pass: the state changes only in short fenced commits (agent_factory.Lease)."""
     tasks = read_plan(json.loads(plan.read_text(encoding="utf-8")))
     if staging.resolve().is_relative_to(root.resolve()):
         raise InvalidPlan("staging inside source project is forbidden")
     if checkpoint.resolve().is_relative_to(root.resolve()):
         raise InvalidPlan("checkpoint inside source project is forbidden")
-    # The checkpoint is local. Exclusive directory creation is an atomic
-    # single controller lock on supported filesystems, with no stale stealing.
-    lock = checkpoint.with_suffix(checkpoint.suffix + ".lockdir")
+    if lease is not None and not task_id:
+        raise InvalidPlan("a lease belongs to a task: task_id is required")
+    tasks, state = snapshot(checkpoint, plan)             # read-only: the pass changes the state only by commits
+    if lease is not None:
+        candidates = [task_id] if task_id in tasks else []
+    else:
+        candidates = [t for t in ready(tasks, state) if task_id is None or t == task_id]
+    if not candidates:
+        return {"status": "IDLE", "next": None, "deploy_blocked": state["deploy_blocked"]}
+    tid = candidates[0]
+    task = tasks[tid]
+    model = route(task, small_model=small_model, large_model=large_model)
+    if not execute:
+        return {"status": "DRY_RUN", "next": tid, "model": model,
+                "deploy_blocked": state["deploy_blocked"]}
+    if not acknowledge:
+        raise InvalidPlan("autonomous Kilo is not OS isolated: explicit opt-in required")
+    if not shutil.which("kilo") and not os.environ.get('FACTORY_KILO_ENTRY'):
+        raise InvalidPlan("kilo command unavailable")
+    configured = []
+    if channel_config is not None:
+        configured = json.loads(channel_config.read_text(encoding='utf-8'))['channels']
+        channels.validate(configured)
+        if not configured or any(c.get('verified') is not True for c in configured):
+            raise InvalidPlan('channels require actual verified model/tool availability')
+    if not configured and not os.environ.get("GOOGLE_GENERATIVE_AI_API_KEY"):
+        raise InvalidPlan("Google API auth key must be set in the caller environment")
+    if not review_model:
+        raise InvalidPlan("review_model is required: no candidate may skip the independent review")
+    if staging_reveals_profile(staging):
+        raise InvalidPlan(PROFILE_LEAK_MESSAGE)
     try:
-        lock.mkdir(parents=True, exist_ok=False)
-    except FileExistsError as e:
-        raise InvalidPlan("another controller or stale lock owns state") from e
-    owner = lock / LOCK_OWNER
-    with contextlib.suppress(OSError):   # the holder's pid: the loop clears the lock of a dead holder at once
-        owner.write_text(str(os.getpid()), encoding='ascii')
-    try:
-        state = load_state(checkpoint, tasks)
-        if max_model_calls is not None:
-            # Explicit operator budget for this checkpoint, never an implicit raise.
-            state["max_model_calls"] = max_model_calls
-        candidates = ready(tasks, state)
-        if not candidates:
-            return {"status": "IDLE", "next": None, "deploy_blocked": state["deploy_blocked"]}
-        tid = candidates[0]
-        task = tasks[tid]
-        model = route(task, small_model=small_model, large_model=large_model)
-        if not execute:
-            return {"status": "DRY_RUN", "next": tid, "model": model,
-                    "deploy_blocked": state["deploy_blocked"]}
-        if not acknowledge:
-            raise InvalidPlan("autonomous Kilo is not OS isolated: explicit opt-in required")
-        if not shutil.which("kilo") and not os.environ.get('FACTORY_KILO_ENTRY'):
-            raise InvalidPlan("kilo command unavailable")
-        configured = []
-        if channel_config is not None:
-            configured = json.loads(channel_config.read_text(encoding='utf-8'))['channels']
-            channels.validate(configured)
-            if not configured or any(c.get('verified') is not True for c in configured):
-                raise InvalidPlan('channels require actual verified model/tool availability')
-        if not configured and not os.environ.get("GOOGLE_GENERATIVE_AI_API_KEY"):
-            raise InvalidPlan("Google API auth key must be set in the caller environment")
-        if not review_model:
-            raise InvalidPlan("review_model is required: no candidate may skip the independent review")
-        if staging_reveals_profile(staging):
-            raise InvalidPlan(PROFILE_LEAK_MESSAGE)
+        staging.mkdir(parents=True, exist_ok=True)
+        swept_failed = sweep_scratch(staging)
+    except OSError as error:   # antivirus, a locked folder: the machine, not the task (a lease handed in is returned by once())
+        return {'status': 'READY', 'reason': 'os_error', 'task_id': tid, 'task': tid,
+                'backlog_id': task.backlog_id, 'base_sha': base_sha, 'calls': [], 'stages': {},
+                'events': [], 'tests': None, 'infra': True, 'wait_s': 60.0,
+                'error_type': type(error).__name__,
+                'reason_detail': scrub_paths(redact(str(error))[:200], [root, staging]),
+                'deploy_blocked': state['deploy_blocked']}
+    if max_model_calls is not None:
+        # Explicit operator budget for this checkpoint, never an implicit raise.
+        with txn(checkpoint, plan) as (_tasks, fresh):
+            fresh["max_model_calls"] = max_model_calls
+    token = lease
+    if token is None:
         try:
-            staging.mkdir(parents=True, exist_ok=True)
-            swept_failed = sweep_scratch(staging)
-        except OSError as error:   # antivirus, a locked folder: the machine, not the task (nothing was acquired yet)
-            return {'status': 'READY', 'reason': 'os_error', 'task_id': tid, 'task': tid,
-                    'backlog_id': task.backlog_id, 'base_sha': base_sha, 'calls': [], 'stages': {},
-                    'events': [], 'tests': None, 'infra': True, 'wait_s': 60.0,
-                    'error_type': type(error).__name__,
-                    'reason_detail': scrub_paths(redact(str(error))[:200], [root, staging]),
+            claimed = claim(checkpoint, plan, tid)     # one transaction; calls are charged when they are made
+        except BudgetExhausted:
+            return {'status': 'WAITING_CHANNEL', 'reason': 'budget_exhausted', 'task_id': tid, 'task': tid,
+                    'backlog_id': task.backlog_id, 'base_sha': base_sha, 'calls': [], 'stages': {}, 'events': [],
+                    'tests': None, 'infra': False, 'wait_s': round(seconds_to_local_midnight(), 1),
                     'deploy_blocked': state['deploy_blocked']}
-        return _pass(tasks, task, state, checkpoint=checkpoint, root=root, staging=staging,
-                     small_model=small_model, large_model=large_model, review_model=review_model,
-                     configured=configured, max_attempts=max_attempts, swept_failed=swept_failed,
-                     base_sha=base_sha or os.environ.get('FACTORY_BASE_SHA'), small_follow_up=small_follow_up,
-                     port_repo=port_repo,
-                     ledger=(channel_config.resolve().parent / 'quota') if channel_config is not None else None)
-    finally:
-        with contextlib.suppress(OSError):    # a lock left behind is cleared by the loop; the pass result stands
-            owner.unlink(missing_ok=True)
-            lock.rmdir()
+        if claimed is None:
+            return {"status": "IDLE", "next": None, "deploy_blocked": state["deploy_blocked"]}
+        tid, token = claimed
+        _box['claim'] = (tid, token)
+    _box['passed'] = True      # from here the pass itself returns or ends the lease
+    return _pass(task, Lease(checkpoint, plan, tid, token), checkpoint=checkpoint, root=root, staging=staging,
+                 small_model=small_model, large_model=large_model, review_model=review_model,
+                 configured=configured, max_attempts=max_attempts, swept_failed=swept_failed,
+                 base_sha=base_sha or os.environ.get('FACTORY_BASE_SHA'), small_follow_up=small_follow_up,
+                 port_repo=port_repo,
+                 ledger=(channel_config.resolve().parent / 'quota') if channel_config is not None else None)
 
 
-def _pass(tasks, task: Task, state: dict, **kwargs) -> dict:
-    with scratch_redirect(kwargs['staging']):
-        return _pass_inner(tasks, task, state, **kwargs)
+def _pass(task: Task, ck: Lease, **kwargs) -> dict:
+    try:
+        with scratch_redirect(kwargs['staging']):
+            return _pass_inner(task, ck, **kwargs)
+    except LockBusy:          # the checkpoint lock stayed busy: no verdict, nothing written, the lease expires on its own
+        return {'status': 'READY', 'reason': 'lock_busy', 'task_id': task.id, 'task': task.id,
+                'backlog_id': task.backlog_id, 'base_sha': kwargs.get('base_sha'), 'calls': [], 'stages': {},
+                'events': [], 'tests': None, 'infra': False, 'wait_s': 30.0}
+    except StaleLease:        # the lease is not this pass's any more (it expired, or another writer ended the pass)
+        return {'status': 'STALE_LEASE', 'reason': 'stale_lease', 'task_id': task.id, 'task': task.id,
+                'backlog_id': task.backlog_id, 'base_sha': kwargs.get('base_sha'), 'calls': [], 'stages': {},
+                'events': [], 'tests': None, 'infra': False, 'wait_s': 0.0}
 
 
-def _pass_inner(tasks, task: Task, state: dict, *, checkpoint: Path, root: Path, staging: Path,
+def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging: Path,
           small_model: str, large_model: str, review_model: str, configured: list,
           max_attempts: int, base_sha: str | None, swept_failed=(), ledger: Path | None = None,
           small_follow_up: bool = True, port_repo: Path | None = None) -> dict:
-    tid = task.id
-    staging.mkdir(parents=True, exist_ok=True)
+    """The pass of the lease ``ck`` (the task is already RUNNING under it). It keeps read-only facts (``state`` and
+    ``row`` are a copy taken at the start); every change of the state is ONE ``ck.commit`` on the FRESH state."""
+    tid, token = task.id, ck.token
     try:
-        token = acquire(tasks, state, tid, charge=False)  # calls are charged when they are made
-    except BudgetExhausted:
-        return {'status': 'WAITING_CHANNEL', 'reason': 'budget_exhausted', 'task_id': tid, 'task': tid,
-                'backlog_id': task.backlog_id, 'base_sha': base_sha, 'calls': [], 'stages': {}, 'events': [],
-                'tests': None, 'infra': False, 'wait_s': round(seconds_to_local_midnight(), 1),
-                'deploy_blocked': state['deploy_blocked']}
-    save_atomic(checkpoint, state)
+        staging.mkdir(parents=True, exist_ok=True)
+        ck.commit(lambda s, r: begin(s, tid, token, os.getpid()))   # fenced: a foreign or dead lease stops the pass here
+    except StaleLease:
+        raise
+    except BaseException:      # never began: give the lease back (unclaim refuses once the pass began)
+        _drop_claim({'checkpoint': checkpoint, 'plan': ck.plan}, {'claim': (tid, token)})
+        raise
+    state = ck.read()
     prefix = "task-" + tid + "-" + token[:8]
     row = state['tasks'][tid]
     attempt = row['attempts']
@@ -1642,19 +1690,33 @@ def _pass_inner(tasks, task: Task, state: dict, *, checkpoint: Path, root: Path,
     started_pass = time.monotonic()
     prev_diff_file = staging / 'prev-diff' / (tid + '.diff')
 
-    def finish(status: str, **extra) -> dict:
+    def end(apply, **extra) -> dict:
+        """The end of the pass: ``apply(state, row)`` makes the transition(s) on the fresh state and returns
+        (status, more report fields) -- all of it ONE commit."""
+        def commit(state, row):
+            status, more = apply(state, row)
+            if status not in ('READY', 'WAITING_CHANNEL'):      # settled, blocked or quarantined: every series is over
+                table = factory_env(state)
+                for key in ('task:%s:code' % tid, 'task:%s:review' % tid):
+                    table['idle'].pop(key, None)
+                table['shortages'].pop(tid, None)
+                table['other'].pop(tid, None)
+            return status, more, state['deploy_blocked']
+        status, more, blocked = ck.commit(commit)
         report.update(extra)
-        if status not in ('READY', 'WAITING_CHANNEL'):      # settled, blocked or quarantined: every series is over
-            table = factory_env(state)
-            for key in ('task:%s:code' % tid, 'task:%s:review' % tid):
-                table['idle'].pop(key, None)
-            table['shortages'].pop(tid, None)
-            table['other'].pop(tid, None)
+        report.update(more or {})
+        report['deploy_blocked'] = blocked
         report['status'] = status
         report['tests'] = _counts(ctx['counts'])
         report['dur_s'] = round(time.monotonic() - started_pass, 3)
-        save_atomic(checkpoint, state)
         return report
+
+    def has_pending() -> bool:
+        return bool(ck.read()['tasks'][tid].get('pending_review'))
+
+    def set_pending(state, row) -> None:
+        row['pending_review'] = dict(workdir=str(ctx['workdir']), baseline_digest=baseline_digest,
+                                     coder_model=ctx['coder_model'])
 
     def timed(name: str, fn):
         t0 = time.monotonic()
@@ -1665,26 +1727,29 @@ def _pass_inner(tasks, task: Task, state: dict, *, checkpoint: Path, root: Path,
 
     def release(reason: str, seconds: float, infra: bool | None = None) -> dict:
         """No strike, attempt not spent: back to READY, postponed. ``infra`` only for real faults."""
-        status = defer(state, tid, token, reason, seconds)
-        return finish(status, reason=reason, wait_s=round(float(seconds), 1),
-                      infra=(reason in INFRA_DEFERS) if infra is None else infra,
-                      deploy_blocked=state['deploy_blocked'])
+        return end(lambda s, r: (defer(s, tid, token, reason, seconds), None), reason=reason,
+                   wait_s=round(float(seconds), 1), infra=(reason in INFRA_DEFERS) if infra is None else infra)
 
     def block(reason: str, detail: str = '', *, infra: bool = False, keep: bool = False) -> dict:
         """BLOCKED without a strike (also drops a stale pending review: agent_factory.quarantine)."""
         detail = scrub(redact(detail))[:400]
-        old = row.get('pending_review')
+        voided = []
+
+        def apply(state, row):
+            voided.append(row.get('pending_review'))
+            quarantine(state, tid, token, reason=reason)
+            if detail:
+                add_feedback(state, tid, 'gate', '[infra] ' + reason + ': ' + detail)
+            return 'BLOCKED', {'blocked_reason': row.get('blocked_reason')}
+        result = end(apply, reason=reason, reason_detail=detail, infra=infra)
+        old = voided[0]
         if not keep and isinstance(old, dict) and isinstance(old.get('workdir'), str) and inside_staging(old['workdir'], staging):
             shutil.rmtree(old['workdir'], ignore_errors=True)   # the candidate is void with the block
-        quarantine(state, tid, token, reason=reason)
-        if detail:
-            add_feedback(state, tid, 'gate', '[infra] ' + reason + ': ' + detail)
-        return finish('BLOCKED', reason=reason, reason_detail=detail, infra=infra,
-                      blocked_reason=row.get('blocked_reason'))
+        return result
 
     def release_or_block(reason: str, seconds: float) -> dict:
         """The same postponement three times in a row is not a wait any more: BLOCKED for Opus."""
-        if reason in ESCALATE and defer_streak(state, tid, reason) + 1 >= ESCALATE_AFTER:
+        if reason in ESCALATE and defer_streak(ck.read(), tid, reason) + 1 >= ESCALATE_AFTER:
             return block(reason, 'postponed %d times in a row' % ESCALATE_AFTER, infra=reason in INFRA_DEFERS)
         return release(reason, seconds)
 
@@ -1692,7 +1757,6 @@ def _pass_inner(tasks, task: Task, state: dict, *, checkpoint: Path, root: Path,
         """A candidate failed a gate or the reviewer: feedback + previous diff + a strike."""
         reason = scrub(redact(reason))[:300]
         text = scrub(text)
-        add_feedback(state, tid, source, '[attempt %d] %s' % (attempt, text))
         # NOTE: the previous diff below is deliberately NOT scrubbed: it is the user's own code under
         # relative a/ b/ names, and rewriting it would corrupt the diff the model must not repeat.
         if source == 'review' or reason in ('gate:no_changes', 'gate:steps_exhausted'):
@@ -1704,10 +1768,14 @@ def _pass_inner(tasks, task: Task, state: dict, *, checkpoint: Path, root: Path,
                                       encoding='utf-8')
         else:
             prev_diff_file.unlink(missing_ok=True)  # never hand the next attempt another cycle's diff
-        status = settle(state, tid, token, tests_ok=False, evidence=_digest(reason, text),
-                        max_attempts=max_attempts)
-        row.pop('pending_review', None)
-        return finish(status, reason=reason, reason_detail=redact(text)[:400])
+
+        def apply(state, row):
+            add_feedback(state, tid, source, '[attempt %d] %s' % (attempt, text))
+            status = settle(state, tid, token, tests_ok=False, evidence=_digest(reason, text),
+                            max_attempts=max_attempts)
+            row.pop('pending_review', None)
+            return status, None
+        return end(apply, reason=reason, reason_detail=redact(text)[:400])
 
     def call(role: str, call_task: Task, directory_for, preferred: str, prompt: str,
              *, exclude_model: str | None = None, skip_tiers: tuple = ()) -> tuple[int, bytes, bytes]:
@@ -1721,6 +1789,11 @@ def _pass_inner(tasks, task: Task, state: dict, *, checkpoint: Path, root: Path,
                                                overhead=LIGHT_OVERHEAD_TOKENS if light else None)
         steps = 1 if light else (REVIEW_STEPS if role == 'review' else PROVIDER_STEPS)
         booked = 1 if light else requests_for(steps)   # the whole run: what choose() checks and reserve() books; reconcile() writes the fact
+        def booked_one(row) -> None:
+            began = row.get('began')
+            if isinstance(began, dict):
+                began['booked'] = int(began.get('booked') or 0) + 1      # the pool's admission counts workers that did not book yet
+
         for retry in (0, 1):
             selected, at, chosen, kwargs = None, None, preferred, {}
             if configured:
@@ -1733,72 +1806,104 @@ def _pass_inner(tasks, task: Task, state: dict, *, checkpoint: Path, root: Path,
                                                  skip_tiers=skip_tiers)
                 if not order:
                     raise NoIndependentReviewer()
-                quota = state.setdefault('channel_quotas', {})
-                seen = (quota_ledger.view(quota, quota_ledger.others(ledger, str(checkpoint)))
-                        if ledger is not None else quota)    # <id>: the other states' bookings of the same keys
-                live = channels.usable(order, seen, os.environ) or order   # a dead or keyless channel sets no ceiling
-                tokens = min(base_tokens, max(c['tpm'] for c in live))  # a huge file may not make every channel "too small"
+
+                def book(state, row):
+                    """View + usable + choose + charge + reserve + publish: ONE commit on the fresh state, so two workers
+                    never choose the same free request."""
+                    quota = state.setdefault('channel_quotas', {})
+                    seen = (quota_ledger.view(quota, quota_ledger.others(ledger, str(checkpoint)))
+                            if ledger is not None else quota)    # <id>: the other states' bookings of the same keys
+                    live = channels.usable(order, seen, os.environ) or order   # a dead or keyless channel sets no ceiling
+                    tokens = min(base_tokens, max(c['tpm'] for c in live))  # a huge file may not make every channel "too small"
+                    pick = channels.choose(order, seen, tokens, os.environ,
+                                           requests=booked)   # a multi-step call needs room
+                    charge_call(state, tid)   # BEFORE booking: an exhausted budget must leave no reservation behind
+                    when = channels.reserve(quota, pick, tokens, requests=booked)   # exactly what choose() checked
+                    if ledger is not None:
+                        quota_ledger.publish(ledger, str(checkpoint), quota)
+                    booked_one(row)
+                    return pick, when, tokens
+                selected, at, tokens = ck.commit(book)
                 if tokens < base_tokens and 'reservation_capped' not in events:
                     events.append('reservation_capped')
-                selected = channels.choose(order, seen, tokens, os.environ,
-                                           requests=booked)   # a multi-step call needs room
-                charge_call(state, tid)   # BEFORE booking: an exhausted budget must leave no reservation behind
-                at = channels.reserve(quota, selected, tokens, requests=booked)   # exactly what choose() checked
-                if ledger is not None:
-                    quota_ledger.publish(ledger, str(checkpoint), quota)
                 chosen, kwargs['key_env'] = selected['model'], selected['key_env']
             elif chosen in channels.excluded_models(exclude_model):
                 raise NoIndependentReviewer()
             else:
                 tokens = base_tokens
-                charge_call(state, tid)
+
+                def charge(state, row):
+                    charge_call(state, tid)
+                    booked_one(row)
+                ck.commit(charge)
             ctx['last_tokens'] = tokens
-            save_atomic(checkpoint, state)
-            directory = directory_for(retry)
             began = time.monotonic()
-            engine = light_attempt if light else model_attempt
-            code, stdout, stderr = engine(call_task, directory, chosen, timeout=240,
-                                          prompt_override=prompt, steps=steps, **kwargs)
+            try:
+                directory = directory_for(retry)
+                engine = light_attempt if light else model_attempt
+                code, stdout, stderr = engine(call_task, directory, chosen, timeout=240,
+                                              prompt_override=prompt, steps=steps, **kwargs)
+            except BaseException:
+                if selected is not None:    # booked, never accounted: the reservation goes back (the call did not finish)
+                    def unbook(state, row):
+                        channels.reconcile(state['channel_quotas'], selected, at, tokens, 0,
+                                           requests=booked, actual_requests=0)
+                        if ledger is not None:
+                            quota_ledger.publish(ledger, str(checkpoint), state['channel_quotas'])
+                    try:
+                        ck.commit(unbook)
+                    except Exception as error:   # noqa: BLE001 - the original failure is what the pass reports
+                        _log.warning('reservation not returned: %s', error)
+                raise
             ctx['light_note'] = stderr.decode('utf-8', 'replace')[:300] if light and code == 0 else ''
             elapsed = round(time.monotonic() - began, 3)
             summary = event_summary(stdout, directory)
             idle = code == 124 and summary['steps'] == 0 and summary['tool_events'] == 0
-            counters = factory_env(state)['idle']
-            task_key = 'task:%s:%s' % (tid, 'review' if role == 'review' else 'code')
-            keys = (task_key, 'channel:' + str(selected['id'] if selected else chosen))
-            prior = counters.get(task_key) if type(counters.get(task_key)) is int else 0    # only the TASK's own series blocks it
-            ceiling = idle and prior >= IDLE_SUSPECTS_ALLOWED      # a broken launch must trip the brake, not cool forever
-            info = channels.classify(stdout, stderr, code, idle=idle and not ceiling)
-            if ceiling:
-                info['ceiling'] = True
-                if selected is not None:       # the NEXT task on this channel must not meet the same wall at once
-                    channels.cool(state['channel_quotas'], selected, seconds=channels.RATE_SUSPECT_COOL_S)
-                counters.pop(keys[1], None)
-            if idle and not ceiling:
-                for k in keys:
-                    counters[k] = (counters.get(k) if type(counters.get(k)) is int else 0) + 1
-            elif summary['steps'] > 0 or summary['tool_events'] > 0 or info['kind'] == 'ok':
-                for k in keys:
-                    counters.pop(k, None)               # real work was seen: the series is over
-            if info.get('suspect') and 'rate_limited_suspect' not in events:
-                events.append('rate_limited_suspect')
             kinds = ('input_tokens', 'cache_read_tokens', 'cache_write_tokens')
             actual_input = (sum(summary[k] or 0 for k in kinds) if any(summary[k] is not None for k in kinds)
                             else None)       # None = Kilo reported no usage: unknown, never 0
             actual = (None if actual_input is None and summary['output_tokens'] is None
                       else (actual_input or 0) + (summary['output_tokens'] or 0) + (summary['reasoning_tokens'] or 0))
-            if selected is not None:
-                # no usage reported: the fact is unknown, so the token booking stays whole
-                charged = actual_input if actual_input is not None else tokens
-                # Kilo retries inside a failed call and the retries spend quota the stream never shows: after a
-                # failure, or when nothing was reported, the booking stays whole; only a clean call is trued up
-                unknown = summary['steps'] == 0 and actual_input is None
-                failed = code != 0 or info['kind'] != 'ok' or summary['provider_error']
-                fact = max(booked, summary['steps']) if (failed or unknown) else max(1, summary['steps'])
-                if info['kind'] == 'network':
-                    fact = 0         # no HTTP answer: the request never reached the provider's quota
-                channels.reconcile(state['channel_quotas'], selected, at, tokens, charged,
-                                   requests=booked, actual_requests=fact)
+
+            def account(state, row):
+                """What the call showed, on the FRESH state: the idle series, a cooling, the true-up of the booking and
+                the ledger -- one commit."""
+                counters = factory_env(state)['idle']
+                task_key = 'task:%s:%s' % (tid, 'review' if role == 'review' else 'code')
+                keys = (task_key, 'channel:' + str(selected['id'] if selected else chosen))
+                prior = counters.get(task_key) if type(counters.get(task_key)) is int else 0    # only the TASK's own series blocks it
+                ceiling = idle and prior >= IDLE_SUSPECTS_ALLOWED      # a broken launch must trip the brake, not cool forever
+                info = channels.classify(stdout, stderr, code, idle=idle and not ceiling)
+                if ceiling:
+                    info['ceiling'] = True
+                    if selected is not None:       # the NEXT task on this channel must not meet the same wall at once
+                        channels.cool(state.setdefault('channel_quotas', {}), selected,
+                                      seconds=channels.RATE_SUSPECT_COOL_S)
+                    counters.pop(keys[1], None)
+                if idle and not ceiling:
+                    for k in keys:
+                        counters[k] = (counters.get(k) if type(counters.get(k)) is int else 0) + 1
+                elif summary['steps'] > 0 or summary['tool_events'] > 0 or info['kind'] == 'ok':
+                    for k in keys:
+                        counters.pop(k, None)               # real work was seen: the series is over
+                if selected is not None:
+                    # no usage reported: the fact is unknown, so the token booking stays whole
+                    charged = actual_input if actual_input is not None else tokens
+                    # Kilo retries inside a failed call and the retries spend quota the stream never shows: after a
+                    # failure, or when nothing was reported, the booking stays whole; only a clean call is trued up
+                    unknown = summary['steps'] == 0 and actual_input is None
+                    failed = code != 0 or info['kind'] != 'ok' or summary['provider_error']
+                    fact = max(booked, summary['steps']) if (failed or unknown) else max(1, summary['steps'])
+                    if info['kind'] == 'network':
+                        fact = 0         # no HTTP answer: the request never reached the provider's quota
+                    channels.reconcile(state['channel_quotas'], selected, at, tokens, charged,
+                                       requests=booked, actual_requests=fact)
+                    if ledger is not None:
+                        quota_ledger.publish(ledger, str(checkpoint), state['channel_quotas'])
+                return info
+            info = ck.commit(account)
+            if info.get('suspect') and 'rate_limited_suspect' not in events:
+                events.append('rate_limited_suspect')
             calls.append({'role': role, 'attempt': attempt, 'channel': selected['id'] if selected else None,
                           'model': chosen, 'reserved_tokens': tokens, 'actual_tokens': actual,
                           'actual_input_tokens': actual_input,
@@ -1814,18 +1919,18 @@ def _pass_inner(tasks, task: Task, state: dict, *, checkpoint: Path, root: Path,
                           'finish_reason': summary['finish_reason'], 'files_read': summary['files_read'],
                           'provider_error': info['kind'] not in ('ok', 'unknown') or summary['provider_error']})
             ctx['last_text'] = summary['text']
-            if ledger is not None and selected is not None:
-                quota_ledger.publish(ledger, str(checkpoint), state['channel_quotas'])
-            save_atomic(checkpoint, state)
             kind = info['kind']
             if kind == 'ok' or (kind == 'unknown' and code == 0):
                 return code, stdout, stderr
             if kind in ('timeout', 'launcher'):
                 raise ChannelFault(info)
             if selected is not None:
-                done = channels.apply_failure(state['channel_quotas'], selected, info, env=os.environ)
-                if ledger is not None:
-                    quota_ledger.publish(ledger, str(checkpoint), state['channel_quotas'])
+                def failure(state, row):
+                    outcome = channels.apply_failure(state['channel_quotas'], selected, info, env=os.environ)
+                    if ledger is not None:
+                        quota_ledger.publish(ledger, str(checkpoint), state['channel_quotas'])
+                    return outcome
+                done = ck.commit(failure)
             else:
                 done = {'cool_s': info.get('retry_after_s') or 0}
             if kind in ('transient', 'network') and retry == 0:
@@ -1840,7 +1945,7 @@ def _pass_inner(tasks, task: Task, state: dict, *, checkpoint: Path, root: Path,
         if not configured:
             return default
         pool = [c for c in configured if not (ctx['role'] == 'review' and c['model'] == ctx['coder_model'])]
-        quota = state.get('channel_quotas', {})
+        quota = ck.read().get('channel_quotas', {})
         seen = quota_ledger.view(quota, quota_ledger.others(ledger, str(checkpoint))) if ledger is not None else quota
         wait = channels.next_wait(pool, seen, ctx['last_tokens'], os.environ,
                                   requests=1 if ctx.get('light') else
@@ -1879,17 +1984,22 @@ def _pass_inner(tasks, task: Task, state: dict, *, checkpoint: Path, root: Path,
 
     base_holder = None
     gate_tmp = staging / 'tmp'     # pytest's own temp (--basetemp) stays inside staging, never under the profile
-    slot = {'deadline': None}      # armed at the FIRST gate run: the coder call must not eat the wait
+    slot = {'armed': False, 'left': float(SLOT_BUDGET_S), 'waited': 0.0}   # armed at the FIRST gate run
 
     def gate_run(tree, tests):
-        """gate.run_tests with the pass-wide slot budget (what is left of it, never a fresh one per call). What was cut
+        """gate.run_tests with the pass-wide slot budget: what is left of it, never a fresh one per call, and it is
+        spent by WAITING for a slot only (GateResult.slot_wait_s), never by the run time of the tests. What was cut
         at the limit on the base (files, single tests) is handed over: the candidate run starts file by file and runs
         those tests alone (a joint run would only be cut again)."""
-        if slot['deadline'] is None:
-            slot['deadline'] = _now() + SLOT_BUDGET_S
+        slot['armed'] = True
         known = getattr(ctx.get('counts'), 'timed_out', ())
-        return gate.run_tests(tree, tests, GATE_TIMEOUT_S, workdir=gate_tmp,
-                              wait_s=max(0.0, slot['deadline'] - _now()), **({'hung': known} if known else {}))
+        result = gate.run_tests(tree, tests, GATE_TIMEOUT_S, workdir=gate_tmp,
+                                wait_s=max(0.0, slot['left']), **({'hung': known} if known else {}))
+        waited = float(getattr(result, 'slot_wait_s', 0.0) or 0.0)
+        slot['left'] -= waited
+        slot['waited'] += waited
+        stages['slot_wait_s'] = round(slot['waited'], 3)
+        return result
 
     def park_candidate() -> str:
         """Save the diff of a paid candidate outside every sweep (staging/parked) and name it for Opus."""
@@ -1908,22 +2018,28 @@ def _pass_inner(tasks, task: Task, state: dict, *, checkpoint: Path, root: Path,
         reason = why_text[4:].lstrip() if why_text.startswith('env:') else why_text
         report['reason_detail'] = scrub(redact(reason))[:300]
         events.append('env_shortage')
-        table = factory_env(state)
-        if not reason.startswith('pytest slot:'):
-            seen = (table['other'].get(tid) if type(table['other'].get(tid)) is int else 0) + 1
-            table['other'][tid] = seen
-            if seen >= ENV_OTHER_CEILING:
-                table['other'].pop(tid, None)
-                saved = park_candidate() if candidate else ''
-                return block('gate_unknown', "ENV: %s (%d passes in a row; not the candidate fault).%s"
-                             % (reason, seen, saved), keep=True)
-        if candidate:      # (the red_before check runs before any candidate exists; a pending one stays as it is)
-            row['pending_review'] = dict(workdir=str(ctx['workdir']), baseline_digest=baseline_digest,
-                                         coder_model=ctx['coder_model'])
-        report['pending_review'] = bool(row.get('pending_review'))
-        count = (table['shortages'].get(tid) if type(table['shortages'].get(tid)) is int else 0) + 1
-        if reason.startswith('pytest slot:'):
-            table['shortages'][tid] = count
+
+        def count_it(state, row):
+            """The environment counters and the kept candidate, on the fresh state: ONE commit."""
+            table = factory_env(state)
+            if not reason.startswith('pytest slot:'):
+                seen = (table['other'].get(tid) if type(table['other'].get(tid)) is int else 0) + 1
+                table['other'][tid] = seen
+                if seen >= ENV_OTHER_CEILING:
+                    table['other'].pop(tid, None)
+                    return 'park', seen, False
+            if candidate:      # (the red_before check runs before any candidate exists; a pending one stays as it is)
+                set_pending(state, row)
+            count = (table['shortages'].get(tid) if type(table['shortages'].get(tid)) is int else 0) + 1
+            if reason.startswith('pytest slot:'):
+                table['shortages'][tid] = count
+            return 'release', count, bool(row.get('pending_review'))
+        what, count, pending_now = ck.commit(count_it)
+        if what == 'park':
+            saved = park_candidate() if candidate else ''
+            return block('gate_unknown', "ENV: %s (%d passes in a row; not the candidate fault).%s"
+                         % (reason, count, saved), keep=True)
+        report['pending_review'] = pending_now
         return release('transient', ENV_HOLD_S if count >= ENV_HOLD_AFTER else INFRA_DEFER_S)
 
     def base_root() -> Path:
@@ -1936,7 +2052,7 @@ def _pass_inner(tasks, task: Task, state: dict, *, checkpoint: Path, root: Path,
 
     baseline_dir = None
     owned, live, parsed = set(), set(), True
-    for other_tid, other in state['tasks'].items():
+    for other_tid, other in ck.read()['tasks'].items():     # fresh: other workers' candidates and leases are theirs
         held = other.get('pending_review')
         if held is not None:
             if isinstance(held, dict) and isinstance(held.get('workdir'), str):
@@ -1970,7 +2086,7 @@ def _pass_inner(tasks, task: Task, state: dict, *, checkpoint: Path, root: Path,
         pending = row.get('pending_review')
         if pending is not None and not (isinstance(pending, dict) and isinstance(pending.get('workdir'), str)
                                         and isinstance(pending.get('baseline_digest'), str)):
-            row.pop('pending_review', None)  # corrupt record: treat as absent
+            ck.commit(lambda s, r: r.pop('pending_review', None))  # corrupt record: treat as absent
             events.append('pending_dropped')
             pending = None
         baseline_dir = ctx['workdir'] if not pending else staging / (prefix + '-baseline')
@@ -1983,7 +2099,7 @@ def _pass_inner(tasks, task: Task, state: dict, *, checkpoint: Path, root: Path,
             inside = inside_staging(old, staging)
             if pending.get('baseline_digest') != baseline_digest or not old.is_dir() or not inside:
                 # HEAD moved (or the work copy is gone): the old candidate is void. Start fresh, no strike.
-                row.pop('pending_review', None)
+                ck.commit(lambda s, r: r.pop('pending_review', None))
                 events.append('pending_dropped')
                 if inside and old.is_dir():
                     shutil.rmtree(old, ignore_errors=True)
@@ -2004,12 +2120,15 @@ def _pass_inner(tasks, task: Task, state: dict, *, checkpoint: Path, root: Path,
         else:
             verdict, base = timed('red_before_s', lambda: gate.red_before(
                 base_root() if task.kind != 'unit_test' else root, task.tests, GATE_TIMEOUT_S, task.kind,
-                wait_s=(min(RED_BEFORE_WAIT_S, max(0.0, slot['deadline'] - _now())) if slot['deadline'] is not None
-                        else RED_BEFORE_WAIT_S),
+                wait_s=(min(RED_BEFORE_WAIT_S, max(0.0, slot['left'])) if slot['armed'] else RED_BEFORE_WAIT_S),
                 workdir=gate_tmp))
-            row.pop('base_red', None)
-            if key and verdict == 'red' and not base.env_reason and task.kind != 'unit_test':
-                row['base_red'] = {'key': key, 'at': _now(), 'result': dataclasses.asdict(base)}
+            keep_red = (key and verdict == 'red' and not base.env_reason and task.kind != 'unit_test')
+
+            def note_base(state, row):
+                row.pop('base_red', None)
+                if keep_red:
+                    row['base_red'] = {'key': key, 'at': _now(), 'result': dataclasses.asdict(base)}
+            ck.commit(note_base)
         ctx['counts'] = base
         if verdict == 'green':
             return block('already_green', 'the task tests already pass on the base')
@@ -2067,8 +2186,10 @@ def _pass_inner(tasks, task: Task, state: dict, *, checkpoint: Path, root: Path,
                 ctx['counts'] = cand
                 if cand.env_reason:
                     return env_release(cand.env_reason)
-                factory_env(state)['shortages'].pop(tid, None)   # measured: both environment series are over
-                factory_env(state)['other'].pop(tid, None)
+                def measured(state, row):       # measured: both environment series are over
+                    factory_env(state)['shortages'].pop(tid, None)
+                    factory_env(state)['other'].pop(tid, None)
+                ck.commit(measured)
                 # pytest executes untrusted code: it may not rewrite the frozen tests or inputs.
                 for name in sorted((set(task.tests) | set(task.read_files)) - set(changed)):
                     original, after = root.joinpath(*name.split('/')), tree.joinpath(*name.split('/'))
@@ -2138,8 +2259,7 @@ def _pass_inner(tasks, task: Task, state: dict, *, checkpoint: Path, root: Path,
                         elif outcome == 'unknown':
                             report['reason_detail'] = 'neighbour tests of the base are not measured'
                             # keep the candidate: the next pass resumes at the gates and measures, no new coder call
-                            row['pending_review'] = dict(workdir=str(ctx['workdir']), baseline_digest=baseline_digest,
-                                                         coder_model=ctx['coder_model'])
+                            ck.commit(lambda s, r: set_pending(s, r))
                             report['pending_review'] = True
                             return release_or_block('gate_unknown', INFRA_DEFER_S)
                         elif outcome == 'regression':
@@ -2152,7 +2272,7 @@ def _pass_inner(tasks, task: Task, state: dict, *, checkpoint: Path, root: Path,
         # 2. The coder call(s) (a rejected candidate comes back next pass with feedback and its diff).
         decision = None
         if not pending:
-            feedback = fresh_feedback(state, tid)
+            feedback = fresh_feedback(state, tid)       # the state of the start of the pass: its own feedback is final
             feedback = scrub(feedback) if feedback else feedback
             prev_diff = prev_diff_file.read_text(encoding='utf-8') if prev_diff_file.is_file() else ''
             role = 'repair' if (feedback or attempt > 1) else 'code'
@@ -2288,12 +2408,10 @@ def _pass_inner(tasks, task: Task, state: dict, *, checkpoint: Path, root: Path,
 
 
         # 4. Independent reviewer: another model, reasons go back as feedback.
-        row['pending_review'] = dict(workdir=str(ctx['workdir']), baseline_digest=baseline_digest,
-                                     coder_model=ctx['coder_model'])
-        save_atomic(checkpoint, state)
+        ck.commit(lambda s, r: set_pending(s, r))
 
         critics = []      # the models that reviewed this candidate: the next critic is none of them, nor the coder
-        told = rejected_for(state, tid)
+        told = rejected_for(ck.read(), tid)
 
         def invoke(call_task, directory, preferred, **kwargs):
             return call('review', call_task, lambda _retry: directory, preferred,
@@ -2344,21 +2462,27 @@ def _pass_inner(tasks, task: Task, state: dict, *, checkpoint: Path, root: Path,
             dst = reviewed.joinpath(*name.split("/"))
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(ctx['workdir'].joinpath(*name.split("/")), dst)
-        status = settle(state, tid, token, tests_ok=True, evidence=receipt, max_attempts=max_attempts)
-        row.pop('pending_review', None)
+
+        def approve(state, row):
+            status = settle(state, tid, token, tests_ok=True, evidence=receipt, max_attempts=max_attempts)
+            row.pop('pending_review', None)
+            return status, None
+        result = end(approve, changed=len(changed), receipt_sha256=receipt, cross_review=True)
         prev_diff_file.unlink(missing_ok=True)
-        return finish(status, changed=len(changed), receipt_sha256=receipt, cross_review=True)
+        return result
+    except (StaleLease, LockBusy):
+        raise                       # the lease is gone / the lock is busy: write nothing (the caller reports it)
     except ChannelFault as error:
         return fault(error)
     except BudgetExhausted:
-        report['pending_review'] = bool(row.get('pending_review'))
+        report['pending_review'] = has_pending()
         return release('budget_exhausted', seconds_to_local_midnight())
     except channels.ChannelUnavailable as error:
-        report['pending_review'] = bool(row.get('pending_review'))
+        report['pending_review'] = has_pending()
         return _wait(release, report, 'channel_wait', error.wait_s, status='WAITING_CHANNEL',
                      channel_reason=error.reason)
     except NoIndependentReviewer:
-        report['pending_review'] = bool(row.get('pending_review'))
+        report['pending_review'] = has_pending()
         return _wait(release_or_block, report, 'no_independent_reviewer', status='WAITING_CHANNEL')
     except PromptTooLarge as error:
         return block('context_too_large', 'prompt of %s characters exceeds %d' %
@@ -2374,7 +2498,7 @@ def _pass_inner(tasks, task: Task, state: dict, *, checkpoint: Path, root: Path,
             note = scrub(redact(str(error_obj)))[:200]
             report['reason_detail'] = note
             kind = 'os_error'   # whitelisted in agent_factory.DEFER_REASONS (seam test guards it)
-            if defer_streak(state, tid, kind) + 1 >= ESCALATE_AFTER:
+            if defer_streak(ck.read(), tid, kind) + 1 >= ESCALATE_AFTER:
                 # the same OS error on every pass is this task's problem (path clash, long path): block it,
                 # and do not count it toward the brake of the whole factory
                 return block('worker_exception', note, infra=False)
@@ -2423,6 +2547,8 @@ def main(argv=None):
                    help="explicit model-call budget written into this checkpoint")
     p.add_argument("--small-follow-up", choices=("on", "off"), default="on",
                    help="may a small-tier model be a later tournament candidate (an A/B arm)")
+    p.add_argument("--task", help="run this task (the one the loop claimed); default: the first ready one")
+    p.add_argument("--lease", help="the lease token of --task, claimed by the caller (without it the pass claims its own)")
     p.add_argument("--port-repo", type=Path,
                    help="git repository that holds the old-branch commits of port tasks (--root is a copy without .git)")
     args = p.parse_args(argv)
@@ -2434,6 +2560,8 @@ def main(argv=None):
         p.error("--max-model-calls must be in 1..%d" % MAX_MODEL_CALLS)
     if args.execute and args.staging.resolve().is_relative_to(args.root.resolve()):
         p.error("staging must not be within original repository")
+    if args.lease and not args.task:
+        p.error("--lease needs --task")
     outcomes = []
     for _ in range(args.max_tasks if args.execute else 1):
         options = {}
@@ -2446,7 +2574,7 @@ def main(argv=None):
                       large_model=args.large_model, execute=args.execute,
                       acknowledge=args.ack_host_access_risk,
                       max_attempts=args.max_attempts,
-                      max_model_calls=args.max_model_calls, **options)
+                      max_model_calls=args.max_model_calls, task_id=args.task, lease=args.lease, **options)
         outcomes.append(result)
         if result["status"] not in ("REVIEW", "READY"):
             break

@@ -127,34 +127,7 @@ WORK = Path(r"<project-root>")
 
 # ---- OS helpers -------------------------------------------------------------------------
 
-def pid_alive(pid: int) -> bool:
-    """Liveness without touching the process. os.kill(pid, 0) is NOT used on Windows."""
-    if pid == os.getpid():
-        return True
-    if pid <= 0:
-        return False
-    if os.name == "nt":
-        import ctypes
-        from ctypes import wintypes as W
-        k = ctypes.WinDLL("kernel32", use_last_error=True)
-        k.OpenProcess.restype = W.HANDLE
-        k.OpenProcess.argtypes = [W.DWORD, W.BOOL, W.DWORD]
-        k.GetExitCodeProcess.argtypes = [W.HANDLE, ctypes.POINTER(W.DWORD)]
-        k.CloseHandle.argtypes = [W.HANDLE]
-        handle = k.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
-        if not handle:
-            return ctypes.get_last_error() == 5  # access denied: it exists
-        code = W.DWORD()
-        ok = k.GetExitCodeProcess(handle, ctypes.byref(code))
-        k.CloseHandle(handle)
-        return bool(ok) and code.value == 259  # STILL_ACTIVE
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
+pid_alive = F.pid_alive    # moved to agent_factory: the checkpoint lock reads its holder with it
 
 
 def set_execution_state(flags: int) -> None:
