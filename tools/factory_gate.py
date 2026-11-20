@@ -797,6 +797,239 @@ def loosened_checks(old: str, new: str) -> list[str]:
     return out
 
 
+# A hollow unit test (night 20.11: five factory tests passed the gate and a critic, a brand-new test file was never
+# inspected). Red only because it asserts an invented name (hasattr(trace, 'environment_consistency')),
+# reads the code text instead of running it (inspect.getsource), or asserts only `is not None`.
+# Deterministic: ast of the test + a symbol index of the base tree. Measured on the 796 accepted test files
+# of the integration tree: the invented-name rules flag none; the source-text and not-None rules exist in accepted grep-lock files, so an edited file is
+# rejected only when a rule's count grows. Not enforced (too noisy there): "a test must call project code" (~100 files).
+_IDENT = re.compile(r'[A-Za-z_]\w*\Z')
+_LINE = re.compile(r'line \d+ ')
+_SETTERS = frozenset({'setattr', '__setattr__', 'patch', 'object', 'setitem'})   # calls that create a name by string
+_INDEX: dict = {}     # resolved base root -> (signature, (names, modules)); rebuilt when a .py file changes
+
+
+def _parse_py(text: str):
+    try:
+        return ast.parse(text.lstrip('﻿'))
+    except (SyntaxError, ValueError, RecursionError):
+        return None
+
+
+def symbol_index(base_root):
+    """``(names, modules)`` of the base tree, cached per root while no .py file changes. names: every identifier the
+    non-test source defines or mentions (identifier-shaped string literals too: getattr tables, __slots__, namedtuple
+    fields) plus what modules under tests/ define. modules: importable top names (folders, .py stems)."""
+    root = Path(base_root)
+    files, modules = [], set()
+    for folder, dirs, names in os.walk(root):
+        dirs[:] = [d for d in dirs if d not in _SKIP_DIRS]
+        modules.update(dirs)
+        for name in names:
+            if name.endswith('.py'):
+                modules.add(name[:-3])
+                path = Path(folder) / name
+                try:
+                    st = path.stat()
+                except OSError:
+                    continue
+                files.append((path, st.st_mtime_ns, st.st_size))
+    signature = hash(tuple((str(p), m, s) for p, m, s in files))
+    key = str(root.resolve()) if root.exists() else str(root)
+    cached = _INDEX.get(key)
+    if cached and cached[0] == signature:
+        return cached[1]
+    found = set()
+    for path, _, _ in files:
+        try:
+            tree = _parse_py(path.read_text(encoding='utf-8', errors='replace'))
+        except OSError:
+            continue
+        if tree is None:
+            continue
+        in_tests = path.relative_to(root).parts[0] == 'tests'
+        for n in ast.walk(tree):
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                found.add(n.name)
+            elif isinstance(n, ast.alias):
+                found.add((n.asname or n.name).split('.')[-1])
+                if not in_tests:
+                    found.update(n.name.split('.'))
+            elif in_tests:
+                if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store):
+                    found.add(n.id)
+                elif isinstance(n, ast.Attribute) and isinstance(n.ctx, ast.Store) and isinstance(n.value, ast.Name) \
+                        and n.value.id in ('self', 'cls'):
+                    found.add(n.attr)
+            elif isinstance(n, ast.Name):
+                found.add(n.id)
+            elif isinstance(n, ast.Attribute):
+                found.add(n.attr)
+            elif isinstance(n, ast.arg):
+                found.add(n.arg)
+            elif isinstance(n, ast.keyword) and n.arg:
+                found.add(n.arg)
+            elif isinstance(n, ast.Constant) and isinstance(n.value, str) and _IDENT.match(n.value):
+                found.add(n.value)
+    result = (frozenset(found), frozenset(modules))
+    _INDEX[key] = (signature, result)
+    return result
+
+
+def _defined_names(text: str) -> set:
+    """What a test module defines or stores itself (its own helpers and the attributes it sets)."""
+    tree = _parse_py(text)
+    out = set()
+    if tree is None:
+        return out
+    for n in ast.walk(tree):
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            out.add(n.name)
+        elif isinstance(n, ast.arg):
+            out.add(n.arg)
+        elif isinstance(n, ast.keyword) and n.arg:
+            out.add(n.arg)
+        elif isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store):
+            out.add(n.id)
+        elif isinstance(n, ast.Attribute) and isinstance(n.ctx, ast.Store):
+            out.add(n.attr)
+        elif isinstance(n, ast.Call) and (n.func.attr if isinstance(n.func, ast.Attribute) else getattr(
+                n.func, 'id', None)) in _SETTERS:
+            # setattr(obj, 'n'), monkeypatch.setattr('pkg.mod.n', ...), mock.patch.object(obj, 'n', create=True),
+            # mock.patch('pkg.mod.n', create=True), object.__setattr__(obj, 'n', v), monkeypatch.setitem(d, 'n', v)
+            for a in n.args:
+                if isinstance(a, ast.Constant) and isinstance(a.value, str):
+                    last = a.value.rsplit('.', 1)[-1]
+                    if _IDENT.match(last):
+                        out.add(last)
+    return out
+
+
+def _negated(node) -> bool:
+    """Under `not`, compared with False/None, or inside assertFalse/assertIsNone: proves a name is ABSENT."""
+    cur = node
+    while hasattr(cur, '_up'):
+        up = cur._up
+        if isinstance(up, ast.UnaryOp) and isinstance(up.op, ast.Not):
+            return True
+        if isinstance(up, ast.Compare) and any(isinstance(c, ast.Constant) and c.value in (False, None)
+                                               for c in up.comparators):
+            return True
+        if isinstance(up, ast.Call) and isinstance(up.func, ast.Attribute) and up.func.attr in (
+                'assertFalse', 'assertIsNone'):
+            return True
+        if isinstance(up, ast.stmt):
+            return False
+        cur = up
+    return False
+
+
+def _in_assert(node) -> bool:
+    cur = node
+    while hasattr(cur, '_up'):
+        up = cur._up
+        if isinstance(up, ast.Assert):
+            return True
+        if isinstance(up, ast.Call) and isinstance(up.func, ast.Attribute) and up.func.attr in (
+                'assertTrue', 'assertIsNotNone', 'assertEqual'):
+            return True
+        if isinstance(up, ast.stmt):
+            return False
+        cur = up
+    return False
+
+
+def _hollow(text: str, names, modules) -> list:
+    """``[(rule, message)]`` for one test module; see hollow_test_reasons."""
+    tree = _parse_py(text)
+    if tree is None:
+        return []
+    for n in ast.walk(tree):
+        for c in ast.iter_child_nodes(n):
+            c._up = n
+    stdlib = getattr(sys, 'stdlib_module_names', frozenset())
+    project, inspect_as = set(), {'inspect'}
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Import):
+            inspect_as.update(a.asname for a in n.names if a.name == 'inspect' and a.asname)
+        if isinstance(n, ast.ImportFrom):
+            top = (n.module or '').split('.')[0]
+            if n.level > 0 or (top in modules and top not in stdlib):
+                project.update(a.asname or a.name for a in n.names)
+        elif isinstance(n, ast.Import):
+            for a in n.names:
+                top = a.name.split('.')[0]
+                if top in modules and top not in stdlib:
+                    project.add(a.asname or top)
+    known = names | _defined_names(text)
+    out = []
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id in ('hasattr', 'getattr') \
+                and len(n.args) >= 2 and isinstance(n.args[1], ast.Constant) and isinstance(n.args[1].value, str):
+            attr = n.args[1].value
+            if names and attr not in known and not attr.startswith('__') and _in_assert(n) and not _negated(n):
+                out.append(('A', 'line %d asserts %s(..., %r), but %r is defined nowhere in the project (no def, '
+                                 'class, assignment or attribute): the test is red only because the name is invented. '
+                                 'Call the code that exists and assert its wrong behaviour'
+                            % (n.lineno, n.func.id, attr, attr)))
+        elif isinstance(n, ast.Attribute) and isinstance(n.ctx, ast.Load) and isinstance(n.value, ast.Name) \
+                and n.value.id in project and names and n.attr not in known and not n.attr.startswith('__') \
+                and not _negated(n):
+            out.append(('A2', 'line %d uses %s.%s, but %r is defined nowhere in the project: the test is red only '
+                              'because the name is invented. Call the code that exists and assert its wrong behaviour'
+                        % (n.lineno, n.value.id, n.attr, n.attr)))
+        elif isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr in (
+                'getsource', 'getsourcelines') and isinstance(n.func.value, ast.Name) and n.func.value.id in inspect_as:
+            out.append(('B', 'line %d reads the code text (inspect.%s): a unit test must run the code and assert what '
+                             'it does, not grep its source' % (n.lineno, n.func.attr)))
+        elif isinstance(n, ast.ImportFrom) and n.module == 'inspect' and any(
+                a.name in ('getsource', 'getsourcelines') for a in n.names):
+            out.append(('B', 'line %d imports inspect.getsource: a unit test must run the code and assert what it '
+                             'does, not grep its source' % n.lineno))
+
+    def tests_in(body, cls=None):
+        for node in body:
+            if isinstance(node, ast.ClassDef):
+                yield from tests_in(node.body, node)
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith('test'):
+                yield cls, node
+
+    for cls, fn in tests_in(tree.body):
+        asserts = [x for x in ast.walk(fn) if isinstance(x, ast.Assert)]
+        other = any(isinstance(x, ast.Call) and isinstance(x.func, ast.Attribute) and (
+            x.func.attr.startswith('assert') or x.func.attr in ('raises', 'fail')) for x in ast.walk(fn))
+        if asserts and not other and all(
+                isinstance(a.test, ast.Compare) and len(a.test.ops) == 1 and isinstance(a.test.ops[0], ast.IsNot)
+                and isinstance(a.test.comparators[0], ast.Constant) and a.test.comparators[0].value is None
+                for a in asserts):
+            out.append(('E', '%s%s (line %d) asserts only "is not None", which any result passes: assert the exact '
+                             'value the defect gets wrong' % (cls.name + '.' if cls else '', fn.name, fn.lineno)))
+    return out
+
+
+def hollow_test_reasons(base_root, path, old: str, new: str, extra_names=()) -> list[str]:
+    """Why a unit_test candidate's test module is hollow (empty = fine). A: a positive hasattr/getattr in an assert
+    names something defined nowhere (``not hasattr`` proving an old name is gone is fine); <id>: ``project_module.name``
+    defined nowhere; B: inspect.getsource; E: a test whose every assert is ``is not None``. ``old`` is the base copy
+    ('' for a new file): then only a rule whose count grew rejects, with the hits the base did not have.
+    ``extra_names``: what the candidate's other changed files define."""
+    names, modules = symbol_index(base_root)
+    if names:
+        names = names | frozenset(extra_names)
+    new_hits = _hollow(new or '', names, modules)
+    if not old:
+        return [why for _, why in new_hits]
+    old_hits = _hollow(old, names, modules)
+    out = []
+    for rule in sorted({r for r, _ in new_hits}):
+        now = [why for r, why in new_hits if r == rule]
+        was = [why for r, why in old_hits if r == rule]
+        if len(now) > len(was):
+            seen = {_LINE.sub('', w) for w in was}
+            out.extend([w for w in now if _LINE.sub('', w) not in seen] or now)
+    return out
+
+
 def is_forbidden(path: str, kind=None, named=()):
     """The ONE rule of which paths a candidate may not write: the reason, or None when allowed.
 
@@ -828,6 +1061,11 @@ def weakening_check(base_root, cand_files: dict, kind, named=()):
     """``(violations, notes)``: notes are neutral remarks (a check that had to be skipped), not violations."""
     out, notes = [], []
     root = Path(base_root)
+    extra = set()
+    if kind == 'unit_test':
+        for raw, text in cand_files.items():
+            if raw.endswith('.py'):
+                extra |= _defined_names(text or '')
     for raw, text in sorted(cand_files.items()):
         path = _canon(raw)
         reason = is_forbidden(raw, kind, named)
@@ -852,6 +1090,8 @@ def weakening_check(base_root, cand_files: dict, kind, named=()):
             out.append(f'{path}: skip/xfail/exit markers grew {before} -> {after}')
         if is_py and base_exists and not _is_test_file(path):
             out.extend(f'{path}: {why}' for why in loosened_checks(old, new))
+        if kind == 'unit_test' and is_py and _is_test_file(path):    # new files too: they had no content check
+            out.extend(f'{path}: {why}' for why in hollow_test_reasons(root, path, old, new, extra))
         if kind == 'unit_test' and base_exists and _is_test_file(path) and path.endswith('.py'):
             try:
                 old_checks, old_names = _shape(old)

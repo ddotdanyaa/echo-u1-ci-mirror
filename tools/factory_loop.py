@@ -2136,6 +2136,7 @@ class Loop:
         if ls.get("seen_mtime") != mtime:  # backlog edited: stale/skipped rows get a fresh look
             ls["seen"], ls["seen_mtime"] = {}, mtime
             self._refresh_profile_attempts(ls)
+        dropped = self._drop_weak_candidates(ls, now)
         known |= set(ls["holds"]) | set(ls["closed"])
         known |= {b for b, rec in ls["seen"].items() if not self._seen_expired(rec, now)}
         known |= self._not_code_known(ls, now)              # <id>: survives edits until the row's own text changes
@@ -2223,7 +2224,7 @@ class Loop:
                                                                    "until": now + cfg.triage_retry_s}
         self.save_ls(ls)
         tasks2, state2 = self.load()
-        if new_holds:
+        if new_holds or dropped:
             self._write_questions(tasks2, state2, ls)
         self._write_reconcile(tasks2, state2, ls, now)
         self.event("triage", status="added" if progress else "empty", dur_s=round(
@@ -2235,6 +2236,33 @@ class Loop:
         return Outcome(action="TRIAGE", reason="added=%d holds=%d" % (len(added), len(new_holds)),
                        status=status,
                        sleep=0 if (added or new_holds) else cfg.triage_idle_sleep)
+
+    def _drop_weak_candidates(self, ls, now) -> int:
+        """<id>: a candidates hold whose row has no strong code signal any more (raised by the older words-only rule,
+        or its signal is gone at HEAD) leaves the holds before the triage: booked as a seen skip «кандидаты слабые»
+        with a term (cfg.seen_retry_s), never asked to the head. Independent of the triage's portion limit. A
+        failure keeps the holds (the next triage tries again)."""
+        from tools import factory_holds as H
+        ids = [b for b, q in (ls.get("holds") or {}).items() if H.kind_of(q) == "candidates"]
+        ids += [b for b in (ls.get("head_scope") or {}) if b not in ids]     # a pick made on a weak hold: same rule
+        if not ids:
+            return 0
+        try:
+            from tools import agent_factory_import as imp
+            weak = imp.weak_candidate_holds(self.cfg.worktree, self.cfg.backlog, ids)
+        except Exception as e:
+            self.err("weak candidates recheck", e)
+            return 0
+        for bid, why in weak.items():
+            ls["holds"].pop(bid, None)
+            ls.get("hold_hash", {}).pop(bid, None)
+            (ls.get("head_scope") or {}).pop(bid, None)
+            ls["seen"][bid] = {"kind": "skipped", "reason": self._scrub(F.redact("нет упомянутых файлов; " + why))[:200],
+                               "until": now + self.cfg.seen_retry_s}
+        if weak:
+            self.event("triage", status="hold_dropped", reason="weak candidates: %d (%s)" % (
+                len(weak), ", ".join(sorted(weak)[:10])))
+        return len(weak)
 
     PARENTS_MAX = 100
 

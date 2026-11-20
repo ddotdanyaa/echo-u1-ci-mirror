@@ -1035,9 +1035,11 @@ def _port_task(r: dict, root: Path, all_tests: list) -> dict:
 # ---- <id>: candidate files for a row that names no file (deterministic, no model) ----
 SCOPE_K = 5                  # candidates in a hold
 CAND_MIN = 1.0               # the best candidate must reach this score, or the row stays a skip
-STRONG_TAGS = ("id", "git", "sym")   # an owner-words row becomes a hold (for Opus) only with one of these
-BRIDGE_MAX_MODULES = 4       # a .md paragraph naming more modules is a list or a table: it ties no words to a module
+STRONG_TAGS = ("id", "git", "sym")   # <id>: any row becomes a candidates hold only with one of these
+SYM_MAX_FILES = 2            # <id>: a name without an inner "_" that more files define is a common word, not a sym
+BRIDGE_MAX_MODULES = 4      # a .md paragraph naming more modules is a list or a table: it ties no words to a module
 _SCOPE_CACHE: dict = {}      # one entry per root: (HEAD sha, index)
+_QUOTES = re.compile(r"^[rRbBuUfF]{0,2}('''|\"\"\"|'|\")|('''|\"\"\"|'|\")$")   # a string token -> its text
 _WORD = re.compile(r"[A-Za-z_][A-Za-z0-9_]{2,}|[А-Яа-яЁё]{4,}")
 _ROW_IDENT = re.compile(r"`([A-Za-z_][\w.]*)(?:\(\))?`|(?<![\w.])([a-z_][a-z0-9]*_[a-z0-9_]+)(?![\w])")
 _MOD_REF = re.compile(r"(?<![\w])([a-z][a-z0-9_]{3,})(?:\.py)?(?![\w])")
@@ -1100,7 +1102,13 @@ def _scope_index(root) -> dict:
         text = id_query._text(root / rel)
         if text is None:
             continue
-        for i in set(id_query.TOKEN.findall(text)):
+        try:     # <id>: an ID counts in prose only (comments, strings); a name (``<id> = ..``) or a bare label
+            toks = list(tokenize.generate_tokens(io.StringIO(text).readline))     # (``Relation('<id>', ..)``) is
+            prose = " ".join(t.string for t in toks if t.type == tokenize.COMMENT or (   # the code's own name for
+                t.type == tokenize.STRING and _QUOTES.sub("", t.string) not in id_query.TOKEN.findall(t.string)))
+        except (tokenize.TokenError, IndentationError, SyntaxError):                   # something, not a backlog row
+            toks, prose = [], text
+        for i in set(id_query.TOKEN.findall(prose)):
             ids.setdefault(i, set()).add(rel)
         names, notes = {PurePosixPath(rel).stem}, []
         try:
@@ -1111,16 +1119,11 @@ def _scope_index(root) -> dict:
             if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                 names.add(n.name)
                 notes.append(ast.get_docstring(n) or "")
-            elif isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store):
-                names.add(n.id)
-            elif isinstance(n, ast.Attribute):
-                names.add(n.attr)
+            elif isinstance(n, (ast.Name, ast.Attribute)) and isinstance(n.ctx, ast.Store):
+                names.add(n.id if isinstance(n, ast.Name) else n.attr)   # <id>: defined here, never a read of it
         if tree is not None:
             notes.append(ast.get_docstring(tree) or "")
-        try:
-            notes += [t.string for t in tokenize.generate_tokens(io.StringIO(text).readline) if t.type == tokenize.COMMENT]
-        except (tokenize.TokenError, IndentationError, SyntaxError):
-            pass
+        notes += [t.string for t in toks if t.type == tokenize.COMMENT]
         for name in names:
             syms.setdefault(name, set()).add(rel)
         code[rel] = Counter(_words(" ".join(notes) + " " + " ".join(sorted(names))))
@@ -1143,8 +1146,8 @@ def _scope_index(root) -> dict:
                 bridge.setdefault(f, Counter()).update(words)
     git_ids: dict = {}
     try:
-        log = _git(root, "log", "--name-only", "--format=\x01%s%n%b\x02")
-    except ClosedCheckError:
+        log = _git(root, "log", "--name-only", "--format=\x01%s\x02")   # <id>: the subject only; a body lists
+    except ClosedCheckError:                                              # neighbours ("частично в <id>, <id>")
         log = ""
     for block in log.split("\x01"):
         message, _, files = block.partition("\x02")
@@ -1192,7 +1195,10 @@ def candidate_files(root, bid: str, text: str, k: int = SCOPE_K) -> list:
     for m in _ROW_IDENT.finditer(text or ""):
         raw = m.group(1) or m.group(2)
         name = raw[:-3] if raw.endswith(".py") else raw.split(".")[-1]     # `law_base.py` -> law_base, `a.b` -> b
-        for rel in ix["syms"].get(name, ()):
+        where = ix["syms"].get(name, ())
+        if "_" not in name.strip("_") and len(where) > SYM_MAX_FILES:
+            continue        # <id>: a plain word many files define (`sys.path` -> path, `log`, `usage`) names no module
+        for rel in where:
             sym.setdefault(rel, set()).add(name)
     for rel, names in sym.items():
         add(rel, 3.0 * len(names), "sym")
@@ -1204,6 +1210,43 @@ def candidate_files(root, bid: str, text: str, k: int = SCOPE_K) -> list:
     ranked = sorted(score.items(), key=lambda kv: (-kv[1], kv[0]))[:k]
     memo[(bid, text, k)] = [(rel, round(sc, 2), list(tags[rel])) for rel, sc in ranked]
     return [(rel, sc, list(t)) for rel, sc, t in memo[(bid, text, k)]]
+
+
+WEAK_CANDIDATES = "кандидаты слабые"
+
+
+def strong_candidates(cands) -> bool:
+    """<id>: may these candidates make a hold?  Only with a code signal (STRONG_TAGS: the row's ID in the source, a
+    commit subject naming the ID with code files, a name of the row that the source defines), public row or not.
+    Live 20.11: every task made from a words-only (``doc``) pick was a non-code or too broad row (<id> dispatcher
+    design, <id> proxy watchdog, <id> a work rule) scoped wrongly by the free head; the coordinator rejected all 5
+    promotions.  The head does not reliably answer not_code, so words alone never reach it."""
+    return bool(cands) and cands[0][1] >= CAND_MIN and any(t in STRONG_TAGS for _, _, tags in cands for t in tags)
+
+
+def _weak_reason(cands) -> str:
+    if not cands or cands[0][1] < CAND_MIN:
+        return "кандидатов нет"
+    return WEAK_CANDIDATES + ": только совпадения слов (%s), нет ID в коде, коммита с ID или имени из кода" % (
+        ", ".join(c[0] for c in cands[:2]))
+
+
+def weak_candidate_holds(root, backlog_path, bids) -> dict:
+    """{backlog_id: reason} of the given rows whose candidates are not strong (strong_candidates) at ``root``: a
+    candidates hold raised for them by the older rule is dropped by the loop (factory_loop._drop_weak_candidates).
+    Rows not in the backlog (or without a section-4 entry) are not named: their hold is not this rule's business."""
+    want = set(bids)
+    out = {}
+    if not want:
+        return out
+    for r in parse_section4(Path(backlog_path).read_bytes().decode("utf-8-sig")):
+        bid = r["backlog_id"]
+        if bid in want:
+            cands = candidate_files(root, bid, r["text"])
+            if not strong_candidates(cands):
+                why = _weak_reason(cands)
+                out[bid] = why if why.startswith(WEAK_CANDIDATES) else WEAK_CANDIDATES + " для удержания: " + why
+    return out
 
 
 def triage_portion(backlog_path, head_root, known_backlog_ids, limit, profile_attempts=None, known_parts=None, env_streak=0,
@@ -1218,9 +1261,9 @@ def triage_portion(backlog_path, head_root, known_backlog_ids, limit, profile_at
     ``profile_attempts`` and stores the new ones), "env_streak": consecutive portions that could not profile for the
     environment (the caller passes the old value back as ``env_streak``; at 5 an event and a hold "ENV-PYTEST" appear), "deferred": [{backlog_id, reason}] (rows left for the next portion by the profiling deadline: NOT skipped,
     so a caller that marks skipped rows as seen does not lose them)} in <id> -> <id> order.
-    - <id>: a public row that names no file and has candidate files (candidate_files) is a hold
-      factory_holds.candidate_question (paths and tags only) instead of a skip; an owner-words row only with a strong
-      signal (its ID in the code, a commit, a name it defines), and that hold goes to Opus; ``scopes`` {backlog_id:
+    - <id>/<id>: a row that names no file is a hold factory_holds.candidate_question (paths and tags only) instead of a
+      skip ONLY with a strong signal (strong_candidates: its ID in the code, a commit subject with the ID, a name the
+      source defines), public row or owner words; words alone -> skip "кандидаты слабые"; ``scopes`` {backlog_id:
       {touch_files, note}} are the head model's picks: a row without touch takes their existing, writable source
       files and goes the normal way (unit_test sub-task, privacy screen, gate rules), the note joins the goal;
     - rows closed at HEAD (``<ID>:`` commit) -> stale; IDs in known_backlog_ids -> skipped; two IDs
@@ -1421,14 +1464,11 @@ def triage_portion(backlog_path, head_root, known_backlog_ids, limit, profile_at
             except Exception as e:     # an index failure must not stop the triage: the row stays a skip
                 cands = []
                 out["events"].append({"backlog_id": bid, "event": "candidates_failed", "reason": ("%s: %s" % (type(e).__name__, e))[:200]})
-            public = _screen(F, bid, r["text"])[1] is None
-            strong = any(t in STRONG_TAGS for _, _, tags in cands for t in tags)
-            if cands and cands[0][1] >= CAND_MIN and (public or strong):
+            if strong_candidates(cands):
                 from tools import factory_holds
                 out["holds"].append({"backlog_id": bid, "question": factory_holds.candidate_question(r["priority"], cands)})
             else:
-                skip(bid, "нет упомянутых файлов или модулей области; " + (
-                    "кандидатов нет" if not cands or cands[0][1] < CAND_MIN else "кандидаты слабые, текст не публичный"))
+                skip(bid, "нет упомянутых файлов или модулей области; " + _weak_reason(cands))
             continue
         prot = [f for f in touch if _protected(f)]
         if prot:
