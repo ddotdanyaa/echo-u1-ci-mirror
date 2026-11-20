@@ -1,6 +1,6 @@
 {
  "accepted": 0,
- "free_ram_gb": 3.96,
+ "free_ram_gb": 2.74,
  "funnel": {
   "accepted": 0,
   "claimed": 84,
@@ -9,30 +9,30 @@
   "gate_pass": 26,
   "known_to_loop": 344,
   "promoted": 24,
-  "ready": 12,
+  "ready": 13,
   "reviewed": 33,
   "triaged": 64
  },
  "model": {
   "google/gemini-3.1-flash-lite": {
-   "calls": 491,
+   "calls": 495,
    "calls_usage_unknown": 25,
    "errors": {
     "transient": 25
    },
    "http_429": 0,
-   "tokens_in": 2992220,
-   "tokens_out": 208669
+   "tokens_in": 3025522,
+   "tokens_out": 209789
   },
   "google/gemini-3.5-flash-lite": {
-   "calls": 684,
+   "calls": 687,
    "calls_usage_unknown": 20,
    "errors": {
     "transient": 20
    },
    "http_429": 0,
-   "tokens_in": 4515165,
-   "tokens_out": 230828
+   "tokens_in": 4540411,
+   "tokens_out": 231460
   },
   "google/gemini-3.6-flash": {
    "calls": 59,
@@ -47,11 +47,11 @@
    "tokens_out": 13302
   },
   "google/gemma-4-26b-a4b-it": {
-   "calls": 88,
-   "calls_usage_unknown": 43,
+   "calls": 89,
+   "calls_usage_unknown": 44,
    "errors": {
     "rate_minute": 2,
-    "transient": 41
+    "transient": 42
    },
    "http_429": 0,
    "tokens_in": 214998,
@@ -91,15 +91,15 @@
   }
  },
  "promoted": 24,
- "rows_recognized": 7926,
+ "rows_recognized": 7956,
  "schema": 3,
  "side": {
-  "blocked": 1,
+  "blocked": 0,
   "parked": 0,
   "requeued": 2
  },
  "skipped_files": 0,
- "source_sha": "sha8fecc9772fd1",
+ "source_sha": "sha46cd666c0bcc",
  "span": {
   "answer": {
    "calls": 0,
@@ -119,9 +119,9 @@
    "calls_usage_unknown": 0,
    "errors": {},
    "http_429": 0,
-   "rows": 1325,
+   "rows": 1331,
    "status": {
-    "ok": 1325
+    "ok": 1331
    },
    "tokens_in": 0,
    "tokens_out": 0
@@ -150,11 +150,11 @@
    "calls_usage_unknown": 0,
    "errors": {},
    "http_429": 0,
-   "rows": 1502,
+   "rows": 1507,
    "status": {
     "BLOCKED": 73,
     "FAILED": 194,
-    "READY": 518,
+    "READY": 521,
     "REVIEW": 33,
     "WAITING_CHANNEL": 22,
     "added": 12,
@@ -162,7 +162,7 @@
     "deferred": 34,
     "empty": 34,
     "infra": 5,
-    "ok": 514,
+    "ok": 516,
     "other": 37,
     "requeued": 2,
     "stop": 21
@@ -175,10 +175,10 @@
    "calls_usage_unknown": 0,
    "errors": {},
    "http_429": 0,
-   "rows": 867,
+   "rows": 868,
    "status": {
     "ok": 1,
-    "other": 843,
+    "other": 844,
     "rejected": 23
    },
    "tokens_in": 0,
@@ -198,24 +198,24 @@
    "tokens_out": 0
   },
   "review": {
-   "calls": 289,
-   "calls_usage_unknown": 84,
+   "calls": 291,
+   "calls_usage_unknown": 85,
    "errors": {
     "rate_minute": 3,
-    "transient": 81
+    "transient": 82
    },
    "http_429": 0,
-   "rows": 542,
+   "rows": 545,
    "status": {
     "approved": 33,
-    "error": 84,
-    "ok": 425
+    "error": 85,
+    "ok": 427
    },
-   "tokens_in": 932831,
-   "tokens_out": 26265
+   "tokens_in": 941093,
+   "tokens_out": 26396
   },
   "run": {
-   "calls": 1210,
+   "calls": 1216,
    "calls_usage_unknown": 98,
    "errors": {
     "model_missing": 1,
@@ -224,19 +224,19 @@
     "transient": 80
    },
    "http_429": 2,
-   "rows": 3096,
+   "rows": 3111,
    "status": {
     "BLOCKED": 73,
     "FAILED": 195,
-    "READY": 555,
+    "READY": 558,
     "REVIEW": 33,
     "WAITING_CHANNEL": 22,
     "error": 99,
-    "ok": 2111,
+    "ok": 2123,
     "other": 8
    },
-   "tokens_in": 7455671,
-   "tokens_out": 584506
+   "tokens_in": 7505957,
+   "tokens_out": 586127
   },
   "triage": {
    "calls": 0,
@@ -256,7 +256,7 @@
  "status": {
   "BLOCKED": 146,
   "FAILED": 389,
-  "READY": 1073,
+  "READY": 1079,
   "REVIEW": 66,
   "WAITING_CHANNEL": 44,
   "added": 38,
@@ -267,11 +267,11 @@
   "cleared": 54,
   "deferred": 68,
   "empty": 86,
-  "error": 183,
+  "error": 184,
   "hold_dropped": 2,
   "infra": 5,
-  "ok": 4376,
-  "other": 932,
+  "ok": 4398,
+  "other": 933,
   "parked": 8,
   "rejected": 29,
   "released": 8,
@@ -281,10 +281,9 @@
  },
  "summary": "ok",
  "tasks_now": {
-  "BLOCKED": 1,
   "DONE": 32,
   "FAILED": 49,
-  "READY": 12
+  "READY": 13
  },
  "unrecognized_rows": 0
 }

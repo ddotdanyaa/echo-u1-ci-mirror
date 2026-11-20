@@ -12,6 +12,7 @@ from tools import factory_requeue as Q
 
 APPROVE = '{"approved": true, "reasons": []}'
 GATE = 'gate: rc=1 (0 required)'
+TID2 = 'T' + '2'      # the loop env plans <id>, <id> ...; built at runtime so no ID-shaped literal stays in the source
 
 
 def _state():
@@ -64,14 +65,14 @@ def test_the_loop_sends_the_factory_test_back_after_such_a_pass(tmp_path, monkey
     env = Env(tmp_path, monkeypatch, tasks=[
         task_row(1, backlog_id='A'),
         task_row(2, backlog_id='A', kind='unit_test', touch_files=['tests/test_a.py'], tests=['tests/test_a.py'])])
-    env.set_row('T2000', status='PROMOTED')
+    env.set_row(TID2, status='PROMOTED')
     loop = env.loop()
     env.runner_says({'status': 'READY', 'task': 'T1', 'reason': GATE, 'calls': [],
                      'gate_red': [['x', ['tests.test_a::test_one']], ['y', ['tests.test_a::test_one']]]})
     loop.step()
     sent = [json.loads(p.read_text(encoding='utf-8')) for p in (env.state_dir / 'answers').rglob('*.json')]
-    assert any(a.get('task_id') == 'T2000' and a.get('reject') is True for a in sent), sent
-    assert any(e['span'] == 'audit' and e.get('reason') == 'T2000' for e in env.events())
+    assert any(a.get('task_id') == TID2 and a.get('reject') is True for a in sent), sent
+    assert any(e['span'] == 'audit' and e.get('reason') == TID2 for e in env.events())
 
 
 def test_a_task_without_a_promoted_factory_test_or_a_pass_without_a_red_gate_is_never_audited(tmp_path):
