@@ -13,7 +13,10 @@ from pathlib import Path
 from tools import agent_factory as F
 from tools import factory_classes as C
 
-SKIP = re.compile(r'scope_violation|already_green|only_opus|private|runner_no_result|spec_not_testable', re.I)
+# <id> (a "cannot be fixed" ban without an owner rule is a defect): only the owner's rules ban a
+# requeue; scope_violation / already_green / spec_not_testable / runner_no_result blocks have a term instead and the
+# loop lifts them itself (factory_loop._auto_unblock).
+SKIP = re.compile('|'.join(sorted(F.OWNER_RULES)), re.I)
 LAST_ITEMS = 2      # the newest non-Opus feedback items read for the failure class
 
 

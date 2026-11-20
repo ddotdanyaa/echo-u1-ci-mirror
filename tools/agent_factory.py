@@ -24,6 +24,13 @@ STATES = frozenset(("READY", "RUNNING", "REVIEW", "DONE", "PROMOTED", "FAILED", 
 SATISFIED = frozenset(("DONE", "PROMOTED"))  # dependency is met
 FEEDBACK_SOURCES = frozenset(("gate", "review", "opus"))
 MAX_STRIKES = 3
+# <id> (owner: «пока есть задачи, петля не стоит в HOLD дольше 5 минут ... у каждого запрета или блокировки есть причина
+# и срок»): every BLOCKED row has a reason and a term; the loop lifts an expired block itself, AUTO_UNBLOCK_MAX times per
+# task (shared with the new-version requeue ledger), then escalates. The term is fixed, not growing: a growing term
+# would keep the loop in HOLD longer than 5 minutes when one blocked task is all that is left.
+BLOCK_TERM_S = 300.0
+AUTO_UNBLOCK_MAX = 3
+OWNER_RULES = frozenset(("private", "only_opus"))   # the owner's rules: the only blocks without a term
 LEASE_LIFETIME_S = 1800.0   # one lease length: acquire() and the stale work-copy cleanup share it
 FEEDBACK_KEEP = 3
 FEEDBACK_MAX_CHARS = 2000
@@ -268,6 +275,12 @@ def sync_state(tasks: dict[str, Task], state: dict) -> dict:
             for k, v in _row_for(task).items():
                 if k not in ("status", "attempts", "lease", "deadline", "evidence"):
                     row.setdefault(k, v)
+        if isinstance(row, dict) and row.get("status") == "BLOCKED" and "block_until" not in row:
+            # a block written before <id> had no term: a passed defer term is its term (<id>, gate_unknown, stayed
+            # BLOCKED 824 min after its «отложить до»), else one term from now
+            nb = row.get("not_before")
+            _block(row, row.get("blocked_reason") or "unknown", time.time(),
+                   until=float(nb) if type(nb) in (int, float) else None)
     return state
 
 
@@ -301,6 +314,11 @@ def validate_state(tasks: dict[str, Task], state: dict) -> None:
                                   or type(began.get("pid")) is not int or type(began.get("booked")) is not int
                                   or began["booked"] < 0):
             raise InvalidPlan("began belongs to a running task only")
+        if row["status"] == "BLOCKED":
+            if not isinstance(row.get("blocked_reason"), str) or not row["blocked_reason"].strip():
+                raise InvalidPlan("BLOCKED task has no reason")
+            if row["blocked_reason"] not in OWNER_RULES and type(row.get("block_until")) not in (int, float):
+                raise InvalidPlan("BLOCKED task has no term (block_until)")
     if type(state.get("max_model_calls")) is not int or type(state.get("model_calls")) is not int:
         raise InvalidPlan("invalid budget")
     if state["max_model_calls"] < 0 or state["model_calls"] < 0:
@@ -451,13 +469,42 @@ def add_strike(state: dict, tid: str) -> int:
             if (_strike_key(orow, other) == key and
                     orow["status"] in ("READY", "BLOCKED")):
                 orow.update(status="FAILED", reason="quarantine", blocked_reason=None)
+                _clear_block(orow)
     return strikes[key]
+
+
+def _block(row: dict, reason: str, now: float, *, until: float | None = None) -> None:
+    """The one way a row becomes BLOCKED: a reason and a term (blocked_at, block_until = now + BLOCK_TERM_S, or
+    ``until``). An owner's rule (OWNER_RULES) has no term. The term replaces a defer term (not_before)."""
+    reason = str(reason or "unknown")
+    now = float(now)
+    row.update(status="BLOCKED", blocked_reason=reason, lease=None, deadline=None, blocked_at=now,
+               block_until=None if reason in OWNER_RULES else (float(until) if until is not None
+                                                                else now + BLOCK_TERM_S))
+    row.pop("not_before", None)
+
+
+def _clear_block(row: dict) -> None:
+    for key in ("blocked_at", "block_until"):
+        row.pop(key, None)
+
+
+def escalate(state: dict, tid: str) -> str:
+    """The block of ``tid`` expired after AUTO_UNBLOCK_MAX automatic lifts: FAILED escalated:<reason>, for Opus and
+    the backlog; the loop never lifts it again. Returns the new reason."""
+    row = state["tasks"][tid]
+    if row["status"] != "BLOCKED":
+        raise InvalidPlan("task is not blocked")
+    reason = ("escalated:" + str(row.get("blocked_reason") or "unknown"))[:80]
+    row.update(status="FAILED", reason=reason, blocked_reason=None)
+    _clear_block(row)
+    return reason
 
 
 PARK_REASONS = frozenset(("runner_no_result", "no_package", "promote_failed", "spec_not_testable"))
 
 
-def park(state: dict, tid: str, reason: str, note: str) -> None:
+def park(state: dict, tid: str, reason: str, note: str, *, now: float | None = None) -> None:
     """The loop parks a task that can make no progress (the runner gives no result, a REVIEW has no
     package): BLOCKED with a whitelisted reason and a gate remark for Opus. Settled tasks only."""
     if reason not in PARK_REASONS:
@@ -465,13 +512,13 @@ def park(state: dict, tid: str, reason: str, note: str) -> None:
     row = state["tasks"][tid]
     if row["status"] not in ("READY", "RUNNING", "REVIEW"):
         raise InvalidPlan("only an unsettled task can be parked")
-    row.update(status="BLOCKED", blocked_reason=reason, lease=None, deadline=None)
+    _block(row, reason, time.time() if now is None else now)
     for key in ("pending_review", "candidate", "not_before", "orphan_releases", "began"):
         row.pop(key, None)
     add_feedback(state, tid, "gate", note)
 
 
-def quarantine(state: dict, tid: str, token: str, *, reason: str) -> None:
+def quarantine(state: dict, tid: str, token: str, *, reason: str, now: float | None = None) -> None:
     """Fail closed after unknown descendant, invalid auth, repeated 429, or unsafe worker.
 
     Never retry an uncertain process or a locked provider in the next batch.
@@ -488,9 +535,8 @@ def quarantine(state: dict, tid: str, token: str, *, reason: str) -> None:
     row.pop("pending_review", None)  # a blocked task must not resume a stale candidate
     row.pop("orphan_releases", None)
     row.pop("began", None)
-    row.update(status="BLOCKED", lease=None, deadline=None,
-               blocked_reason=reason,
-               evidence=sha256(reason.encode("utf-8")).hexdigest())
+    _block(row, reason, time.time() if now is None else now)
+    row["evidence"] = sha256(reason.encode("utf-8")).hexdigest()
 
 
 DEFER_REASONS = frozenset(("rate_minute", "rate_day", "transient", "network", "region", "key_invalid",
@@ -590,7 +636,7 @@ def release_expired(state: dict, now: float, *, orphan: bool = False, keep=()) -
             row["lease_expiries"] = row.get("lease_expiries", 0) + 1
             row.update(status="READY", lease=None, deadline=None)
             if row["lease_expiries"] >= 3:
-                row.update(status="BLOCKED", blocked_reason="lease_expired")
+                _block(row, "lease_expired", now if now < float("inf") else time.time())   # inf: the orphan sweep
             freed.append(tid)
     return freed
 
@@ -614,21 +660,25 @@ def mark_promoted(state: dict, tid: str, commit_sha: str) -> None:
                 orow.update(status="READY", reason=None)
 
 
-def unblock(state: dict, tid: str, note: str) -> None:
+def unblock(state: dict, tid: str, note: str | None) -> None:
     """Opus lifts BLOCKED/FAILED. Attempts restart; the strikes of this task's
-    backlog_id are reset too (Opus gives a new attempt with new instructions)."""
+    backlog_id are reset too (Opus gives a new attempt with new instructions). ``note=None``: the loop's own lift
+    after a block's term (<id>): no Opus note, since an Opus note hides the last failure from the coder
+    (agent_factory_runner.fresh_feedback) and evicts gate remarks; the loop journals the lift itself."""
     row = state["tasks"][tid]
     if row["status"] not in ("BLOCKED", "FAILED"):
         raise InvalidPlan("task is not blocked")
     state.get("strikes", {}).pop(_strike_key(row, tid), None)
     row.update(status="READY", attempts=0, lease=None, deadline=None,
                blocked_reason=None, reason=None, lease_expiries=0)
+    _clear_block(row)
     row.pop("not_before", None)
     row.pop("pending_review", None)
     row.pop("candidate", None)
     row.pop("defer_streak", None)
     row.pop("orphan_releases", None)
-    add_feedback(state, tid, "opus", note)
+    if note is not None:
+        add_feedback(state, tid, "opus", note)
 
 
 def requeue(state: dict, tid: str, note: str, keep_candidate: bool = False) -> None:
@@ -721,6 +771,13 @@ def next_action(state: dict, now: float, channel_wait_s: float,
         if channel_wait_s > 0:
             return {"action": "WAIT", "wait_s": channel_wait_s, "reason": "channel_cooldown"}
         return {"action": "RUN", "task_id": runnable[0], "task_ids": runnable, "reason": "ready"}
+    expired = sorted((float(row["block_until"]), tid) for tid, row in rows.items()
+                     if row["status"] == "BLOCKED" and tid not in skip
+                     and type(row.get("block_until")) in (int, float) and row["block_until"] <= now)
+    if expired:      # <id>: nothing runnable and a block's term is over: the loop lifts it itself (earliest first)
+        tid = expired[0][1]
+        return {"action": "UNBLOCK", "task_id": tid, "reason": rows[tid].get("blocked_reason") or "unknown",
+                "block_until": expired[0][0]}
     delayed = [rows[t].get("not_before", 0) for t in ready(tasks, state, google=google,
                                                             now=float("inf"))]
     if free > 0 and backlog_has_more and not delayed:
@@ -735,15 +792,28 @@ def next_action(state: dict, now: float, channel_wait_s: float,
         return {"action": "WAIT", "wait_s": 5, "reason": "running_lease"}
     if backlog_has_more:
         return {"action": "TRIAGE", "reason": "no_runnable_tasks"}
-    held = False
+    held, owner, terms = False, set(), []
     for tid, row in rows.items():
         st = row["status"]
-        if st == "BLOCKED" or (st == "FAILED" and row.get("reason") != "quarantine"):
+        task = tasks.get(tid)
+        if st == "BLOCKED" and row.get("blocked_reason") in OWNER_RULES:
+            owner.add(row["blocked_reason"])
+        elif st == "BLOCKED":
             held = True
+            if type(row.get("block_until")) in (int, float):
+                terms.append(float(row["block_until"]))
+        elif st == "FAILED" and row.get("reason") != "quarantine":
+            held = True
+        elif st == "READY" and google and task is not None and (task.only_opus or not task.privacy_safe):
+            owner.add("only_opus" if task.only_opus else "private")
         elif st == "READY":
-            held = True  # not runnable now: only_opus/private, dead dependency, conflict
+            held = True  # not runnable now: dead dependency, conflict
+    if terms:        # the HOLD ends at the earliest term: then that block is lifted (UNBLOCK)
+        return {"action": "HOLD", "reason": "blocked_until", "wait_s": max(5.0, min(terms) - now)}
     if held:
         return {"action": "HOLD", "reason": "only_opus_or_blocked"}
+    if owner:
+        return {"action": "HOLD", "reason": "owner_rule:" + ",".join(sorted(owner))}
     return {"action": "DONE", "reason": "nothing_left"}
 
 

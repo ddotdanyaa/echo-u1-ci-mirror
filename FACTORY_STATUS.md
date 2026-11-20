@@ -1,9 +1,11 @@
 # Factory status (generated, structured data only)
 
-Generated: 2026-11-20T12:44:44Z
-Source commit: shab4fbb508a621
+Generated: 2026-11-20T13:31:42Z
+Source commit: shad326bd7385dd
 
 ## Commits (sha, time)
+- shad326bd73 2026-11-20T16:31:24+03:00
+- sha65516f8e 2026-11-20T16:30:41+03:00
 - shab4fbb508 2026-11-20T15:44:25+03:00
 - sha4901b1ee 2026-11-20T14:53:26+03:00
 - sha9c422638 2026-11-20T14:03:17+03:00
@@ -22,8 +24,6 @@ Source commit: shab4fbb508a621
 - sha9d8c2b32 2026-11-20T07:59:21+03:00
 - sha418bd704 2026-11-20T07:44:57+03:00
 - sha6a1742d8 2026-11-20T07:02:07+03:00
-- sha51a8356d 2026-11-20T06:50:04+03:00
-- sha5c7a1faf 2026-11-20T06:42:02+03:00
 
 ## Funnel
 | step | count |
@@ -43,8 +43,8 @@ Side counters: blocked=9, parked=0, requeued=0
 Tasks now: BLOCKED=9, DONE=28, FAILED=26, READY=3
 Accepted: 0
 Promoted: 13
-Free RAM, GB: 3.96
-Telemetry rows: 5022 recognised, 0 unrecognised
+Free RAM, GB: 3.57
+Telemetry rows: 5038 recognised, 0 unrecognised
 
 ## Spend per model
 | model | calls | tokens_in | tokens_out | usage_unknown | http_429 | errors |
@@ -63,12 +63,12 @@ Telemetry rows: 5022 recognised, 0 unrecognised
 | answer | 283 | 0 |
 | gate | 846 | 0 |
 | infra | 92 | 0 |
-| loop | 960 | 0 |
-| other | 420 | 0 |
+| loop | 973 | 0 |
+| other | 421 | 0 |
 | promote | 17 | 0 |
 | review | 165 | 88 |
 | run | 2193 | 962 |
-| triage | 46 | 0 |
+| triage | 48 | 0 |
 
 ## Channels (model ids)
 - g-3-1-flash-lite
@@ -94,7 +94,7 @@ Telemetry rows: 5022 recognised, 0 unrecognised
 ## Published files
 Modules: 19
 Tests in the cloud: 48
-Tests not in the cloud: 75
+Tests not in the cloud: 76
 - tests/test_agent_factory.py (backlog-id, email, env-path, key, long-run, owner-name, path, user-path)
 - tests/test_factory_ab.py (backlog-id)
 - tests/test_factory_asked_code.py (dependency)
@@ -106,6 +106,7 @@ Tests not in the cloud: 75
 - tests/test_factory_critic_gate_told.py (dependency)
 - tests/test_factory_critic_prior.py (backlog-id)
 - tests/test_factory_decompose.py (backlog-id, call-word, email)
+- <redacted-name> (backlog-id, call-word, long-run)
 - tests/test_factory_feedback_window.py (backlog-id)
 - tests/test_factory_gate.py (email, path)
 - tests/test_factory_gate_marker.py (backlog-id)

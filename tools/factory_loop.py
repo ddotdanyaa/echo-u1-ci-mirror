@@ -1099,6 +1099,8 @@ class Loop:
             ls["wait_triage_at"] = now  # a long channel wait: triage the next portion meanwhile
             self.save_ls(ls)
             return self._triage(state, tasks, ls, now)
+        if name == "UNBLOCK":                  # <id>: a block's term is over, the loop lifts it itself (no wait for Opus)
+            return self._auto_unblock(act)
         if name == "TRIAGE":
             out = self._triage(state, tasks, ls, now)
             if not self.pool.workers:
@@ -1115,8 +1117,54 @@ class Loop:
                            action="WAIT", reason=why)
         if name == "HOLD":
             self._write_questions(tasks, state, ls)
-            return Outcome(sleep=cfg.hold_sleep, action="HOLD", reason=why)
+            sleep = cfg.hold_sleep
+            if isinstance(act.get("wait_s"), (int, float)):     # the earliest block term ends the HOLD
+                sleep = min(sleep, max(5.0, float(act["wait_s"])))
+            return Outcome(sleep=sleep, action="HOLD", reason=why)
         return Outcome(sleep=cfg.done_sleep, action="DONE", reason=why)
+
+    def _auto_unblock(self, act) -> Outcome:
+        """<id>: the block of act['task_id'] is past its term. Lifted (F.unblock) at most F.AUTO_UNBLOCK_MAX times per
+        task, counted in requeue_ledger.json (key 'hold:<time>') together with the new-version requeues; past that the
+        task is escalated (FAILED escalated:<reason>, a line in opus_questions.md), never lifted again."""
+        tid, why = act["task_id"], str(act.get("reason") or "unknown")
+        now = self.clock()
+        term = self._iso(float(act.get("block_until") or now))
+        path = self.cfg.state_dir / "requeue_ledger.json"
+        try:
+            ledger = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+        except (OSError, ValueError):
+            ledger = {}
+        used = len(ledger.get(tid) or [])
+        if used >= F.AUTO_UNBLOCK_MAX:
+            got = []
+
+            def esc(state):
+                if state["tasks"].get(tid, {}).get("status") == "BLOCKED":
+                    got.append(F.escalate(state, tid))
+            self._tx(esc)
+            text = "%s: %s, срок %s, возвратов %d/%d исчерпано" % (tid, why, term, used, F.AUTO_UNBLOCK_MAX)
+            if got:
+                self.event("infra", task_id=tid, status="escalated", reason=self.rs(got[0], 80), block_until=term,
+                           returns=used)
+                try:
+                    self._write_questions(*self.load(), self.ls())
+                except Exception as e:
+                    self.err("questions after escalation", e)
+            return Outcome(sleep=1, action="ESCALATE", reason=self.rs(text, 200))
+        n = used + 1
+        lifted = []
+
+        def lift(state):   # no feedback note: the coder keeps its last failure; the event below is the record
+            if state["tasks"].get(tid, {}).get("status") == "BLOCKED":
+                F.unblock(state, tid, None)
+                lifted.append(tid)
+        self._tx(lift)
+        if lifted:
+            ledger.setdefault(tid, []).append("hold:" + self._iso(now))
+            F.save_atomic(path, ledger)
+        text = "%s: %s, срок %s, %d/%d" % (tid, why, term, n, F.AUTO_UNBLOCK_MAX)
+        return Outcome(sleep=1, action="UNBLOCK", reason=self.rs(text, 200), status="ok" if lifted else "gone")
 
     _refused = ""
 
@@ -1752,7 +1800,7 @@ class Loop:
                 parked = state["tasks"][tid]["status"] in ("READY", "RUNNING", "REVIEW")
                 if parked:
                     self._drop_pending(state["tasks"][tid])   # its work copy stays in staging otherwise
-                    F.park(state, tid, reason, note)
+                    F.park(state, tid, reason, note, now=self.clock())
             if parked:
                 self.event("infra", task_id=tid, status="parked", reason=reason)
         except Exception as e:
@@ -2943,7 +2991,8 @@ class Loop:
         except Exception as e:  # a package we cannot even read is a package failure
             return self._promote_failed(tid, tasks, state, ls, e, finish)
         if why:
-            self._tx(lambda st: self._block_review(st, tid, "scope_violation", "promote refused: " + why))
+            self._tx(lambda st: self._block_review(st, tid, "scope_violation", "promote refused: " + why,
+                                                       self.clock()))
             shutil.rmtree(src, ignore_errors=True)
             ls["bases"].pop(tid, None)
             self.save_ls(ls)
@@ -3013,7 +3062,8 @@ class Loop:
                 self.event("infra", status="error", reason="restore: " + F.redact(str(e2))[:200])
             raise
         if no_diff:  # the candidate equals HEAD: nothing to merge, never record a foreign sha
-            self._tx(lambda st: self._block_review(st, tid, "no_diff", "promote: candidate equals branch HEAD (no diff)"))
+            self._tx(lambda st: self._block_review(st, tid, "no_diff", "promote: candidate equals branch HEAD (no diff)",
+                                                       self.clock()))
             shutil.rmtree(src, ignore_errors=True)
             ls["bases"].pop(tid, None)
             self.save_ls(ls)
@@ -3026,9 +3076,9 @@ class Loop:
         return finish("promoted", "promoted", proof=True, commit=sha)
 
     @staticmethod
-    def _block_review(state, tid, reason, note) -> None:
+    def _block_review(state, tid, reason, note, now=None) -> None:
         row = state["tasks"][tid]
-        row.update(status="BLOCKED", blocked_reason=reason, lease=None, deadline=None)
+        F._block(row, reason, time.time() if now is None else now)     # <id>: a reason and a term
         row.pop("candidate", None)
         F.add_feedback(state, tid, "gate", note)
 
