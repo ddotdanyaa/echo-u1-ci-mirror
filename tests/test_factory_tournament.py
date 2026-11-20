@@ -28,7 +28,7 @@ def _wire(rig, monkeypatch, code_for, review_for):
 
 def test_a_candidate_that_changes_nothing_hands_the_pass_to_another_model(tmp_path, monkeypatch):
     rig = Rig(tmp_path, monkeypatch)
-    wrong = FIX_BLOCK.replace('return a-b', 'return a - b', 1)        # a SEARCH that is not in the file
+    wrong = FIX_BLOCK.replace('return a-b', 'return b - a', 1)        # a SEARCH that is not in the file
     sent = _wire(rig, monkeypatch, lambda model: wrong if model == 'x' else FIX_BLOCK, lambda model, n: APPROVE)
     result = rig.once()
     assert result['status'] == 'REVIEW'
@@ -46,7 +46,7 @@ def test_a_candidate_that_changes_nothing_hands_the_pass_to_another_model(tmp_pa
 def test_small_follow_up_off_keeps_a_small_model_out_of_the_later_candidates(tmp_path, monkeypatch):
     """<id> small_follow_up (20.11 02:05): Gemma as a later candidate won 0 of ~20 coder calls of the night at ~175 s
     each. 'off': after the first candidate no small-tier model is asked; 'on' asks it as before."""
-    wrong = FIX_BLOCK.replace('return a-b', 'return a - b', 1)
+    wrong = FIX_BLOCK.replace('return a-b', 'return b - a', 1)
     small = dict(id='c3', group='p3', model='google/z', key_env='KEY', tpm=100000, rpd=100, verified=True,
                  tier='small')
     for arm, coders in ((False, ['x', 'y']), (True, ['x', 'y', 'z'])):
@@ -72,7 +72,7 @@ def test_a_usable_first_candidate_needs_no_second_coder(tmp_path, monkeypatch):
 
 def test_when_every_model_failed_the_pass_is_rejected_once_with_the_last_reason(tmp_path, monkeypatch):
     rig = Rig(tmp_path, monkeypatch)
-    wrong = FIX_BLOCK.replace('return a-b', 'return a - b', 1)
+    wrong = FIX_BLOCK.replace('return a-b', 'return b - a', 1)
     sent = _wire(rig, monkeypatch, lambda model: wrong, lambda model, n: APPROVE)
     two = tmp_path / 'two.json'
     two.write_text(json.dumps(dict(channels=TWO_CHANNELS)))

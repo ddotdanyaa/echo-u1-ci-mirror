@@ -7,7 +7,7 @@ from tests.test_factory_runtime import FIX_BLOCK, TWO_CHANNELS, Rig, gr
 from tests.test_factory_tournament import APPROVE, _wire
 
 BAD = FIX_BLOCK.replace('return a-b\n=======\ndef add(a,b): return a+b', 'return a-b\n=======\ndef add(a,b): return a*b')
-WRONG = FIX_BLOCK.replace('return a-b', 'return a - b', 1)        # a SEARCH that is not in the file
+WRONG = FIX_BLOCK.replace('return a-b', 'return b - a', 1)        # a SEARCH that is not in the file
 
 
 def _three(rig, tmp_path):
