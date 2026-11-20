@@ -1356,7 +1356,12 @@ class Loop:
 
     # -- <id> self-fix: a failure class that repeated becomes a self-build task designed by a free head model
     SELFFIX_EVERY_S = 3600
-    SELF_DIR = DEFAULT_STATE_DIR.parent / "self"    # the self-build folder next to the state: plans, trees, queue pid
+    SELF_DIR = None     # the self-build folder: plans, trees, queue pid, the self-fix ledger; None: self_dir()
+
+    def self_dir(self) -> Path:
+        """The factory's self-build folder next to this project's state dir (<id>: the register lives in the factory,
+        not in ECHO; it came from the hard-coded ECHO default before)."""
+        return Path(self.SELF_DIR) if self.SELF_DIR is not None else Path(self.cfg.state_dir).parent / "self"
 
     def _telemetry_rows(self) -> list:
         """The rows of telemetry.jsonl and .1 (a broken line is skipped)."""
@@ -1390,7 +1395,7 @@ class Loop:
                 return          # its pytest is a third one beside the gates' two slots: it waits for an idle pool
             ls["selffix_at"] = self.clock()
             self.save_ls(ls)
-            self_dir = self.SELF_DIR
+            self_dir = self.self_dir()
             if X.queue_running(self_dir):
                 self.event("selffix", status="queue_busy")
                 return
@@ -1399,9 +1404,15 @@ class Loop:
             # failure would look like a repeat)
             rows = [r for r in self._telemetry_rows()
                     if r.get("span") == "run" and r.get("attempt") and r.get("reason")]
-            ledger = ls.setdefault("selffix", {})
+            # the ledger is the factory's, one for every project (X.LEDGER); a project's old entries move in once
+            stored = X.load_ledger(self_dir)
+            ledger = X.load_ledger(self_dir, seed=ls.get("selffix"))
             quotas = ls.setdefault("selffix_quotas", {})
             asked = {}
+            # only the cases of public tasks go to the free head, as for the coder's class note (_class_note)
+            tasks, _ = self.load()
+            public = {k for k, t in (tasks or {}).items()
+                      if getattr(t, "privacy_safe", False) is True and not getattr(t, "only_opus", True)}
 
             def ask(prompt):
                 status, model, answer, used = self._light_ask(prompt, attempt=2, section="loop-selffix",
@@ -1411,15 +1422,19 @@ class Loop:
             stamp = dt.datetime.fromtimestamp(self.clock()).strftime("%m%d%H%M")
             before = json.loads(json.dumps(ledger))
             report = X.run(rows, ledger, ask=ask, repo_root=src_root, src_root=src_root, self_dir=self_dir,
-                           base_sha=base_sha, python=sys.executable, now_iso=self.ts(), stamp=stamp)
+                           base_sha=base_sha, python=sys.executable, now_iso=self.ts(), stamp=stamp,
+                           clean=lambda text: self._public_case(text, 300), public=public)
             if asked and asked.get("status") != "ok":     # the head was not reached: ask again next hour
-                cls, prev = report.get("cls"), before.get(report.get("cls")) or {}
-                tries = (ledger.get(cls) or {}).get("tries")   # its failed self-fixes (X.MAX_TRIES) are kept
-                if tries:
-                    ledger[cls] = {k: v for k, v in dict(prev, status="failed", tries=tries).items()
-                                   if k in ("at", "status", "tries", "closed_at")}
+                # the class's entry as it was before this turn, whole: an open one keeps its plan, a closed or
+                # reopened one its tests (a filtered copy dropped them, and the reopened class lost its variation
+                # check); a failed open entry ages out again next hour, so its tries are not lost
+                cls = report.get("cls")
+                if cls in before:
+                    ledger[cls] = before[cls]
                 else:
-                    ledger.pop(report.get("cls"), None)
+                    ledger.pop(cls, None)
+            X.save_ledger(self_dir, ledger, stored)
+            ls.pop("selffix", None)                     # moved into the factory's ledger
             self.save_ls(ls)
             launched = report.get("status") == "open" and X.launch(_ROOT, report["plan"], self_dir, sys.executable)
             self.event("selffix", status=report.get("status"), reason=self.rs(
@@ -2632,6 +2647,15 @@ class Loop:
 
     CLASS_CASES = 3
 
+    def _public_case(self, text: str, width: int = 240):
+        """A failure case that may go to a free model (the coder's class note, the self-fix head's question): the
+        privacy check and the public screen pass it, cut to ``width``; else None."""
+        from tools import agent_factory_import as imp
+        if self._privacy_hit(text):
+            return None
+        ok, bad = imp.screen(text, 0)
+        return ok[:width] if ok is not None and not bad else None
+
     def _class_note(self, tid: str, tasks, rkey: str, res: dict) -> None:
         """<id> clause 3: a refusal of a known, non-infrastructure class gives the task's next coder one line (a repeat
         line, so fresh_feedback shows it until a newer attempt and rejected_for keeps it from the critic): the class,
@@ -2639,7 +2663,6 @@ class Loop:
         this plan known as public (privacy_safe, not only_opus: a missing flag is private, agent_factory.Task), and
         it passes the public screen and the privacy check; no case, no line; the same line is not written twice for
         one attempt."""
-        from tools import agent_factory_import as imp
         from tools import factory_classes as K
         try:
             cls = K.classify(rkey, str(res.get("reason_detail") or ""))
@@ -2647,10 +2670,7 @@ class Loop:
                 return
 
             def clean(text):
-                if self._privacy_hit(text):
-                    return None
-                ok, bad = imp.screen(text, 0)
-                return ok[:240] if ok is not None and not bad else None
+                return self._public_case(text, 240)
             public = {k for k, t in (tasks or {}).items()
                       if getattr(t, "privacy_safe", False) is True and not getattr(t, "only_opus", True)}
             rows = [r for r in self._telemetry_rows() if r.get("span") == "run" and r.get("attempt")

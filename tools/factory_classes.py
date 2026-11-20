@@ -102,9 +102,28 @@ def note(cls, examples):
     return f"[класс {cls}] known remedy: {remedy_of(cls)}; past cases: " + ' | '.join(e.replace('\n', ' ') for e in examples)
 
 
-def question(cls, info):
+# a local path (drive or UNC) up to the next blank, quote or separator: it names the machine, never the defect
+_LOCAL_PATH = re.compile(r'(?:\b[A-Za-z]:[\\/]|\\\\)[^\s\'"|,;()<>]*')
+
+
+def question(cls, info, k=6, clean=None, width=300, max_tasks=12):
+    """The head's question for class ``cls``: the newest ``k`` distinct examples (count() keeps them newest last),
+    local paths hidden, each screened by ``clean`` (text -> text or None, a refused one is dropped) and cut to
+    ``width``. Live 20.11: all 96 gate-red examples went in, 30.7 KB with local stage paths."""
     remedy = remedy_of(cls)
-    tasks = ', '.join(info.get('tasks', []))
+    names = list(info.get('tasks', []))
+    tasks = ', '.join(names[-max_tasks:]) + (f" (+{len(names) - max_tasks} more)" if len(names) > max_tasks else '')
     n = info.get('n', 0)
-    examples = '\n'.join(f"- {e}" for e in info.get('examples', []))
+    picked = []
+    for e in reversed(list(info.get('examples', []))):
+        e = _LOCAL_PATH.sub('<path>', str(e)).replace('\r', ' ').replace('\n', ' ')
+        e = clean(e) if clean else e
+        if not e:
+            continue
+        e = str(e)[:width]
+        if e not in picked:
+            picked.append(e)
+            if len(picked) >= k:
+                break
+    examples = '\n'.join(f"- {e}" for e in reversed(picked))
     return f"Self-fix {cls}: failed {n} times (tasks: {tasks}). Examples:\n{examples}\nknown remedy: {remedy}"

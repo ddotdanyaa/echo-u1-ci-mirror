@@ -1,9 +1,10 @@
 # Factory status (generated, structured data only)
 
-Generated: 2026-11-20T11:53:45Z
-Source commit: sha4901b1ee936e
+Generated: 2026-11-20T12:44:44Z
+Source commit: shab4fbb508a621
 
 ## Commits (sha, time)
+- shab4fbb508 2026-11-20T15:44:25+03:00
 - sha4901b1ee 2026-11-20T14:53:26+03:00
 - sha9c422638 2026-11-20T14:03:17+03:00
 - shabae3b5dc 2026-11-20T12:57:58+03:00
@@ -23,7 +24,6 @@ Source commit: sha4901b1ee936e
 - sha6a1742d8 2026-11-20T07:02:07+03:00
 - sha51a8356d 2026-11-20T06:50:04+03:00
 - sha5c7a1faf 2026-11-20T06:42:02+03:00
-- sha8aed118c 2026-11-20T06:39:33+03:00
 
 ## Funnel
 | step | count |
@@ -39,19 +39,19 @@ Source commit: sha4901b1ee936e
 | reviewed | 15 |
 | triaged | 50 |
 
-Side counters: blocked=8, parked=0, requeued=0
-Tasks now: BLOCKED=8, DONE=28, FAILED=27, READY=3
+Side counters: blocked=9, parked=0, requeued=0
+Tasks now: BLOCKED=9, DONE=28, FAILED=26, READY=3
 Accepted: 0
 Promoted: 13
-Free RAM, GB: 2.89
-Telemetry rows: 4950 recognised, 0 unrecognised
+Free RAM, GB: 3.96
+Telemetry rows: 5022 recognised, 0 unrecognised
 
 ## Spend per model
 | model | calls | tokens_in | tokens_out | usage_unknown | http_429 | errors |
 |---|---|---|---|---|---|---|
-| google/gemini-3.1-flash-lite | 309 | 1993880 | 149787 | 12 | 0 | 12 |
-| google/gemini-3.5-flash-lite | 482 | 3367555 | 171603 | 15 | 0 | 15 |
-| google/gemini-3.6-flash | 49 | 184034 | 11502 | 18 | 1 | 18 |
+| google/gemini-3.1-flash-lite | 315 | 2054423 | 152693 | 12 | 0 | 12 |
+| google/gemini-3.5-flash-lite | 488 | 3424133 | 176320 | 15 | 0 | 15 |
+| google/gemini-3.6-flash | 55 | 242759 | 12506 | 18 | 1 | 18 |
 | google/gemma-4-26b-a4b-it | 48 | 111834 | 28683 | 21 | 0 | 21 |
 | google/gemma-4-31b-it | 73 | 67690 | 3572 | 49 | 0 | 49 |
 | openrouter/cohere/north-mini-code:free | 20 | 69376 | 10273 | 3 | 0 | 4 |
@@ -60,15 +60,15 @@ Telemetry rows: 4950 recognised, 0 unrecognised
 ## Spans
 | span | rows | calls |
 |---|---|---|
-| answer | 281 | 0 |
-| gate | 840 | 0 |
+| answer | 283 | 0 |
+| gate | 846 | 0 |
 | infra | 92 | 0 |
-| loop | 943 | 0 |
-| other | 411 | 0 |
+| loop | 960 | 0 |
+| other | 420 | 0 |
 | promote | 17 | 0 |
 | review | 165 | 88 |
-| run | 2157 | 944 |
-| triage | 44 | 0 |
+| run | 2193 | 962 |
+| triage | 46 | 0 |
 
 ## Channels (model ids)
 - g-3-1-flash-lite
@@ -94,13 +94,13 @@ Telemetry rows: 4950 recognised, 0 unrecognised
 ## Published files
 Modules: 19
 Tests in the cloud: 48
-Tests not in the cloud: 74
+Tests not in the cloud: 75
 - tests/test_agent_factory.py (backlog-id, email, env-path, key, long-run, owner-name, path, user-path)
 - tests/test_factory_ab.py (backlog-id)
 - tests/test_factory_asked_code.py (dependency)
 - tests/test_factory_base_cache.py (dependency)
 - tests/test_factory_channels.py (long-run)
-- tests/test_factory_class_cases.py (backlog-id, call-word, phone)
+- tests/test_factory_class_cases.py (backlog-id, call-word, path, phone)
 - tests/test_factory_context.py (env-path, key, long-run, owner-name, path, short-name, user-path)
 - tests/test_factory_context_fit_whole.py (backlog-id)
 - tests/test_factory_critic_gate_told.py (dependency)
@@ -140,6 +140,7 @@ Tests not in the cloud: 74
 - tests/test_factory_loop_report7.py (backlog-id)
 - tests/test_factory_loop_requeue.py (backlog-id)
 - tests/test_factory_loop_run.py (key, long-run)
+- tests/test_factory_loop_selffix.py (call-word, phone)
 - tests/test_factory_neighbours.py (dependency)
 - tests/test_factory_no_effect.py (dependency)
 - tests/test_factory_owner_list.py (backlog-id, call-word, long-run)
