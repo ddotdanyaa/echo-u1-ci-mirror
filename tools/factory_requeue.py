@@ -93,6 +93,25 @@ def _write_answer(box, payload, label) -> Path:
             target = box / ('%s-%d.json' % (name, n))
 
 
+# A suspected test (20.11 02:55: of five promoted factory tests whose fixes kept failing, three could never be made
+# green by a correct fix; each cost its code task three strikes per version). After AUDIT_AFTER requeues of a code
+# task that still fails its gate, the factory-written test of its row goes back to its test task instead.
+AUDIT_AFTER = 2
+AUDIT_NOTE = ('Retry on factory version %s. The code task of this row failed its gate on this test after %d returns. '
+              'Check that the test calls the real function with the kind of arguments its signature takes, does not '
+              'replace the function the behaviour happens in, and pins a behaviour the row really asks for; else '
+              'rewrite it, or answer not testable when the row is no code defect.')
+
+
+def _promoted_test(state, tid, row):
+    """The PROMOTED unit_test task of the same backlog row: the factory wrote the test the code task fails on."""
+    for other, orow in sorted(state['tasks'].items()):
+        if (other != tid and orow.get('backlog_id') and orow.get('backlog_id') == row.get('backlog_id')
+                and orow.get('kind') == 'unit_test' and orow.get('status') == 'PROMOTED'):
+            return other
+    return None
+
+
 def run(state_dir, code, *, skip=(), check=None, max_times=3) -> list:
     state_dir = Path(state_dir)
     state = json.loads((state_dir / 'state.json').read_text(encoding='utf-8'))
@@ -101,6 +120,19 @@ def run(state_dir, code, *, skip=(), check=None, max_times=3) -> list:
     written = []
     for tid, cls in pick(state, code, ledger, max_times=max_times, skip=skip):
         row = state['tasks'][tid]
+        test = (_promoted_test(state, tid, row) if cls == 'gate-red' and row.get('kind') in (None, 'code') else None)
+        if test and len(ledger.get(tid, [])) >= AUDIT_AFTER and ('audit:' + test) not in ledger:
+            text = AUDIT_NOTE % (code, len(ledger[tid]))
+            if check is not None:
+                try:
+                    check(text)
+                except Exception:
+                    continue
+            _write_answer(state_dir / 'answers', {'task_id': test, 'reject': True, 'note': text}, test)
+            ledger['audit:' + test] = [code]
+            ledger.setdefault(tid, []).append(code)      # the code task waits for the rewritten test (depends_on)
+            written.append(test)
+            continue
         own = C.classify(_last(row)) != 'unknown'
         text = note(cls, code, sibling=None if own else _sibling(state, tid, row)[0])
         if check is not None:

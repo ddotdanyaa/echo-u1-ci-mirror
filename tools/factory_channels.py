@@ -49,6 +49,15 @@ OVERLOAD_COOL_MAX_S = 900      # a model that stays overloaded is tried 4 times 
                                # answered 503 to 11 of 17 reviews, each refusal took 0.6-43 s)
 OVERLOAD_FORGET_S = 1800       # no overload of the model for half an hour: the next one starts a new series
 TIERS = ('small', 'main', 'escalation')
+# The day of a provider's daily quota (requests per day): Google AI Studio resets at midnight Pacific (the page
+# above), OpenRouter's free models at 00:00 UTC (live 19.11 20:03: its 429 free-models-per-day carries
+# metadata.headers X-RateLimit-Reset). The day window counts from the provider's midnight, not over the last 24 h,
+# and a daily 429 cools until that provider's reset (live 20.11 03:00: OpenRouter, reset at 00:00 UTC, stayed
+# cooled until midnight Pacific, 8 h of its free quota unused; the rolling window held models after their reset).
+UTC_DAY_PROVIDERS = frozenset(('openrouter',))
+DAY_RESET_MAX_S = 26 * 3600    # a reset time the provider names further away than this is not believed
+DAY_GRACE_S = 3600             # a daily 429 in the first hour of the provider's day with no reset time named:
+DAY_GRACE_COOL_S = 900         # the provider's counter may lag its clock, so cool 15 minutes, not the whole day
 
 
 class ChannelUnavailable(InvalidPlan):
@@ -202,7 +211,8 @@ def _balanced(channels, state, now):
     models stays (owner: the load spreads over all connected keys instead of using one key up first)."""
     def left(channel):
         times = state.get(channel['group'], {}).get('request_times', [])
-        return channel['rpd'] - sum(1 for t in times if now - t < 86400)
+        start = quota_day(channel['model'], now)[0]
+        return channel['rpd'] - sum(1 for t in times if t >= start)
     models, by_model = [], {}
     for channel in channels:
         if channel['model'] not in by_model:
@@ -235,12 +245,12 @@ def choose(channels, state, tokens, env, *, now=None, requests=1):
         if cool > now:
             reasons.append(('cool', cool - now))
             continue
-        used = [t for t in group.get('request_times', []) if now - t < 86400]
+        start, end = quota_day(channel['model'], now)       # the provider's day, not the last 24 h
+        used = [t for t in group.get('request_times', []) if t >= start]
         # exactly what reserve() books: the day window the whole run (at most rpd), the minute window at most rpm
         need = min(requests, channel['rpd'])
         if len(used) + need > channel['rpd']:
-            oldest = min(used) if used else now
-            reasons.append(('rpd', max(1.0, 86400 - (now - oldest))))
+            reasons.append(('rpd', max(1.0, end - now)))
             continue
         if channel.get('rpm'):
             lately = sorted(t for t in _numbers(group.get('rpm_times')) if now - t < 60)
@@ -338,7 +348,7 @@ def cool(state, channel, *, now=None, seconds=DEFAULT_COOL_S):
 
 _KEY_TEXT = re.compile(r'api[_ ]?key[_ ]?(?:is )?(?:not )?invalid|api key not valid|invalid api key', re.I)
 _REGION_TEXT = re.compile(r'location is not supported|not available in your (?:country|region)', re.I)
-_PERDAY = re.compile(r'PerDay|per day|daily', re.I)
+_PERDAY = re.compile(r'PerDay|per[ -]day|daily', re.I)
 _PERMIN = re.compile(r'PerMinute|per minute', re.I)
 _RETRY = re.compile(r'retryDelay"?\s*[:=]\s*"?(\d+(?:\.\d+)?)s', re.I)
 _STATUS_TEXT = re.compile(r'\b(?:HTTP(?:/\d(?:\.\d)?)?|status(?:Code)?|code)\D{0,3}([45]\d\d)\b(?!:\d)', re.I)  # never bare numbers: stack lines are file.js:429:15
@@ -358,14 +368,40 @@ def pacific_offset_hours(utc: datetime.datetime) -> int:
     return -7 if start <= utc.replace(tzinfo=None) < end else -8
 
 
-def seconds_to_daily_reset(now=None) -> int:
-    """Seconds until midnight Pacific time: the Gemini daily quota reset
-    (https://ai.google.dev/gemini-api/docs/rate-limits)."""
+def _day_offset_hours(model, utc: datetime.datetime) -> int:
+    """Hours from UTC of the clock whose midnight resets the daily quota of ``model``'s provider."""
+    return 0 if str(model or '').split('/')[0] in UTC_DAY_PROVIDERS else pacific_offset_hours(utc)
+
+
+def quota_day(model=None, now=None) -> tuple:
+    """(start, end) of the provider's current quota day, epoch seconds; ``model`` None: midnight Pacific."""
     now = time.time() if now is None else now
     utc = datetime.datetime.fromtimestamp(now, datetime.timezone.utc).replace(tzinfo=None)
-    local = utc + datetime.timedelta(hours=pacific_offset_hours(utc))
-    midnight = datetime.datetime.combine(local.date() + datetime.timedelta(days=1), datetime.time(0, 0))
-    return max(60, int((midnight - local).total_seconds()))
+    local = utc + datetime.timedelta(hours=_day_offset_hours(model, utc))
+    since = (local - datetime.datetime.combine(local.date(), datetime.time(0, 0))).total_seconds()
+    return now - since, now - since + 86400
+
+
+def seconds_to_daily_reset(now=None, model=None) -> int:
+    """Seconds until the daily quota reset of ``model``'s provider: midnight Pacific for Gemini
+    (https://ai.google.dev/gemini-api/docs/rate-limits), 00:00 UTC for OpenRouter."""
+    now = time.time() if now is None else now
+    return max(60, int(quota_day(model, now)[1] - now))
+
+
+def _reset_at(body, now):
+    """The epoch second the provider names for the reset of the exhausted limit (OpenRouter: metadata.headers
+    X-RateLimit-Reset, in ms), or None when absent or not believable (past, or further than DAY_RESET_MAX_S)."""
+    value = _find(body, 'X-RateLimit-Reset')
+    if value is None:
+        value = _find(body, 'x-ratelimit-reset')
+    try:
+        at = float(value)
+    except (TypeError, ValueError):
+        return None
+    if at > 1e11:              # milliseconds
+        at /= 1000.0
+    return at if 0 < at - now <= DAY_RESET_MAX_S else None
 
 
 def _walk_details(body):
@@ -445,7 +481,13 @@ def _classify_error_event(error: dict):
         return _info('transient', status, name, message)
     if status == 429:
         if _PERDAY.search(quota_text):
-            return _info('rate_day', status, name, message, seconds_to_daily_reset(), quota_text)
+            now = time.time()
+            at = _reset_at(body, now)
+            info = _info('rate_day', status, name, message,
+                         math.ceil(at - now) if at else seconds_to_daily_reset(now), quota_text)
+            if at:
+                info['reset_at'] = at
+            return info
         wait = math.ceil(retry) if retry else DEFAULT_COOL_S
         info = _info('rate_minute', status, name, message, wait, quota_text)
         if _find(body, 'provider_code') is not None:       # the UPSTREAM provider of one model, not the account
@@ -546,7 +588,7 @@ def apply_failure(state, channel, info, *, env=None, now=None) -> dict:
         cool(state, channel, now=now, seconds=REGION_COOL_S)
         return {'action': 'cool', 'cool_s': REGION_COOL_S}
     if kind in ('rate_minute', 'rate_day'):
-        seconds = int(info.get('retry_after_s') or DEFAULT_COOL_S)
+        seconds = _day_cool(channel, info, now) if kind == 'rate_day' else int(info.get('retry_after_s') or DEFAULT_COOL_S)
         if info.get('scope') == 'model':     # an upstream provider of ONE model: the rest of the account is fine
             return _cool_model(state, channel, now, seconds)
         cool(state, channel, now=now, seconds=seconds)
@@ -557,6 +599,18 @@ def apply_failure(state, channel, info, *, env=None, now=None) -> dict:
         # 503 of gemini-3.5-flash-lite while three other channels idled).
         return _cool_model(state, channel, now, _overload_seconds(state, channel['model'], now))
     return {'action': 'none', 'cool_s': 0}
+
+
+def _day_cool(channel, info, now) -> int:
+    """Cooling of a daily 429: until the reset time the provider named, else until the midnight of the channel's
+    provider; in the first DAY_GRACE_S of the provider's day without a named reset only DAY_GRACE_COOL_S."""
+    at = info.get('reset_at')
+    if isinstance(at, (int, float)) and not isinstance(at, bool) and 0 < at - now <= DAY_RESET_MAX_S:
+        return int(math.ceil(at - now))
+    start, end = quota_day(channel['model'], now)
+    if now - start < DAY_GRACE_S:
+        return DAY_GRACE_COOL_S
+    return max(60, int(end - now))
 
 
 def _overload_seconds(state, model, now) -> int:

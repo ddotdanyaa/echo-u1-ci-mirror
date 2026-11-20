@@ -79,6 +79,14 @@ def test_every_light_call_asks_for_no_inline_thought():
     assert 'inline-thought' in {row[0] for row in P.PATTERNS}
 
 
+def test_the_test_critic_checks_the_real_function_and_its_arguments():
+    """20.11 02:55: promoted tests no correct fix could make green: one faked the function the behaviour lives in
+    (<id>, say), one called a function with arguments of another kind (<id>, reason_of)."""
+    from tools import agent_factory_runner as W
+    assert 'does not replace (monkeypatch, fake) the function inside which' in W.REVIEW_CHECKS_TEST
+    assert 'the kind of arguments its signature and docstring take' in W.REVIEW_CHECKS_TEST
+
+
 def test_every_pattern_has_an_id_a_kind_and_a_description():
     assert {row[1] for row in P.PATTERNS} <= {'repair', 'note'}
     assert {'view-line', 'reflow', 'elided'} <= {row[0] for row in P.PATTERNS}

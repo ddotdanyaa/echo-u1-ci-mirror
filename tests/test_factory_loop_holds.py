@@ -1,4 +1,4 @@
-"""<id>/<id> wiring: every 20 minutes, idle or busy, a free head model answers mechanical holds; private rows are never sent;
+"""<id>/<id> wiring: a free head model answers mechanical holds — at once when the loop is idle, every 20 minutes when busy;
 a 20 minute gate; a fault goes to infra. The model call and the backlog text are faked."""
 import json
 
@@ -51,12 +51,26 @@ def test_idle_loop_answers_an_ambiguous_hold(tmp_path, monkeypatch):
 
 def test_a_busy_loop_answers_too(tmp_path, monkeypatch):
     """Live 20.11 01:33-02:17: requeued tasks kept the loop busy, it never went idle, 68 holds waited and the head
-    never ran. The 20 minute gate is the only pace."""
+    never ran. Busy: the 20 minute gate is the pace."""
     env, loop, calls = setup(tmp_path, monkeypatch)
     env.runner_says({"status": "NO_RESULT"})
-    loop.step()                                       # a RUN step: the loop is busy
+    loop._last_out = loop.step()                      # a RUN step: the loop is busy
     loop._head_holds()
     assert len(calls) == 1 and answers(env)[0]["backlog_id"] == "B9"
+
+
+def test_an_idle_loop_asks_at_once_without_the_gate(tmp_path, monkeypatch):
+    """Owner: an empty READY queue with unparsed backlog is the trigger of the next triage portion."""
+    env, loop, calls = setup(tmp_path, monkeypatch, bids=("B9", "B8"))
+    ls = loop.ls()
+    ls["holds_at"] = loop.clock()                      # the gate was just used
+    loop.save_ls(ls)
+    loop._last_out = L.Outcome(action="RUN")
+    loop._head_holds()
+    assert not calls                                  # busy: the gate holds
+    loop._last_out = L.Outcome(action="HOLD")
+    loop._head_holds()
+    assert len(calls) == 2                            # idle: at once
 
 
 def test_private_row_is_never_sent(tmp_path, monkeypatch):

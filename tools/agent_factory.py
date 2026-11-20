@@ -599,9 +599,15 @@ def add_feedback(state: dict, tid: str, source: str, text: str) -> None:
     row = state["tasks"][tid]
     clean = redact(text)[:FEEDBACK_MAX_CHARS]
     items = list(row.get("feedback", [])) + [{"source": source, "text": clean}]
-    while len(items) > FEEDBACK_KEEP:  # the window evicts gate/review remarks first, Opus last
-        victim = next((i for i, x in enumerate(items) if x["source"] != "opus"), 0)
-        del items[victim]
+    # The window evicts older gate/review remarks first, then the oldest Opus note, but NEVER the newest gate/review
+    # remark: it is the last failure, the class factory_requeue reads and the next coder needs. Live 20.11 02:37: after
+    # three requeue notes the window held only Opus notes, every new failure was evicted at once, 14 quarantined tasks
+    # had no class left, nothing was requeued and the loop stood in HOLD.
+    while len(items) > FEEDBACK_KEEP:
+        failures = [i for i, x in enumerate(items) if x["source"] != "opus"]
+        older = failures[:-1]
+        notes = [i for i, x in enumerate(items) if x["source"] == "opus"]
+        del items[older[0] if older else notes[0] if notes else 0]
     row["feedback"] = items
 
 

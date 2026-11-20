@@ -515,7 +515,12 @@ REVIEW_CHECKS_TEST = (
     '(1) the test imports the real code and calls it, and asserts the behaviour the task describes; (2) it fails '
     'on the current code because of the described defect and would pass once the defect is fixed; (3) NO stub: no '
     'MagicMock in place of the code under test, no assert False, no test that only checks that a name exists, no '
-    'hard-coded counts of files or markers in the repository; (4) nothing outside the test file.')
+    'hard-coded counts of files or markers in the repository; (4) nothing outside the test file; (5) it does not '
+    'replace (monkeypatch, fake) the function inside which the described behaviour happens, read its body and the '
+    'comments at the call; (6) every function is called with the kind of arguments its signature and docstring take.')
+# (5) and (6), 20.11 02:55: two promoted tests could never be made green by a correct fix. <id> called
+# diagnostics.reason_of(call marks) although it takes an exception or a token (unknown for anything else); <id> replaced
+# controlled_host.say, inside which speech_text turns numbers into words, so the fake always saw digits.
 # Owner: «турнир нескольких кандидатов с последовательной цепочкой критиков». A pass of the light engine
 # asks up to TOURNAMENT_SIZE coders, each a different model, and every next one is told why the previous one failed;
 # the first candidate that passes the mechanical checks (it changes the files, compiles, weakens no check) goes to the
@@ -1793,6 +1798,8 @@ def _pass_inner(tasks, task: Task, state: dict, *, checkpoint: Path, root: Path,
         if held is not None:
             if isinstance(held, dict) and isinstance(held.get('workdir'), str):
                 try:
+                    if '\0' in held['workdir']:      # Python 3.13+ resolve() no longer refuses an embedded NUL
+                        raise ValueError('embedded null character')
                     owned.add(Path(held['workdir']).resolve())
                 except (OSError, ValueError, RuntimeError):
                     parsed = False
@@ -2121,7 +2128,9 @@ def _pass_inner(tasks, task: Task, state: dict, *, checkpoint: Path, root: Path,
                 if not approved:
                     break
             report['critics'] = list(critics)
-            report['critiques'] = list(said)
+            # redacted like reason_detail: a critic may quote a key it saw (test_reason_and_feedback_are_redacted_...,
+            # red since the chain landed; that test never reaches the public cloud run, its fake key blocks it)
+            report['critiques'] = [scrub(redact(s))[:300] for s in said]
         except NoIndependentReviewer:
             report['pending_review'] = True
             return _wait(release_or_block, report, 'no_independent_reviewer', status='WAITING_CHANNEL')
