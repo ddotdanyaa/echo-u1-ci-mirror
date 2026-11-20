@@ -1515,7 +1515,7 @@ def once(*, root: Path, plan: Path, checkpoint: Path, staging: Path,
          acknowledge: bool = False, review_model: str | None = None,
          channel_config: Path | None = None, max_attempts: int = 2,
          max_model_calls: int | None = None, base_sha: str | None = None,
-         small_follow_up: bool = True) -> dict:
+         small_follow_up: bool = True, port_repo: Path | None = None) -> dict:
     tasks = read_plan(json.loads(plan.read_text(encoding="utf-8")))
     if staging.resolve().is_relative_to(root.resolve()):
         raise InvalidPlan("staging inside source project is forbidden")
@@ -1575,6 +1575,7 @@ def once(*, root: Path, plan: Path, checkpoint: Path, staging: Path,
                      small_model=small_model, large_model=large_model, review_model=review_model,
                      configured=configured, max_attempts=max_attempts, swept_failed=swept_failed,
                      base_sha=base_sha or os.environ.get('FACTORY_BASE_SHA'), small_follow_up=small_follow_up,
+                     port_repo=port_repo,
                      ledger=(channel_config.resolve().parent / 'quota') if channel_config is not None else None)
     finally:
         with contextlib.suppress(OSError):    # a lock left behind is cleared by the loop; the pass result stands
@@ -1590,7 +1591,7 @@ def _pass(tasks, task: Task, state: dict, **kwargs) -> dict:
 def _pass_inner(tasks, task: Task, state: dict, *, checkpoint: Path, root: Path, staging: Path,
           small_model: str, large_model: str, review_model: str, configured: list,
           max_attempts: int, base_sha: str | None, swept_failed=(), ledger: Path | None = None,
-          small_follow_up: bool = True) -> dict:
+          small_follow_up: bool = True, port_repo: Path | None = None) -> dict:
     tid = task.id
     staging.mkdir(parents=True, exist_ok=True)
     try:
@@ -2139,9 +2140,12 @@ def _pass_inner(tasks, task: Task, state: dict, *, checkpoint: Path, root: Path,
             if small_total + REVIEW_DIFF_LIMIT + REVIEW_OVERHEAD > channels.PROMPT_LIMIT_CHARS:
                 raise PromptTooLarge('coder+review prompts cannot both fit')
             failing = (', '.join(base.failed_ids) + '\n' + base.diag).strip() if task.kind == 'code' else ''
-            reference = port_reference(root, task)
+            # ``root`` is the loop's plain copy of the sources (no .git): an old commit is read from the repository itself
+            reference = port_reference(port_repo or root, task)
             if reference:
                 events.append('port_reference:%d' % len(reference))
+            elif task.port_from and task.kind != 'unit_test':
+                events.append('port_reference_missing')      # a lost example shows in the telemetry, never silently
             def make_prompt(asked=frozenset()):
                 return build_coder_prompt(task, visible, feedback, prev_diff, failing=scrub(failing),
                                           light=engine_for(role, task) == 'light',   # the same rule call() applies
@@ -2394,6 +2398,8 @@ def main(argv=None):
                    help="explicit model-call budget written into this checkpoint")
     p.add_argument("--small-follow-up", choices=("on", "off"), default="on",
                    help="may a small-tier model be a later tournament candidate (an A/B arm)")
+    p.add_argument("--port-repo", type=Path,
+                   help="git repository that holds the old-branch commits of port tasks (--root is a copy without .git)")
     args = p.parse_args(argv)
     if not 1 <= args.max_tasks <= 10:
         p.error("--max-tasks must be in 1..10")
@@ -2409,7 +2415,7 @@ def main(argv=None):
         if args.execute:
             options.update(review_model=args.review_model or args.large_model,
                            channel_config=args.channels, base_sha=args.base_sha,
-                           small_follow_up=args.small_follow_up == "on")
+                           small_follow_up=args.small_follow_up == "on", port_repo=args.port_repo)
         result = once(root=args.root, plan=args.plan, checkpoint=args.checkpoint,
                       staging=args.staging, small_model=args.small_model,
                       large_model=args.large_model, execute=args.execute,

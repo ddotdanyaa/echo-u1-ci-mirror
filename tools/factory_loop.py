@@ -2005,6 +2005,7 @@ class Loop:
             "--review-model", review, "--channels", str(cfg.channels),
             "--max-tasks", "1", "--max-attempts", str(cfg.max_attempts),
             "--max-model-calls", str(self._call_budget()), "--base-sha", self.base_sha,
+            "--port-repo", str(cfg.repo),    # the runner's --root is a plain copy: a port task's old commit lives here
             "--execute", "--ack-host-access-risk"]
         if (self._run_exps or {}).get("small_follow_up") in EXPERIMENTS["small_follow_up"]:
             cmd += ["--small-follow-up", self._run_exps["small_follow_up"]]
