@@ -82,3 +82,11 @@ def test_own_tuple_bookings_and_the_file_list_bookings_join_without_a_crash():
     seen = Q.view(own, [{'g1': {'minute': [[NOW - 1, 50]], 'request_times': [NOW - 1]}}])
     assert len(seen['g1']['minute']) == 2
     assert C.choose(CH, seen, 100, ENV, now=NOW)['id'] in ('a', 'b')
+
+
+def test_the_view_takes_the_longest_channel_cooling():
+    own = {'channel_cool': {'c1': 10}}
+    other = {'channel_cool': {'c1': 50, 'c2': 7}}
+    assert Q.view(own, [other])['channel_cool'] == {'c1': 50, 'c2': 7}
+    assert Q.view({}, [other])['channel_cool'] == {'c1': 50, 'c2': 7}
+    assert own == {'channel_cool': {'c1': 10}}

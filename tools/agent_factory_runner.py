@@ -2069,16 +2069,21 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
             if isinstance(began, dict):
                 began['booked'] = int(began.get('booked') or 0) + 1      # the pool's admission counts workers that did not book yet
 
+        family = os.path.splitext(task.touch_files[0].replace('\\', '/'))[0] if task.touch_files else ''
+        suffix = ':review' if role == 'review' else ''      # a reviewer must not move the coder's remembered channel
+        affinity = ['task:' + tid + suffix] + (['family:' + family + suffix] if family else [])
+
         for retry in (0, 1):
             selected, at, chosen, kwargs = None, None, preferred, {}
             if configured:
                 route = 'review' if role == 'review' else 'code'
+                live_state = ck.read().get('channel_quotas') or {}    # a fresh private copy: ratings, parked 404s, cooling
                 order = channels.route_order(configured, route, attempt, base_tokens, preferred=preferred,
-                                             exclude_model=exclude_model, skip_tiers=skip_tiers)
+                                             exclude_model=exclude_model, skip_tiers=skip_tiers, state=live_state)
                 if not order and route == 'code':     # no escalation/main channel at all: any channel is better than none
                     order = channels.route_order(configured, route, 1, 0, preferred=preferred,
                                                  exclude_model=exclude_model,   # never a model the tournament tried
-                                                 skip_tiers=skip_tiers)
+                                                 skip_tiers=skip_tiers, state=live_state)
                 if not order:
                     raise NoIndependentReviewer()
                 if not light:
@@ -2093,9 +2098,10 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                     live = channels.usable(order, seen, os.environ) or order   # a dead or keyless channel sets no ceiling
                     tokens = min(base_tokens, max(c['tpm'] for c in live))  # a huge file may not make every channel "too small"
                     pick = channels.choose(order, seen, tokens, os.environ,
-                                           requests=booked)   # a multi-step call needs room
+                                           requests=booked, affinity=affinity)   # a multi-step call needs room
                     charge_call(state, tid)   # BEFORE booking: an exhausted budget must leave no reservation behind
-                    when = channels.reserve(quota, pick, tokens, requests=booked)   # exactly what choose() checked
+                    when = channels.reserve(quota, pick, tokens, requests=booked,
+                                           affinity=affinity)   # exactly what choose() checked
                     if ledger is not None:
                         quota_ledger.publish(ledger, str(checkpoint), quota)
                     booked_one(row)
@@ -2554,7 +2560,13 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                         return reject('gate', 'gate: immutable file changed during pytest',
                                       'pytest changed a frozen file: ' + name, changed)
                 if task.kind == 'unit_test':
-                    ok, why = gate.accept_unit_test(cand)
+                    added = []
+                    for name in changed:     # the test functions this candidate ADDS (all of a new file)
+                        if name in task.tests and name.endswith('.py'):
+                            before = root.joinpath(*name.split('/'))
+                            old_text = before.read_text(encoding='utf-8', errors='replace') if before.is_file() else ''
+                            added += gate.added_tests(old_text, cand_files.get(name, ''))
+                    ok, why = gate.accept_unit_test(cand, added=added)
                 else:
                     ok, why = gate.accept(base, cand, verdict == 'red')
                 if not ok and why.startswith('env:'):

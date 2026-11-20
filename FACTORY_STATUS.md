@@ -1,9 +1,10 @@
 # Factory status (generated, structured data only)
 
-Generated: 2026-11-20T20:32:07Z
-Source commit: sha22cce829c3e4
+Generated: 2026-11-20T20:42:15Z
+Source commit: sha85d04614e26f
 
 ## Commits (sha, time)
+- sha85d04614 2026-11-20T23:41:52+03:00
 - sha22cce829 2026-11-20T23:31:32+03:00
 - sha1a8b7a7a 2026-11-20T23:24:06+03:00
 - sha1f928dc3 2026-11-20T23:22:22+03:00
@@ -23,51 +24,50 @@ Source commit: sha22cce829c3e4
 - sha4901b1ee 2026-11-20T14:53:26+03:00
 - sha9c422638 2026-11-20T14:03:17+03:00
 - shabae3b5dc 2026-11-20T12:57:58+03:00
-- sha20aca72b 2026-11-20T12:18:35+03:00
 
 ## Funnel
 | step | count |
 |---|---|
 | accepted | 0 |
-| claimed | 81 |
-| coded | 35 |
+| claimed | 83 |
+| coded | 37 |
 | found_in_backlog | unknown |
-| gate_pass | 22 |
+| gate_pass | 25 |
 | known_to_loop | 344 |
-| promoted | 21 |
-| ready | 20 |
-| reviewed | 31 |
+| promoted | 23 |
+| ready | 17 |
+| reviewed | 33 |
 | triaged | 64 |
 
-Side counters: blocked=0, parked=0, requeued=1
-Tasks now: DONE=31, FAILED=42, READY=20, RUNNING=1
+Side counters: blocked=2, parked=0, requeued=2
+Tasks now: BLOCKED=2, DONE=32, FAILED=42, READY=17, RUNNING=1
 Accepted: 0
-Promoted: 21
-Free RAM, GB: 3.6
-Telemetry rows: 7433 recognised, 0 unrecognised
+Promoted: 23
+Free RAM, GB: 3.1
+Telemetry rows: 7643 recognised, 0 unrecognised
 
 ## Spend per model
 | model | calls | tokens_in | tokens_out | usage_unknown | http_429 | errors |
 |---|---|---|---|---|---|---|
-| google/gemini-3.1-flash-lite | 453 | 2781064 | 197637 | 25 | 0 | 25 |
-| google/gemini-3.5-flash-lite | 656 | 4351447 | 220814 | 20 | 0 | 20 |
+| google/gemini-3.1-flash-lite | 471 | 2881848 | 202621 | 25 | 0 | 25 |
+| google/gemini-3.5-flash-lite | 669 | 4418451 | 227740 | 20 | 0 | 20 |
 | google/gemini-3.6-flash | 59 | 261862 | 13302 | 18 | 1 | 18 |
-| google/gemma-4-26b-a4b-it | 77 | 169234 | 28932 | 40 | 0 | 40 |
-| google/gemma-4-31b-it | 102 | 104464 | 4138 | 68 | 0 | 68 |
+| google/gemma-4-26b-a4b-it | 85 | 206720 | 29870 | 41 | 0 | 41 |
+| google/gemma-4-31b-it | 103 | 104464 | 4138 | 69 | 0 | 69 |
 | openrouter/cohere/north-mini-code:free | 20 | 69376 | 10273 | 3 | 0 | 4 |
 | openrouter/nvidia/nemotron-3-ultra-550b-a55b:free | 51 | 230417 | 113622 | 1 | 1 | 1 |
 
 ## Spans
 | span | rows | calls |
 |---|---|---|
-| answer | 345 | 0 |
-| gate | 1235 | 0 |
+| answer | 349 | 0 |
+| gate | 1275 | 0 |
 | infra | 120 | 0 |
-| loop | 1400 | 0 |
-| other | 823 | 0 |
-| promote | 29 | 0 |
-| review | 450 | 238 |
-| run | 2953 | 1180 |
+| loop | 1431 | 0 |
+| other | 844 | 0 |
+| promote | 32 | 0 |
+| review | 498 | 265 |
+| run | 3016 | 1193 |
 | triage | 78 | 0 |
 
 ## Channels (model ids)
@@ -93,8 +93,8 @@ Telemetry rows: 7433 recognised, 0 unrecognised
 
 ## Published files
 Modules: 19
-Tests in the cloud: 47
-Tests not in the cloud: 89
+Tests in the cloud: 48
+Tests not in the cloud: 90
 - tests/test_agent_factory.py (backlog-id, email, env-path, key, long-run, owner-name, path, user-path)
 - tests/test_factory_ab.py (backlog-id)
 - tests/test_factory_asked_code.py (dependency)
@@ -170,6 +170,7 @@ Tests not in the cloud: 89
 - tests/test_factory_requeue.py (backlog-id)
 - tests/test_factory_round7.py (backlog-id, call-word, owner-name, path, phone, user-path)
 - tests/test_factory_router.py (backlog-id, long-run)
+- tests/test_factory_router_wiring.py (dependency)
 - tests/test_factory_runtime.py (backlog-id, email, env-path, key, long-run, path, user-path)
 - tests/test_factory_selffix.py (long-run)
 - tests/test_factory_source_guard.py (key)

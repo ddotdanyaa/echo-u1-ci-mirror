@@ -1287,7 +1287,29 @@ def undecided(base: GateResult, cand: GateResult) -> bool:
     return _within(set(cand.timed_out) - set(cand.unrun), base.timed_out)
 
 
-def accept_unit_test(cand_on_base: GateResult, test_text=None, backlog_id=None):
+def added_tests(old_text: str, new_text: str) -> list:
+    """Qualified names (``Class.test_x``) of the test functions ``new_text`` adds to ``old_text``; [] when unreadable."""
+    try:
+        names = _shape(new_text or '')[1]
+    except (SyntaxError, ValueError, RecursionError):
+        return []
+    try:
+        names = names - _shape(old_text or '')[1]
+    except (SyntaxError, ValueError, RecursionError):
+        pass
+    return sorted(names)
+
+
+def _red_id(case_id: str, qualified: str) -> bool:
+    """Does the junit id ``classname::name[params]`` belong to the function ``Class.test_x``?"""
+    klass, _, name = case_id.partition('::')
+    owner, _, leaf = qualified.rpartition('.')
+    if name.split('[', 1)[0] != leaf:
+        return False
+    return not owner or klass.rsplit('.', 1)[-1] == owner.rsplit('.', 1)[-1]
+
+
+def accept_unit_test(cand_on_base: GateResult, test_text=None, backlog_id=None, added=None):
     """unit_test task: the NEW test run on the OLD base code must be red on the merits.
 
     With ``test_text`` and ``backlog_id`` the first line of the new test must be the marker
@@ -1312,6 +1334,13 @@ def accept_unit_test(cand_on_base: GateResult, test_text=None, backlog_id=None):
         return False, 'тест не ловит дефект: на старом коде зелёный'
     if cand_on_base.crashed:
         return False, 'the test crashes before its assertion on the current code: ' + cand_on_base.crashed[0] + ' - call the code the way its signature says and assert the wrong behaviour; if the defect itself is this exception, catch it and call pytest.fail with the reason'
+    # every function the candidate adds must be red here: one that passes pins today's behaviour (an id the environment
+    # turned red is unknown, never a pass)
+    red = tuple(cand_on_base.failed_ids) + tuple(cand_on_base.env_failed)
+    green = [q for q in (added or ()) if not any(_red_id(i, q) for i in red)]
+    if green:
+        return False, ('%s passes on the base code: it pins current behaviour instead of catching the defect'
+                       % ', '.join(green))
     return True, 'ok'
 
 

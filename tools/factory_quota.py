@@ -55,6 +55,12 @@ def view(own, others_list) -> dict:
                     seen['model_cool'] = {}
                 for m, t in v.items():
                     seen['model_cool'][m] = max(seen['model_cool'].get(m, 0), t)
+            elif k == 'channel_cool':
+                if 'channel_cool' not in seen:
+                    seen['channel_cool'] = {}
+                for c_id, t in v.items():
+                    if isinstance(t, (int, float)):
+                        seen['channel_cool'][c_id] = max(seen['channel_cool'].get(c_id, 0), t)
             elif k == 'dead':
                 if 'dead' not in seen:
                     seen['dead'] = {}
