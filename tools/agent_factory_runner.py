@@ -30,7 +30,7 @@ import urllib.request
 import dataclasses
 from dataclasses import replace
 
-from .agent_factory import (BudgetExhausted, DEFER_REASONS, LEASE_LIFETIME_S, LOCK_OWNER, MODEL_ID, InvalidPlan, Task, acquire, add_feedback, charge_call,
+from .agent_factory import (BudgetExhausted, DEFER_REASONS, LEASE_LIFETIME_S, LOCK_OWNER, MODEL_ID, InputTooLarge, InvalidPlan, Task, acquire, add_feedback, charge_call,
                             defer, defer_streak, seconds_to_local_midnight,
                             load_state, read_plan, ready, redact, REPEAT_MARK,
                             route, quarantine, safe_path, safe_source, save_atomic, settle)
@@ -553,7 +553,14 @@ def unified_diff(baseline: dict[str, bytes], workdir: Path, names, limit: int) -
         new = path.read_bytes().decode('utf-8', 'replace').splitlines(keepends=True)
         chunks.extend(difflib.unified_diff(old, new, 'a/' + name, 'b/' + name, n=2))
     text = redact(''.join(chunks))
-    return text if len(text) <= limit else text[:limit] + '\n[diff truncated]\n'
+    return text if len(text) <= limit else text[:limit] + DIFF_CUT % limit
+
+
+# the cut of a diff named as a cut, not as the end of the change: live 20.11 07:48 a critic rejected a self-fix whose
+# code had passed the gate as "truncated ... incomplete and syntactically invalid"
+DIFF_CUT = '\n[the diff is cut here at %d characters; the rest of the change is not shown]\n'
+GATE_PASSED = (' The candidate already compiles and passes the task tests (the gate ran them before you): never reject '
+               'it for syntax, imports or the cut of the diff; judge what the change does.')
 
 
 REVIEW_CHECKS = (
@@ -637,7 +644,7 @@ def review_candidate(task: Task, workdir: Path, model: str, invoke, *,
                    'Find what they missed or got wrong; do not repeat their remarks.\n') if prior else ''
         told = ('Earlier candidates of this task were rejected for:\n' + rejected[-REVIEW_NOTE_LIMIT:] +
                 '\nReject this candidate if it still has a defect named there.\n') if rejected else ''
-        head = ('Review this patch task: ' + redact(task.title) + '.\n' + checks + told +
+        head = ('Review this patch task: ' + redact(task.title) + '.\n' + checks + GATE_PASSED + '\n' + told +
                 (' The task files are below: small files whole, a large file as its outline and the parts that '
                  'matter. Judge the candidate by its diff and the code shown; never reject it only because some '
                  'code is not shown.\n' if light else
@@ -1961,6 +1968,11 @@ def _pass_inner(tasks, task: Task, state: dict, *, checkpoint: Path, root: Path,
             report['reason_detail'] = scrub(redact(base.diag))[:300]
             return release_or_block('gate_unknown', INFRA_DEFER_S)
 
+        def red_on(model) -> None:
+            """<id>: the test ids the candidate of ``model`` was red on, for the loop's audit of a factory test."""
+            ids = sorted(getattr(ctx.get('counts'), 'failed_ids', ()) or ())
+            ctx.setdefault('gate_red', []).append([str(model or ''), ids])
+
         # 3. Deterministic gates (factory_gate only). A decision, not a settlement: a dict ends the pass; a
         # _GateRetry is a real test failure the tournament may answer with another model; (changed, receipt) goes on.
         def run_gates():
@@ -2193,6 +2205,7 @@ def _pass_inner(tasks, task: Task, state: dict, *, checkpoint: Path, root: Path,
                 if not isinstance(decision, _GateRetry):
                     break                            # passed, or a final result (environment, unknown neighbour, ...)
                 gate_failed.append(ctx['coder_model'])
+                red_on(ctx['coder_model'])
                 events.append('tournament_gate_retry_%d' % (k + 1))
                 next_note = gate_note(decision)
             if size > 1:
@@ -2202,9 +2215,14 @@ def _pass_inner(tasks, task: Task, state: dict, *, checkpoint: Path, root: Path,
                     report['tournament']['gate_failed'] = list(gate_failed)
         if decision is None:
             decision = run_gates()                   # the standing candidate (or the kept one of a pending review)
-            if isinstance(decision, _GateRetry) and 'tournament' in report:
-                report['tournament']['gate_failed'] = report['tournament'].get('gate_failed', []) + [ctx['coder_model']]
+            if isinstance(decision, _GateRetry):
+                red_on(ctx.get('coder_model'))
+                if 'tournament' in report:
+                    report['tournament']['gate_failed'] = (report['tournament'].get('gate_failed', [])
+                                                           + [ctx['coder_model']])
         if isinstance(decision, _GateRetry):
+            if ctx.get('gate_red'):                  # <id>: which test ids each red model failed on (the loop's audit)
+                report['gate_red'] = ctx['gate_red']
             return reject(*decision.reject_args)     # the pass ends on its last gate failure: ONE rejection
         if isinstance(decision, dict):
             return decision
@@ -2289,7 +2307,9 @@ def _pass_inner(tasks, task: Task, state: dict, *, checkpoint: Path, root: Path,
                      (error, channels.PROMPT_LIMIT_CHARS))
     except Exception as error_obj:  # noqa: BLE001 - fail closed, never retry an uncertain worker
         text = scrub(redact(str(error_obj)))[:300]
-        if isinstance(error_obj, InvalidPlan) and 'budget' in text:  # prepare()/packet(): context over budget
+        # prepare()/packet(): context over budget; a source over SOURCE_MAX_BYTES is the same resource limit (live 20.11:
+        # it read 'scope_violation', the question asked "which files?" and the factory never retried the 6 rows)
+        if isinstance(error_obj, InputTooLarge) or (isinstance(error_obj, InvalidPlan) and 'budget' in text):
             return block('context_too_large', text)
         if isinstance(error_obj, OSError):   # antivirus, a locked file, a full disk: the machine, not the task
             report['error_type'] = type(error_obj).__name__

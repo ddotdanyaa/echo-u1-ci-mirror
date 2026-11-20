@@ -69,6 +69,10 @@ class BudgetExhausted(InvalidPlan):
     """The daily model-call budget is spent (resets at local midnight)."""
 
 
+class InputTooLarge(InvalidPlan):
+    """A source over SOURCE_MAX_BYTES: a resource limit (the task blocks as context_too_large), never a scope violation."""
+
+
 def safe_path(value: str) -> str:
     """Fail closed on traversal, hidden/system secrets, odd Windows filenames."""
     if not isinstance(value, str) or not value or "\\" in value or ":" in value:
@@ -846,19 +850,49 @@ def backoff(attempt: int, *, base: float = 2.0, cap: float = 20.0) -> float:
     return min(cap, base * 2 ** min(attempt, 16))
 
 
-def safe_source(path: Path, *, max_size: int = 200_000) -> bytes:
-    """Reject symlinks, non-UTF8, suspicious secrets and oversized inputs."""
-    if path.is_symlink() or not path.is_file() or path.stat().st_size > max_size:
-        raise InvalidPlan("input requires trusted local review")
+# Live 20.11: under a 200 000-byte cap the product's largest file (echo_sync/cm_kind.py, 330 715 bytes) refused every
+# task that named it - 6 rows blocked for good as 'scope_violation' ("input requires trusted local review"). A big file
+# reaches a model as an outline plus fragments, so render() bounds what a model sees, not the size of the file.
+SOURCE_MAX_BYTES = 1_000_000
+_ASSIGNMENT = re.compile(r"(?i)(?:password|api[_-]?key|client_secret)\s*[:=]")
+_KEYWORD_VALUE = re.compile(r"(?i)(?:password|api[_-]?key|client_secret)\s*[:=]\s*(?:continue|nonlocal)\s*$")
+
+
+def secret_in_source(text: str) -> bool:
+    """SECRET in a source file, minus two shapes of code that only look like a key (live 20.11, 2 product files):
+    a key prefix inside a word (the name of a speech model whose word 'vosk' ends in the two letters of a key prefix,
+    followed by a dash) and a Python keyword after the name password and a colon (an if on parts.password whose body
+    is continue). An assignment of a value always counts, also inside a longer name. redact() masks both shapes in
+    free text all the same."""
+    for match in SECRET.finditer(text):
+        found = match.group(0)
+        if _ASSIGNMENT.match(found):
+            if _KEYWORD_VALUE.match(found):
+                continue
+            return True
+        before = text[match.start() - 1] if match.start() else ''
+        if before.isalnum() or before == '_':
+            continue
+        return True
+    return False
+
+
+def safe_source(path: Path, *, max_size: int | None = None) -> bytes:
+    """Reject symlinks, non-UTF8, suspicious secrets and oversized inputs; every refusal names the file."""
+    limit = SOURCE_MAX_BYTES if max_size is None else max_size
+    if path.is_symlink() or not path.is_file():
+        raise InvalidPlan("input is not a regular file: %s" % path.name)
+    if path.stat().st_size > limit:
+        raise InputTooLarge("input over %d bytes: %s" % (limit, path.name))
     data = path.read_bytes()
     if b"\x00" in data:
-        raise InvalidPlan("binary input")
+        raise InvalidPlan("binary input: %s" % path.name)
     try:
         text = data.decode("utf-8")
     except UnicodeDecodeError as e:
-        raise InvalidPlan("not UTF-8") from e
-    if SECRET.search(text):
-        raise InvalidPlan("potential secret; private review required")
+        raise InvalidPlan("not UTF-8: %s" % path.name) from e
+    if secret_in_source(text):
+        raise InvalidPlan("potential secret in %s; private review required" % path.name)
     return data
 
 

@@ -1,9 +1,12 @@
 # Factory status (generated, structured data only)
 
-Generated: 2026-11-20T04:45:16Z
-Source commit: sha418bd7047973
+Generated: 2026-11-20T05:22:37Z
+Source commit: sha389125d84b8f
 
 ## Commits (sha, time)
+- sha389125d8 2026-11-20T08:22:19+03:00
+- shaab44c66a 2026-11-20T08:21:26+03:00
+- sha9d8c2b32 2026-11-20T07:59:21+03:00
 - sha418bd704 2026-11-20T07:44:57+03:00
 - sha6a1742d8 2026-11-20T07:02:07+03:00
 - sha51a8356d 2026-11-20T06:50:04+03:00
@@ -21,9 +24,6 @@ Source commit: sha418bd7047973
 - shad68d3a33 2026-11-20T03:41:01+03:00
 - sha0a612339 2026-11-20T03:38:35+03:00
 - shad27142b9 2026-11-20T03:23:44+03:00
-- sha91e696cc 2026-11-20T03:09:39+03:00
-- sha886e6076 2026-11-20T02:57:14+03:00
-- shaad200c31 2026-11-20T02:53:56+03:00
 
 ## Funnel
 | step | count |
@@ -35,39 +35,39 @@ Source commit: sha418bd7047973
 | gate_pass | 13 |
 | known_to_loop | 352 |
 | promoted | 13 |
-| ready | 7 |
+| ready | 6 |
 | reviewed | 15 |
 | triaged | 40 |
 
-Side counters: blocked=15, parked=0, requeued=0
-Tasks now: BLOCKED=15, DONE=20, FAILED=13, READY=7, RUNNING=1
+Side counters: blocked=11, parked=0, requeued=0
+Tasks now: BLOCKED=11, DONE=26, FAILED=12, READY=6, RUNNING=1
 Accepted: 0
 Promoted: 13
-Free RAM, GB: 3.33
-Telemetry rows: 3479 recognised, 0 unrecognised
+Free RAM, GB: 2.93
+Telemetry rows: 3511 recognised, 0 unrecognised
 
 ## Spend per model
 | model | calls | tokens_in | tokens_out | usage_unknown | http_429 | errors |
 |---|---|---|---|---|---|---|
-| google/gemini-3.1-flash-lite | 172 | 855443 | 59402 | 9 | 0 | 9 |
-| google/gemini-3.5-flash-lite | 324 | 2010321 | 78134 | 13 | 0 | 13 |
+| google/gemini-3.1-flash-lite | 175 | 883392 | 60009 | 9 | 0 | 9 |
+| google/gemini-3.5-flash-lite | 327 | 2035949 | 78729 | 13 | 0 | 13 |
 | google/gemini-3.6-flash | 24 | 69915 | 3702 | 6 | 1 | 6 |
-| google/gemma-4-26b-a4b-it | 42 | 107516 | 28677 | 16 | 0 | 16 |
-| google/gemma-4-31b-it | 66 | 60152 | 3140 | 43 | 0 | 43 |
+| google/gemma-4-26b-a4b-it | 43 | 107516 | 28677 | 17 | 0 | 17 |
+| google/gemma-4-31b-it | 67 | 60152 | 3140 | 44 | 0 | 44 |
 | openrouter/cohere/north-mini-code:free | 20 | 69376 | 10273 | 3 | 0 | 4 |
 | openrouter/nvidia/nemotron-3-ultra-550b-a55b:free | 51 | 230417 | 113622 | 1 | 1 | 1 |
 
 ## Spans
 | span | rows | calls |
 |---|---|---|
-| answer | 193 | 0 |
-| gate | 688 | 0 |
+| answer | 201 | 0 |
+| gate | 691 | 0 |
 | infra | 90 | 0 |
-| loop | 688 | 0 |
-| other | 180 | 0 |
+| loop | 694 | 0 |
+| other | 181 | 0 |
 | promote | 17 | 0 |
 | review | 165 | 88 |
-| run | 1428 | 611 |
+| run | 1442 | 619 |
 | triage | 30 | 0 |
 
 ## Channels (model ids)
@@ -94,7 +94,7 @@ Telemetry rows: 3479 recognised, 0 unrecognised
 ## Published files
 Modules: 19
 Tests in the cloud: 46
-Tests not in the cloud: 61
+Tests not in the cloud: 64
 - tests/test_agent_factory.py (backlog-id, email, env-path, key, long-run, owner-name, path, user-path)
 - tests/test_factory_ab.py (backlog-id)
 - tests/test_factory_asked_code.py (dependency)
@@ -102,6 +102,7 @@ Tests not in the cloud: 61
 - tests/test_factory_channels.py (long-run)
 - tests/test_factory_context.py (env-path, key, long-run, owner-name, path, short-name, user-path)
 - tests/test_factory_context_fit_whole.py (backlog-id)
+- tests/test_factory_critic_gate_told.py (dependency)
 - tests/test_factory_critic_prior.py (backlog-id)
 - tests/test_factory_decompose.py (backlog-id, call-word, email)
 - tests/test_factory_feedback_window.py (backlog-id)
@@ -149,8 +150,10 @@ Tests not in the cloud: 61
 - tests/test_factory_round7.py (backlog-id, call-word, owner-name, path, phone, user-path)
 - tests/test_factory_runtime.py (backlog-id, email, env-path, key, long-run, path, user-path)
 - tests/test_factory_selffix.py (long-run)
+- tests/test_factory_source_guard.py (key)
 - tests/test_factory_spec.py (backlog-id)
 - tests/test_factory_status.py (backlog-id)
+- tests/test_factory_test_audit.py (backlog-id)
 - tests/test_factory_tournament.py (dependency)
 - tests/test_factory_tournament_gate.py (dependency)
 - tests/test_factory_triage.py (backlog-id, call-word, email, env-path, phone)

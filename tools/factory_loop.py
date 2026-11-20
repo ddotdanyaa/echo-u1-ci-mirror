@@ -1939,6 +1939,9 @@ class Loop:
                     or "no change" in fb_all.lower():
                 cand = ", ".join(sorted(set((t.touch_files + t.read_files) if t else ())))
                 q = "область задачи не подошла. Кандидаты (touch/read): %s. Какие файлы менять?" % cand
+                # the refusal itself (live 20.11: six rows read "which files?" while the cause was a size cap of
+                # the factory, invisible here; the head cannot answer a cause it is not shown)
+                q += " Причина: " + (fb[-200:] or reason)
             else:
                 q = "последнее замечание: " + (fb or "нет")
             lines += [head, "  вопрос: " + q,
@@ -2168,11 +2171,27 @@ class Loop:
                 words = " ".join(re.findall(r"[a-zа-яё_]{2,}", text)[:6])
         return (self._reason_class(rkey) + "|" + words), words
 
+    def _audit_factory_test(self, tid: str, res: dict) -> None:
+        """<id>: when two or more models of one pass were red on the same test of the row's promoted factory test task,
+        that test goes back to its task at once (factory_requeue.audit_after_pass); a fault never stops the loop."""
+        from tools import factory_requeue
+        try:
+            tasks, state = self.load()
+            test = factory_requeue.audit_after_pass(
+                self.cfg.state_dir, state, tid, res, _ROOT.name,
+                lambda t: tasks[t].tests if t in tasks else (), check=self._check_note)
+            if test:
+                self.event("audit", task_id=tid, status="test_sent_back", reason=test)
+        except Exception as e:
+            self.err("audit after pass", e)
+
     def _learn_from_run(self, tid: str, tasks, rkey: str, res: dict) -> None:
         """A rejection (gate:*, weakening:*, review:*) is remembered per task and per file; the second time the
         same signature comes back the next brief says so and the task's channel tier goes one step up."""
         if not tid or not rkey.startswith(REJECT_PREFIXES) or rkey == "gate:no_changes":
             return
+        if rkey.startswith("gate:") and res.get("gate_red"):
+            self._audit_factory_test(tid, res)
         try:
             tasks2, state = self.load()
             remark = next((str(x.get("text") or "") for x in reversed(state["tasks"].get(tid, {}).get("feedback") or [])
