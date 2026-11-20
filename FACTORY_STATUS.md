@@ -1,9 +1,10 @@
 # Factory status (generated, structured data only)
 
-Generated: 2026-11-20T14:40:57Z
-Source commit: sha630c2d6118b0
+Generated: 2026-11-20T15:12:04Z
+Source commit: shae502ceb78347
 
 ## Commits (sha, time)
+- shae502ceb7 2026-11-20T18:11:39+03:00
 - sha630c2d61 2026-11-20T17:40:37+03:00
 - shad326bd73 2026-11-20T16:31:24+03:00
 - sha65516f8e 2026-11-20T16:30:41+03:00
@@ -23,7 +24,6 @@ Source commit: sha630c2d6118b0
 - sha389125d8 2026-11-20T08:22:19+03:00
 - shaab44c66a 2026-11-20T08:21:26+03:00
 - sha9d8c2b32 2026-11-20T07:59:21+03:00
-- sha418bd704 2026-11-20T07:44:57+03:00
 
 ## Funnel
 | step | count |
@@ -43,8 +43,8 @@ Side counters: blocked=0, parked=0, requeued=0
 Tasks now: DONE=28, FAILED=38
 Accepted: 0
 Promoted: 15
-Free RAM, GB: 3.58
-Telemetry rows: 5303 recognised, 0 unrecognised
+Free RAM, GB: 3.25
+Telemetry rows: 5312 recognised, 0 unrecognised
 
 ## Spend per model
 | model | calls | tokens_in | tokens_out | usage_unknown | http_429 | errors |
@@ -63,12 +63,12 @@ Telemetry rows: 5303 recognised, 0 unrecognised
 | answer | 287 | 0 |
 | gate | 887 | 0 |
 | infra | 97 | 0 |
-| loop | 1029 | 0 |
-| other | 459 | 0 |
+| loop | 1036 | 0 |
+| other | 460 | 0 |
 | promote | 19 | 0 |
 | review | 182 | 97 |
 | run | 2292 | 994 |
-| triage | 51 | 0 |
+| triage | 52 | 0 |
 
 ## Channels (model ids)
 - g-3-1-flash-lite
@@ -94,7 +94,7 @@ Telemetry rows: 5303 recognised, 0 unrecognised
 ## Published files
 Modules: 19
 Tests in the cloud: 47
-Tests not in the cloud: 77
+Tests not in the cloud: 78
 - tests/test_agent_factory.py (backlog-id, email, env-path, key, long-run, owner-name, path, user-path)
 - tests/test_factory_ab.py (backlog-id)
 - tests/test_factory_asked_code.py (dependency)
@@ -134,6 +134,7 @@ Tests not in the cloud: 77
 - tests/test_factory_loop_d8d.py (backlog-id, call-word, key, long-run, phone)
 - tests/test_factory_loop_d8e.py (long-run)
 - tests/test_factory_loop_discover.py (env-path)
+- <redacted-name> (backlog-id, path)
 - tests/test_factory_loop_git.py (backlog-id)
 - tests/test_factory_loop_parents.py (dependency)
 - tests/test_factory_loop_r7.py (backlog-id, ip, key, long-run, phone)

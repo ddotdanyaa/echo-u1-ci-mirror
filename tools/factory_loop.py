@@ -284,6 +284,8 @@ class Config:
     chunk: int = 60
     triage_retry_s: int = 1800
     triage_idle_sleep: int = 120
+    seen_retry_s: int = 21600       # <id>: a skipped/stale backlog row is triaged again after this term, edit or not
+    requeue_term_s: int = 3600      # <id>: a FAILED task of a retryable class is given back this long after its last try
 
 
 class _Later(Exception):
@@ -1104,6 +1106,8 @@ class Loop:
         if name == "TRIAGE":
             out = self._triage(state, tasks, ls, now)
             if not self.pool.workers:
+                if out.status == "empty":       # <id>: the backlog gave nothing: a FAILED task past its term instead
+                    return self._idle_requeue(tasks, state, now) or out
                 return out
             if out.proof:
                 self._series_ok()              # triage worked while a runner works: then the iteration waits for it
@@ -1115,8 +1119,13 @@ class Loop:
         if name == "WAIT":
             return Outcome(sleep=min(max(float(act.get("wait_s") or 0), 5), 60),
                            action="WAIT", reason=why)
+        if name in ("HOLD", "DONE"):
+            got = self._idle_requeue(tasks, state, now)
+            if got is not None:
+                return got
         if name == "HOLD":
             self._write_questions(tasks, state, ls)
+            self._write_reconcile(tasks, state, self.ls(), now)
             sleep = cfg.hold_sleep
             if isinstance(act.get("wait_s"), (int, float)):     # the earliest block term ends the HOLD
                 sleep = min(sleep, max(5.0, float(act["wait_s"])))
@@ -1998,8 +2007,65 @@ class Loop:
             mtime = self.cfg.backlog.stat().st_mtime
         except OSError:
             return False
+        if any(self._seen_expired(rec, now) for rec in (ls.get("seen") or {}).values()):
+            return True                      # <id>: a skipped/stale row's term is over: it gets a fresh look
         mark = ls.get("triage_empty")
         return not (mark and mark.get("mtime") == mtime and now < mark.get("until", 0))
+
+    @staticmethod
+    def _seen_expired(rec, now: float) -> bool:
+        """A seen row without a term (the bare word of older loops) counts as expired."""
+        try:
+            return not isinstance(rec, dict) or float(rec.get("until") or 0) <= now
+        except (TypeError, ValueError):
+            return True
+
+    SEEN_KNOWN = "уже известна"            # the triage's word for a row the loop already holds: not booked as seen
+    STALE_REASON = "закрыта коммитом <ID>: на HEAD; строку бэклога обновить"
+
+    def _book_seen(self, ls, res, now) -> None:
+        """<id> («у каждого запрета или блокировки в журнале есть причина и срок»): every stale/skipped row is booked
+        with its reason and a term (cfg.seen_retry_s); rows the loop already holds are not booked (their state is the
+        queue, the holds or the closed book). A row past its term that the triage did not report again is dropped."""
+        cfg = self.cfg
+        until = now + cfg.seen_retry_s
+        reported = set()
+        for key in ("stale", "skipped"):
+            for item in res.get(key) or []:
+                bid = item if isinstance(item, str) else (
+                    item.get("backlog_id") if isinstance(item, dict) else None)
+                if not bid:
+                    continue
+                reported.add(bid)
+                why = (item.get("reason") if isinstance(item, dict) else "") or ""
+                if key == "skipped" and str(why).startswith(self.SEEN_KNOWN):
+                    # a live seen row is passed as known, so the triage calls it known: its term stays (popping it
+                    # here re-triaged every seen row on every second triage, whatever its term)
+                    if self._seen_expired(ls["seen"].get(bid), now):
+                        ls["seen"].pop(bid, None)
+                    continue
+                why = self._scrub(F.redact(str(why)))[:200] if why else (
+                    self.STALE_REASON if key == "stale" else "пропущена триажем")
+                ls["seen"][bid] = {"kind": key, "reason": why, "until": until}
+        for bid, rec in list(ls["seen"].items()):
+            if bid not in reported and self._seen_expired(rec, now):
+                ls["seen"].pop(bid, None)
+        ls["skipped_unknown"] = {
+            str(x["backlog_id"]): self._scrub(F.redact(str(x.get("state") or "")))[:60]
+            for x in res.get("skipped_unknown") or [] if isinstance(x, dict) and x.get("backlog_id")}
+        ls["deferred"] = {
+            str(x.get("backlog_id") if isinstance(x, dict) else x):
+                self._scrub(F.redact(str(x.get("reason") if isinstance(x, dict) else "") or "отложена"))[:200]
+            for x in res.get("deferred") or [] if (x.get("backlog_id") if isinstance(x, dict) else x)}
+
+    def _defer_seen(self, ls, now) -> None:
+        """The triage failed: expired seen rows wait one more triage_retry_s (no busy re-triage of a broken backlog)."""
+        for rec in (ls.get("seen") or {}).values():
+            if isinstance(rec, dict) and self._seen_expired(rec, now):
+                rec["until"] = now + self.cfg.triage_retry_s
+        for bid, rec in list((ls.get("seen") or {}).items()):
+            if not isinstance(rec, dict):
+                ls["seen"][bid] = {"kind": str(rec), "reason": "пропущена триажем", "until": now + self.cfg.triage_retry_s}
 
     def _triage(self, state, tasks, ls, now) -> Outcome:
         cfg = self.cfg
@@ -2012,7 +2078,8 @@ class Loop:
         if ls.get("seen_mtime") != mtime:  # backlog edited: stale/skipped rows get a fresh look
             ls["seen"], ls["seen_mtime"] = {}, mtime
             self._refresh_profile_attempts(ls)
-        known |= set(ls["holds"]) | set(ls["seen"]) | set(ls["closed"])
+        known |= set(ls["holds"]) | set(ls["closed"])
+        known |= {b for b, rec in ls["seen"].items() if not self._seen_expired(rec, now)}
         known |= {b for b, rec in (ls.get("parents") or {}).items()
                   if rec.get("children") and all(c in known for c in rec["children"])}   # all parts exist: no re-import
         t0 = self.clock()
@@ -2026,22 +2093,19 @@ class Loop:
             res = fn(**kwargs)
         except ValueError as e:  # the backlog cannot be parsed: not infrastructure, try after an edit
             ls["triage_empty"] = {"mtime": mtime, "until": now + cfg.triage_retry_s}
+            self._defer_seen(ls, now)
             self.save_ls(ls)
             self.event("triage", status="empty", reason="backlog_unparsable: " + F.redact(str(e))[:120])
             return Outcome(action="TRIAGE", reason="backlog_unparsable", status="empty",
                            sleep=cfg.triage_idle_sleep)
         except NotImplementedError as e:
             ls["triage_empty"] = {"mtime": mtime, "until": now + cfg.triage_retry_s}
+            self._defer_seen(ls, now)
             self.save_ls(ls)
             self.event("triage", status="empty",
                        reason="triage_not_implemented: " + F.redact(str(e))[:120])
             return Outcome(action="TRIAGE", reason="triage_not_implemented", status="empty")
-        for key in ("stale", "skipped"):
-            for item in res.get(key) or []:
-                bid = item if isinstance(item, str) else (
-                    item.get("backlog_id") if isinstance(item, dict) else None)
-                if bid:
-                    ls["seen"][bid] = key
+        self._book_seen(ls, res, now)
         portion = list(res.get("tasks") or [])
         new_holds = []
         added = []
@@ -2082,9 +2146,10 @@ class Loop:
         ls["triage_empty"] = None if (progress or deferred) else {"mtime": mtime,
                                                                    "until": now + cfg.triage_retry_s}
         self.save_ls(ls)
+        tasks2, state2 = self.load()
         if new_holds:
-            tasks2, state2 = self.load()
             self._write_questions(tasks2, state2, ls)
+        self._write_reconcile(tasks2, state2, ls, now)
         self.event("triage", status="added" if progress else "empty", dur_s=round(
             self.clock() - t0, 3), reason="added=%d holds=%d skipped=%d stale=%d" % (
             len(added), len(new_holds), len(res.get("skipped") or ()), len(res.get("stale") or ())),
@@ -2211,6 +2276,92 @@ class Loop:
                             if h == "closed" or (b in texts and texts[b] == h)}
         except Exception as e:
             self.err("closed rows refresh", e)
+
+    # the task state that speaks for a backlog row with several tasks: the least finished one
+    RECONCILE_ORDER = ("RUNNING", "REVIEW", "READY", "BLOCKED", "FAILED", "DONE", "PROMOTED")
+
+    def _write_reconcile(self, tasks, state, ls, now) -> None:
+        """<id> («Утром сверка с бэклогом: ни одной забытой задачи»): <state>/reconcile.json maps EVERY backlog row
+        to where the loop holds it, with a reason and a term: the queue (the task state wins), a triage hold, the
+        closed book, a cut parent, a stale or skipped row (seen, with its term), a deferred row, a row whose state
+        wording is not recognised, or a row the triage has not reached yet. Ids and the loop's own words only."""
+        try:
+            self._write_reconcile_now(tasks, state, ls, now)
+        except Exception as e:                       # the report never stops the loop
+            self.err("reconcile", e)
+
+    def _write_reconcile_now(self, tasks, state, ls, now) -> None:
+        from tools import factory_requeue
+        rows = {}
+        try:
+            from tools import agent_factory_import as imp
+            md = Path(self.cfg.backlog).read_bytes().decode("utf-8-sig")
+            backlog = [(r["backlog_id"], bool(r.get("open", True))) for r in imp.parse_section4(md)]
+        except Exception as e:
+            self.err("reconcile: backlog unreadable", e)
+            backlog = []
+        try:
+            ledger = json.loads((self.cfg.state_dir / "requeue_ledger.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            ledger = {}
+        order = {s: i for i, s in enumerate(self.RECONCILE_ORDER)}
+        for tid, row in sorted(state["tasks"].items()):
+            t = tasks.get(tid)
+            bid = row.get("backlog_id") or (t.backlog_id if t else "")
+            if not bid:
+                continue
+            old = rows.get(bid)
+            if old and order.get(old["state"], 99) <= order.get(row["status"], 99):
+                continue
+            rec = {"state": row["status"], "task_id": tid,
+                   "reason": self.rs(row.get("blocked_reason") or row.get("reason") or row["status"].lower(), 200),
+                   "until": self._iso(float(row["block_until"])) if type(row.get("block_until")) in (int, float)
+                   else None}
+            if row["status"] in ("FAILED", "BLOCKED"):
+                used = len(ledger.get(tid) or [])
+                rec["returns"] = "%d/3" % used
+                if t is not None and (t.only_opus or not t.privacy_safe):
+                    rec["owner"] = "only_opus/private: делает Opus"
+                elif used < 3 and rec["until"] is None:
+                    rec["until"] = self._iso(max(now, factory_requeue.last_try(ledger, tid) + self.cfg.requeue_term_s))
+            rows[bid] = rec
+
+        def put(bid, state_name, reason, until=None):
+            if bid and bid not in rows:
+                rows[bid] = {"state": state_name, "reason": self.rs(reason or state_name, 200), "until": until}
+        for bid, q in (ls.get("holds") or {}).items():
+            put(bid, "hold", q)
+        for bid in ls.get("closed") or {}:
+            put(bid, "closed", "закрыта в книге петли")
+        for bid, rec in (ls.get("parents") or {}).items():
+            put(bid, "parts", "разрезана на %s частей: %s" % (rec.get("parts"), ",".join(rec.get("children") or [])))
+        for bid, rec in (ls.get("seen") or {}).items():
+            if isinstance(rec, dict):
+                put(bid, "stale" if rec.get("kind") == "stale" else "seen", rec.get("reason"),
+                    self._iso(float(rec.get("until") or now)))
+            else:
+                put(bid, "stale" if rec == "stale" else "seen", "пропущена триажем (без срока, старая запись)", None)
+        for bid, why in (ls.get("deferred") or {}).items():
+            put(bid, "deferred", why)
+        for bid, st in (ls.get("skipped_unknown") or {}).items():
+            put(bid, "unknown_state", "формулировка состояния не распознана: " + (st or "?"))
+        for bid, is_open in backlog:
+            if is_open:
+                put(bid, "untriaged", "триаж ещё не дошёл до строки")
+            else:
+                put(bid, "closed_in_backlog", "закрыта в бэклоге")
+        counts = {}
+        for r in rows.values():
+            counts[r["state"]] = counts.get(r["state"], 0) + 1
+        body = {"backlog_rows": len(backlog), "counts": dict(sorted(counts.items())), "rows": dict(sorted(rows.items()))}
+        path = self.cfg.state_dir / "reconcile.json"
+        try:
+            old = json.loads(path.read_text(encoding="utf-8"))
+            old.pop("updated", None)
+        except (OSError, ValueError):
+            old = None
+        if old != body:
+            F.save_atomic(path, {"updated": self.ts(), **body})
 
     def _write_questions(self, tasks, state, ls) -> None:
         lines = ["# Вопросы к Opus (обновлено %s)\n" % self.ts(), "## Задачи BLOCKED / FAILED"]
@@ -3266,6 +3417,33 @@ class Loop:
                 os.environ.pop(name, None)
             else:
                 os.environ[name] = value
+
+    def _idle_requeue(self, tasks, state, now):
+        """<id> (live 20.11: HOLD only_opus_or_blocked with 7 FAILED tasks of a retryable class that only a new factory
+        version would have given back): nothing runnable, so every F.BLOCK_TERM_S the FAILED/BLOCKED tasks whose last
+        return is older than cfg.requeue_term_s go back through the answer box (factory_requeue, max 3 shared). Only
+        Opus and private tasks are never given back to an external model. Outcome, or None (nothing given back)."""
+        from tools import factory_requeue
+        if not any(r.get("status") in ("FAILED", "BLOCKED") for r in state["tasks"].values()):
+            return None
+        ls = self.ls()
+        if now - float(ls.get("requeue_at") or 0) < F.BLOCK_TERM_S:
+            return None
+        ls["requeue_at"] = now
+        self.save_ls(ls)
+        skip = {tid for tid, t in tasks.items() if t.only_opus or not t.privacy_safe}
+        skip |= set(state["tasks"]) - set(tasks)    # no plan row: privacy unknown, never given to an external model
+        try:
+            done = factory_requeue.run(self.cfg.state_dir, _ROOT.name, skip=skip, check=self._check_note,
+                                       now=now, term_s=self.cfg.requeue_term_s)
+        except Exception as e:
+            self.err("idle requeue", e)
+            return None
+        if not done:
+            return None
+        text = "term %ds: %s" % (self.cfg.requeue_term_s, ",".join(done))
+        self.event("loop", action="REQUEUE", status="ok", reason=text[:200])
+        return Outcome(sleep=1, action="REQUEUE", reason=self.rs(text, 200))
 
     def _requeue_on_new_version(self) -> None:
         """<id>: a new factory version gets one more try at the FAILED/BLOCKED tasks whose failure class it may have
