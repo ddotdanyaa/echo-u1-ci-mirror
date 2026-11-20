@@ -78,6 +78,21 @@ _DUP_MARK = re.compile(r"^[\s*`]*(?:\[[^\]]*\][\s*`]*)?(?:дубль|отказ)
 
 def _marked_duplicate(cells: list) -> bool:
     return any(_DUP_MARK.match(part) for cell in cells for part in cell.split(" · "))
+
+
+# A port (live 20.11): "реализовано на ветке ... `<sha>`" waited for a merge of an old branch that never comes (the
+# unified code is rebuilt from inside, the old layout is not merged), so 22 rows waited for good while their guard
+# tests are red on the head. With the commit named and no other wait in the state, the row is OPEN as a port task
+# (factory_port: the commit's diff is the coder's reference); without a commit it still waits.
+_IMPLEMENTED = re.compile(r"(?<![\w])(?<!не )реализован\w*(?![\w])", re.I)
+
+
+def _port_of(state: str) -> str:
+    from tools.factory_port import port_sha
+    sha = port_sha(state)
+    if not sha or STRONG_WAIT.search(state):
+        return ""
+    return "" if any(WAITING.search(_IMPLEMENTED.sub("", h)) for h in _heads(state)) else sha
 STRONG_WAIT = re.compile(_B % r"нужен телефон|ждёт записи\w*|ждет записи\w*|ждёт владельца|ждет владельца", re.I)  # whole state
 CLOSED = re.compile(r"(?<![\w])(?<!не )(?:сделано|закрыто|готово|выложено|выполнено)(?![\w])", re.I)
 OPEN_WORD = re.compile(r"(?<![\w])(?:не сделан\w*|не начат\w*|нов\w*|откры\w*|обязательство|улучшение|блокер|частично|регресс\w*|open|new)(?![\w])", re.I)
@@ -508,13 +523,16 @@ def parse_section4(markdown: str) -> list[dict]:
                        and not PRIO_CELL.fullmatch(cells[k].strip("`* "))), None)
         text = cells[ti] if ti is not None else ""
         cls = classify_state(state if si is not None else row_text, si is not None)
+        port_from = _port_of(state) if cls == "waiting" and si is not None else ""
+        if port_from:
+            cls = "open"
         if cls == "open" and _marked_duplicate([c for k, c in enumerate(cells)
                                                 if k != 0 and k != (ti if ti is not None else 1)]):
-            cls = "waiting"
+            cls, port_from = "waiting", ""
         seen[ident] = {"backlog_id": ident, "priority": "P" + pm.group(1) if pm else None,
                        "state": state, "text": text, "row": row_text, "section": section,
                        "line": line_no, "locations": [{"line": line_no, "section": section}],
-                       "open": cls == "open", "unknown": cls == "unknown",
+                       "open": cls == "open", "unknown": cls == "unknown", "port_from": port_from,
                        # only the formulation and the state decide: a service cell such as "как сказал владелец"
                        # never reaches a goal, so it must not make the row private
                        "private": bool(PRIVATE.search(_cut(text)[0]) or PRIVATE.search(_cut(state)[0]))}
@@ -651,7 +669,7 @@ def parse_open_rows(backlog_path, repo_root, include_closed: bool = False) -> li
                     "text": "" if r["private"] else r["text"],
                     "private": r["private"], "mentioned_files": files, "mentioned_tests": tests,
                     "section": r["section"], "line": r["line"], "closed_at_head": closed,
-                    "text_len": len(r["text"]), "bare_names": _bare_names(row)})
+                    "text_len": len(r["text"]), "bare_names": _bare_names(row), "port_from": r.get("port_from", "")})
     out.sort(key=_sort_key)
     return out
 
@@ -981,6 +999,38 @@ def _screen(F, bid: str, raw_text: str):
     return None, "текст строки %s — %s; дать техническую формулировку? Осталось: %s" % (bid, why, shown)
 
 
+def _port_task(r: dict, root: Path, all_tests: list) -> dict:
+    """A row built on an old branch (r["port_from"]): ONE code task that brings the commit's behaviour over, its tests
+    the row's own guard test (tests/**/test_v_<ID>.py, red on the head), its files the ones that define the functions
+    the commit changed (factory_port; the coder sees the commit's diff as a reference). Never a test task: a port with
+    no guard test, or whose functions are defined nowhere now, is a question (live 19.11 21:43: such a row as a test
+    task got a defect the free model invented). Returns {"task": row} or {"hold": question}."""
+    from tools import agent_factory as F
+    from tools import factory_port
+    bid, sha, private = r["backlog_id"], r["port_from"], r["private"]
+    pfx = "приватная строка (only_opus): " if private else ""
+    guard = [t for t in _tests_named_by_id(bid, all_tests) if PurePosixPath(t).name.lower().startswith("test_v_")]
+    if not guard:
+        return {"hold": pfx + "перенос `%s`: у строки нет теста-стража tests/**/test_v_%s.py; дать тест или закрыть"
+                % (sha, bid)}
+    names = factory_port.changed_names(root, sha)
+    touch = [f for f in factory_port.locate(root, names, limit=2) if _is_src(f)]
+    if not touch:
+        return {"hold": pfx + "перенос `%s`: функции коммита (%s) в текущем коде не найдены; какие файлы менять?"
+                % (sha, ", ".join(names[:6]) or "нет")}
+    text = F.redact(r["text"]).strip("`* ") or bid
+    if not private:
+        text, question = _screen(F, bid, r["text"])
+        if question:
+            return {"hold": question}
+    goal = ("Перенести в единую архитектуру поведение коммита %s со старой ветки (его дифф дан ниже как образец): "
+            "тест %s должен пройти. Строка: %s" % (sha, guard[0], text))
+    return {"task": {"backlog_id": bid, "priority": r["priority"] or "P4", "privacy_safe": not private,
+                     "only_opus": private, "read_files": [], "task_type": "patch", "id": _task_id(bid),
+                     "title": (bid + ": " + text)[:120], "goal": goal[:MAX_TEXT], "depends_on": [],
+                     "touch_files": touch, "tests": guard[:1], "kind": "code", "port_from": sha}}
+
+
 def triage_portion(backlog_path, head_root, known_backlog_ids, limit, profile_attempts=None, known_parts=None, env_streak=0) -> dict:
     """K-E.3: next portion of the live backlog as plan tasks (nothing is written).
 
@@ -1054,6 +1104,13 @@ def triage_portion(backlog_path, head_root, known_backlog_ids, limit, profile_at
             continue
         if bid in collide:
             skip(bid, "коллизия id: " + " и ".join(collide[bid]))
+            continue
+        if r.get("port_from"):
+            made = _port_task(r, root, all_tests)
+            if "hold" in made:
+                out["holds"].append({"backlog_id": bid, "question": made["hold"]})
+            else:
+                out["tasks"].append(made["task"])
             continue
         private = r["private"]
         pfx = "приватная строка (only_opus): " if private else ""

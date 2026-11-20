@@ -690,9 +690,25 @@ def review_candidate(task: Task, workdir: Path, model: str, invoke, *,
         return False, reasons or ['rejected without a stated reason']
 
 
+REFERENCE_MAX = 5000   # the old-branch diff of a port task in the coder prompt; the view of the files gets the rest
+
+
+def port_reference(root: Path, task: Task) -> str:
+    """The diff of the old-branch commit a port task names (factory_port.reference: code files only, never a test or
+    a key), '' for any other task or on any fault: a missing reference costs the model its example, never the pass."""
+    sha = getattr(task, 'port_from', '')
+    if not sha or task.kind == 'unit_test':
+        return ''
+    try:
+        from . import factory_port
+        return factory_port.reference(root, sha, max_chars=REFERENCE_MAX)
+    except Exception:  # noqa: BLE001
+        return ''
+
+
 def build_coder_prompt(task: Task, visible: dict[str, bytes], feedback: str | None = None,
                        prev_diff: str = '', *, goal: str | None = None, failing: str = '',
-                       light: bool = False, asked: frozenset = frozenset()) -> str:
+                       light: bool = False, asked: frozenset = frozenset(), reference: str = '') -> str:
     """The ONE builder of the coder prompt (used by the pass and by model_attempt's default). ``light``: the
     prompt of the light engine, which has no tools: no read/grep instructions (live 19.11 17:48-17:50:
     with them the model answered "CANNOT: requires access outside the provided files"). ``asked``: definitions
@@ -725,6 +741,13 @@ def build_coder_prompt(task: Task, visible: dict[str, bytes], feedback: str | No
         core += "\nTask text:\n" + redact(scrub_paths(goal))[:1500]
     if failing and task.kind != 'unit_test':
         core += "\nFailing on the base now (must pass after your change):\n" + redact(failing)[:1500]
+    if reference and task.kind != 'unit_test':
+        # a port task: the behaviour was built before on an old branch, in the code's old layout (live 20.11: 35 open
+        # rows say so, their guard tests are red on the head of the unified code)
+        core += ("\nThis behaviour was built before on an old branch, in the old layout of the code (commit " +
+                 str(getattr(task, 'port_from', '')) + "). Its diff below is a reference, not a patch: files, names "
+                 "and lines differ here. Bring the same behaviour into the files you may change:\n" +
+                 redact(scrub_paths(reference))[:REFERENCE_MAX])
     if task.kind == 'unit_test':
         core += (" Write the test so that it FAILS on the current code because of the described "
                  "defect and would pass once the defect is fixed.")
@@ -823,7 +846,10 @@ def model_attempt(task: Task, workdir: Path, model: str, timeout: int,
 # (the Agentless scheme). The answer comes back as a Kilo-shaped event stream, so event_summary(), classify(),
 # reconcile() and the telemetry stay ONE path for both engines. Live evidence 19.11 17:04-17:13: three Kilo runs
 # of a one-file task spent all 8 steps reading files that were already in the prompt and made no edit.
-LIGHT_MAX_FILES = 2              # a coder task that changes more files is a multi-file edit: Kilo
+# a coder task that changes more files is a multi-file edit: Kilo. 3 since 20.11 (telemetry of the whole run: Kilo 0 of
+# 14 passes ever reached a review, every one of the 17 promoted candidates came from the light engine; 08:44-08:46 a
+# 3-file row burned its three passes on 'steps exhausted'); the triage's MAX_TOUCH is 3, so no triaged task goes to Kilo
+LIGHT_MAX_FILES = 3
 LIGHT_OVERHEAD_TOKENS = 600      # the rules below and the chat wrapper (Kilo: 5 300-7 300)
 LIGHT_TIMEOUT_S = 180
 LIGHT_MAX_OUTPUT = 8192
@@ -2113,10 +2139,13 @@ def _pass_inner(tasks, task: Task, state: dict, *, checkpoint: Path, root: Path,
             if small_total + REVIEW_DIFF_LIMIT + REVIEW_OVERHEAD > channels.PROMPT_LIMIT_CHARS:
                 raise PromptTooLarge('coder+review prompts cannot both fit')
             failing = (', '.join(base.failed_ids) + '\n' + base.diag).strip() if task.kind == 'code' else ''
+            reference = port_reference(root, task)
+            if reference:
+                events.append('port_reference:%d' % len(reference))
             def make_prompt(asked=frozenset()):
                 return build_coder_prompt(task, visible, feedback, prev_diff, failing=scrub(failing),
                                           light=engine_for(role, task) == 'light',   # the same rule call() applies
-                                          asked=asked)
+                                          asked=asked, reference=reference)
             prompt = make_prompt()
             chosen = route(task, small_model=small_model, large_model=large_model, fallback=attempt > 1)
 

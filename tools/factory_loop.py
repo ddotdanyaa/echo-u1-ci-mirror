@@ -1406,7 +1406,7 @@ class Loop:
             cands.sort(key=lambda t: (getattr(tasks.get(t), "kind", "code") == "unit_test") != want_unit)
             tid = cands[0] if cands else ""
         fields = {k: ans.get(k) for k in ("touch_files", "tests", "read_files",
-                                           "context_targets", "depends_on")
+                                           "context_targets", "depends_on", "port_from")
                   if ans.get(k) is not None}
         kind = tasks[tid].kind if tid in tasks else (ans.get("kind") or "code")
         if ans.get("accept"):
@@ -1471,6 +1471,8 @@ class Loop:
                "context_targets": dict(ans.get("context_targets") or {}),
                "depends_on": list(ans.get("depends_on") or []), "backlog_id": bid,
                "estimated_tokens": 4000, "priority": 1}
+        if ans.get("port_from"):
+            row["port_from"] = str(ans["port_from"])
         if ans.get("kind") == "unit_test":
             row["kind"] = "unit_test"
         goal, private, unclean = self._backlog_text(bid)
@@ -2935,8 +2937,12 @@ def answer_main(argv) -> int:
                    help="allow a public --goal for a private/unknown backlog row (explicit release)")
     p.add_argument("--goal", help="technical wording for the coder (checked: no owner words)")
     p.add_argument("--kind", choices=("code", "unit_test"), help="for a new task from a hold")
+    p.add_argument("--port", help="a port task: the old-branch commit whose behaviour it brings over (its diff is "
+                                  "shown to the coder as a reference)")
     p.add_argument("--note", default="")
     a = p.parse_args(argv)
+    if a.port is not None and not F.PORT_SHA.fullmatch(a.port):
+        p.error("--port must be a commit sha (7-40 hex characters)")
     if not a.backlog_id and not a.task_id:
         p.error("--backlog-id or --task-id is required")
     if not Path(a.state_dir).is_dir():
@@ -2975,6 +2981,8 @@ def answer_main(argv) -> int:
            "goal": a.goal}
     if a.release_private:
         ans["release_private"] = True
+    if a.port:
+        ans["port_from"] = a.port
     if a.close:
         ans["close"] = True
     if a.accept:
@@ -3024,7 +3032,7 @@ def answer_main(argv) -> int:
             pass
     ans = {k: v for k, v in ans.items() if v not in (None, "")}
     if not any(k in ans for k in ("touch_files", "tests", "read_files", "context_targets",
-                                  "depends_on", "note", "close", "goal", "accept")):
+                                  "depends_on", "note", "close", "goal", "accept", "port_from")):
         p.error("empty answer: give fields or --note")
     box = Path(a.state_dir) / "answers"
     box.mkdir(parents=True, exist_ok=True)

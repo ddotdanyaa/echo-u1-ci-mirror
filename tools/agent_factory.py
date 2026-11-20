@@ -50,6 +50,7 @@ REDACT_EXTRA = re.compile(
 )
 WINDOWS_DEVICE = re.compile(r"^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?$", re.I)
 TASK_ID = re.compile(r"^[a-zA-Z][a-zA-Z0-9_-]{0,63}$")
+PORT_SHA = re.compile(r"^[0-9a-f]{7,40}$")   # Task.port_from: an abbreviated or full commit id, nothing else
 # provider/model or provider/vendor/model (OpenRouter); no segment may be only dots ('..').
 # 0 RUB guard: an openrouter model must end with ":free" (a paid id is not a model of this project).
 MODEL_ID = re.compile(r"^(?:(?!(?i:openrouter)/)|(?=.*:free$))(?!\.+/)[a-zA-Z0-9._-]+/(?:(?!\.+/)[a-zA-Z0-9._-]+/)?(?!\.+$)[a-zA-Z0-9._:-]+$")
@@ -108,6 +109,7 @@ class Task:
     priority: int = 5
     kind: str = "code"  # "code" | "unit_test" (creates its own test file)
     goal: str = ""      # the backlog row text the coder works from (<= 1500 chars)
+    port_from: str = ""  # a port task: the old-branch commit whose behaviour it brings over (its diff is a reference)
 
     @property
     def scope(self) -> frozenset[str]:
@@ -193,6 +195,9 @@ def read_plan(plan: object) -> dict[str, Task]:
         if not isinstance(goal, str):
             raise InvalidPlan("goal must be a string")
         goal = goal.strip()[:1500]
+        port_from = row.get("port_from", "")
+        if not isinstance(port_from, str) or (port_from and not PORT_SHA.fullmatch(port_from)):
+            raise InvalidPlan("port_from must be a commit sha")
         scope = set(files['touch_files'] + files['read_files'] + files['tests'])
         if any(k not in scope or not isinstance(v, str) for k, v in targets.items()):
             raise InvalidPlan('context target outside approved files')
@@ -200,7 +205,7 @@ def read_plan(plan: object) -> dict[str, Task]:
                            files["touch_files"], files["read_files"], files["tests"],
                            row.get("privacy_safe", False), size, opus,
                            tuple(sorted(targets.items())), kind, budget,
-                           backlog_id, priority, work_kind, goal)
+                           backlog_id, priority, work_kind, goal, port_from)
     for task in result.values():
         if any(d not in result or d == task.id for d in task.depends_on):
             raise InvalidPlan("missing/self dependency")
@@ -777,7 +782,7 @@ def append_tasks(plan_path: Path, tasks: list[dict], *,
 
 
 def amend_task(plan_path: Path, tid: str, *, touch_files=None, tests=None, read_files=None,
-               context_targets=None, depends_on=None, goal=None, state_path=None,
+               context_targets=None, depends_on=None, goal=None, port_from=None, state_path=None,
                lock_timeout_s: float = 10.0) -> dict:
     """Opus corrects one task of a live plan: only the given fields change, the whole plan is
     re-validated by read_plan, the write is atomic and happens under the plan's lockdir.
@@ -819,6 +824,8 @@ def amend_task(plan_path: Path, tid: str, *, touch_files=None, tests=None, read_
             new["context_targets"] = dict(context_targets)
         if goal is not None:
             new["goal"] = redact(str(goal))[:1000]
+        if port_from is not None:
+            new["port_from"] = str(port_from)
         rows = rows[:idx] + [new] + rows[idx + 1:]
         read_plan(rows)  # the whole plan, not just this row
         save_atomic(plan_path, dict(extra, tasks=rows))

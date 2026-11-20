@@ -37,7 +37,9 @@ def test_engine_rule_review_and_small_tasks_are_light_multi_file_edits_are_kilo(
     assert W.engine_for('review', task(touch=())) == 'light'
     assert W.engine_for('code', task(touch=('a.py',))) == 'light'
     assert W.engine_for('repair', task(touch=('a.py', 'b.py'))) == 'light'
-    assert W.engine_for('code', task(touch=('a.py', 'b.py', 'c.py'))) == 'kilo'
+    # 3 files are light since 20.11: Kilo never reached a review in 14 passes, a triaged task has at most 3 files
+    assert W.engine_for('code', task(touch=('a.py', 'b.py', 'c.py'))) == 'light'
+    assert W.engine_for('code', task(touch=('a.py', 'b.py', 'c.py', 'd.py'))) == 'kilo'
 
 
 def test_blocks_name_their_file_and_a_block_for_another_file_is_refused():
