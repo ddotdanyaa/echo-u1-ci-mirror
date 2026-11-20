@@ -1212,6 +1212,34 @@ def candidate_files(root, bid: str, text: str, k: int = SCOPE_K) -> list:
     return [(rel, sc, list(t)) for rel, sc, t in memo[(bid, text, k)]]
 
 
+def _localized_scope(root, bid, text, ask, events) -> tuple:
+    """(touch, note) from the Agentless localization (tools.slicer_localize) run on the strong candidate shortlist
+    with the free model's ``ask(prompt) -> text``.  Only existing, writable src files survive, the functions the model
+    named (checked against the real ast) go into the note.  Nothing valid or any fault -> ([], ""): the old path
+    (hold for the head pick) stays."""
+    try:
+        cands = candidate_files(root, bid, text)
+        if not strong_candidates(cands):
+            return [], ""
+        from tools import slicer_localize
+        # only files the factory may write are shown to the model: a protected module never leaves the machine
+        shortlist = [c[0] for c in cands if _is_src(c[0]) and not _protected(c[0])]
+        if not shortlist:
+            return [], ""
+        res = slicer_localize.localize(root, text, shortlist, ask, max_touch=MAX_TOUCH)
+        touch = [f for f in res["touch_files"] if _is_src(f) and _exists(root, f) and not _protected(f)][:MAX_TOUCH]
+        if not touch:
+            events.append({"backlog_id": bid, "event": "localize_empty", "reason": "no valid file from the model"})
+            return [], ""
+        parts = ["%s: %s" % (f, ", ".join(res["functions"][f][:6])) for f in touch if res["functions"].get(f)]
+        note = ("Functions to inspect: " + "; ".join(parts)) if parts else ""
+        events.append({"backlog_id": bid, "event": "localized", "reason": ", ".join(touch)[:200]})
+        return touch, note[:300]
+    except Exception as e:      # a localization failure must not stop the triage
+        events.append({"backlog_id": bid, "event": "localize_failed", "reason": ("%s: %s" % (type(e).__name__, e))[:200]})
+        return [], ""
+
+
 WEAK_CANDIDATES = "кандидаты слабые"
 
 
@@ -1250,7 +1278,7 @@ def weak_candidate_holds(root, backlog_path, bids) -> dict:
 
 
 def triage_portion(backlog_path, head_root, known_backlog_ids, limit, profile_attempts=None, known_parts=None, env_streak=0,
-                   scopes=None) -> dict:
+                   scopes=None, ask=None) -> dict:
     """K-E.3: next portion of the live backlog as plan tasks (nothing is written).
 
     Returns {"tasks", "holds": [{backlog_id, question}], "stale": [backlog_id],
@@ -1455,6 +1483,8 @@ def triage_portion(backlog_path, head_root, known_backlog_ids, limit, profile_at
             touch = [f for f in picked.get("touch_files") or [] if isinstance(f, str) and _is_src(f)
                      and _exists(root, f) and not _protected(f)][:MAX_TOUCH]
             scope_note = " ".join(str(picked.get("note") or "").split())[:300] if touch else ""
+        if not touch and not private and ask is not None:
+            touch, scope_note = _localized_scope(root, bid, r["text"], ask, out["events"])
         if not touch:
             if private:
                 out["holds"].append(private_hold)

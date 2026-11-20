@@ -31,6 +31,7 @@ import tarfile
 import tempfile
 import time
 import uuid
+from types import SimpleNamespace
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -47,12 +48,16 @@ RUNNER_TIMEOUT_S = int(F.LEASE_LIFETIME_S)  # one runner pass = one lease; not a
 from tools.factory_gate import MIN_FREE_RAM  # noqa: <id>  (one floor for the loop and the gates)
 EST_DEFAULT_BYTES = 300 * 2 ** 20     # a worker's memory before the pool has measured five (job peaks: 36 + 87 MB)
 EST_KEEP, EST_MIN_SAMPLES = 20, 5
+# A worker of the light engine is one HTTP call with the files in the prompt (peak 40-120 MB); only a Kilo worker
+# needs the gate's 2 GB floor. The floor admits light workers on a 3 GB machine; the estimate still limits how many.
+LIGHT_FLOOR = 768 * 2 ** 20
 WAIT_CHUNK_S = 3.0                    # real seconds between two looks at the pool while workers run
 STALE_INDEX_LOCK_S = 120
 ES_CONTINUOUS = 0x80000000
 ES_SYSTEM_REQUIRED = 0x00000001
 # Channel-wide reasons stop every task; everything else is the task's own not_before.
 from tools.agent_factory_runner import ESCALATE_AFTER, INFRA_CHANNEL_REASONS, INFRA_DEFERS, LIGHT_MAX_FILES  # noqa: <id>
+from tools.agent_factory_runner import engine_for as _engine_for  # noqa: <id>
 from tools.agent_factory_runner import _light_post  # noqa: <id>  (the <id> spec pass; tests replace this name)
 from tools import factory_ab  # noqa: <id>
 
@@ -278,7 +283,7 @@ class Config:
     max_attempts: int = 3
     max_model_calls: int = 0        # 0: the day's capacity of the channel registry (Loop._call_budget)
     max_infra: int = 5
-    triage_limit: int = 5
+    triage_limit: int = 12
     hold_sleep: int = 300
     done_sleep: int = 900
     chunk: int = 60
@@ -2125,6 +2130,23 @@ class Loop:
             if not isinstance(rec, dict):
                 ls["seen"][bid] = {"kind": str(rec), "reason": "пропущена триажем", "until": now + self.cfg.triage_retry_s}
 
+    LOCATE_CALLS = 24       # free-model calls the localization may spend in one triage pass
+
+    def _locate_ask(self, ls):
+        """ask(prompt) -> text for the triage's localization: the same free channel choice, quota booking and
+        redaction as the head pick (_light_ask), at most LOCATE_CALLS calls a pass. A refusal is an empty answer."""
+        quotas = ls.setdefault("locate_quotas", {})
+        spent = [0]
+
+        def ask(prompt):
+            if spent[0] >= self.LOCATE_CALLS:
+                return ""
+            spent[0] += 1
+            status, _model, answer, _used = self._light_ask(F.redact(str(prompt)), attempt=1, section="loop-locate",
+                                                            quotas=quotas, max_tokens=800)
+            return answer if status == "ok" else ""
+        return ask
+
     def _triage(self, state, tasks, ls, now) -> Outcome:
         cfg = self.cfg
         fn = self.triage_fn
@@ -2152,6 +2174,8 @@ class Loop:
         scopes = {b: s for b, s in (ls.get("head_scope") or {}).items() if b not in known and isinstance(s, dict)}
         if scopes and _accepts(fn, "scopes"):
             kwargs["scopes"] = scopes
+        if _accepts(fn, "ask"):
+            kwargs["ask"] = self._locate_ask(ls)
         try:
             res = fn(**kwargs)
         except ValueError as e:  # the backlog cannot be parsed: not infrastructure, try after an edit
@@ -2544,13 +2568,25 @@ class Loop:
             return EST_DEFAULT_BYTES
         return peaks[min(len(peaks) - 1, int(len(peaks) * 0.9))]
 
+    @staticmethod
+    def _floor(task) -> int:
+        """The free-RAM floor for admitting this task's worker: LIGHT_FLOOR for the light engine (and for an unknown
+        task: the per-task check follows), the gate's MIN_FREE_RAM for a task that needs the Kilo engine."""
+        if task is None:
+            return LIGHT_FLOOR
+        files = task.get("touch_files") if isinstance(task, dict) else getattr(task, "touch_files", None)
+        if not isinstance(files, (list, tuple)):
+            return MIN_FREE_RAM
+        return LIGHT_FLOOR if _engine_for("code", SimpleNamespace(touch_files=tuple(files))) == "light" else MIN_FREE_RAM
+
     def _capacity(self, task) -> str:
         """'' when one more worker may start now, else the reason. K is nothing but this: free RAM (the floor, plus what
         the live workers have not used yet, plus one more estimate) and free quota (first calls that can still be
         booked beyond those the live workers have not booked). With no live worker only today's rules count."""
         self._headroom_seen = None
         free = self.free_ram_fn()
-        if free < MIN_FREE_RAM:
+        floor = self._floor(task)
+        if free < floor:
             return "low_ram"
         live = list(self.pool.workers.values())
         if not live:
@@ -2569,7 +2605,7 @@ class Loop:
         for w in live:
             seen = (w.owned.peak_bytes() if w.owned is not None else None) or 0
             pending += max(0, est - seen)        # the memory a live worker has not used yet is not free
-        if free - pending < MIN_FREE_RAM + est:
+        if free - pending < floor + est:
             return "low_ram"
         try:
             state = self.load()[1]

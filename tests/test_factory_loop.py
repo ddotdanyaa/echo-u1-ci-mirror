@@ -190,7 +190,7 @@ def test_empty_queue_with_backlog_triages_not_idles(empty_env):
 
     loop = e.loop(triage_fn=triage)
     assert loop.step().code is None
-    assert calls == [(e.backlog, e.repo, set(), 5)]
+    assert calls == [(e.backlog, e.repo, set(), L.Config.triage_limit)] and L.Config.triage_limit == 12
     plan = json.loads((e.state_dir / "plan.json").read_text(encoding="utf-8"))
     assert [t["id"] for t in plan["tasks"]] == ["T7"]
     assert "B9" in (e.state_dir / "opus_questions.md").read_text(encoding="utf-8")

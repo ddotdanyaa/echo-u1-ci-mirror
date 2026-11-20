@@ -52,6 +52,8 @@ OWNER_PATHS = frozenset((
     # backlog_register's CLI path only), and rows about them are ordinary project work.
     'tools/affected_tests.py', 'tools/id_query.py', 'tools/backlog_register.py',
     'tools/__init__.py',
+    # the localization the triage runs with the channel keys in the process (agent_factory_import._localized_scope):
+    'tools/slicer_localize.py',
     # the data that decides the verdicts of the acceptance tools (critic 19.11).
     'tools/data/push_guard_allow.txt', 'tools/data/known_red.txt', 'tools/owner_census_caps.json'))
 OWNER_GLOBS = ('tools/factory_*.py', 'tools/agent_factory*.py')
@@ -98,6 +100,7 @@ SLOT_POLL_S = 3
 SLOT_TOUCH_S = 30          # a holder refreshes its slot dir at least this often (stale = 120 s)
 NOT_STARTED = 'pytest not started: '   # diag prefix of a run that never began (no slot / no RAM)
 MIN_FREE_RAM = 2 * 2 ** 30
+SLOT_MIN_FREE_RAM = 1 * 2 ** 30   # the local pytest wait floor (MIN_FREE_RAM stays the loop's engine floor)
 
 
 def _user_temp() -> str:
@@ -173,7 +176,7 @@ class _Slot(str):
 
 @contextmanager
 def pytest_slot(wait_s=None):
-    """Hold one of the shared pytest slots while free RAM > 2 GB.  Yields '' when the run may start, else the
+    """Hold one of the shared pytest slots while free RAM > 1 GB.  Yields '' when the run may start, else the
     reason (no slot / low RAM within the bounded wait): the caller reports unknown/environment, never a pass
     and never a strike.  The slot is released in finally."""
     dirs = list(SLOT_DIRS)
@@ -184,8 +187,8 @@ def pytest_slot(wait_s=None):
     held, why = None, 'no free pytest slot'
     while True:
         free = _free_ram()
-        if free is not None and free <= MIN_FREE_RAM:
-            why = 'free RAM %.1f GB <= 2 GB' % (free / 2 ** 30)
+        if free is not None and free <= SLOT_MIN_FREE_RAM:
+            why = 'free RAM %.1f GB <= %d GB' % (free / 2 ** 30, SLOT_MIN_FREE_RAM // 2 ** 30)
         else:
             held = _take_slot(dirs)
             if held:
@@ -319,17 +322,20 @@ def _traced(trace) -> dict:
     return {'trace': tuple(trace)} if trace else {}
 
 
-def run_tests(root, tests, timeout_s, workdir=None, wait_s=None, hung=(), budget_s=None, trace=()) -> GateResult:
+def run_tests(root, tests, timeout_s, workdir=None, wait_s=None, hung=(), budget_s=None, trace=(),
+              touched=None) -> GateResult:
     """Run ``tests`` in ``root``: one pytest call (_run_once) of at most ``timeout_s``. A call cut at the limit goes on
     in smaller calls (_fit), so a slow or a hanging test no longer hides the verdict of the others (live 20.11: three
     tasks stayed unknown or unacceptable on every pass: one test waits on a speech process, other files need more
     than 30 s under load). ``hung``: what was cut on the base (files or single tests): the run then starts file by
     file, a test of that list runs alone and its file runs without it (the joint call would only spend the limit
-    again). The continuation spends at most ``budget_s`` (SPLIT_BUDGET_S) seconds. ``trace``: source prefixes whose
+    again). ``touched`` (the candidate's changed files; None = unknown): with it the first call of a factory-code
+    task may run in the cloud gate (_cloud_attempt), any other call stays local. The continuation spends at most ``budget_s`` (SPLIT_BUDGET_S) seconds. ``trace``: source prefixes whose
     functions the failing tests ran are recorded in GateResult.path (the verdict never depends on it)."""
     deadline = time.monotonic() + (SPLIT_BUDGET_S if budget_s is None else budget_s)
     if not hung:
-        parts = _fit(root, list(tests), timeout_s, workdir, wait_s, deadline, first=True, **_traced(trace))
+        parts = _fit(root, list(tests), timeout_s, workdir, wait_s, deadline, first=True, touched=touched,
+                     **_traced(trace))
     else:
         singles = [h for h in dict.fromkeys(hung) if '::' in h and _within([h], tests)][:HUNG_ALONE_MAX]
         parts = []
@@ -343,7 +349,7 @@ def run_tests(root, tests, timeout_s, workdir=None, wait_s=None, hung=(), budget
     return parts[0][1] if len(parts) == 1 else _merge(parts)
 
 
-def _fit(root, tests, timeout_s, workdir, wait_s, deadline, first=False, deselect=(), trace=()) -> list:
+def _fit(root, tests, timeout_s, workdir, wait_s, deadline, first=False, deselect=(), trace=(), touched=None) -> list:
     """[(names, GateResult)] for ``tests``: one call; a call cut at the limit goes on. Its progress names the test that
     was running (it runs alone, last: cut alone, it hangs here and is timed out) and how many finished (the others
     run in chunks of SPLIT_SHARE of that count, each chunk the same way). Without progress (cut while collecting) a
@@ -352,7 +358,7 @@ def _fit(root, tests, timeout_s, workdir, wait_s, deadline, first=False, deselec
         return [(tuple(tests), _failure(-1, SPENT_DIAG % timeout_s))]
     seen = {}
     result = _run_once(root, tests, timeout_s, workdir=workdir, wait_s=wait_s, progress=seen, deselect=deselect,
-                       **_traced(trace))
+                       **_traced(trace), **({'touched': touched} if first and touched is not None else {}))
     if not _timed_out(result):
         return [(tuple(tests), result)]
     items, started = seen.get('items') or [], seen.get('started') or []
@@ -419,14 +425,16 @@ def _node(test: str) -> str:
     return _rel(test.split('::', 1)[0]) + ('::' + test.split('::', 1)[1] if '::' in test else '')
 
 
-def _run_once(root, tests, timeout_s, workdir=None, wait_s=None, progress=None, deselect=(), trace=()) -> GateResult:
+def _run_once(root, tests, timeout_s, workdir=None, wait_s=None, progress=None, deselect=(), trace=(),
+              touched=None) -> GateResult:
     """One pytest call, and how long it waited for its slot (GateResult.slot_wait_s)."""
     waits: list = []
-    result = _run_once_raw(root, tests, timeout_s, workdir, wait_s, progress, deselect, waits, trace)
+    result = _run_once_raw(root, tests, timeout_s, workdir, wait_s, progress, deselect, waits, trace, touched)
     return replace(result, slot_wait_s=round(sum(waits), 3)) if waits else result
 
 
-def _run_once_raw(root, tests, timeout_s, workdir, wait_s, progress, deselect, waits, trace=()) -> GateResult:
+def _run_once_raw(root, tests, timeout_s, workdir, wait_s, progress, deselect, waits, trace=(),
+                  touched=None) -> GateResult:
     """Run ``tests`` (pytest node ids / files / dirs) in ``root`` in one pytest call; the verdict comes from JUnit XML.
     ``deselect``: node ids left out of the call. ``progress`` (a dict) receives what a call cut at the limit did: the
     collected names in run order ('items') and the started ones ('started'). ``trace`` (source prefixes): the profile
@@ -441,6 +449,10 @@ def _run_once_raw(root, tests, timeout_s, workdir, wait_s, progress, deselect, w
     tests = [_node(t) for t in tests]
     if not tests:
         return _failure(-1, 'no tests given')
+    if touched is not None and not deselect and not trace:
+        cloud = _cloud_attempt(root, tests, touched)
+        if cloud is not None:
+            return cloud
     # ignore_cleanup_errors: a handle still held after the tree was killed must not crash the pass.
     with tempfile.TemporaryDirectory(prefix='factory-gate-', dir=workdir, ignore_cleanup_errors=True) as d:
         xml = Path(d) / 'result.xml'
@@ -483,6 +495,39 @@ def _run_once_raw(root, tests, timeout_s, workdir, wait_s, progress, deselect, w
         except (OSError, ET.ParseError):
             return _failure(run.returncode, 'no readable JUnit XML: ' + tail)
         path = _failing_path(profile) if trace else ()
+    return _judge(cases, tests, run.returncode, tail, root, path)
+
+
+def _cloud_attempt(root, tests, touched):
+    """The verdict of the cloud gate, or None (ineligible, error, no answer in time): the caller then runs locally,
+    unchanged. Any fault of the cloud path is None, never a verdict."""
+    try:
+        from . import factory_cloud_gate
+        got = factory_cloud_gate.run(root, tests, touched)
+        if not got:
+            return None
+        xml_text, rc = got
+        result = parse_junit(xml_text, tests, rc, root)
+    except Exception:           # noqa: BLE001  the cloud is an optional first try
+        return None
+    # Only a clean green is taken from the cloud: the mirror tree can differ from the local base, so a red is
+    # confirmed by the local run instead of being charged as a strike.
+    clean = (result.collected and result.rc == 0 and not result.failed and not result.errors
+             and not result.missing and not result.crashed)
+    return result if clean else None
+
+
+def parse_junit(xml_text, tests, rc, root, tail='') -> GateResult:
+    """The verdict of a JUnit XML produced elsewhere (the cloud gate): the same judgement as a local call."""
+    try:
+        cases = list(ET.fromstring(xml_text).iter('testcase'))
+    except (ET.ParseError, ValueError, TypeError):
+        return _failure(rc, 'no readable JUnit XML: ' + str(tail)[-600:])
+    return _judge(cases, [_node(t) for t in tests], rc, str(tail)[-600:], Path(root))
+
+
+def _judge(cases, tests, rc, tail, root, path=()) -> GateResult:
+    """JUnit testcases -> GateResult (counts, crashed, missing, environmental reasons)."""
     failed = sum(1 for c in cases if c.find('failure') is not None)
     errors = sum(1 for c in cases if c.find('error') is not None and c.find('failure') is None)
     skipped = sum(1 for c in cases if c.find('skipped') is not None)
@@ -514,8 +559,8 @@ def _run_once_raw(root, tests, timeout_s, workdir, wait_s, progress, deselect, w
     # the environment is to blame only when EVERY red case is environmental
     env_reason = reasons[0] if reasons and all(reasons) else ''
     if not cases:
-        notes.append('empty JUnit (rc=%s): %s' % (run.returncode, tail))
-    return GateResult(run.returncode, len(cases), passed, failed, errors, skipped, junit_ok,
+        notes.append('empty JUnit (rc=%s): %s' % (rc, tail))
+    return GateResult(rc, len(cases), passed, failed, errors, skipped, junit_ok,
                       redact('\n'.join(notes[:6]))[:DIAG_LIMIT], env_reason,
                       tuple(missing),
                       tuple(sorted('%s::%s' % (c.get('classname', ''), c.get('name', '')) for c in cases
@@ -939,6 +984,51 @@ def _in_assert(node) -> bool:
     return False
 
 
+def _lookup_keys(node) -> list:
+    """The string keys / attribute names looked up inside one expression: x['k'], x.get('k'), hasattr(x, 'k'),
+    getattr(x, 'k')."""
+    keys = []
+    for n in ast.walk(node):
+        if isinstance(n, ast.Subscript) and isinstance(n.slice, ast.Constant) and isinstance(n.slice.value, str):
+            keys.append(n.slice.value)
+        elif isinstance(n, ast.Call) and n.args and isinstance(n.args[0], ast.Constant)                 and isinstance(n.args[0].value, str) and isinstance(n.func, ast.Attribute) and n.func.attr == 'get':
+            keys.append(n.args[0].value)
+        elif isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id in ('hasattr', 'getattr')                 and len(n.args) >= 2 and isinstance(n.args[1], ast.Constant) and isinstance(n.args[1].value, str):
+            keys.append(n.args[1].value)
+    return keys
+
+
+def _guessed_key_hits(tree, known) -> list:
+    """Rule G: an assert that ORs two or more lookups by string key (``d.get('a') is True or d.get('b') is True``,
+    ``x['a'] or x['b']``) where none of the keys occurs anywhere in the base tree (``known``: its identifiers and
+    identifier-shaped string literals) nor elsewhere in the test itself: the author guessed the key names and the
+    assert is red (or green) for no reason the code gives. A key that is not identifier-shaped cannot be looked up in
+    the index, so such an assert is left alone."""
+    from collections import Counter
+    everywhere = Counter(n.value for n in ast.walk(tree) if isinstance(n, ast.Constant) and isinstance(n.value, str))
+    out = []
+    for assertion in ast.walk(tree):
+        if not isinstance(assertion, ast.Assert):
+            continue
+        test = assertion.test
+        if not (isinstance(test, ast.BoolOp) and isinstance(test.op, ast.Or)):
+            continue
+        per_operand = [_lookup_keys(v) for v in test.values]
+        looked = [k for k in per_operand if k]
+        if len(looked) < 2:
+            continue
+        keys = [k for ks in looked for k in ks]
+        if not all(_IDENT.match(k) for k in keys):
+            continue
+        inside = Counter(n.value for n in ast.walk(test) if isinstance(n, ast.Constant) and isinstance(n.value, str))
+        if any(k in known or everywhere[k] > inside[k] for k in keys):
+            continue
+        out.append(('G', 'line %d asserts an OR of lookups by key (%s), but none of these keys occurs in the project: '
+                         'the keys are guessed. Look the key up in the code and assert the exact value it holds'
+                    % (assertion.lineno, ', '.join(repr(k) for k in dict.fromkeys(keys)))))
+    return out
+
+
 def _hollow(text: str, names, modules) -> list:
     """``[(rule, message)]`` for one test module; see hollow_test_reasons."""
     tree = _parse_py(text)
@@ -986,6 +1076,9 @@ def _hollow(text: str, names, modules) -> list:
                 a.name in ('getsource', 'getsourcelines') for a in n.names):
             out.append(('B', 'line %d imports inspect.getsource: a unit test must run the code and assert what it '
                              'does, not grep its source' % n.lineno))
+
+    if names:
+        out.extend(_guessed_key_hits(tree, known))
 
     def tests_in(body, cls=None):
         for node in body:
@@ -1050,6 +1143,34 @@ def is_forbidden(path: str, kind=None, named=()):
     if kind != 'unit_test' and parts[0] == 'tests':
         return 'tests/** may be changed only by a unit_test task'
     return None
+
+
+def candidate_findings(base_root, cand_files: dict, kind) -> tuple:
+    """``(hollow, extra_names)`` for the critic's execution report (facts, never a verdict): the hollow findings of the
+    candidate's test files, and, for a unit_test task, the names its non-test files define that the base copy of the
+    same file did not."""
+    root = Path(base_root)
+    hollow, extra = [], set()
+    if kind != 'unit_test':
+        return tuple(hollow), tuple(extra)
+    defined = set()
+    for raw, text in cand_files.items():
+        if raw.endswith('.py'):
+            defined |= _defined_names(text or '')
+    for raw, text in sorted(cand_files.items()):
+        if not raw.endswith('.py'):
+            continue
+        path = raw.replace('\\', '/')
+        base_file = root / path
+        try:
+            old = base_file.read_text(encoding='utf-8', errors='replace') if base_file.is_file() else ''
+        except OSError:
+            old = ''
+        if _is_test_file(path):
+            hollow.extend(f'{path}: {why}' for why in hollow_test_reasons(root, path, old, text or '', defined))
+        else:
+            extra |= _defined_names(text or '') - _defined_names(old)
+    return tuple(hollow), tuple(sorted(extra))
 
 
 def weakening_violations(base_root, cand_files: dict, kind, named=()) -> list[str]:

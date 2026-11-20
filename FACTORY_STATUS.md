@@ -1,9 +1,10 @@
 # Factory status (generated, structured data only)
 
-Generated: 2026-11-20T18:55:49Z
-Source commit: shaacd8f8310685
+Generated: 2026-11-20T19:48:09Z
+Source commit: sha0e14abf39476
 
 ## Commits (sha, time)
+- sha0e14abf3 2026-11-20T22:47:28+03:00
 - shaacd8f831 2026-11-20T21:55:25+03:00
 - shaf7334f7b 2026-11-20T21:54:57+03:00
 - shae8e4657a 2026-11-20T21:53:16+03:00
@@ -23,52 +24,51 @@ Source commit: shaacd8f8310685
 - shae082cdd3 2026-11-20T12:12:45+03:00
 - sha238a85e2 2026-11-20T10:33:14+03:00
 - sha4363ba9b 2026-11-20T09:53:56+03:00
-- sha95474a12 2026-11-20T09:46:00+03:00
 
 ## Funnel
 | step | count |
 |---|---|
 | accepted | 0 |
-| claimed | 71 |
-| coded | 30 |
+| claimed | 78 |
+| coded | 32 |
 | found_in_backlog | unknown |
-| gate_pass | 19 |
-| known_to_loop | 343 |
-| promoted | 18 |
-| ready | 4 |
-| reviewed | 24 |
-| triaged | 56 |
+| gate_pass | 21 |
+| known_to_loop | 345 |
+| promoted | 20 |
+| ready | 10 |
+| reviewed | 29 |
+| triaged | 61 |
 
-Side counters: blocked=0, parked=0, requeued=1
-Tasks now: DONE=30, FAILED=44, READY=4
+Side counters: blocked=1, parked=0, requeued=1
+Tasks now: BLOCKED=1, DONE=31, FAILED=46, READY=10
 Accepted: 0
-Promoted: 18
-Free RAM, GB: 3.37
-Telemetry rows: 6514 recognised, 0 unrecognised
+Promoted: 20
+Free RAM, GB: 3.28
+Telemetry rows: 7027 recognised, 0 unrecognised
 
 ## Spend per model
 | model | calls | tokens_in | tokens_out | usage_unknown | http_429 | errors |
 |---|---|---|---|---|---|---|
-| google/gemini-3.1-flash-lite | 383 | 2418564 | 176892 | 24 | 0 | 24 |
-| google/gemini-3.5-flash-lite | 585 | 3968817 | 200786 | 20 | 0 | 20 |
+| google/gemini-3.1-flash-lite | 417 | 2590033 | 187016 | 25 | 0 | 25 |
+| google/gemini-3.5-flash-lite | 626 | 4189922 | 211466 | 20 | 0 | 20 |
 | google/gemini-3.6-flash | 59 | 261862 | 13302 | 18 | 1 | 18 |
-| google/gemma-4-26b-a4b-it | 63 | 140800 | 28745 | 31 | 0 | 31 |
-| google/gemma-4-31b-it | 89 | 88862 | 3950 | 59 | 0 | 59 |
+| google/gemma-4-26b-a4b-it | 71 | 158376 | 28783 | 36 | 0 | 36 |
+| google/gemma-4-31b-it | 98 | 104464 | 4138 | 64 | 0 | 64 |
 | openrouter/cohere/north-mini-code:free | 20 | 69376 | 10273 | 3 | 0 | 4 |
 | openrouter/nvidia/nemotron-3-ultra-550b-a55b:free | 51 | 230417 | 113622 | 1 | 1 | 1 |
 
 ## Spans
 | span | rows | calls |
 |---|---|---|
-| answer | 319 | 0 |
-| gate | 1064 | 0 |
-| infra | 105 | 0 |
-| loop | 1249 | 0 |
-| other | 738 | 0 |
-| promote | 25 | 0 |
-| review | 304 | 157 |
-| run | 2641 | 1093 |
-| triage | 69 | 0 |
+| answer | 334 | 0 |
+| gate | 1156 | 0 |
+| infra | 116 | 0 |
+| loop | 1343 | 0 |
+| other | 780 | 0 |
+| promote | 28 | 0 |
+| review | 382 | 200 |
+| run | 2812 | 1142 |
+| triage | 76 | 0 |
 
 ## Channels (model ids)
 - g-3-1-flash-lite
@@ -94,7 +94,7 @@ Telemetry rows: 6514 recognised, 0 unrecognised
 ## Published files
 Modules: 19
 Tests in the cloud: 47
-Tests not in the cloud: 82
+Tests not in the cloud: 86
 - tests/test_agent_factory.py (backlog-id, email, env-path, key, long-run, owner-name, path, user-path)
 - tests/test_factory_ab.py (backlog-id)
 - tests/test_factory_asked_code.py (dependency)
@@ -105,6 +105,7 @@ Tests not in the cloud: 82
 - tests/test_factory_context_fit_whole.py (backlog-id)
 - tests/test_factory_critic_gate_told.py (dependency)
 - tests/test_factory_critic_prior.py (backlog-id)
+- tests/test_factory_critic_rubric.py (dependency)
 - tests/test_factory_decompose.py (backlog-id, call-word, email)
 - <redacted-name> (backlog-id, call-word, long-run)
 - tests/test_factory_feedback_window.py (backlog-id)
@@ -120,6 +121,7 @@ Tests not in the cloud: 82
 - tests/test_factory_intake_merge.py (pid-port)
 - tests/test_factory_kilo_rpm.py (dependency)
 - tests/test_factory_light.py (backlog-id)
+- tests/test_factory_light_floor.py (long-run)
 - tests/test_factory_light_function_edit.py (email, path)
 - tests/test_factory_light_indent.py (path)
 - tests/test_factory_light_reasoning.py (backlog-id, long-run)
@@ -139,6 +141,7 @@ Tests not in the cloud: 82
 - tests/test_factory_loop_discover.py (env-path)
 - <redacted-name> (backlog-id, path)
 - tests/test_factory_loop_git.py (backlog-id)
+- tests/test_factory_loop_locate.py (dependency)
 - tests/test_factory_loop_parents.py (dependency)
 - tests/test_factory_loop_r7.py (backlog-id, ip, key, long-run, phone)
 - tests/test_factory_loop_r7b.py (dependency)
@@ -177,6 +180,7 @@ Tests not in the cloud: 82
 - tests/test_factory_triage_candidates.py (backlog-id, email, path)
 - tests/test_factory_triage_example.py (backlog-id)
 - tests/test_factory_triage_state.py (backlog-id, call-word)
+- tests/test_factory_wiring.py (dependency)
 
 ## Cloud test matrix
 Not read yet.

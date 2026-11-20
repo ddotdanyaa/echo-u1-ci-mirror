@@ -614,8 +614,8 @@ REVIEW_CHECKS_TEST = (
 # Owner: «турнир нескольких кандидатов с последовательной цепочкой критиков». A pass of the light engine
 # asks up to TOURNAMENT_SIZE coders, each a different model, and every next one is told why the previous one failed;
 # the first candidate that passes the mechanical checks (it changes the files, compiles, weakens no check) goes to the
-# gate. Then REVIEW_CHAIN critics of different models review it one after another, each with its own lens; the
-# first rejection ends the chain (the owner's cap is 4 rounds). A missing further model shortens the tournament, never
+# gate. Then up to REVIEW_PANEL critics of different models review it one after another, each with its own lens;
+# the majority decides (the owner's cap is 4 rounds). A missing further model shortens the tournament, never
 # fails the pass; a chain cut short never approves: the candidate stays pending for the next pass (review_chain_short,
 # ESCALATE_AFTER in a row is BLOCKED).
 TOURNAMENT_SIZE = 3
@@ -670,23 +670,104 @@ def same_failure(base_diag: str, cand_diag: str) -> bool:
     return bool(norm(cand_diag)) and norm(base_diag) == norm(cand_diag)
 
 
-REVIEW_CHAIN = 2
+# Execution-ranked selection: the critics get the mechanical execution report and answer a fixed rubric; up to
+# REVIEW_PANEL critics of different models vote and the majority decides (2 of 3). A split with no further model goes
+# to the mechanical ranking. The owner's cap is 4 rounds.
+REVIEW_PANEL = 3
 REVIEW_LENSES = (
     '',
-    'You are the SECOND critic: an earlier critic approved this candidate. Look only for what it may have missed: '
-    'an expected result of the task\'s own examples that the change or the test does not pin exactly (a check that '
-    'only says a value changed accepts any wrong change), a case the task names that is not handled, a change the '
-    'task did not ask for. Approve when none of these is there.',
-    'You are the THIRD critic: two critics approved. Check that nothing the task asks for is missing and that the '
-    'change cannot break the code around it (callers, error paths, other inputs of the same function).',
-    'You are the LAST critic: three critics approved. Reject only a concrete defect you can name with its line.')
+    'You are the SECOND critic: judge on your own, then look at what the earlier critic said. Look for what it may '
+    'have missed: an expected result of the task\'s own examples that the change or the test does not pin exactly (a '
+    'check that only says a value changed accepts any wrong change), a case the task names that is not handled, a '
+    'change the task did not ask for.',
+    'You are the THIRD critic: the earlier critics disagree or only partly checked. Check that nothing the task asks '
+    'for is missing and that the change cannot break the code around it (callers, error paths, other inputs of the '
+    'same function). Reject only a concrete defect you can name with its line.')
+RUBRIC_ASK = (
+    'Answer with exactly this JSON and nothing else: {"defect_assert_line": "<the exact line of the test, copied '
+    'character for character, that observes the defect the task names>", "fix_changes_value": "<what a correct fix '
+    'changes at that line: the value before and after>", "independent_asserts": ["<every assert line of the test '
+    'that does not depend on the code under test, e.g. a literal compared with a literal; empty list when there is '
+    'none>"], "approved": true|false, "reasons": ["each concrete defect"]}. The candidate is approved only when the '
+    'line is really in the test and no independent assert is listed.\n')
+EXEC_REPORT_LIMIT = 1500
+EXEC_PATH_NAMES = 12
+
+
+def execution_report(base, hollow=(), extra_names=()) -> str:
+    """The mechanical facts a critic gets beside the diff (measured by the gate, not an opinion): the output of the
+    red-before run, the functions the failing tests ran, hollow findings, names the candidate adds beyond the task."""
+    parts = []
+    diag = redact(str(getattr(base, 'diag', '') or '')).strip()
+    if diag:
+        parts.append('Red-before output (the tests on the unchanged base):\n' + diag[-600:])
+    path = tuple(getattr(base, 'path', ()) or ())
+    if path:
+        parts.append('Failing path (functions the failing tests ran): ' + ', '.join(
+            '%s::%s' % (p[0], p[1]) if isinstance(p, (list, tuple)) and len(p) > 1 else str(p)
+            for p in path[:EXEC_PATH_NAMES]))
+    if hollow:
+        parts.append('Hollow findings: ' + '; '.join(redact(str(h))[:120] for h in hollow))
+    if extra_names:
+        parts.append('Names the candidate adds beyond the task: ' + ', '.join(redact(str(n))[:60] for n in extra_names))
+    return ('Mechanical execution report:\n' + '\n'.join(parts) + '\n')[:EXEC_REPORT_LIMIT] if parts else ''
+
+
+def mechanically_ok(base, hollow=(), extra_names=()) -> bool:
+    """The mechanical ranking of a candidate: the failing tests ran code (a failing path was measured) and nothing
+    hollow or extra was found. It only breaks a tie between critics, never overrules a majority."""
+    return bool(getattr(base, 'path', ())) and not hollow and not extra_names
+
+
+def _squash(text: str) -> str:
+    return ' '.join(str(text).split())
+
+
+def rubric_problems(answer: dict, haystack: str) -> list[str]:
+    """Why an answer of the critic is not an approval: the cited test line must literally be in the code shown, the fix
+    must name the value it changes, and no assert independent of the code under test may be listed. A missing or
+    malformed rubric is a problem, never an approval."""
+    problems = []
+    line = answer.get('defect_assert_line')
+    if not isinstance(line, str) or len(_squash(line)) < 3:
+        problems.append('critic rubric: defect_assert_line is missing')
+    elif _squash(line) not in _squash(haystack):
+        problems.append('critic rubric: the cited line is not in the test: ' + redact(_squash(line))[:120])
+    fix = answer.get('fix_changes_value')
+    if not isinstance(fix, str) or not fix.strip():
+        problems.append('critic rubric: fix_changes_value is missing')
+    asserts = answer.get('independent_asserts')
+    if not isinstance(asserts, list):
+        problems.append('critic rubric: independent_asserts is missing')
+    elif [a for a in asserts if str(a).strip()]:
+        problems.append('independent asserts that do not depend on the code under test: ' +
+                        '; '.join(redact(_squash(a))[:100] for a in asserts if str(a).strip()))
+    return problems
+
+
+def panel_verdict(votes: list, final: bool, mechanical_ok: bool):
+    """True / False when the majority of the panel (2 of REVIEW_PANEL) is reached; None while undecided. ``final``:
+    no further critic can be asked; an even split then goes to the mechanical ranking, a single vote stays undecided
+    (one critic never decides alone)."""
+    need = REVIEW_PANEL // 2 + 1
+    yes = sum(1 for v in votes if v)
+    if yes >= need:
+        return True
+    if len(votes) - yes >= need:
+        return False
+    if final and len(votes) >= 2 and yes * 2 == len(votes):
+        return bool(mechanical_ok)
+    return None
 
 
 def review_candidate(task: Task, workdir: Path, model: str, invoke, *,
                      baseline: dict[str, bytes] | None = None,
                      scratch: Path | None = None, lens: str = '', prior: tuple = (),
-                     rejected: str = '') -> tuple[bool, list[str]]:
+                     rejected: str = '', rubric: bool = False, execution: str = '') -> tuple[bool, list[str]]:
     """A separate call sees an immutable copy and returns ``(approved, reasons)``.
+
+    ``rubric``: the critic answers the fixed rubric (RUBRIC_ASK) and an approval stands only when the cited test line is
+    really in the code shown and no independent assert is listed; ``execution``: the mechanical report shown to it.
 
     Its opinion never grants DONE. A failed call or an unreadable answer raises ReviewFault
     (the reviewer's fault is not the candidate's strike)."""
@@ -714,7 +795,8 @@ def review_candidate(task: Task, workdir: Path, model: str, invoke, *,
                  'code is not shown.\n' if light else
                  ' Read only the explicitly supplied files (relative paths in your working directory: '
                  + ', '.join(sorted(files_for_hint)) + '); grep inside it is allowed, nothing outside it.\n') +
-                earlier + 'Return exactly JSON {"approved":true|false,"reasons":["each concrete defect"]}.\n')
+                earlier + (execution if rubric else '') +
+                (RUBRIC_ASK if rubric else 'Return exactly JSON {"approved":true|false,"reasons":["each concrete defect"]}.\n'))
         files = {n: v for n, v in snapshot.items() if n != POLICY_FILE}
         full_diff = unified_diff(baseline, workdir, task.touch_files, REVIEW_DIFF_LIMIT) if baseline is not None else ''
         priority = frozenset(keywords_from(task.title, strict=False)
@@ -749,6 +831,18 @@ def review_candidate(task: Task, workdir: Path, model: str, invoke, *,
         if isinstance(reasons, str):
             reasons = [reasons]
         reasons = [str(r)[:400] for r in reasons if str(r).strip()] if isinstance(reasons, list) else []
+        if rubric and answer['approved']:
+            def _is_test(name):
+                low = str(name).replace('\\', '/').lower()
+                return '/tests/' in '/' + low or low.rsplit('/', 1)[-1].startswith('test_') or '_test.' in low
+            tests_shown = {n: v for n, v in files.items() if _is_test(n)}
+            # the cited line must be in a test file; with no test file shown the code and the diff are all there is
+            shown = tests_shown or files
+            seen = '\n'.join([v.decode('utf-8', 'replace') if isinstance(v, bytes) else str(v)
+                              for v in shown.values()] + ([] if tests_shown else [diff]))
+            problems = rubric_problems(answer, seen)
+            if problems:
+                return False, problems + reasons
         if answer['approved']:
             return True, reasons          # an approving critic keeps its remarks: the next critic sees them
         return False, reasons or ['rejected without a stated reason']
@@ -2114,7 +2208,7 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
     gate_tmp = staging / 'tmp'     # pytest's own temp (--basetemp) stays inside staging, never under the profile
     slot = {'armed': False, 'left': float(SLOT_BUDGET_S), 'waited': 0.0}   # armed at the FIRST gate run
 
-    def gate_run(tree, tests):
+    def gate_run(tree, tests, touched=None):
         """gate.run_tests with the pass-wide slot budget: what is left of it, never a fresh one per call, and it is
         spent by WAITING for a slot only (GateResult.slot_wait_s), never by the run time of the tests. What was cut
         at the limit on the base (files, single tests) is handed over: the candidate run starts file by file and runs
@@ -2122,7 +2216,8 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
         slot['armed'] = True
         known = getattr(ctx.get('counts'), 'timed_out', ())
         result = gate.run_tests(tree, tests, GATE_TIMEOUT_S, workdir=gate_tmp,
-                                wait_s=max(0.0, slot['left']), **({'hung': known} if known else {}))
+                                wait_s=max(0.0, slot['left']), **({'hung': known} if known else {}),
+                                **({'touched': tuple(touched)} if touched is not None else {}))
         waited = float(getattr(result, 'slot_wait_s', 0.0) or 0.0)
         slot['left'] -= waited
         slot['waited'] += waited
@@ -2363,12 +2458,16 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                         return reject('gate', 'gate: ' + marker_why[:300], marker_why, changed)
                 else:
                     events.append('unit_test_marker_skipped')   # nothing to check against: never an unfixable rejection
+            try:      # mechanical facts for the critics (never a verdict): hollow findings, names added beyond the task
+                ctx['hollow'], ctx['extra_names'] = gate.candidate_findings(root, cand_files, task.kind)
+            except Exception:       # noqa: BLE001  a report fault must not stop the gate
+                ctx['hollow'], ctx['extra_names'] = (), ()
             with tempfile.TemporaryDirectory(prefix='factory-gate-tree-', ignore_cleanup_errors=True) as d:
                 tree = candidate_tree(root, ctx['workdir'], changed, Path(d))
                 ctx['roots'].append(tree)
                 # the gate decides whether a missing module is the environment or the candidate's own import (live
                 # 19.11 18:06-18:08: written tests imported modules that do not exist and went round as 'environment')
-                cand = gate.candidate_import(timed('gate_s', lambda: gate_run(tree, task.tests)), root, tree, changed)
+                cand = gate.candidate_import(timed('gate_s', lambda: gate_run(tree, task.tests, touched=changed)), root, tree, changed)
                 ctx['counts'] = cand
                 if cand.env_reason:
                     return env_release(cand.env_reason)
@@ -2620,17 +2719,22 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
             return call('review', call_task, lambda _retry: directory, preferred,
                         kwargs['prompt_override'], exclude_model=[ctx['coder_model']] + critics)
         try:
-            approved, reasons = timed('review_s', lambda: review_candidate(
-                task, ctx['workdir'], review_model, invoke, baseline=ctx['baseline'], scratch=staging,
-                rejected=told))
-            critics.append(calls[-1]['model'])
-            said = ['critic 1 %s: %s' % ('approved' if approved else 'rejected', '; '.join(reasons) or 'no remarks')]
-            for n in range(1, min(REVIEW_CHAIN, len(REVIEW_LENSES)) if approved else 0):
-                try:     # the sequential chain: another model with its own lens; a missing one shortens it
-                    approved, reasons = timed('review_s', lambda: review_candidate(
+            hollow, extra = tuple(ctx.get('hollow') or ()), tuple(ctx.get('extra_names') or ())
+            exec_text = execution_report(base, hollow, extra)
+            mech_ok = mechanically_ok(base, hollow, extra)
+            votes, said, rejections = [], [], []
+            approved = None
+            for n in range(REVIEW_PANEL):
+                try:     # up to REVIEW_PANEL critics of different models, each with its own lens; the majority decides
+                    ok, why = timed('review_s', lambda: review_candidate(
                         task, ctx['workdir'], review_model, invoke, baseline=ctx['baseline'], scratch=staging,
-                        lens=REVIEW_LENSES[n], prior=tuple(said), rejected=told))
+                        lens=REVIEW_LENSES[n], prior=tuple(said), rejected=told, rubric=True, execution=exec_text))
                 except (NoIndependentReviewer, channels.ChannelUnavailable, ReviewFault, ChannelFault):
+                    if not votes:
+                        raise                      # the first critic failed: the handlers below decide
+                    approved = panel_verdict(votes, True, mech_ok)   # no further model: a split goes to the ranking
+                    if approved is not None:
+                        break
                     # no further model now: one critic never approves alone (live 20.11 16:46, <id> approved by one
                     # critic, its commit rejected 4 min later). The candidate stays pending, the chain starts again
                     # on a later pass; the same postponement ESCALATE_AFTER times in a row is BLOCKED (the term).
@@ -2642,11 +2746,16 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                         return block('review_chain_short', 'review chain cut short %d times' % ESCALATE_AFTER)
                     return release_or_block('review_chain_short', INFRA_DEFER_S)
                 critics.append(calls[-1]['model'])
-                events.append('review_chain_%d' % (n + 1))
-                said.append('critic %d %s: %s' % (n + 1, 'approved' if approved else 'rejected',
-                                                  '; '.join(reasons) or 'no remarks'))
-                if not approved:
+                if n:
+                    events.append('review_chain_%d' % (n + 1))
+                votes.append(ok)
+                said.append('critic %d %s: %s' % (n + 1, 'approved' if ok else 'rejected', '; '.join(why) or 'no remarks'))
+                if not ok:
+                    rejections.extend(why or ['rejected without a stated reason'])
+                approved = panel_verdict(votes, n + 1 == REVIEW_PANEL, mech_ok)
+                if approved is not None:
                     break
+            reasons = [] if approved else (rejections or ['the critics are split and the mechanical ranking is against'])
             report['critics'] = list(critics)
             # redacted like reason_detail: a critic may quote a key it saw (test_reason_and_feedback_are_redacted_...,
             # red since the chain landed; that test never reaches the public cloud run, its fake key blocks it)

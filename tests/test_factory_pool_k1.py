@@ -84,7 +84,7 @@ def scenario_temporary_429(env, loop):
 
 
 def scenario_low_ram(env, loop):
-    env.free[0] = 1 * 2 ** 30
+    env.free[0] = 512 * 2 ** 20      # below the light floor (768 MB)
     steps = [_snap(env, loop, loop.step())]
     env.free[0] = 8 * 2 ** 30
     env.runner_says({"status": "READY", "task": "T1", "calls": []})
