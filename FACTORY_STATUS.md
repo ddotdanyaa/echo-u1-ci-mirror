@@ -1,9 +1,10 @@
 # Factory status (generated, structured data only)
 
-Generated: 2026-11-20T05:22:37Z
-Source commit: sha389125d84b8f
+Generated: 2026-11-20T05:27:35Z
+Source commit: shadbb9a36d2218
 
 ## Commits (sha, time)
+- shadbb9a36d 2026-11-20T08:27:18+03:00
 - sha389125d8 2026-11-20T08:22:19+03:00
 - shaab44c66a 2026-11-20T08:21:26+03:00
 - sha9d8c2b32 2026-11-20T07:59:21+03:00
@@ -23,7 +24,6 @@ Source commit: sha389125d84b8f
 - sha435cebbb 2026-11-20T03:49:08+03:00
 - shad68d3a33 2026-11-20T03:41:01+03:00
 - sha0a612339 2026-11-20T03:38:35+03:00
-- shad27142b9 2026-11-20T03:23:44+03:00
 
 ## Funnel
 | step | count |
@@ -43,7 +43,7 @@ Side counters: blocked=11, parked=0, requeued=0
 Tasks now: BLOCKED=11, DONE=26, FAILED=12, READY=6, RUNNING=1
 Accepted: 0
 Promoted: 13
-Free RAM, GB: 2.93
+Free RAM, GB: 2.71
 Telemetry rows: 3511 recognised, 0 unrecognised
 
 ## Spend per model
@@ -93,7 +93,7 @@ Telemetry rows: 3511 recognised, 0 unrecognised
 
 ## Published files
 Modules: 19
-Tests in the cloud: 46
+Tests in the cloud: 47
 Tests not in the cloud: 64
 - tests/test_agent_factory.py (backlog-id, email, env-path, key, long-run, owner-name, path, user-path)
 - tests/test_factory_ab.py (backlog-id)

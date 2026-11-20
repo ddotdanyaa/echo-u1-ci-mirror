@@ -4,9 +4,12 @@ tells the next attempt what to do instead. Written by gemini-3.5-flash-lite from
 repair and hints corrected by the coordinator after 4 passes (blank lines around a place counted as other places, a
 substring inside a longer line counted as a match, the hint text)."""
 import ast
+import difflib
 import io
+import math
 import re
 import tokenize
+from collections import Counter
 
 VIEW_LINE = re.compile(r'^\s*(?:# [\w.]+, lines \d+-\d+(?: \(part\))?|FILE \S+.*|OUTLINE|SELECTED PARTS|IMPORTS|HEAD OF THE FILE)\s*$')
 # a row of the view's OUTLINE (factory_context.outline: a line range label, then 'def name(args)'), label or not
@@ -171,6 +174,169 @@ def collapsed_match(text: str, search: str):
     return found[0] if len(found) == 1 else None
 
 
+def near_merge(text: str, search: str, replace: str):
+    """The last repair of a SEARCH block that matched nowhere: it drifted from the file (a line misremembered or
+    retyped), but one region of the file still holds at least half of its non-blank lines (and 2). Each SEARCH line
+    equal to a file line votes for the shift between them; the 12 most voted shifts are tried with a margin of a
+    quarter of the block, and no region apart from the chosen one may match as many lines. The edit is then merged
+    like diff3 (base = SEARCH, ours = the file region, theirs = REPLACE): between two lines stable on both sides,
+    ours == base takes theirs, theirs == base or ours == theirs takes ours, anything else is a conflict (None); stable
+    lines are written from ours. Written by a free model in the self-build queue (20.11, its tests passed); the
+    coordinator's review added one rule: the same region found from two shifts is one region (two equal SEARCH lines
+    in a row voted two shifts and the region read as two, test_two_equal_lines_in_a_row_are_one_place)."""
+
+    def clean_lines(s: str) -> list:
+        lines = [line.rstrip() for line in s.split('\n')]
+        while lines and not lines[-1]:
+            lines.pop()
+        while lines and not lines[0]:
+            lines.pop(0)
+        return lines
+
+    search_lines = clean_lines(search)
+    replace_lines = clean_lines(replace)
+    if not search_lines:
+        return None
+
+    file_lines = text.split('\n')
+    n = len(search_lines)
+    s = max(1, n // 4)
+
+    # Vote for offsets
+    votes = []
+    for k, s_line in enumerate(search_lines):
+        if not s_line:
+            continue
+        for q, f_line in enumerate(file_lines):
+            if f_line.rstrip() == s_line:
+                votes.append(q - k)
+
+    if not votes:
+        return None
+
+    counts = Counter(votes)
+    top_offsets = [off for off, _ in counts.most_common(12)]
+
+    places = []
+    for p in top_offsets:
+        win_start = max(0, p - s)
+        win_end = min(len(file_lines), p + n + s)
+        window = file_lines[win_start:win_end]
+
+        matcher = difflib.SequenceMatcher(None, search_lines, window, autojunk=False)
+        matching_blocks = matcher.get_matching_blocks()
+
+        matched_non_blank = 0
+        first_match_info = None
+        last_match_info = None
+
+        for si, wi, blen in matching_blocks:
+            for b_idx in range(blen):
+                s_idx = si + b_idx
+                w_idx = wi + b_idx
+                if s_idx < n and search_lines[s_idx]:
+                    matched_non_blank += 1
+                    if first_match_info is None:
+                        first_match_info = (s_idx, w_idx)
+                    last_match_info = (s_idx, w_idx)
+
+        min_matched = max(2, math.ceil(0.5 * sum(1 for l in search_lines if l)))
+        if matched_non_blank < min_matched or first_match_info is None:
+            continue
+
+        fs_idx, fw_idx = first_match_info
+        ls_idx, lw_idx = last_match_info
+
+        a = win_start + fw_idx - fs_idx
+        b = win_start + lw_idx + (n - 1 - ls_idx) + 1
+
+        a = max(0, min(a, len(file_lines)))
+        b = max(a, min(b, len(file_lines)))
+
+        places.append((a, b, matched_non_blank))
+
+    places = sorted(set(places))   # one region found from two shifts is one region
+    if not places:
+        return None
+
+    # a region no other region apart from it (not overlapping it) matches as well as; of those, the best matched
+    valid_places = []
+    for i, (a1, b1, m1) in enumerate(places):
+        is_best = True
+        for j, (a2, b2, m2) in enumerate(places):
+            if i == j:
+                continue
+            overlapping = max(a1, a2) < min(b1, b2)
+            if not overlapping and m2 >= m1:
+                is_best = False
+                break
+        if is_best:
+            valid_places.append((a1, b1, m1))
+    top = max((m for _, _, m in valid_places), default=0)
+    valid_places = [p for p in valid_places if p[2] == top]
+    if len(valid_places) != 1:
+        return None
+
+    a, b, _ = valid_places[0]
+    ours = file_lines[a:b]
+    base = search_lines
+    theirs = replace_lines
+
+    def get_diff3_merged(base, ours, theirs):
+        # Find matching blocks between base and ours, and base and theirs
+        m_ours = dict() # base_idx -> ours_idx if equal/matched
+        m_theirs = dict()
+
+        for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, base, ours, autojunk=False).get_opcodes():
+            if tag == 'equal':
+                for bi, oi in zip(range(i1, i2), range(j1, j2)):
+                    m_ours[bi] = oi
+
+        for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, base, theirs, autojunk=False).get_opcodes():
+            if tag == 'equal':
+                for bi, ti in zip(range(i1, i2), range(j1, j2)):
+                    m_theirs[bi] = ti
+
+        # a base line matched both to ours and to theirs is stable
+        stable_base = []
+        for bi in range(len(base)):
+            if bi in m_ours and bi in m_theirs:
+                if ours[m_ours[bi]] == base[bi] and theirs[m_theirs[bi]] == base[bi]:
+                    stable_base.append(bi)
+
+        stable_base = [-1] + sorted(stable_base) + [len(base)]   # virtual stable points at both ends
+
+        merged = []
+        for idx in range(len(stable_base) - 1):
+            b_start = stable_base[idx]
+            b_end = stable_base[idx + 1]
+            if b_start != -1:
+                merged.append(ours[m_ours[b_start]])   # a stable line is written from ours
+            chunk_base = base[b_start + 1 : b_end]
+            o_start = m_ours[b_start] + 1 if b_start != -1 else 0
+            o_end = m_ours[b_end] if b_end != len(base) else len(ours)
+            chunk_ours = ours[o_start:o_end]
+
+            t_start = m_theirs[b_start] + 1 if b_start != -1 else 0
+            t_end = m_theirs[b_end] if b_end != len(base) else len(theirs)
+            chunk_theirs = theirs[t_start:t_end]
+
+            if chunk_ours == chunk_base:
+                merged.extend(chunk_theirs)
+            elif chunk_theirs == chunk_base or chunk_ours == chunk_theirs:
+                merged.extend(chunk_ours)
+            else:
+                return None
+
+        return merged
+
+    merged_lines = get_diff3_merged(base, ours, theirs)
+    if merged_lines is None:
+        return None
+
+    return '\n'.join(file_lines[:a] + merged_lines + file_lines[b:])
+
+
 def repair(text: str, search: str, replace: str):
     """The view lines dropped, then the search matched as whole lines (trailing spaces aside) at exactly one place,
     else as one reflowed place; None when neither is unique. A substring inside a longer line is never a match."""
@@ -194,10 +360,10 @@ def repair(text: str, search: str, replace: str):
     if hits:
         return None
     span = collapsed_match(text, search)
-    if span is None:
-        return None
-    i, j = span
-    return '\n'.join(lines[:i] + replace.split('\n') + lines[j + 1:])
+    if span is not None:
+        i, j = span
+        return '\n'.join(lines[:i] + replace.split('\n') + lines[j + 1:])
+    return near_merge(text, search, replace)
 
 
 HEADER = re.compile(r'^\s*(?:L\d+-\d+ )?(?:async def|def|class)\s+(\w+)')
