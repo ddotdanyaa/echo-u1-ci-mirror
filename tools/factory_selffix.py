@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from datetime import datetime
 from pathlib import Path
 
 from tools import factory_classes
@@ -33,11 +34,48 @@ RULES = (
     'The test must use no network, no sleeps, no real audio. At most 2 touch files.')
 
 
-def due(rows, ledger, threshold=2):
+OPEN_MAX_S = 24 * 3600     # an open self-fix whose task never reached a candidate within a day no longer locks its class
+MAX_TRIES = 3              # failed self-fixes of one class before the class stops spawning them (left to the backlog)
+WAITING = ('REVIEW', 'DONE')   # a candidate waits for the coordinator's acceptance: not a failure, never aged out
+
+
+def _iso(text):
+    try:
+        return datetime.fromisoformat(str(text))
+    except (TypeError, ValueError):
+        return None
+
+
+def _open_ended(entry, self_dir, now_iso):
+    """'failed' when the open entry's self-build task FAILED or was BLOCKED (its state file next to the plan), or it
+    reached no candidate (REVIEW/DONE) and the entry is older than OPEN_MAX_S, else ''. Live 20.11: no code moved an
+    entry out of 'open', so a failed self-fix locked its class."""
+    if self_dir is not None and entry.get('plan'):
+        try:
+            state = json.loads((Path(self_dir) / ('state_' + entry['plan'])).read_text(encoding='utf-8'))
+            statuses = {t.get('status') for t in (state.get('tasks') or {}).values() if isinstance(t, dict)}
+            if statuses & {'FAILED', 'BLOCKED'}:
+                return 'failed'
+            if statuses & set(WAITING):
+                return ''
+        except (OSError, ValueError, AttributeError):
+            pass
+    at, now = _iso(entry.get('at')), _iso(now_iso)
+    if at and now and at.tzinfo == now.tzinfo and (now - at).total_seconds() > OPEN_MAX_S:
+        return 'failed'
+    return ''
+
+
+def due(rows, ledger, threshold=2, self_dir=None, now_iso=None):
     res = []
     for cls in WHERE:
         entry = ledger.get(cls) or {}
         if entry.get('status') == 'open':
+            if not _open_ended(entry, self_dir, now_iso):
+                continue
+            # its failures since it opened count again; MAX_TRIES failed self-fixes end the class's self-fixes
+            entry.update(status='failed', closed_at=now_iso, tries=int(entry.get('tries') or 0) + 1)
+        if int(entry.get('tries') or 0) >= MAX_TRIES:
             continue
         counts = factory_classes.count(rows, entry.get('at'))
         info = counts.get(cls)
@@ -144,10 +182,11 @@ def red_on_base(tree, test_file, python, timeout=30):
 
 
 def run(rows, ledger, *, ask, repo_root, src_root, self_dir, base_sha, python, now_iso, stamp):
-    items = due(rows, ledger)
+    items = due(rows, ledger, self_dir=self_dir, now_iso=now_iso)
     if not items:
         return {'status': 'none'}
     cls, info = items[0]
+    tries = int((ledger.get(cls) or {}).get('tries') or 0)   # carried by every new entry: the MAX_TRIES cap holds
     root = Path(repo_root)
     outlines = {}
     for rel in WHERE[cls]:
@@ -159,10 +198,10 @@ def run(rows, ledger, *, ask, repo_root, src_root, self_dir, base_sha, python, n
     plan = parse(answer, root)
     if plan is None:
         why = 'the answer is not a valid self-fix task'
-        ledger[cls] = {'at': now_iso, 'status': 'invalid', 'why': why}
+        ledger[cls] = {'at': now_iso, 'status': 'invalid', 'why': why, 'tries': tries}
         return {'cls': cls, 'status': 'invalid', 'why': why}
     if 'skip' in plan:
-        ledger[cls] = {'at': now_iso, 'status': 'skipped', 'why': plan['skip']}
+        ledger[cls] = {'at': now_iso, 'status': 'skipped', 'why': plan['skip'], 'tries': tries}
         return {'cls': cls, 'status': 'skipped', 'why': plan['skip']}
     plan_path = materialize(plan, src_root, self_dir, stamp, base_sha, cls)
     tree = Path(self_dir) / f"src_fx_{cls}_{stamp}"
@@ -174,9 +213,9 @@ def run(rows, ledger, *, ask, repo_root, src_root, self_dir, base_sha, python, n
                 extra.unlink()
             except OSError:
                 pass
-        ledger[cls] = {'at': now_iso, 'status': 'invalid', 'why': text[:300]}
+        ledger[cls] = {'at': now_iso, 'status': 'invalid', 'why': text[:300], 'tries': tries}
         return {'cls': cls, 'status': 'invalid', 'why': text[:300]}
-    ledger[cls] = {'at': now_iso, 'status': 'open', 'plan': plan_path.name}
+    ledger[cls] = {'at': now_iso, 'status': 'open', 'plan': plan_path.name, 'tries': tries}
     return {'cls': cls, 'status': 'open', 'plan': plan_path.name}
 
 

@@ -306,8 +306,13 @@ def fresh_feedback(state: dict, tid: str) -> str | None:
                 if (m := ATTEMPT_TAG.match(str(item.get('text', '')))) and int(m.group(1)) == last_n}
     else:   # an old state without attempt tags: the last plain gate/review entry (requeue notes included)
         plain = [i for i, item in tail if not (item.get('source') == 'gate'
-                                               and str(item.get('text', '')).startswith('[infra] '))]
+                                               and str(item.get('text', '')).startswith(('[infra] ', REPEAT_MARK)))]
         keep = set(plain[-1:])
+    # <id>: the loop's lines about the last failure (its repeat line, its class with the remedy and past cases) are
+    # untagged and written after it; they reach the coder until a newer attempt is recorded
+    anchor = max(keep, default=last_opus)
+    keep |= {i for i, item in tail if i > anchor and item.get('source') == 'gate'
+             and str(item.get('text', '')).startswith(REPEAT_MARK)}
     out = []
     for i, item in enumerate(items):
         text, source = str(item.get('text', '')), item.get('source')

@@ -46,7 +46,7 @@ def pick(state, code, ledger, max_times=3, skip=()) -> list:
             cls = _sibling(state, tid, row)[1]
         if cls == 'unknown':
             cls = _marker_class(row)
-        if cls == 'unknown' or cls in C.INFRASTRUCTURE_CLASSES:
+        if cls == 'unknown' or cls in C.INFRASTRUCTURE_CLASSES or cls in C.NO_REQUEUE_CLASSES:
             continue
         if cls == 'gate-cut' and row.get('kind') == 'unit_test':
             cls = 'test-hang'            # a test task's own new test is what does not finish

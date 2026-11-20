@@ -1409,10 +1409,17 @@ class Loop:
                 asked.update(status=status, model=model, tokens=used)
                 return answer
             stamp = dt.datetime.fromtimestamp(self.clock()).strftime("%m%d%H%M")
+            before = json.loads(json.dumps(ledger))
             report = X.run(rows, ledger, ask=ask, repo_root=src_root, src_root=src_root, self_dir=self_dir,
                            base_sha=base_sha, python=sys.executable, now_iso=self.ts(), stamp=stamp)
             if asked and asked.get("status") != "ok":     # the head was not reached: ask again next hour
-                ledger.pop(report.get("cls"), None)
+                cls, prev = report.get("cls"), before.get(report.get("cls")) or {}
+                tries = (ledger.get(cls) or {}).get("tries")   # its failed self-fixes (X.MAX_TRIES) are kept
+                if tries:
+                    ledger[cls] = {k: v for k, v in dict(prev, status="failed", tries=tries).items()
+                                   if k in ("at", "status", "tries", "closed_at")}
+                else:
+                    ledger.pop(report.get("cls"), None)
             self.save_ls(ls)
             launched = report.get("status") == "open" and X.launch(_ROOT, report["plan"], self_dir, sys.executable)
             self.event("selffix", status=report.get("status"), reason=self.rs(
@@ -2458,6 +2465,7 @@ class Loop:
                    model_note=self.rs(res.get("model_note"), 300),
                    events=self._events(res.get("events")) or None,
                    reason_detail=self.rs(res.get("reason_detail"), 300),
+                   error_class=self._failure_class(reason, res),
                    error_type=self.rs(res.get("error_type")),
                    channel_reason=self.rs(res.get("channel_reason")),
                    worker=w.slot, pid=getattr(w.owned, "pid", None), lease=(w.token or "")[:8] or None, k=w.k,
@@ -2574,6 +2582,17 @@ class Loop:
         return self.dir / "error_memory.json"
 
     @staticmethod
+    def _failure_class(reason, res: dict):
+        """<id> clause 1: the class of a refusal, recorded on the loop's RUN event (None for a pass without a reason)."""
+        if not reason:
+            return None
+        from tools import factory_classes as K
+        try:
+            return K.classify(str(reason), str(res.get("reason_detail") or ""))
+        except Exception:
+            return "unknown"
+
+    @staticmethod
     def _reason_class(rkey: str) -> str:
         """The class of a rejection key WITHOUT its free text. In the runner a key is 'gate:no_changes' (a fixed
         word) or 'review: <the reviewer's remarks>' / 'gate: <why>' / 'weakening: <text>' (free text that may be
@@ -2611,9 +2630,55 @@ class Loop:
         except Exception as e:
             self.err("audit after pass", e)
 
+    CLASS_CASES = 3
+
+    def _class_note(self, tid: str, tasks, rkey: str, res: dict) -> None:
+        """<id> clause 3: a refusal of a known, non-infrastructure class gives the task's next coder one line (a repeat
+        line, so fresh_feedback shows it until a newer attempt and rejected_for keeps it from the critic): the class,
+        its known remedy and the newest cases of the same class from other tasks. A case comes only from a task of
+        this plan known as public (privacy_safe, not only_opus: a missing flag is private, agent_factory.Task), and
+        it passes the public screen and the privacy check; no case, no line; the same line is not written twice for
+        one attempt."""
+        from tools import agent_factory_import as imp
+        from tools import factory_classes as K
+        try:
+            cls = K.classify(rkey, str(res.get("reason_detail") or ""))
+            if cls == "unknown" or cls in K.INFRASTRUCTURE_CLASSES:
+                return
+
+            def clean(text):
+                if self._privacy_hit(text):
+                    return None
+                ok, bad = imp.screen(text, 0)
+                return ok[:240] if ok is not None and not bad else None
+            public = {k for k, t in (tasks or {}).items()
+                      if getattr(t, "privacy_safe", False) is True and not getattr(t, "only_opus", True)}
+            rows = [r for r in self._telemetry_rows() if r.get("span") == "run" and r.get("attempt")
+                    and r.get("reason") and r.get("task_id") in public]
+            examples = K.cases(rows, cls, exclude_task=tid, k=self.CLASS_CASES, clean=clean)
+            if not examples:
+                return
+            note = F.redact(F.REPEAT_MARK + " " + K.note(cls, examples))[:F.FEEDBACK_MAX_CHARS]
+
+            def add(st):
+                row = st["tasks"].get(tid)
+                if row is None:
+                    return
+                items = [x for x in row.get("feedback") or [] if isinstance(x, dict)]
+                last = max((i for i, x in enumerate(items) if x.get("source") in ("gate", "review")
+                            and not str(x.get("text") or "").startswith(F.REPEAT_MARK)), default=-1)
+                if any(str(x.get("text") or "") == note for x in items[last + 1:]):
+                    return
+                F.add_feedback(st, tid, "gate", note)
+            self._tx(add)
+        except Exception as e:                           # an aid: it must never stop the loop
+            self.err("class note", e)
+
     def _learn_from_run(self, tid: str, tasks, rkey: str, res: dict) -> None:
         """A rejection (gate:*, weakening:*, review:*) is remembered per task and per file; the second time the
         same signature comes back the next brief says so and the task's channel tier goes one step up."""
+        if tid and rkey:
+            self._class_note(tid, tasks, rkey, res)
         if not tid or not rkey.startswith(REJECT_PREFIXES) or rkey == "gate:no_changes":
             return
         if rkey.startswith("gate:") and res.get("gate_red"):

@@ -4,6 +4,9 @@ import re
 from datetime import datetime
 
 CLASSES = (
+    # first: a leak or a waste is named by its own word whatever gate, critic or block reported it
+    ('secret-leak', r'private material|\bcontains (a secret|a phone number)|\bleak(s|ed|ing|age)?\b[^|]{0,60}\b(secret|key|token|password|private|e-?mail|phone)|\b(secret|key|token|password)s?\b[^|]{0,40}\bleak(s|ed|ing|age)?\b', 'a secret or private material reached a candidate, a note or an output', 'the public screen and redact() on every text that leaves the factory; the candidate never prints keys or personal data'),
+    ('token-waste', r'context_too_large|steps_exhausted|max_tokens', 'tokens were spent without a result: the prompt was too large or the model ran out of steps', 'a narrower context (outline, the named functions only) and a short answer format with the edit block first'),
     ('search-miss', r'SEARCH not found|SEARCH is not in the file', 'the coder could not copy the code it had to edit', 'ERROR_PATTERNS repairs (a row of the outline kept in SEARCH and REPLACE stands for the real header), the exact missing line in the note, a wider view of the file'),
     ('no-edit-block', r'had no SEARCH/REPLACE edit block', 'the coder answered without an edit block', 'the format rules and an example in the retry note'),
     ('cannot', r'answered CANNOT', 'the coder asked for code it was not shown (CANNOT: name)', 'the code a model asks for is shown first and whole, to the next candidate of the pass too; the spec stage rewrites a task that is no code change'),
@@ -18,6 +21,9 @@ CLASSES = (
 )
 
 INFRASTRUCTURE_CLASSES = {'quota', 'overload'}
+# registered and counted, but a FAILED/BLOCKED task of these classes is not requeued as is: the same input would spend
+# the same tokens again or carry the same leak (factory_requeue)
+NO_REQUEUE_CLASSES = {'token-waste', 'secret-leak'}
 
 
 def classify(reason, detail=''):
@@ -67,12 +73,37 @@ def due(counts, open_classes, threshold=2):
     return res
 
 
+def remedy_of(cls):
+    return next((rem for cid, _, _, rem in CLASSES if cid == cls), '')
+
+
+def cases(rows, cls, exclude_task='', k=3, clean=None):
+    """The newest distinct 'reason: detail' examples of class ``cls`` from tasks other than ``exclude_task``; ``clean``
+    (text -> text or None) screens each one, a refused example is skipped."""
+    res = []
+    for r in reversed(list(rows)):
+        reason = r.get('reason')
+        if not reason or r.get('task_id') == exclude_task:
+            continue
+        detail = r.get('reason_detail') or ''
+        if classify(reason, detail) != cls:
+            continue
+        ex = f"{reason}: {detail}".strip(': ')
+        ex = clean(ex) if clean else ex
+        if ex and ex not in res:
+            res.append(ex)
+            if len(res) >= k:
+                break
+    return res
+
+
+def note(cls, examples):
+    """One line for the coder of a task refused with class ``cls``: the class, its known remedy, past cases."""
+    return f"[класс {cls}] known remedy: {remedy_of(cls)}; past cases: " + ' | '.join(e.replace('\n', ' ') for e in examples)
+
+
 def question(cls, info):
-    remedy = ''
-    for cid, _, _, rem in CLASSES:
-        if cid == cls:
-            remedy = rem
-            break
+    remedy = remedy_of(cls)
     tasks = ', '.join(info.get('tasks', []))
     n = info.get('n', 0)
     examples = '\n'.join(f"- {e}" for e in info.get('examples', []))
