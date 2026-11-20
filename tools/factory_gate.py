@@ -83,6 +83,7 @@ class GateResult:
     missing: tuple = ()
     failed_ids: tuple = ()   # sorted 'classname::name' of red testcases (set comparison against the base)
     crashed: tuple = ()
+    timed_out: tuple = ()    # test files killed at the limit when each file ran on its own (run_tests)
 
 
 # --- laptop rule: at most 2 pytest machine-wide, and only while free RAM > 2 GB ---------------------
@@ -256,8 +257,46 @@ def _failure(rc, diag):
     return GateResult(rc, 0, 0, 0, 0, 0, False, redact(diag)[:DIAG_LIMIT])
 
 
+TIMEOUT_DIAG = 'timeout after %ss (process tree killed)'
+
+
+def _timed_out(result: GateResult) -> bool:
+    return result.rc == -1 and result.diag.startswith('timeout after')
+
+
 def run_tests(root, tests, timeout_s, workdir=None, wait_s=None) -> GateResult:
-    """Run ``tests`` (pytest node ids / files / dirs) in ``root``; the verdict comes from JUnit XML."""
+    """Run ``tests`` in ``root`` (one pytest call, _run_once). When a call over several test files is killed at
+    ``timeout_s``, each file runs on its own with the same limit and its own slot, and the verdicts are merged: a
+    file that hangs no longer hides the others (live 20.11 05:00: three tasks stayed gate_unknown on every pass;
+    one of their 3-5 files waited on a speech process, the other files were red in 4 s each)."""
+    result = _run_once(root, tests, timeout_s, workdir=workdir, wait_s=wait_s)
+    files = list(dict.fromkeys(t.split('::', 1)[0] for t in tests))
+    if len(files) < 2 or not _timed_out(result):
+        return result
+    return _merge([(f, _run_once(root, [t for t in tests if t.split('::', 1)[0] == f], timeout_s,
+                                 workdir=workdir, wait_s=wait_s)) for f in files])
+
+
+def _merge(parts) -> GateResult:
+    """One verdict of per-file runs: counts and ids summed; a file killed at the limit is not run (missing,
+    timed_out); junit_ok only when every file ran clean; a file pytest could not start (no slot, no RAM) makes the
+    whole run environmental, as does a red made only of environmental failures."""
+    runs = [r for _, r in parts]
+    timed = tuple(f for f, r in parts if _timed_out(r))
+    not_started = next((r.env_reason for r in runs if r.env_reason and not r.collected), '')
+    red = [r for r in runs if r.failed or r.errors]
+    env = not_started or (red[0].env_reason if red and all(r.env_reason for r in red) else '')
+    diag = '\n'.join(('%s: %s' % (f, r.diag)) for f, r in sorted(parts, key=lambda p: not _timed_out(p[1])) if r.diag)
+    return GateResult(next((r.rc for r in runs if r.rc), 0), sum(r.collected for r in runs),
+                      sum(r.passed for r in runs), sum(r.failed for r in runs), sum(r.errors for r in runs),
+                      sum(r.skipped for r in runs), all(r.junit_ok for r in runs), redact(diag)[:DIAG_LIMIT], env,
+                      tuple(sorted({m for r in runs for m in r.missing} | set(timed))),
+                      tuple(sorted({i for r in runs for i in r.failed_ids})),
+                      tuple(sorted({c for r in runs for c in r.crashed})), timed)
+
+
+def _run_once(root, tests, timeout_s, workdir=None, wait_s=None) -> GateResult:
+    """Run ``tests`` (pytest node ids / files / dirs) in ``root`` in one pytest call; the verdict comes from JUnit XML."""
     root = Path(root)
     for t in tests:
         raw = t.split('::', 1)[0]
@@ -279,7 +318,7 @@ def run_tests(root, tests, timeout_s, workdir=None, wait_s=None) -> GateResult:
                     return replace(_failure(-1, NOT_STARTED + why), env_reason='pytest slot: ' + why)
                 run = run_owned(args, cwd=str(root), env=_env(d), timeout=timeout_s)
         except subprocess.TimeoutExpired:
-            return _failure(-1, f'timeout after {timeout_s}s (process tree killed)')
+            return _failure(-1, TIMEOUT_DIAG % timeout_s)
         except OSError as error:
             return _failure(-1, f'cannot run pytest: {type(error).__name__}')
         tail = (run.stdout or b'')[-600:].decode('utf-8', 'replace')
@@ -424,7 +463,9 @@ def red_before(base_root, tests, timeout_s, kind=None, wait_s=None, workdir=None
         return 'red', EMPTY_BASE
     result = run_tests(base_root, tests, timeout_s, workdir=workdir, wait_s=wait_s)
     if result.failed + result.errors > 0:
-        if result.env_reason or not (result.junit_ok or not result.missing):
+        # a file killed at the limit (run_tests) is not a doubt about the red of the files that ran
+        only_timed_out = bool(result.timed_out) and set(result.missing) <= set(result.timed_out)
+        if result.env_reason or not (result.junit_ok or not result.missing or only_timed_out):
             return 'unknown', result
         return 'red', result
     if result.junit_ok and result.passed >= 1:
@@ -596,7 +637,9 @@ def accept(base: GateResult, cand: GateResult, red_before_ok: bool):
         if side.env_reason:
             return False, 'env:' + side.env_reason[:200]
     red_collection = red_before_ok and base.errors > 0 and not base.env_reason
-    if not base.junit_ok and not red_collection:
+    # red in the files that ran, a file killed at the limit (run_tests): known red; the candidate must run every file
+    red_partial = red_before_ok and bool(base.timed_out) and set(base.missing) <= set(base.timed_out)
+    if not base.junit_ok and not (red_collection or red_partial):
         return False, 'base_unknown'
     if not cand.junit_ok:
         return False, 'junit not ok: ' + (cand.diag or 'no valid result')[:300]

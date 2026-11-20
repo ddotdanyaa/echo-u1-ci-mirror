@@ -1,9 +1,10 @@
 # Factory status (generated, structured data only)
 
-Generated: 2026-11-20T01:57:09Z
-Source commit: shab0455c8d9db5
+Generated: 2026-11-20T02:13:25Z
+Source commit: sha4c97eb9a6aba
 
 ## Commits (sha, time)
+- sha4c97eb9a 2026-11-20T05:12:59+03:00
 - shab0455c8d 2026-11-20T04:56:19+03:00
 - shaea2c77ef 2026-11-20T03:59:21+03:00
 - sha8bd01526 2026-11-20T03:57:03+03:00
@@ -23,7 +24,6 @@ Source commit: shab0455c8d9db5
 - shaec9dc6b0 2026-11-20T02:25:49+03:00
 - sha6a4485a7 2026-11-20T02:18:15+03:00
 - shaf62b74c7 2026-11-20T02:12:08+03:00
-- sha1ab9fc21 2026-11-20T02:11:21+03:00
 
 ## Funnel
 | step | count |
@@ -43,8 +43,8 @@ Side counters: blocked=20, parked=0, requeued=0
 Tasks now: BLOCKED=20, DONE=10, FAILED=15, PROMOTED=6, READY=5
 Accepted: 0
 Promoted: 13
-Free RAM, GB: 3.53
-Telemetry rows: 3201 recognised, 0 unrecognised
+Free RAM, GB: 2.82
+Telemetry rows: 3244 recognised, 0 unrecognised
 
 ## Spend per model
 | model | calls | tokens_in | tokens_out | usage_unknown | http_429 | errors |
@@ -60,14 +60,14 @@ Telemetry rows: 3201 recognised, 0 unrecognised
 ## Spans
 | span | rows | calls |
 |---|---|---|
-| answer | 157 | 0 |
-| gate | 640 | 0 |
+| answer | 161 | 0 |
+| gate | 650 | 0 |
 | infra | 85 | 0 |
-| loop | 627 | 0 |
+| loop | 646 | 0 |
 | other | 168 | 0 |
 | promote | 17 | 0 |
 | review | 165 | 88 |
-| run | 1315 | 555 |
+| run | 1325 | 555 |
 | triage | 27 | 0 |
 
 ## Channels (model ids)
@@ -93,8 +93,8 @@ Telemetry rows: 3201 recognised, 0 unrecognised
 
 ## Published files
 Modules: 19
-Tests in the cloud: 40
-Tests not in the cloud: 59
+Tests in the cloud: 42
+Tests not in the cloud: 58
 - tests/test_agent_factory.py (backlog-id, email, env-path, key, long-run, owner-name, path, user-path)
 - tests/test_factory_ab.py (backlog-id)
 - tests/test_factory_asked_code.py (dependency)
@@ -103,7 +103,6 @@ Tests not in the cloud: 59
 - tests/test_factory_context_fit_whole.py (backlog-id)
 - tests/test_factory_critic_prior.py (dependency)
 - tests/test_factory_decompose.py (backlog-id, call-word, email)
-- tests/test_factory_fit_views.py (email)
 - tests/test_factory_gate.py (email, path)
 - tests/test_factory_gate_marker.py (backlog-id)
 - tests/test_factory_gate_more.py (email)
