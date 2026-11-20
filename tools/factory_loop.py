@@ -1672,6 +1672,11 @@ class Loop:
         """Keys, secrets, phones, e-mail, profile paths, call recordings, personal data: the import's
         PRIVATE detector plus what redact() knows. '' when nothing matched."""
         from tools import agent_factory_import as imp
+        # the phone first: PRIVATE carries PHONE.pattern too (19.11 17:47), and it would name a phone "private
+        # material" (both refuse; the name tells Opus what to remove)
+        m = cls.PHONE.search(text)
+        if m and sum(c.isdigit() for c in m.group(0)) >= 10:
+            return "a phone number"
         if imp.PRIVATE.search(text):
             return "private material (owner's private markers, recordings, keys, personal data)"
         step = F.REDACT_INPUT_MAX - 200               # redact() looks at a prefix only: look window by window
@@ -1679,9 +1684,6 @@ class Loop:
             window = text[i:i + F.REDACT_INPUT_MAX]
             if F.redact(window) != window:
                 return "a secret, an e-mail or a profile path"
-        m = cls.PHONE.search(text)
-        if m and sum(c.isdigit() for c in m.group(0)) >= 10:
-            return "a phone number"
         return ""
 
     @classmethod
@@ -2175,7 +2177,7 @@ class Loop:
             tasks2, state = self.load()
             remark = next((str(x.get("text") or "") for x in reversed(state["tasks"].get(tid, {}).get("feedback") or [])
                            if x.get("source") in ("gate", "review") and not str(x.get("text") or "").startswith(
-                               ("не повторяй:", "[infra]"))), "")
+                               (F.REPEAT_MARK, "[infra]"))), "")
             sig, words = self._signature(rkey, remark)
             mem = {}
             try:
@@ -2206,7 +2208,7 @@ class Loop:
             F.save_atomic(self._mem_path(), mem)
             if repeat and tid in state["tasks"]:
                 row = state["tasks"][tid]
-                note = "не повторяй: " + (words or self._reason_class(rkey))
+                note = F.REPEAT_MARK + " " + (words or self._reason_class(rkey))
                 F.add_feedback(state, tid, "gate", note)
                 cur = row.get("tier_floor") if row.get("tier_floor") in TIER_ORDER else TIER_ORDER[0]
                 new = TIER_ORDER[min(TIER_ORDER.index(cur) + 1, len(TIER_ORDER) - 1)]

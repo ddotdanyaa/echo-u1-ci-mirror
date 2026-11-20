@@ -83,7 +83,8 @@ class GateResult:
     missing: tuple = ()
     failed_ids: tuple = ()   # sorted 'classname::name' of red testcases (set comparison against the base)
     crashed: tuple = ()
-    timed_out: tuple = ()    # test files killed at the limit when each file ran on its own (run_tests)
+    timed_out: tuple = ()    # files / tests cut at the limit that could not be split further, or not run (run_tests)
+    env_failed: tuple = ()   # 'classname::name' of red testcases whose every failure is environmental (_env_reason)
 
 
 # --- laptop rule: at most 2 pytest machine-wide, and only while free RAM > 2 GB ---------------------
@@ -258,66 +259,176 @@ def _failure(rc, diag):
 
 
 TIMEOUT_DIAG = 'timeout after %ss (process tree killed)'
+SPENT_DIAG = 'timeout after %ss: the split budget was spent, not run'
+SPLIT_BUDGET_S = 300     # a call cut at the limit goes on in smaller calls for at most this long in all
+SPLIT_SHARE = 0.6        # a chunk holds this share of the tests the cut call finished: well inside the limit
+HUNG_ALONE_MAX = 5       # at most this many tests cut on the base run alone (the others run in their files)
+PROGRESS_PLUGIN = 'factory_gate_progress'
+# pytest plugin written next to every gate call (PYTHONPATH + -p, as the profile plugin below): which tests were
+# collected and which one started last, flushed per test, so a call killed at the limit still tells what it did.
+_PROGRESS_SOURCE = r'''
+import os
+
+_out = os.environ.get("FACTORY_PROGRESS_OUT", "")
+
+
+def _note(kind, nodeid):
+    if _out:
+        with open(_out, "a", encoding="utf-8") as f:
+            f.write(kind + "\t" + nodeid.replace("\r", " ").replace("\n", " ") + "\n")
+
+
+def pytest_collection_finish(session):
+    for item in session.items:
+        _note("item", item.nodeid)
+
+
+def pytest_runtest_logstart(nodeid, location):
+    _note("start", nodeid)
+'''
 
 
 def _timed_out(result: GateResult) -> bool:
     return result.rc == -1 and result.diag.startswith('timeout after')
 
 
-def run_tests(root, tests, timeout_s, workdir=None, wait_s=None) -> GateResult:
-    """Run ``tests`` in ``root`` (one pytest call, _run_once). When a call over several test files is killed at
-    ``timeout_s``, each file runs on its own with the same limit and its own slot, and the verdicts are merged: a
-    file that hangs no longer hides the others (live 20.11 05:00: three tasks stayed gate_unknown on every pass;
-    one of their 3-5 files waited on a speech process, the other files were red in 4 s each)."""
-    result = _run_once(root, tests, timeout_s, workdir=workdir, wait_s=wait_s)
+def _within(names, labels) -> bool:
+    """Every name is one of ``labels`` or a test inside one of them (a label may name a whole file)."""
+    labels = tuple(labels)
+    return all(n in labels or any(n.startswith(label + '::') for label in labels) for n in names)
+
+
+def run_tests(root, tests, timeout_s, workdir=None, wait_s=None, hung=(), budget_s=None) -> GateResult:
+    """Run ``tests`` in ``root``: one pytest call (_run_once) of at most ``timeout_s``. A call cut at the limit goes on
+    in smaller calls (_fit), so a slow or a hanging test no longer hides the verdict of the others (live 20.11: three
+    tasks stayed unknown or unacceptable on every pass: one test waits on a speech process, other files need more
+    than 30 s under load). ``hung``: what was cut on the base (files or single tests): the run then starts file by
+    file, a test of that list runs alone and its file runs without it (the joint call would only spend the limit
+    again). The continuation spends at most ``budget_s`` (SPLIT_BUDGET_S) seconds."""
+    deadline = time.monotonic() + (SPLIT_BUDGET_S if budget_s is None else budget_s)
+    if not hung:
+        parts = _fit(root, list(tests), timeout_s, workdir, wait_s, deadline, first=True)
+    else:
+        singles = [h for h in dict.fromkeys(hung) if '::' in h and _within([h], tests)][:HUNG_ALONE_MAX]
+        parts = []
+        for f in dict.fromkeys(t.split('::', 1)[0] for t in tests):
+            mine = [t for t in tests if t.split('::', 1)[0] == f and t not in singles]
+            if mine:
+                parts += _fit(root, mine, timeout_s, workdir, wait_s, deadline, first=True,
+                              deselect=[h for h in singles if _within([h], mine)])
+        for h in singles:
+            parts += _fit(root, [h], timeout_s, workdir, wait_s, deadline, first=True)
+    return parts[0][1] if len(parts) == 1 else _merge(parts)
+
+
+def _fit(root, tests, timeout_s, workdir, wait_s, deadline, first=False, deselect=()) -> list:
+    """[(names, GateResult)] for ``tests``: one call; a call cut at the limit goes on. Its progress names the test that
+    was running (it runs alone, last: cut alone, it hangs here and is timed out) and how many finished (the others
+    run in chunks of SPLIT_SHARE of that count, each chunk the same way). Without progress (cut while collecting) a
+    call over several files goes on file by file. A call after the deadline is not run (timed out: never a pass)."""
+    if not first and time.monotonic() >= deadline:
+        return [(tuple(tests), _failure(-1, SPENT_DIAG % timeout_s))]
+    seen = {}
+    result = _run_once(root, tests, timeout_s, workdir=workdir, wait_s=wait_s, progress=seen, deselect=deselect)
+    if not _timed_out(result):
+        return [(tuple(tests), result)]
+    items, started = seen.get('items') or [], seen.get('started') or []
+    if len(items) > 1 and started and started[-1] in items:
+        suspect, done = started[-1], len(started) - 1
+        others = [i for i in items if i != suspect]
+        size = max(1, int(done * SPLIT_SHARE)) if done else len(others)
+        parts = []
+        for k in range(0, len(others), size):
+            parts += _fit(root, others[k:k + size], timeout_s, workdir, wait_s, deadline)
+        return parts + _fit(root, [suspect], timeout_s, workdir, wait_s, deadline)
     files = list(dict.fromkeys(t.split('::', 1)[0] for t in tests))
-    if len(files) < 2 or not _timed_out(result):
-        return result
-    return _merge([(f, _run_once(root, [t for t in tests if t.split('::', 1)[0] == f], timeout_s,
-                                 workdir=workdir, wait_s=wait_s)) for f in files])
+    if len(files) > 1:
+        return [p for f in files for p in _fit(root, [t for t in tests if t.split('::', 1)[0] == f], timeout_s,
+                                               workdir, wait_s, deadline, deselect=deselect)]
+    return [(tuple(items) if len(items) == 1 else tuple(tests), result)]
+
+
+def _progress(log) -> dict:
+    """What a cut call wrote through the progress plugin: collected names in run order, started names."""
+    items, started = [], []
+    try:
+        text = Path(log).read_text(encoding='utf-8', errors='replace')
+    except OSError:
+        return {'items': items, 'started': started}
+    for line in text.splitlines():
+        kind, _, name = line.partition('\t')
+        if kind == 'item' and name:
+            items.append(name)
+        elif kind == 'start' and name:
+            started.append(name)
+    return {'items': items, 'started': started}
 
 
 def _merge(parts) -> GateResult:
-    """One verdict of per-file runs: counts and ids summed; a file killed at the limit is not run (missing,
-    timed_out); junit_ok only when every file ran clean; a file pytest could not start (no slot, no RAM) makes the
-    whole run environmental, as does a red made only of environmental failures."""
+    """One verdict of several calls: counts and ids summed; a call cut at the limit (or not run: budget spent) is
+    timed out and its names are missing, as are the names of a call that came back without any testcase; junit_ok
+    only when every call ran clean; a call pytest could not start (no slot, no RAM) makes the whole run
+    environmental, as does a red made only of environmental failures."""
     runs = [r for _, r in parts]
-    timed = tuple(f for f, r in parts if _timed_out(r))
+    timed = {n for names, r in parts if _timed_out(r) for n in names}
+    empty = {n for names, r in parts if not r.collected for n in names}
     not_started = next((r.env_reason for r in runs if r.env_reason and not r.collected), '')
     red = [r for r in runs if r.failed or r.errors]
     env = not_started or (red[0].env_reason if red and all(r.env_reason for r in red) else '')
-    diag = '\n'.join(('%s: %s' % (f, r.diag)) for f, r in sorted(parts, key=lambda p: not _timed_out(p[1])) if r.diag)
+
+    def label(names):
+        return names[0] if len(names) == 1 else '%s (+%d more)' % (names[0], len(names) - 1)
+    diag = '\n'.join('%s: %s' % (label(n), r.diag) for n, r in sorted(parts, key=lambda p: not _timed_out(p[1]))
+                     if r.diag)
     return GateResult(next((r.rc for r in runs if r.rc), 0), sum(r.collected for r in runs),
                       sum(r.passed for r in runs), sum(r.failed for r in runs), sum(r.errors for r in runs),
                       sum(r.skipped for r in runs), all(r.junit_ok for r in runs), redact(diag)[:DIAG_LIMIT], env,
-                      tuple(sorted({m for r in runs for m in r.missing} | set(timed))),
+                      tuple(sorted({m for r in runs for m in r.missing} | timed | empty)),
                       tuple(sorted({i for r in runs for i in r.failed_ids})),
-                      tuple(sorted({c for r in runs for c in r.crashed})), timed)
+                      tuple(sorted({c for r in runs for c in r.crashed})), tuple(sorted(timed)),
+                      tuple(sorted({i for r in runs for i in r.env_failed})))
 
 
-def _run_once(root, tests, timeout_s, workdir=None, wait_s=None) -> GateResult:
-    """Run ``tests`` (pytest node ids / files / dirs) in ``root`` in one pytest call; the verdict comes from JUnit XML."""
+def _node(test: str) -> str:
+    return _rel(test.split('::', 1)[0]) + ('::' + test.split('::', 1)[1] if '::' in test else '')
+
+
+def _run_once(root, tests, timeout_s, workdir=None, wait_s=None, progress=None, deselect=()) -> GateResult:
+    """Run ``tests`` (pytest node ids / files / dirs) in ``root`` in one pytest call; the verdict comes from JUnit XML.
+    ``deselect``: node ids left out of the call. ``progress`` (a dict) receives what a call cut at the limit did: the
+    collected names in run order ('items') and the started ones ('started')."""
     root = Path(root)
-    for t in tests:
+    for t in [*tests, *deselect]:
         raw = t.split('::', 1)[0]
         parts = _clean(raw)
         if parts is None or any(seg.startswith('-') for seg in parts):
             return _failure(-1, f'test path not allowed (outside the repository or option-like): {raw}')
-    tests = [_rel(t.split('::', 1)[0]) + ('::' + t.split('::', 1)[1] if '::' in t else '') for t in tests]
+    tests = [_node(t) for t in tests]
     if not tests:
         return _failure(-1, 'no tests given')
     # ignore_cleanup_errors: a handle still held after the tree was killed must not crash the pass.
     with tempfile.TemporaryDirectory(prefix='factory-gate-', dir=workdir, ignore_cleanup_errors=True) as d:
         xml = Path(d) / 'result.xml'
-        args = [sys.executable, '-m', 'pytest', '-q', '--tb=short', '-p', 'no:cacheprovider',
+        log = Path(d) / 'progress.txt'
+        env, plugin = _env(d), []
+        try:
+            (Path(d) / 'plug').mkdir()
+            (Path(d) / 'plug' / (PROGRESS_PLUGIN + '.py')).write_text(_PROGRESS_SOURCE, encoding='utf-8')
+            env.update(PYTHONPATH=str(Path(d) / 'plug'), FACTORY_PROGRESS_OUT=str(log))
+            plugin = ['-p', PROGRESS_PLUGIN]
+        except OSError:
+            pass      # without progress a cut call goes on file by file only
+        args = [sys.executable, '-m', 'pytest', '-q', '--tb=short', '-p', 'no:cacheprovider', *plugin,
                 '--rootdir=' + str(root), '--basetemp=' + str(Path(d) / 'bt'),
-                '--junitxml=' + str(xml), *tests]
+                '--junitxml=' + str(xml), *['--deselect=' + _node(t) for t in deselect], *tests]
         try:
             with pytest_slot(wait_s) as why:
                 if why:
                     return replace(_failure(-1, NOT_STARTED + why), env_reason='pytest slot: ' + why)
-                run = run_owned(args, cwd=str(root), env=_env(d), timeout=timeout_s)
+                run = run_owned(args, cwd=str(root), env=env, timeout=timeout_s)
         except subprocess.TimeoutExpired:
+            if progress is not None:
+                progress.update(_progress(log))
             return _failure(-1, TIMEOUT_DIAG % timeout_s)
         except OSError as error:
             return _failure(-1, f'cannot run pytest: {type(error).__name__}')
@@ -348,11 +459,12 @@ def _run_once(root, tests, timeout_s, workdir=None, wait_s=None) -> GateResult:
     if missing:
         notes.append('no testcase for: ' + ', '.join(missing))
     junit_ok = bool(cases) and errors == 0 and not missing
-    reasons = []
+    reasons, env_ids = [], set()
     for case in cases:
-        for child in case:
-            if child.tag in ('failure', 'error'):
-                reasons.append(_env_reason(_exception_text(child), root, notes))
+        whys = [_env_reason(_exception_text(child), root, notes) for child in case if child.tag in ('failure', 'error')]
+        reasons += whys
+        if whys and all(whys):
+            env_ids.add('%s::%s' % (case.get('classname', ''), case.get('name', '')))
     # the environment is to blame only when EVERY red case is environmental
     env_reason = reasons[0] if reasons and all(reasons) else ''
     if not cases:
@@ -362,7 +474,7 @@ def _run_once(root, tests, timeout_s, workdir=None, wait_s=None) -> GateResult:
                       tuple(missing),
                       tuple(sorted('%s::%s' % (c.get('classname', ''), c.get('name', '')) for c in cases
                                    if c.find('failure') is not None or c.find('error') is not None)),
-                      tuple(sorted(crashed)))
+                      tuple(sorted(crashed)), (), tuple(sorted(env_ids)))
 
 
 def _exception_text(node) -> str:
@@ -464,7 +576,7 @@ def red_before(base_root, tests, timeout_s, kind=None, wait_s=None, workdir=None
     result = run_tests(base_root, tests, timeout_s, workdir=workdir, wait_s=wait_s)
     if result.failed + result.errors > 0:
         # a file killed at the limit (run_tests) is not a doubt about the red of the files that ran
-        only_timed_out = bool(result.timed_out) and set(result.missing) <= set(result.timed_out)
+        only_timed_out = bool(result.timed_out) and _within(result.missing, result.timed_out)
         if result.env_reason or not (result.junit_ok or not result.missing or only_timed_out):
             return 'unknown', result
         return 'red', result
@@ -637,15 +749,22 @@ def accept(base: GateResult, cand: GateResult, red_before_ok: bool):
         if side.env_reason:
             return False, 'env:' + side.env_reason[:200]
     red_collection = red_before_ok and base.errors > 0 and not base.env_reason
-    # red in the files that ran, a file killed at the limit (run_tests): known red; the candidate must run every file
-    red_partial = red_before_ok and bool(base.timed_out) and set(base.missing) <= set(base.timed_out)
+    # red in the tests that ran, the rest cut at the limit (run_tests): known red
+    red_partial = red_before_ok and bool(base.timed_out) and _within(base.missing, base.timed_out)
     if not base.junit_ok and not (red_collection or red_partial):
         return False, 'base_unknown'
-    if not cand.junit_ok:
+    # Not measurable here on either side (live 20.11): cut at the limit on the base too (it hangs here), or red by the
+    # environment on both sides (a package the gate's Python lacks). The candidate is judged on every other test;
+    # anything else cut, missing or red fails it. unmeasured() names these for the report.
+    spared = set(cand.env_failed) & set(base.env_failed)
+    red_left = cand.failed + cand.errors - sum(1 for i in cand.failed_ids if i in spared)    # counts, not only names
+    excused = (cand.collected > 0 and bool(cand.timed_out or spared) and _within(cand.missing, cand.timed_out)
+               and _within(cand.timed_out, base.timed_out) and not (cand.errors and red_left > 0))
+    if not cand.junit_ok and not excused:
         return False, 'junit not ok: ' + (cand.diag or 'no valid result')[:300]
-    if cand.rc != 0:
+    if cand.rc != 0 and not (cand.timed_out or spared):
         return False, f'rc={cand.rc} (0 required)'
-    if cand.failed or cand.errors:
+    if red_left > 0:
         return False, f'failed={cand.failed} errors={cand.errors}'
     if cand.collected < 1:
         return False, 'nothing collected'
@@ -658,6 +777,11 @@ def accept(base: GateResult, cand: GateResult, red_before_ok: bool):
     if not red_before_ok:
         return False, 'tests were not red before (task already done or test is vacuous)'
     return True, 'ok'
+
+
+def unmeasured(base: GateResult, cand: GateResult) -> tuple:
+    """What an accepted candidate was not measured on (accept): cut on both sides, red by the environment on both."""
+    return tuple(sorted(set(cand.timed_out) | (set(cand.env_failed) & set(base.env_failed))))
 
 
 def accept_unit_test(cand_on_base: GateResult, test_text=None, backlog_id=None):

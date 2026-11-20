@@ -61,3 +61,14 @@ def test_a_hanging_test_has_its_own_class_and_it_is_not_infrastructure():
     assert K.classify(text) == 'test-hang'
     assert 'test-hang' not in K.INFRASTRUCTURE_CLASSES
     assert K.classify('The test is a stub and does not actually verify') == 'weak-test'
+
+
+def test_a_test_of_a_code_task_cut_at_the_limit_is_its_own_class():
+    """Live 20.11 06:08-06:28: four code tasks failed on '<file>: timeout after 30s'; their tests are the
+    repository's (slow or hanging here), the coder wrote none, so the test-hang advice was wrong for them."""
+    assert K.classify('gate: junit not ok: tests/test_silence_kinds.py: timeout after 30s (process tree killed)') \
+        == 'gate-cut'
+    assert K.classify('junit not ok: tests/test_a.py::t2 (+3 more): timeout after 30s: the split budget was spent') \
+        == 'gate-cut'
+    assert K.classify('[attempt 3] junit not ok: timeout after 30s (process tree killed)') == 'test-hang'
+    assert 'gate-cut' not in K.INFRASTRUCTURE_CLASSES

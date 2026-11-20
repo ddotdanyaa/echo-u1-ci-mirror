@@ -27,6 +27,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+import dataclasses
 from dataclasses import replace
 
 from .agent_factory import (BudgetExhausted, DEFER_REASONS, LEASE_LIFETIME_S, LOCK_OWNER, MODEL_ID, InvalidPlan, Task, acquire, add_feedback, charge_call,
@@ -320,6 +321,35 @@ def large_names(task: Task, files: dict[str, bytes]) -> set[str]:
         big.add(name)
         whole -= size
     return big
+
+
+BASE_CACHE_S = 6 * 3600     # a measured red base is reused this long for the same commit, tests and files
+
+
+def _base_key(base_sha, task: Task, baseline: dict) -> str | None:
+    """The identity of a base measurement: the base commit, the kind, the task's tests and the bytes of every staged
+    file (the worker policy aside); None without a base commit (an unpinned tree is never reused)."""
+    if not base_sha:
+        return None
+    h = sha256(('%s\n%s\n%s' % (base_sha, task.kind, '\n'.join(sorted(task.tests)))).encode('utf-8'))
+    for name, data in sorted(baseline.items()):
+        if name != POLICY_FILE:
+            h.update(name.encode('utf-8') + b'\0' + sha256(data).digest())
+    return h.hexdigest()
+
+
+def _held_base(row: dict, key: str | None):
+    """The red base kept on the row for this key while it is fresh; None when absent, stale, foreign or unreadable
+    (a damaged record only costs a new measurement)."""
+    held = row.get('base_red')
+    if not key or not isinstance(held, dict) or held.get('key') != key:
+        return None
+    try:
+        if not 0 <= _now() - float(held['at']) < BASE_CACHE_S:
+            return None
+        return gate.GateResult(**{k: tuple(v) if isinstance(v, list) else v for k, v in held['result'].items()})
+    except (TypeError, ValueError, KeyError, AttributeError):
+        return None
 
 
 def prepare(root: Path, task: Task, workdir: Path) -> dict[str, bytes]:
@@ -1773,11 +1803,14 @@ def _pass_inner(tasks, task: Task, state: dict, *, checkpoint: Path, root: Path,
     slot = {'deadline': None}      # armed at the FIRST gate run: the coder call must not eat the wait
 
     def gate_run(tree, tests):
-        """gate.run_tests with the pass-wide slot budget (what is left of it, never a fresh one per call)."""
+        """gate.run_tests with the pass-wide slot budget (what is left of it, never a fresh one per call). What was cut
+        at the limit on the base (files, single tests) is handed over: the candidate run starts file by file and runs
+        those tests alone (a joint run would only be cut again)."""
         if slot['deadline'] is None:
             slot['deadline'] = _now() + SLOT_BUDGET_S
+        known = getattr(ctx.get('counts'), 'timed_out', ())
         return gate.run_tests(tree, tests, GATE_TIMEOUT_S, workdir=gate_tmp,
-                              wait_s=max(0.0, slot['deadline'] - _now()))
+                              wait_s=max(0.0, slot['deadline'] - _now()), **({'hung': known} if known else {}))
 
     def park_candidate() -> str:
         """Save the diff of a paid candidate outside every sweep (staging/parked) and name it for Opus."""
@@ -1881,12 +1914,23 @@ def _pass_inner(tasks, task: Task, state: dict, *, checkpoint: Path, root: Path,
                 ctx['workdir'] = old.resolve()
                 ctx['coder_model'] = pending.get('coder_model')
 
-        # 1. Base verdict before any model call: green = already done, unknown = infrastructure.
-        verdict, base = timed('red_before_s', lambda: gate.red_before(
-            base_root() if task.kind != 'unit_test' else root, task.tests, GATE_TIMEOUT_S, task.kind,
-            wait_s=(min(RED_BEFORE_WAIT_S, max(0.0, slot['deadline'] - _now())) if slot['deadline'] is not None
-                    else RED_BEFORE_WAIT_S),
-            workdir=gate_tmp))
+        # 1. Base verdict before any model call: green = already done, unknown = infrastructure. A red base measured on
+        # the same commit with the same tests and files is reused (base_red): it cannot change, and with a hanging
+        # test file it cost 70 s every pass (live 20.11 05:25-05:37).
+        key = _base_key(base_sha, task, ctx['baseline'])
+        held = _held_base(row, key)
+        if held is not None:
+            verdict, base = 'red', held
+            events.append('base_reused')
+        else:
+            verdict, base = timed('red_before_s', lambda: gate.red_before(
+                base_root() if task.kind != 'unit_test' else root, task.tests, GATE_TIMEOUT_S, task.kind,
+                wait_s=(min(RED_BEFORE_WAIT_S, max(0.0, slot['deadline'] - _now())) if slot['deadline'] is not None
+                        else RED_BEFORE_WAIT_S),
+                workdir=gate_tmp))
+            row.pop('base_red', None)
+            if key and verdict == 'red' and not base.env_reason and task.kind != 'unit_test':
+                row['base_red'] = {'key': key, 'at': _now(), 'result': dataclasses.asdict(base)}
         ctx['counts'] = base
         if verdict == 'green':
             return block('already_green', 'the task tests already pass on the base')
@@ -1956,6 +2000,9 @@ def _pass_inner(tasks, task: Task, state: dict, *, checkpoint: Path, root: Path,
                 if not ok:
                     return _GateRetry(('gate', 'gate: ' + why[:300], why + '\n' + cand.diag, changed), cand.diag or why,
                                       changed)
+                left = gate.unmeasured(base, cand) if task.kind != 'unit_test' else ()
+                if left:      # accepted on every test that ran; these hang or lack a package here on both sides
+                    events.append('unmeasured:%d' % len(left))
                 if task.kind != 'unit_test':
                     try:
                         near = neighbor_tests(root, task)[:MAX_NEIGHBORS]

@@ -1,8 +1,9 @@
 """fac-gate-split (live 20.11 05:00): three tasks stayed gate_unknown on every pass. Their 3-5 test files ran in ONE
 pytest call killed at the 30 s limit, because one file hung (it waits on a speech process); the other files were red
-in 4 s each. When a run of several files is killed at the limit, each file runs on its own (same limit, its own
-slot); a file killed again is "timed out", the others keep their verdict. The base is red when a file that ran is
-red; a candidate is accepted only when every file ran and passed."""
+in 4 s each. When a run of several files is killed at the limit and its progress is unknown (these fakes write
+none), each file runs on its own (same limit, its own slot); a file killed again is "timed out", the others keep
+their verdict. The base is red when a file that ran is red; a candidate must run every file except those cut on
+the base too (tests/test_factory_gate_chunks.py: the split by tests when the progress is known)."""
 from tools import factory_gate as fg
 
 A, B, C = 'tests/test_a.py', 'tests/test_b.py', 'tests/test_c.py'
@@ -20,7 +21,7 @@ def _green(n=2):
 def _fake(monkeypatch, by_file):
     calls = []
 
-    def once(root, tests, timeout_s, workdir=None, wait_s=None):
+    def once(root, tests, timeout_s, workdir=None, wait_s=None, progress=None, deselect=()):
         files = sorted({t.split('::', 1)[0] for t in tests})
         calls.append(files)
         return TIMEOUT if len(files) > 1 else by_file[files[0]]
@@ -61,17 +62,29 @@ def test_a_slot_refusal_of_one_file_makes_the_run_environmental(monkeypatch, tmp
     assert fg.red_before(tmp_path, [A, B], 30)[0] == 'unknown'
 
 
-def test_a_full_green_candidate_is_accepted_against_a_partly_timed_out_red_base(monkeypatch, tmp_path):
+def test_a_candidate_is_judged_on_what_ran_when_only_the_file_cut_on_the_base_is_cut(monkeypatch, tmp_path):
     _fake(monkeypatch, {A: _red('a::t1'), B: TIMEOUT})
     base = fg.run_tests(tmp_path, [A, B], 30)
     assert fg.accept(base, fg.GateResult(0, 5, 5, 0, 0, 0, True, ''), True) == (True, 'ok')
     _fake(monkeypatch, {A: _green(), B: TIMEOUT})
     partial = fg.run_tests(tmp_path, [A, B], 30)
-    ok, reason = fg.accept(base, partial, True)
+    assert fg.accept(base, partial, True) == (True, 'ok') and fg.unmeasured(base, partial) == (B,)
+    _fake(monkeypatch, {A: TIMEOUT, B: _green()})
+    swapped = fg.run_tests(tmp_path, [A, B], 30)        # the file the base measured is cut now: not measured = no
+    ok, reason = fg.accept(base, swapped, True)
     assert not ok and reason.startswith('junit not ok')
 
 
-def test_tests_of_one_file_are_never_split(monkeypatch, tmp_path):
+def test_a_file_cut_on_the_base_starts_the_run_file_by_file(monkeypatch, tmp_path):
+    calls = _fake(monkeypatch, {A: _red('a::t1'), B: TIMEOUT})
+    result = fg.run_tests(tmp_path, [A, B], 30, hung=(B,))
+    assert calls == [[A], [B]] and result.timed_out == (B,) and result.failed_ids == ('a::t1',)
+    calls.clear()
+    fg.run_tests(tmp_path, [A + '::t1', A + '::t2'], 30, hung=(B,))     # one file: one call, as always
+    assert calls == [[A]]
+
+
+def test_without_progress_the_tests_of_one_file_are_not_split(monkeypatch, tmp_path):
     calls = []
     monkeypatch.setattr(fg, '_run_once', lambda root, tests, *a, **k: calls.append(list(tests)) or TIMEOUT)
     fg.run_tests(tmp_path, [A + '::t1', A + '::t2'], 30)

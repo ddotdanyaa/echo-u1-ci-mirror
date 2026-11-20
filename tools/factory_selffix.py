@@ -18,6 +18,7 @@ WHERE = {
     'no-edit-block': ('tools/agent_factory_runner.py',),
     'cannot': ('tools/factory_spec.py', 'tools/agent_factory_import.py'),
     'test-hang': ('tools/factory_gate.py',),
+    'gate-cut': ('tools/factory_gate.py',),
     'weak-test': ('tools/factory_gate.py', 'tools/factory_spec.py'),
     'test-crash': ('tools/factory_gate.py', 'tools/agent_factory_runner.py'),
     'review-reject': ('tools/agent_factory_runner.py',),

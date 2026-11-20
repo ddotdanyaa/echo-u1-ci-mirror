@@ -27,6 +27,7 @@ MAX_STRIKES = 3
 LEASE_LIFETIME_S = 1800.0   # one lease length: acquire() and the stale work-copy cleanup share it
 FEEDBACK_KEEP = 3
 FEEDBACK_MAX_CHARS = 2000
+REPEAT_MARK = "не повторяй:"   # the loop's line for a rejection seen again (factory_loop._learn_from_run)
 DENY_PARTS = frozenset((".env", ".git", ".kilo", ".ssh", "secrets", "private",
                         "transcripts", "credentials", "tokens", "recordings",
                         "__pycache__", "node_modules", "materials", "kilo.jsonc", "kilo.json", "opencode.jsonc", "opencode.json",
@@ -599,15 +600,17 @@ def add_feedback(state: dict, tid: str, source: str, text: str) -> None:
     row = state["tasks"][tid]
     clean = redact(text)[:FEEDBACK_MAX_CHARS]
     items = list(row.get("feedback", [])) + [{"source": source, "text": clean}]
-    # The window evicts older gate/review remarks first, then the oldest Opus note, but NEVER the newest gate/review
-    # remark: it is the last failure, the class factory_requeue reads and the next coder needs. Live 20.11 02:37: after
-    # three requeue notes the window held only Opus notes, every new failure was evicted at once, 14 quarantined tasks
-    # had no class left, nothing was requeued and the loop stood in HOLD.
+    # The window evicts older gate/review remarks first, then older repeat markers, then the oldest Opus note, but
+    # NEVER the newest gate/review remark: it is the last failure, the class factory_requeue reads and the next coder
+    # needs. Live 20.11 02:37: after three requeue notes the window held only Opus notes, every new failure was evicted
+    # at once, 14 quarantined tasks had no class left. Live 20.11 06:2x: the loop's repeat marker ("не повторяй: ...")
+    # counted as the newest failure and evicted the failure it repeats; three FAILED tasks were never returned.
     while len(items) > FEEDBACK_KEEP:
-        failures = [i for i, x in enumerate(items) if x["source"] != "opus"]
-        older = failures[:-1]
+        own = [i for i, x in enumerate(items) if x["source"] != "opus"]
+        marks = [i for i in own if str(items[i]["text"]).startswith(REPEAT_MARK)]
+        failures = [i for i in own if i not in marks]
         notes = [i for i, x in enumerate(items) if x["source"] == "opus"]
-        del items[older[0] if older else notes[0] if notes else 0]
+        del items[(failures[:-1] or marks[:-1] or notes[:1] or marks or [0])[0]]
     row["feedback"] = items
 
 
