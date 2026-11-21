@@ -99,14 +99,15 @@ def pick(state, code, ledger, max_times=3, skip=(), now=None, term_s=None, jam=F
         if cls == 'unknown':
             cls = _marker_class(row)
         lift = False
-        if cls == 'unknown' and jam:
+        jam_here = jam and row.get('status') == 'FAILED'   # a BLOCKED task keeps its own term (UNBLOCK / HOLD)
+        if cls == 'unknown' and jam_here:
             cls, lift = 'gate-red', True     # a jam: a failure nobody classified is a red gate, tried once more
         if cls == 'unknown' or cls in C.INFRASTRUCTURE_CLASSES or cls in C.NO_REQUEUE_CLASSES:
             continue
         if cls == 'gate-cut' and row.get('kind') == 'unit_test':
             cls = 'test-hang'            # a test task's own new test is what does not finish
         if len(history) >= max_times and not _audit_due(state, tid, row, cls, ledger):
-            if not jam:
+            if not jam_here:
                 continue
             lift = True
         if lift:
