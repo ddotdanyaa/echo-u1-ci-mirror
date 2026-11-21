@@ -2381,7 +2381,7 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
             raise PromptTooLarge(str(len(prompt)))
         # the paid escalation coder (owner rule 4): only a coder call of a pass after a free attempt (or a raised tier
         # floor), once per pass, the first candidate; up to 8 files; any fault or refusal leaves the free route as it was
-        paid_try = (role == 'code' and paid_coder is not None and not later and not ctx.get('paid_tried')
+        paid_try = (role in ('code', 'repair') and paid_coder is not None   # a later attempt is a 'repair' call (live 02:50) and not later and not ctx.get('paid_tried')
                     and len(call_task.touch_files) <= paid_coder.MAX_FILES and paid_coder.available()
                     and paid_coder.wanted(attempt, ((ck.read().get('tasks') or {}).get(tid) or {}).get('tier_floor')))
         light = ctx['light'] = paid_try or engine_for(role, call_task) == 'light'    # one request, the files travel in the prompt
