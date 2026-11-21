@@ -2281,9 +2281,15 @@ class Loop:
                 rec.pop("prev", None)
                 ls["sweep"] = rec
                 self.save_ls(ls)
-            if now - self._sw_refresh_at >= 60:
+            sw_dir = self._sweep_dir()
+            if now - self._sw_refresh_at >= 60 and sw_dir.is_dir() and AF.latest_sweep(sw_dir) is not None:
                 self._sw_refresh_at = now
-                tasks, state = self.load()
+                try:
+                    tasks, state = self.load()
+                except Exception as e:      # a busy plan lock: the refresh waits for the next minute, it is no fault
+                    if type(e).__name__ != "LockBusy":
+                        raise
+                    return
                 rows = {tid: {"status": r.get("status"), "tests": list(tasks[tid].tests) if tid in tasks else [],
                               "base_red": r.get("base_red")} for tid, r in state["tasks"].items()}
                 got = AF.refresh_from_tasks(self._sweep_dir(), rows)
