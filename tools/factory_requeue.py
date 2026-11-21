@@ -99,7 +99,8 @@ def pick(state, code, ledger, max_times=3, skip=(), now=None, term_s=None, jam=F
         if cls == 'unknown':
             cls = _marker_class(row)
         lift = False
-        jam_here = jam and row.get('status') == 'FAILED'   # a BLOCKED task keeps its own term (UNBLOCK / HOLD)
+        jam_here = (jam and row.get('status') == 'FAILED'   # a BLOCKED task keeps its own term (UNBLOCK / HOLD)
+                    and 'already_green' not in str(row.get('reason') or ''))   # a fact of the base: the head question
         if cls == 'unknown' and jam_here:
             cls, lift = 'gate-red', True     # a jam: a failure nobody classified is a red gate, tried once more
         if cls == 'unknown' or cls in C.INFRASTRUCTURE_CLASSES or cls in C.NO_REQUEUE_CLASSES:

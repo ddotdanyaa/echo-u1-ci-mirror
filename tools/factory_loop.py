@@ -1348,7 +1348,9 @@ class Loop:
         except (OSError, ValueError):
             ledger = {}
         used = len(ledger.get(tid) or [])
-        if used >= F.AUTO_UNBLOCK_MAX:
+        # already_green is a fact of the base, not of a model: a lift reruns the same green test on the same base (live
+        # 21.11 21:41-22:20: 7 tasks took 12 lifts, a slot each, all green again). It goes to the head question at once.
+        if used >= F.AUTO_UNBLOCK_MAX or why == "already_green":
             got = []
 
             def esc(state):
