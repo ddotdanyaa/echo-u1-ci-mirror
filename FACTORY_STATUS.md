@@ -1,9 +1,10 @@
 # Factory status (generated, structured data only)
 
-Generated: 2026-11-21T22:09:32Z
-Source commit: sha3965ff526166
+Generated: 2026-11-21T22:13:42Z
+Source commit: sha5a45b2ba5f47
 
 ## Commits (sha, time)
+- sha5a45b2ba 2026-11-22T01:13:14+03:00
 - sha3965ff52 2026-11-22T00:39:51+03:00
 - shadc5292c4 2026-11-22T00:35:48+03:00
 - sha56d3d8db 2026-11-22T00:33:25+03:00
@@ -23,7 +24,6 @@ Source commit: sha3965ff526166
 - sha1715ff1b 2026-11-21T23:17:09+03:00
 - shac3ec61c9 2026-11-21T23:17:06+03:00
 - sha1afaedda 2026-11-21T23:17:00+03:00
-- shafb6ec4c0 2026-11-21T23:10:57+03:00
 
 ## Funnel
 | step | count |
@@ -35,22 +35,22 @@ Source commit: sha3965ff526166
 | gate_pass | 31 |
 | known_to_loop | 168 |
 | promoted | 29 |
-| ready | 27 |
+| ready | 26 |
 | reviewed | 62 |
 | triaged | 106 |
 
 Side counters: blocked=1, parked=0, requeued=2
-Tasks now: BLOCKED=1, DONE=68, FAILED=58, PROMOTED=5, READY=27, RUNNING=1
+Tasks now: BLOCKED=1, DONE=68, FAILED=58, PROMOTED=5, READY=26, RUNNING=2
 Accepted: 5
 Promoted: 29
-Free RAM, GB: 3.31
-Telemetry rows: 18583 recognised, 0 unrecognised
+Free RAM, GB: 3.22
+Telemetry rows: 18593 recognised, 0 unrecognised
 
 ## Spend per model
 | model | calls | tokens_in | tokens_out | usage_unknown | http_429 | errors |
 |---|---|---|---|---|---|---|
-| google/gemini-3.1-flash-lite | 1086 | 6797526 | 432354 | 44 | 0 | 44 |
-| google/gemini-3.5-flash-lite | 1371 | 9093364 | 417833 | 24 | 0 | 24 |
+| google/gemini-3.1-flash-lite | 1087 | 6800725 | 432678 | 44 | 0 | 44 |
+| google/gemini-3.5-flash-lite | 1372 | 9096993 | 418036 | 24 | 0 | 24 |
 | google/gemini-3.6-flash | 99 | 383453 | 17290 | 39 | 1 | 39 |
 | google/gemini-3.8-flash | 7 | 21237 | 15 | 4 | 2 | 4 |
 | google/gemma-4-26b-a4b-it | 150 | 327722 | 31667 | 86 | 0 | 86 |
@@ -62,13 +62,13 @@ Telemetry rows: 18583 recognised, 0 unrecognised
 | span | rows | calls |
 |---|---|---|
 | answer | 503 | 0 |
-| gate | 2833 | 0 |
+| gate | 2835 | 0 |
 | infra | 659 | 0 |
-| loop | 3333 | 0 |
-| other | 2438 | 0 |
+| loop | 3334 | 0 |
+| other | 2440 | 0 |
 | promote | 40 | 0 |
 | review | 1323 | 718 |
-| run | 7281 | 2275 |
+| run | 7286 | 2277 |
 | triage | 173 | 0 |
 
 ## Channels (model ids)

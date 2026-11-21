@@ -2337,6 +2337,8 @@ class Loop:
                 if missing:                 # no sidecar entry: the closing commit itself names the sha
                     sha_of = dict(AF.closing_shas(self.cfg.worktree, missing), **sha_of)
             got = factory_closures.sync_stale(self.cfg.backlog, ids, sha_of, "commit closed the row (triage proof)")
+        except ImportError:          # the public mirror withholds the feed module
+            return 0
         except Exception as e:
             self.err("stale closures", e)
             return 0
@@ -2745,6 +2747,8 @@ class Loop:
             guards = AF.guard_map(AF.load_sweep(self.cfg.worktree), sorted(ids))
             got = AF.refeed_rows(state["tasks"], tasks, guards, ls.get("refed") or {})
             return {b: v for b, v in got.items() if b not in ls["holds"] and b not in ls["closed"]}
+        except ImportError:          # the public mirror withholds the feed module: no re-feed there
+            return {}
         except Exception as e:
             self.err("refeed pick", e)
             return {}
