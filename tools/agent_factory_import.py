@@ -1386,7 +1386,9 @@ def triage_portion(backlog_path, head_root, known_backlog_ids, limit, profile_at
 
     # task-id collisions inside the portion or with known IDs (<id> and <id> are both <id>)
     owners: dict[str, list[str]] = {}
-    for r in rows:
+    for r in rows:      # a red guard reopens a row a commit closed: the commit did not finish it, or it broke again
+        if r["closed_at_head"] and AF.verdict(guards.get(r["backlog_id"])) == "red":
+            r["closed_at_head"] = False
         if not r["closed_at_head"]:
             owners.setdefault(_task_id(r["backlog_id"]), []).append(r["backlog_id"])
     for k in known_backlog_ids:
