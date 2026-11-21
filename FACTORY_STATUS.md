@@ -1,9 +1,10 @@
 # Factory status (generated, structured data only)
 
-Generated: 2026-11-21T21:29:30Z
-Source commit: shae70a80aa03af
+Generated: 2026-11-21T21:34:34Z
+Source commit: sha56d3d8db6d94
 
 ## Commits (sha, time)
+- sha56d3d8db 2026-11-22T00:33:25+03:00
 - shae70a80aa 2026-11-22T00:28:25+03:00
 - sha3ee534fd 2026-11-22T00:21:39+03:00
 - sha54ec7cfb 2026-11-22T00:21:39+03:00
@@ -23,7 +24,6 @@ Source commit: shae70a80aa03af
 - shab8d6b511 2026-11-21T23:10:51+03:00
 - shab799e8b7 2026-11-21T23:07:11+03:00
 - sha88fd8dd0 2026-11-21T23:06:02+03:00
-- sha251545fc 2026-11-21T23:03:25+03:00
 
 ## Funnel
 | step | count |
@@ -43,17 +43,17 @@ Side counters: blocked=3, parked=0, requeued=2
 Tasks now: BLOCKED=3, DONE=68, FAILED=54, PROMOTED=5, READY=29, RUNNING=1
 Accepted: 5
 Promoted: 29
-Free RAM, GB: 3.05
-Telemetry rows: 17787 recognised, 0 unrecognised
+Free RAM, GB: 2.13
+Telemetry rows: 17839 recognised, 0 unrecognised
 
 ## Spend per model
 | model | calls | tokens_in | tokens_out | usage_unknown | http_429 | errors |
 |---|---|---|---|---|---|---|
-| google/gemini-3.1-flash-lite | 1009 | 6339185 | 406513 | 44 | 0 | 44 |
-| google/gemini-3.5-flash-lite | 1295 | 8642272 | 403171 | 24 | 0 | 24 |
+| google/gemini-3.1-flash-lite | 1012 | 6354218 | 407121 | 44 | 0 | 44 |
+| google/gemini-3.5-flash-lite | 1298 | 8656947 | 403726 | 24 | 0 | 24 |
 | google/gemini-3.6-flash | 99 | 383453 | 17290 | 39 | 1 | 39 |
 | google/gemini-3.8-flash | 7 | 21237 | 15 | 4 | 2 | 4 |
-| google/gemma-4-26b-a4b-it | 147 | 327722 | 31667 | 83 | 0 | 83 |
+| google/gemma-4-26b-a4b-it | 148 | 327722 | 31667 | 84 | 0 | 84 |
 | google/gemma-4-31b-it | 161 | 174129 | 5167 | 115 | 0 | 115 |
 | openrouter/cohere/north-mini-code:free | 22 | 69376 | 10273 | 5 | 0 | 6 |
 | openrouter/nvidia/nemotron-3-ultra-550b-a55b:free | 95 | 551204 | 147387 | 1 | 1 | 1 |
@@ -62,13 +62,13 @@ Telemetry rows: 17787 recognised, 0 unrecognised
 | span | rows | calls |
 |---|---|---|
 | answer | 494 | 0 |
-| gate | 2678 | 0 |
+| gate | 2688 | 0 |
 | infra | 658 | 0 |
-| loop | 3238 | 0 |
-| other | 2344 | 0 |
+| loop | 3247 | 0 |
+| other | 2352 | 0 |
 | promote | 40 | 0 |
-| review | 1200 | 654 |
-| run | 6966 | 2181 |
+| review | 1209 | 659 |
+| run | 6982 | 2183 |
 | triage | 169 | 0 |
 
 ## Channels (model ids)

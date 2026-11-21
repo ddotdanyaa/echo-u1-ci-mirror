@@ -2266,6 +2266,9 @@ class Loop:
         (3) when the base SHA moved or the sweep is old, ONE cloud sweep starts in the background (own slot, no wait here)."""
         try:
             from tools import factory_autofeed as AF
+        except ImportError:          # the public mirror withholds the feed module (backlog ids): no red-guard supply there
+            return
+        try:
             ls = None
             job = self._sw
             if job is not None and job.done.is_set():
