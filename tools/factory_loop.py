@@ -3416,7 +3416,7 @@ class Loop:
                 ls["no_proof"] = {}                       # proof of work empties the spread
                 ls["backoff"] = {}                        # and the pauses of temporary faults
                 self.save_ls(ls)
-            elif key and self._ran_model_or_gate(res, calls, st, rkey) and not self._judged_by_gate(rkey, res):
+            elif key and self._ran_model_or_gate(res, calls, st, rkey) and not self._judged_by_gate(rkey, res, calls):
                 # A run that reached the model or the gates and proved nothing. The set of DIFFERENT
                 # tasks failing like that since the last proof is the second brake counter: one task
                 # with an eternal error does not grow it, a dying Kilo or broken gates do.
@@ -3668,12 +3668,14 @@ class Loop:
             "gate_unknown", "reviewer_failed", "no_independent_reviewer", "provider_error")
 
     @staticmethod
-    def _judged_by_gate(rkey: str, res: dict) -> bool:
+    def _judged_by_gate(rkey: str, res: dict, calls: list) -> bool:
         """The model answered and the gates or a critic judged the candidate (no change, red test, off path, a
         reject): the pipeline is alive, the task or the model is weak. Rule 3 of 21.11 (tactical brakes do not stop
         work): such outcomes never grow the spread brake; live 21.11 15:15 and 15:40 six of them held the whole
         factory 20-30 min each time. Only pipeline faults (gate_unknown, reviewer_failed, provider_error, no
         independent reviewer) still do."""
+        if not any(isinstance(c, dict) and (c.get("output_tokens") or c.get("returncode") == 0) for c in calls):
+            return False            # no model answered (a dying Kilo: rc 1, 0 tokens): that is the pipeline's fault
         blocked = str(res.get("blocked_reason") or "")
         return (rkey.startswith(REJECT_PREFIXES) or rkey.startswith(("gate:", "gate ")) or
                 rkey in JUDGED_OUTCOMES or blocked in JUDGED_OUTCOMES)
