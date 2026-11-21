@@ -132,6 +132,8 @@ CHANNEL_REASONS = DEAD_CHANNEL | frozenset(("rate_minute", "rate_day", "region",
 TEMPORARY_CHANNEL = frozenset(("rate_limited_suspect", "rate_limited", "429", "channel_timeout"))
 TEMPORARY_TASK = frozenset(("transient", "env_shortage", "fresh_model_busy"))
 BACKOFF_FIRST_S, BACKOFF_MAX_S = 60, 1800
+JUDGED_OUTCOMES = frozenset(("off_path", "no_changes", "no_effect", "cannot_repeat", "scope_violation",
+                             "review_chain_short", "context_too_large"))   # a weak candidate or task, not a dead pipeline
 GLOBAL_WAIT_MAX_S = 300   # owner: a dead route gets 5 min, then the fallback. A wait no channel owns holds the
                           # whole loop, so it never exceeds this (live 21.11 12:22: an unnamed 'dead' held 12 tasks 1 h)
 BRAKE_SPAN_S, BRAKE_MAX_S = 600, 1800           # 21.11 (was 1800, 7200): the brake has a term; a failed trial doubles it up to 30 min
@@ -3414,7 +3416,7 @@ class Loop:
                 ls["no_proof"] = {}                       # proof of work empties the spread
                 ls["backoff"] = {}                        # and the pauses of temporary faults
                 self.save_ls(ls)
-            elif key and self._ran_model_or_gate(res, calls, st, rkey):
+            elif key and self._ran_model_or_gate(res, calls, st, rkey) and not self._judged_by_gate(rkey, res):
                 # A run that reached the model or the gates and proved nothing. The set of DIFFERENT
                 # tasks failing like that since the last proof is the second brake counter: one task
                 # with an eternal error does not grow it, a dying Kilo or broken gates do.
@@ -3664,6 +3666,17 @@ class Loop:
             return False
         return bool(calls) or rkey.startswith(REJECT_PREFIXES) or rkey in (
             "gate_unknown", "reviewer_failed", "no_independent_reviewer", "provider_error")
+
+    @staticmethod
+    def _judged_by_gate(rkey: str, res: dict) -> bool:
+        """The model answered and the gates or a critic judged the candidate (no change, red test, off path, a
+        reject): the pipeline is alive, the task or the model is weak. Rule 3 of 21.11 (tactical brakes do not stop
+        work): such outcomes never grow the spread brake; live 21.11 15:15 and 15:40 six of them held the whole
+        factory 20-30 min each time. Only pipeline faults (gate_unknown, reviewer_failed, provider_error, no
+        independent reviewer) still do."""
+        blocked = str(res.get("blocked_reason") or "")
+        return (rkey.startswith(REJECT_PREFIXES) or rkey.startswith(("gate:", "gate ")) or
+                rkey in JUDGED_OUTCOMES or blocked in JUDGED_OUTCOMES)
 
     def _spread_brake(self, ls: dict, out: Outcome) -> Outcome:
         """K different tasks failed without any proof of work: the same BRAKE path, with the causes."""

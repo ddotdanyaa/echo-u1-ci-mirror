@@ -1,6 +1,6 @@
 {
  "accepted": 4,
- "free_ram_gb": 2.17,
+ "free_ram_gb": 2.88,
  "funnel": {
   "accepted": 4,
   "claimed": 104,
@@ -102,7 +102,7 @@
   }
  },
  "promoted": 28,
- "rows_recognized": 10557,
+ "rows_recognized": 10560,
  "schema": 3,
  "side": {
   "blocked": 2,
@@ -110,7 +110,7 @@
   "requeued": 2
  },
  "skipped_files": 0,
- "source_sha": "shaa6a061798eff",
+ "source_sha": "sha3afe6e297a41",
  "span": {
   "answer": {
    "calls": 0,
@@ -162,7 +162,7 @@
    "calls_usage_unknown": 0,
    "errors": {},
    "http_429": 0,
-   "rows": 2099,
+   "rows": 2102,
    "status": {
     "BLOCKED": 103,
     "FAILED": 222,
@@ -170,7 +170,7 @@
     "REVIEW": 39,
     "WAITING_CHANNEL": 32,
     "added": 14,
-    "brake": 9,
+    "brake": 11,
     "deferred": 102,
     "empty": 50,
     "infra": 13,
@@ -178,7 +178,7 @@
     "other": 42,
     "refused": 1,
     "requeued": 2,
-    "stop": 37
+    "stop": 38
    },
    "tokens_in": 0,
    "tokens_out": 0
@@ -276,7 +276,7 @@
   "added": 43,
   "applied": 421,
   "approved": 39,
-  "brake": 15,
+  "brake": 17,
   "brake_cleared": 1,
   "cleared": 54,
   "deferred": 206,
@@ -292,7 +292,7 @@
   "released": 9,
   "requeued": 4,
   "run_failed": 13,
-  "stop": 37
+  "stop": 38
  },
  "summary": "ok",
  "tasks_now": {

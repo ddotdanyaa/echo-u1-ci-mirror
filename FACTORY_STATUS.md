@@ -1,10 +1,14 @@
 # Factory status (generated, structured data only)
 
-Generated: 2026-11-21T12:40:57Z
-Source commit: shaa6a061798eff
+Generated: 2026-11-21T12:49:55Z
+Source commit: sha3afe6e297a41
 
 ## Commits (sha, time)
+- sha3afe6e29 2026-11-21T15:49:08+03:00
+- sha4ce1d324 2026-11-21T15:43:46+03:00
+- sha3aa2e980 2026-11-21T15:42:35+03:00
 - shaa6a06179 2026-11-21T15:39:50+03:00
+- sha48e62bb7 2026-11-21T15:39:10+03:00
 - sha6e6721b7 2026-11-21T15:34:26+03:00
 - sha05ec65e6 2026-11-21T15:34:25+03:00
 - sha560f1dcc 2026-11-21T15:30:15+03:00
@@ -20,10 +24,6 @@ Source commit: shaa6a061798eff
 - sha5b6793f0 2026-11-21T15:21:04+03:00
 - sha37ae5bc6 2026-11-21T15:21:03+03:00
 - shad3018729 2026-11-21T15:17:44+03:00
-- shad1418318 2026-11-21T15:17:26+03:00
-- sha9868c0b1 2026-11-21T15:16:26+03:00
-- shaa94d395c 2026-11-21T15:15:58+03:00
-- shab80664cc 2026-11-21T15:15:37+03:00
 
 ## Funnel
 | step | count |
@@ -43,8 +43,8 @@ Side counters: blocked=2, parked=0, requeued=2
 Tasks now: BLOCKED=2, DONE=64, FAILED=34, PROMOTED=4, READY=8
 Accepted: 4
 Promoted: 28
-Free RAM, GB: 2.17
-Telemetry rows: 10557 recognised, 0 unrecognised
+Free RAM, GB: 2.88
+Telemetry rows: 10560 recognised, 0 unrecognised
 
 ## Spend per model
 | model | calls | tokens_in | tokens_out | usage_unknown | http_429 | errors |
@@ -64,7 +64,7 @@ Telemetry rows: 10557 recognised, 0 unrecognised
 | answer | 435 | 0 |
 | gate | 1560 | 0 |
 | infra | 216 | 0 |
-| loop | 2099 | 0 |
+| loop | 2102 | 0 |
 | other | 1272 | 0 |
 | promote | 39 | 0 |
 | review | 606 | 330 |
@@ -97,8 +97,9 @@ Telemetry rows: 10557 recognised, 0 unrecognised
 ## Published files
 Modules: 24
 Tests in the cloud: 114
-Tests not in the cloud: 43
+Tests not in the cloud: 44
 - tests/test_agent_factory.py (backlog-id, call-word, env-path, long-run, pid-port)
+- tests/test_factory_asked_memory.py (backlog-id)
 - tests/test_factory_autofeed.py (backlog-id)
 - tests/test_factory_cannot_scope.py (env-path)
 - tests/test_factory_class_cases.py (backlog-id, call-word, long-run, path, phone)

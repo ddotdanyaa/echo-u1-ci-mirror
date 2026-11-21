@@ -12,6 +12,7 @@ its feedback and diff to the next pass; channel and provider faults are never st
 from __future__ import annotations
 
 import argparse
+import ast
 import contextlib
 import difflib
 from hashlib import sha256
@@ -721,6 +722,33 @@ TOURNAMENT_DIFF_NOTE = '\nIts diff (do not repeat it):\n%s\n'
 # live 20.11 03:18, one task: three candidates in a row answered CANNOT: _last_clause_question to the same view
 TOURNAMENT_ASKED_NOTE = 'The code it asked for (%s) is shown above now: edit it.\n'
 TOURNAMENT_OUTPUT_LIMIT = 1500
+# live 21.11 (replay of 36 CANNOT runs): 27 asked for a function defined in the task's own files, 17 repeated the same
+# CANNOT on the next attempt. What a model asked for is kept on the task row, so every later attempt shows it first.
+ASKED_KEEP = 12
+
+
+def remember_asked(row: dict, names) -> None:
+    """Add ``names`` (the definitions a coder asked to see) to the task row's ``asked`` list: no duplicates, the
+    newest ASKED_KEEP kept."""
+    kept = [n for n in (row.get('asked') or []) if isinstance(n, str)]
+    for name in (sorted(names) if isinstance(names, (set, frozenset)) else names):
+        if name and name not in kept:
+            kept.append(name)
+    row['asked'] = kept[-ASKED_KEEP:]
+
+
+def defined_names(task: Task, workdir: Path) -> frozenset:
+    """Names of the functions and classes (nested too) defined in the python files the task may change."""
+    found = set()
+    for name in task.touch_files:
+        if not name.endswith('.py'):
+            continue
+        try:
+            tree = ast.parse(Path(workdir).joinpath(*name.split('/')).read_bytes().decode('utf-8', 'replace'))
+        except (OSError, SyntaxError, ValueError):
+            continue
+        found |= {n.name for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))}
+    return frozenset(found)
 
 
 class _GateRetry:
@@ -2299,8 +2327,12 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
         else:
             prev_diff_file.unlink(missing_ok=True)  # never hand the next attempt another cycle's diff
 
+        asked_now = (asked_names(text) | frozenset(ctx.get('asked') or ())) & defined_names(task, ctx['workdir'])
+
         def apply(state, row):
             add_feedback(state, tid, source, '[attempt %d] %s' % (attempt, text))
+            if asked_now:                          # the next attempts show these whole first, whatever fails in between
+                remember_asked(row, asked_now)
             if mark is not None:
                 mark(row)
             failed = (list(ctx.get('tried', ())) + [m for m, _ in ctx.get('gate_red', ()) if m]
@@ -2942,10 +2974,12 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
             elif task.port_from and task.kind != 'unit_test':
                 events.append('port_reference_missing')      # a lost example shows in the telemetry, never silently
             focus = (port_focus(port_repo or root, task) if reference else frozenset()) | path_focus
+            remembered = frozenset(state['tasks'][tid].get('asked') or ()) & defined_names(task, ctx['workdir'])
+
             def make_prompt(asked=frozenset()):
                 return build_coder_prompt(task, visible, feedback, prev_diff, failing=scrub(failing),
                                           light=engine_for(role, task) == 'light',   # the same rule call() applies
-                                          asked=asked, reference=reference, focus=focus, off_path=tuple(off_short))
+                                          asked=frozenset(asked) | remembered, reference=reference, focus=focus, off_path=tuple(off_short))
             prompt = make_prompt()
             chosen = route(task, small_model=small_model, large_model=large_model, fallback=attempt > 1)
 
@@ -3073,6 +3107,7 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                     wanted = asked_names(why) - asked
                     if wanted:                       # it asked for code: the next view shows that code first
                         asked |= wanted
+                        ctx['asked'] = asked
                         next_note += TOURNAMENT_ASKED_NOTE % ', '.join(sorted(wanted))
                     continue
                 decision = run_gates()               # usable: the deterministic gates decide

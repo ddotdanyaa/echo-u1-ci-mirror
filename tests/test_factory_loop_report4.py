@@ -68,9 +68,23 @@ def test_no_proof_labels_are_scrubbed_in_loop_state_and_brake_file(tmp_path, mon
     key = "plainsecretvalue-0777"
     loop = e.loop(extra={"extra_env": {"K": key}})
     for i in range(1, 6):
-        e.runner_says({"status": "READY", "task": "T%d" % i, "reason": "gate:no_changes " + key,
+        e.runner_says({"status": "READY", "task": "T%d" % i, "reason": "reviewer_failed " + key,   # a pipeline fault (21.11: a judged candidate never brakes)
                        "calls": [REAL_CALL]})
         out = loop.step()
     assert out.code == 3
     assert key not in (e.state_dir / "loop_state.json").read_text(encoding="utf-8")
     assert key not in (e.state_dir / "BRAKE").read_text(encoding="utf-8")
+
+
+def test_judged_candidates_on_different_tasks_never_brake(tmp_path, monkeypatch):
+    """Rule 3 of 21.11: live 15:15 and 15:40 six weak candidates (no changes, off path, red gate) on different tasks
+    tripped the spread brake and held the factory 20-30 min. The model answered and the gates judged: the pipeline
+    is alive, so these outcomes never grow the spread."""
+    e = two_tasks(tmp_path, monkeypatch, n=6)
+    loop = e.loop()
+    for i, why in enumerate(("gate:no_changes", "off_path", "gate: rc=1 (0 required)", "gate:no_changes",
+                             "off_path", "cannot_repeat"), 1):
+        e.runner_says({"status": "READY", "task": "T%d" % i, "reason": why, "calls": [REAL_CALL]})
+        out = loop.step()
+        assert out.code is None, (why, out)
+    assert not (e.state_dir / "BRAKE").exists()
