@@ -1,9 +1,10 @@
 # Factory status (generated, structured data only)
 
-Generated: 2026-11-21T07:24:17Z
-Source commit: shaf33c430c4bd4
+Generated: 2026-11-21T07:28:43Z
+Source commit: sha39c023a7c170
 
 ## Commits (sha, time)
+- sha39c023a7 2026-11-21T10:28:16+03:00
 - shaf33c430c 2026-11-21T10:23:50+03:00
 - sha1a4510c0 2026-11-21T10:21:03+03:00
 - sha22773320 2026-11-21T10:07:56+03:00
@@ -23,7 +24,6 @@ Source commit: shaf33c430c4bd4
 - sha1f928dc3 2026-11-20T23:22:22+03:00
 - sha0e14abf3 2026-11-20T22:47:28+03:00
 - shaacd8f831 2026-11-20T21:55:25+03:00
-- shaf7334f7b 2026-11-20T21:54:57+03:00
 
 ## Funnel
 | step | count |
@@ -40,17 +40,17 @@ Source commit: shaf33c430c4bd4
 | triaged | 73 |
 
 Side counters: blocked=0, parked=0, requeued=2
-Tasks now: DONE=64, FAILED=34, PROMOTED=4, RUNNING=1
+Tasks now: DONE=64, FAILED=35, PROMOTED=4
 Accepted: 4
 Promoted: 28
-Free RAM, GB: 3.37
-Telemetry rows: 8938 recognised, 0 unrecognised
+Free RAM, GB: 3.51
+Telemetry rows: 8955 recognised, 0 unrecognised
 
 ## Spend per model
 | model | calls | tokens_in | tokens_out | usage_unknown | http_429 | errors |
 |---|---|---|---|---|---|---|
-| google/gemini-3.1-flash-lite | 564 | 3550786 | 249017 | 26 | 0 | 26 |
-| google/gemini-3.5-flash-lite | 763 | 5120360 | 265458 | 20 | 0 | 20 |
+| google/gemini-3.1-flash-lite | 566 | 3567337 | 249805 | 26 | 0 | 26 |
+| google/gemini-3.5-flash-lite | 765 | 5136936 | 266952 | 20 | 0 | 20 |
 | google/gemini-3.6-flash | 59 | 261862 | 13302 | 18 | 1 | 18 |
 | google/gemini-3.8-flash | 1 | 0 | 0 | 1 | 1 | 1 |
 | google/gemma-4-26b-a4b-it | 100 | 253075 | 30404 | 49 | 0 | 49 |
@@ -62,13 +62,13 @@ Telemetry rows: 8938 recognised, 0 unrecognised
 | span | rows | calls |
 |---|---|---|
 | answer | 421 | 0 |
-| gate | 1449 | 0 |
+| gate | 1451 | 0 |
 | infra | 134 | 0 |
-| loop | 1713 | 0 |
-| other | 951 | 0 |
+| loop | 1716 | 0 |
+| other | 953 | 0 |
 | promote | 39 | 0 |
 | review | 597 | 324 |
-| run | 3535 | 1397 |
+| run | 3545 | 1401 |
 | triage | 99 | 0 |
 
 ## Channels (model ids)

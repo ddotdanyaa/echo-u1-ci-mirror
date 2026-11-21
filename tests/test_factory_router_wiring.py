@@ -44,7 +44,7 @@ def test_the_call_passes_the_task_and_family_names_and_the_state(tmp_path, monke
     assert all(isinstance(s, dict) for s in seen['order'])
 
 
-def test_a_second_attempt_of_one_task_keeps_the_key_and_model_while_it_has_room(tmp_path, monkeypatch):
+def test_a_second_attempt_after_a_rejection_goes_to_another_model(tmp_path, monkeypatch):
     rig = Rig(tmp_path, monkeypatch)
     rig.coder_script = ['bad', 'good']
     cfg = _cfg(tmp_path)
@@ -52,9 +52,8 @@ def test_a_second_attempt_of_one_task_keeps_the_key_and_model_while_it_has_room(
     assert first['calls'][0]['model'] == 'google/y'        # the first attempt starts on the small model
     rig.edit_state(lambda s: s['tasks']['T1'].update(not_before=0))      # the memory in channel_quotas stays
     second = rig.once(channel_config=cfg, small_model='google/y', large_model='google/x')
-    # without the memory the second attempt goes to its preferred escalation model (x)
-    assert second['calls'][0]['model'] == first['calls'][0]['model']
-    assert second['calls'][0]['channel'] == first['calls'][0]['channel']
+    # 21.11 (OLD_RULES_AUDIT item 6): the model that failed is left out while the router has another one
+    assert second['calls'][0]['model'] == 'google/x' != first['calls'][0]['model']
 
 
 def test_a_channel_cooled_on_its_own_is_skipped(tmp_path, monkeypatch):
