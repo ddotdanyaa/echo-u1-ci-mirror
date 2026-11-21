@@ -1,9 +1,16 @@
 # Factory status (generated, structured data only)
 
-Generated: 2026-11-21T20:57:21Z
-Source commit: sha40b92bf5cb2c
+Generated: 2026-11-21T21:23:27Z
+Source commit: sha3ee534fdacdd
 
 ## Commits (sha, time)
+- sha3ee534fd 2026-11-22T00:21:39+03:00
+- sha54ec7cfb 2026-11-22T00:21:39+03:00
+- sha9cbc465b 2026-11-22T00:19:58+03:00
+- sha85b4a8b4 2026-11-22T00:17:29+03:00
+- sha33389d99 2026-11-22T00:15:45+03:00
+- sha12a52f74 2026-11-22T00:13:38+03:00
+- sha940c08b5 2026-11-22T00:11:42+03:00
 - sha40b92bf5 2026-11-21T23:56:22+03:00
 - sha92f9852a 2026-11-21T23:50:23+03:00
 - sha9e19658b 2026-11-21T23:19:49+03:00
@@ -17,59 +24,52 @@ Source commit: sha40b92bf5cb2c
 - sha88fd8dd0 2026-11-21T23:06:02+03:00
 - sha251545fc 2026-11-21T23:03:25+03:00
 - shac05bcb56 2026-11-21T23:01:24+03:00
-- shafe025ebd 2026-11-21T23:00:50+03:00
-- shad3964a4a 2026-11-21T23:00:37+03:00
-- shaa82e051f 2026-11-21T22:59:26+03:00
-- sha28b6507d 2026-11-21T22:59:22+03:00
-- sha91e652cf 2026-11-21T22:58:11+03:00
-- shaedfae999 2026-11-21T22:58:02+03:00
-- shaeb12c561 2026-11-21T22:55:58+03:00
 
 ## Funnel
 | step | count |
 |---|---|
 | accepted | 5 |
-| claimed | 124 |
-| coded | 67 |
+| claimed | 128 |
+| coded | 71 |
 | found_in_backlog | unknown |
 | gate_pass | 31 |
-| known_to_loop | 255 |
+| known_to_loop | 259 |
 | promoted | 29 |
-| ready | 26 |
-| reviewed | 58 |
-| triaged | 102 |
+| ready | 27 |
+| reviewed | 60 |
+| triaged | 106 |
 
-Side counters: blocked=0, parked=0, requeued=2
-Tasks now: DONE=68, FAILED=51, PROMOTED=5, READY=26, RUNNING=2
+Side counters: blocked=3, parked=0, requeued=2
+Tasks now: BLOCKED=3, DONE=68, FAILED=54, PROMOTED=5, READY=27, RUNNING=3
 Accepted: 5
 Promoted: 29
-Free RAM, GB: 3.25
-Telemetry rows: 17191 recognised, 0 unrecognised
+Free RAM, GB: 3.19
+Telemetry rows: 17709 recognised, 0 unrecognised
 
 ## Spend per model
 | model | calls | tokens_in | tokens_out | usage_unknown | http_429 | errors |
 |---|---|---|---|---|---|---|
-| google/gemini-3.1-flash-lite | 955 | 6011122 | 386794 | 44 | 0 | 44 |
-| google/gemini-3.5-flash-lite | 1240 | 8302194 | 391499 | 23 | 0 | 23 |
+| google/gemini-3.1-flash-lite | 1005 | 6310610 | 405507 | 44 | 0 | 44 |
+| google/gemini-3.5-flash-lite | 1289 | 8616318 | 402202 | 23 | 0 | 23 |
 | google/gemini-3.6-flash | 99 | 383453 | 17290 | 39 | 1 | 39 |
 | google/gemini-3.8-flash | 7 | 21237 | 15 | 4 | 2 | 4 |
-| google/gemma-4-26b-a4b-it | 144 | 320603 | 31424 | 81 | 0 | 81 |
-| google/gemma-4-31b-it | 158 | 174129 | 5167 | 112 | 0 | 112 |
+| google/gemma-4-26b-a4b-it | 147 | 327722 | 31667 | 83 | 0 | 83 |
+| google/gemma-4-31b-it | 160 | 174129 | 5167 | 114 | 0 | 114 |
 | openrouter/cohere/north-mini-code:free | 22 | 69376 | 10273 | 5 | 0 | 6 |
 | openrouter/nvidia/nemotron-3-ultra-550b-a55b:free | 95 | 551204 | 147387 | 1 | 1 | 1 |
 
 ## Spans
 | span | rows | calls |
 |---|---|---|
-| answer | 487 | 0 |
-| gate | 2564 | 0 |
-| infra | 656 | 0 |
-| loop | 3160 | 0 |
-| other | 2274 | 0 |
+| answer | 494 | 0 |
+| gate | 2663 | 0 |
+| infra | 658 | 0 |
+| loop | 3225 | 0 |
+| other | 2337 | 0 |
 | promote | 40 | 0 |
-| review | 1132 | 618 |
-| run | 6713 | 2102 |
-| triage | 165 | 0 |
+| review | 1189 | 649 |
+| run | 6936 | 2175 |
+| triage | 167 | 0 |
 
 ## Channels (model ids)
 - 1db4ab-gemini-3-8-flash
@@ -97,7 +97,7 @@ Telemetry rows: 17191 recognised, 0 unrecognised
 ## Published files
 Modules: 25
 Tests in the cloud: 115
-Tests not in the cloud: 48
+Tests not in the cloud: 49
 - tests/test_agent_factory.py (backlog-id, call-word, env-path, long-run, pid-port)
 - tests/test_factory_asked_memory.py (backlog-id)
 - tests/test_factory_autofeed.py (backlog-id)
@@ -142,6 +142,7 @@ Tests not in the cloud: 48
 - tests/test_factory_route_d.py (backlog-id, long-run)
 - tests/test_factory_status.py (dependency)
 - tests/test_factory_survive.py (path, pid-port, user-path)
+- tests/test_factory_sync.py (backlog-id, email)
 - tests/test_factory_test_order.py (dependency)
 - tests/test_factory_tree.py (dependency)
 - tests/test_factory_triage.py (backlog-id, call-word, email, env-path, key, phone, tunnel-host)

@@ -125,10 +125,10 @@ def estimate_tokens(prompt_chars: int, read_chars: int = 0, overhead: int | None
 def prompt_too_big(prompt) -> bool:
     """A prompt over PROMPT_LIMIT_CHARS Latin characters of weight: Cyrillic text weighs 3.5 / 1.4 = 2.5 times more
     per character (D #23), so its share shortens the limit."""
-    text = str(prompt or '')
-    share = cyrillic_share(text)
-    per_char = (1 - share) / CHARS_PER_TOKEN + share / CYRILLIC_CHARS_PER_TOKEN
-    return len(text) * per_char * CHARS_PER_TOKEN > PROMPT_LIMIT_CHARS
+    # live 22.11 00:05-00:20: the weighted limit blocked 22-25 k character prompts (context_too_large, 5 blocks in 15 min)
+    # that passed before; the Cyrillic weight already decides WHICH channel fits (estimate_tokens in the router), so the
+    # hard ceiling stays in plain characters.
+    return len(str(prompt or '')) > PROMPT_LIMIT_CHARS
 
 
 prompt_too_large = prompt_too_big

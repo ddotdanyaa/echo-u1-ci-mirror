@@ -26,6 +26,10 @@ except ImportError:      # the public mirror (tools.factory_mirror.MODULES) does
     AF = _NS(closed_ids=lambda root: set(), sync_closed=lambda root, path=None: {"path": None, "added": [], "total": 0},
              load_sweep=lambda root, sweep=None: {}, guard_map=lambda sweep, ids: {}, verdict=lambda entries: None,
              red_paths=lambda entries: [])
+try:
+    from tools import factory_closures as FC
+except ImportError:      # the public mirror may not carry the closures writer: no table, git alone decides
+    FC = None
 from tools import id_query
 
 
@@ -685,13 +689,14 @@ def parse_open_rows(backlog_path, repo_root, include_closed: bool = False) -> li
     Raises ClosedCheckError when git cannot be read."""
     markdown = Path(backlog_path).read_bytes().decode("utf-8-sig")
     out = OpenRows()
+    tabled = FC.table_ids(backlog_path) if FC is not None else {}      # the closures table of the backlog: a commit-backed record
     for r in parse_section4(markdown):
         if r["unknown"]:
             out.skipped_unknown.append({"backlog_id": r["backlog_id"],
                                         "state": "" if r["private"] else _public_state(r["state"], 60)})
         if not r["open"]:
             continue
-        closed = is_closed_at_head(r["backlog_id"], repo_root)
+        closed = r["backlog_id"] in tabled or is_closed_at_head(r["backlog_id"], repo_root)
         if closed and not include_closed:
             continue
         row = r["row"].replace("\\", "/")
@@ -1486,6 +1491,7 @@ def triage_portion(backlog_path, head_root, known_backlog_ids, limit, profile_at
     except Exception as e:                        # the sidecar is a convenience: git still answers
         events0.append({"backlog_id": "", "event": "closed_sidecar_failed", "reason": ("%s: %s" % (type(e).__name__, e))[:200]})
     rows = parse_open_rows(backlog_path, root, include_closed=True)
+    tabled = FC.table_ids(backlog_path) if FC is not None else {}
     attempts = {k: v for k, v in (profile_attempts.items() if isinstance(profile_attempts, dict) else ())
                 if type(v) is int and v >= 0}      # a damaged value from an old state counts as 0
     out = {"tasks": [], "holds": [], "stale": [], "skipped": [], "skipped_unknown": list(rows.skipped_unknown), "events": events0, "deferred": [], "profile_attempts": {}, "parents": [], "env_streak": 0,
@@ -1530,7 +1536,8 @@ def triage_portion(backlog_path, head_root, known_backlog_ids, limit, profile_at
         if len(out["tasks"]) >= limit:
             break
         if r["closed_at_head"]:
-            out["stale"].append(bid)
+            if bid not in tabled:          # a row the closures table already holds is booked: it is not stale any more
+                out["stale"].append(bid)
             continue
         if bid in known_backlog_ids:
             skip(bid, "уже известна")

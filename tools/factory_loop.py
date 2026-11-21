@@ -324,6 +324,7 @@ class Config:
     triage_idle_sleep: int = 120
     metrics_since: str = ""         # <id>: cohort start (ISO time) of the hourly metrics span; empty = everything
     metrics_every_s: int = 3600     # <id>: one metrics span per hour
+    sweep_every_s: int = 6 * 3600   # the red-guard supply: a cloud sweep at least this often (and when the base SHA moved)
     seen_retry_s: int = 3600        # 21.11 (was 21600) <id>: a skipped/stale backlog row is triaged again after this term, edit or not
     requeue_term_s: int = 900       # 21.11 (was 3600) <id>: a FAILED task of a retryable class is given back this long after its last try
     ready_target: int = 15          # <id> (owner): the slicer keeps this many tasks READY (0: off)
@@ -480,7 +481,7 @@ class Loop:
 
     def __init__(self, cfg: Config, *, triage_fn=None, runner_cmd=None, clock=time.time,
                  sleep=time.sleep, power_fn=set_execution_state, free_ram_fn=free_ram_bytes,
-                 extra_env=None, startup_notes=None, rng=None, wait_fn=None, cloud_fn=None, reap_fn=None):
+                 extra_env=None, startup_notes=None, rng=None, wait_fn=None, cloud_fn=None, reap_fn=None, sweep_fn=None):
         if cfg.review_model in (cfg.small_model, cfg.large_model):
             raise ValueError("review model must differ from the code model: " + cfg.review_model)
         self.cfg = cfg
@@ -488,6 +489,9 @@ class Loop:
         self.extra_env = dict(extra_env or {})
         self.startup_notes = list(startup_notes or [])
         self.triage_fn = triage_fn
+        self.sweep_fn = sweep_fn        # None: no cloud sweep (tests); main passes tools.echo_cloud.sweep
+        self._sw = None                 # the cloud sweep job in flight (Prefetch) or None
+        self._sw_refresh_at = 0.0
         self.runner_cmd = list(runner_cmd or [sys.executable, "-B", "-m",
                                               "tools.agent_factory_runner"])
         self.clock, self.sleep_fn = clock, sleep
@@ -1282,6 +1286,7 @@ class Loop:
         self.base_sha = refresh_mirror(cfg.repo, cfg.branch, self.mirror)
         self.apply_answers()  # Opus answers first: before anything else touches the state
         self._bg_poll()       # a finished background triage / hold pick is applied here, in this thread
+        self._sweep_tick(now)  # the red-guard supply follows the loop's own results and a periodic cloud sweep
         with self.txn() as (_tasks, state):       # a lease a live worker still holds is ended by the loop, not freed
             freed = F.release_expired(state, now, keep=self.pool.tids())
         if freed:
@@ -2238,16 +2243,98 @@ class Loop:
         self._write_closure(tid, bid, state["tasks"][tid])
         return {"task_id": tid, "backlog_id": bid, "reason": "accepted"}
 
-    def _write_closure(self, tid, bid, row) -> None:
-        """<id>: an ACCEPTED ECHO task goes into the backlog's closures table (one atomic idempotent writer); fac-* never."""
+    def _write_closure(self, tid, bid, row, how="accepted") -> None:
+        """<id>: an ACCEPTED (coordinator) or PROMOTED (merged by the loop) ECHO task goes into the backlog's closures table
+        (one atomic idempotent writer); fac-* never, and a row without a commit sha never (closed by the head, a duplicate)."""
         sha = row.get("commit")
         if not bid or not sha or str(bid).lower().startswith("fac-"):
             return
         try:
-            res = factory_closures.record_closure(self.cfg.backlog, bid, str(sha), "бесплатный контур, принято координатором")
-            self.event("closure", task_id=tid, backlog_id=bid, status=res)
+            note = "free loop, merged by the loop (not yet taken)" if how == "promoted" else "free loop, accepted by the coordinator"
+            res = factory_closures.record_closure(self.cfg.backlog, bid, str(sha), note)
+            self.event("closure", task_id=tid, backlog_id=bid, status=res, reason=how)
         except Exception as e:
             self.err("closure", e)
+
+    def _sweep_dir(self) -> Path:
+        from tools import factory_autofeed as AF
+        return AF.factory_dir(self.cfg.worktree) or Path(self.cfg.state_dir)
+
+    def _sweep_tick(self, now) -> None:
+        """Red-guard supply (the triage reads guard_sweep_<date>.json): (1) a finished cloud sweep is booked; (2) at most once a
+        minute the newest sweep is refreshed from the tasks' own results (promoted guards go green, a fresh red base joins);
+        (3) when the base SHA moved or the sweep is old, ONE cloud sweep starts in the background (own slot, no wait here)."""
+        try:
+            from tools import factory_autofeed as AF
+            ls = None
+            job = self._sw
+            if job is not None and job.done.is_set():
+                self._sw = None
+                ls = self.ls()
+                rec = dict(ls.get("sweep") or {})
+                if job.error is None:
+                    rec["failed_at"] = 0
+                    self.event("sweep", status="done", dur_s=round(job.dur_s, 3), reason="cloud sweep written", base_sha=rec.get("sha"))
+                else:
+                    rec = dict(rec.get("prev") or {}, failed_at=now)
+                    self.event("sweep", status="failed", dur_s=round(job.dur_s, 3), reason=F.redact(str(job.error))[:200])
+                rec.pop("prev", None)
+                ls["sweep"] = rec
+                self.save_ls(ls)
+            if now - self._sw_refresh_at >= 60:
+                self._sw_refresh_at = now
+                tasks, state = self.load()
+                rows = {tid: {"status": r.get("status"), "tests": list(tasks[tid].tests) if tid in tasks else [],
+                              "base_red": r.get("base_red")} for tid, r in state["tasks"].items()}
+                got = AF.refresh_from_tasks(self._sweep_dir(), rows)
+                if got and (got["green"] or got["red"]):
+                    self.event("sweep", status="refreshed", reason="green=%d red=%d" % (len(got["green"]), len(got["red"])))
+            if self.sweep_fn is None or self._sw is not None or self._ending():
+                return
+            ls = ls or self.ls()
+            if not AF.sweep_due(ls.get("sweep"), self.base_sha, now, self.cfg.sweep_every_s):
+                return
+            out = self._sweep_dir()
+            latest = AF.latest_sweep(out) if out.is_dir() else None
+            prev = sorted(AF.read_sweep(latest)) if latest is not None else []
+            ls["sweep"] = {"sha": self.base_sha, "at": now, "prev": dict(ls.get("sweep") or {})}
+            self.save_ls(ls)
+            fn, wt = self.sweep_fn, self.cfg.worktree
+            self._sw = Prefetch("sweep", lambda: AF.run_cloud_sweep(fn, wt, out, previous=prev), {})
+            self._sw.thread.start()
+            self.event("sweep", status="started", reason="cloud sweep of %d guard files" % len(prev), base_sha=self.base_sha)
+        except Exception as e:
+            self.err("sweep", e)
+
+    @staticmethod
+    def _closes_row(task, parents=None) -> bool:
+        """A promoted task closes its backlog row only when it is the whole row's code task: a test sub-task or one part of
+        a cut row shares the backlog ID but proves nothing about the row (the parents path closes a cut row)."""
+        return (task is not None and getattr(task, "kind", "code") == "code"
+                and getattr(task, "backlog_id", "") not in (parents or {}))
+
+    def _sync_stale_rows(self, ids, sha_of=None) -> int:
+        """Rows the triage proved closed by a commit (stale) go into the closures table with that commit's sha; a row with no
+        sha is left alone.  ``sha_of`` defaults to the sidecar of closed IDs.  Returns how many rows were added."""
+        ids = [i for i in ids if i]
+        if not ids:
+            return 0
+        try:
+            if sha_of is None:
+                from tools import factory_autofeed as AF
+                path = AF.sidecar_path(self.cfg.worktree)
+                sha_of = AF.read_closed(path) if path is not None else {}
+                missing = [i for i in ids if i not in sha_of]
+                if missing:                 # no sidecar entry: the closing commit itself names the sha
+                    sha_of = dict(AF.closing_shas(self.cfg.worktree, missing), **sha_of)
+            got = factory_closures.sync_stale(self.cfg.backlog, ids, sha_of, "commit closed the row (triage proof)")
+        except Exception as e:
+            self.err("stale closures", e)
+            return 0
+        if got["added"] or got["no_sha"]:
+            self.event("closure", status="stale_synced", reason="added=%d no_sha=%d" % (len(got["added"]), len(got["no_sha"])),
+                       backlog_id=",".join(got["added"][:10]))
+        return len(got["added"])
 
     def _reject_answer(self, tid, bid, state, note) -> dict:
         if not tid or tid not in state["tasks"]:
@@ -2687,6 +2774,7 @@ class Loop:
                 ls["holds"][bid] = self._scrub(F.redact(str(h.get("question", ""))))[:500]
                 new_holds.append(bid)
         self._take_parents(res.get("parents"), ls)
+        self._sync_stale_rows(res.get("stale") or ())
         if res.get("not_code"):       # <id>: rows the triage cut by structure (documentation only) join the not_code book
             try:
                 texts = self._row_hashes("text")
@@ -3947,6 +4035,8 @@ class Loop:
             return finish("no_diff", "no_diff", "no_diff")
         sha = git_run(wt, "rev-parse", "HEAD").strip()
         self._tx(lambda st: F.mark_promoted(st, tid, sha))
+        if self._closes_row(tasks.get(tid), ls.get("parents")):
+            self._write_closure(tid, fields.get("backlog_id"), {"commit": sha}, "promoted")
         self._clear_requeues(ls, tid)
         ls.get("promote_fail", {}).pop(tid, None)
         package_done()
@@ -4497,6 +4587,7 @@ def parse_args(argv=None):
     p.add_argument("--until", type=_dt, help='"YYYY-MM-DD HH:MM" local time (may cross midnight)')
     p.add_argument("--once", action="store_true", help="one iteration (debugging)")
     p.add_argument("--clear-brake", action="store_true", help="remove BRAKE and start")
+    p.add_argument("--no-cloud-sweep", action="store_true", help="do not refresh the red-guard sweep in the cloud")
     p.add_argument("--env-file", type=Path, help="read ONLY the channels' key_env names from it")
     p.add_argument("--small-model", default=Config.small_model)
     p.add_argument("--large-model", default=Config.large_model)
@@ -4656,6 +4747,17 @@ def answer_main(argv) -> int:
     return 0
 
 
+def _cloud_sweep_fn(a):
+    """The existing cloud sweep (tools.echo_cloud.sweep), or None with --no-cloud-sweep / when the module is absent."""
+    if getattr(a, "no_cloud_sweep", False):
+        return None
+    try:
+        from tools import echo_cloud
+        return echo_cloud.sweep
+    except Exception:
+        return None
+
+
 def main(argv=None) -> int:
     argv = sys.argv[1:] if argv is None else list(argv)
     if argv and argv[0] == "answer":
@@ -4671,7 +4773,7 @@ def main(argv=None) -> int:
                  review_model=a.review_model, env_file=a.env_file, clear_brake=a.clear_brake)
     try:
         loop = Loop(cfg, extra_env=keys, startup_notes=["no key for channel env " + n for n in absent],
-                    cloud_fn=getattr(factory_cloud_gate, "available", None), reap_fn=lambda **kw: SV.reap(procs_fn=SV.list_processes, kill_fn=SV.kill_tree, **kw))
+                    cloud_fn=getattr(factory_cloud_gate, "available", None), sweep_fn=_cloud_sweep_fn(a), reap_fn=lambda **kw: SV.reap(procs_fn=SV.list_processes, kill_fn=SV.kill_tree, **kw))
     except ValueError as e:
         raise SystemExit(str(e))
     return loop.run()
