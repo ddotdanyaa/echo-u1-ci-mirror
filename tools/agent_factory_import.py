@@ -495,6 +495,10 @@ def _find_col(header: list[str], *prefixes: str):
     return None
 
 
+OWNER_CELL = re.compile(r"как сказал владелец", re.I)     # <id>: the row's own cell with the owner's wording
+DOC_MARK = re.compile(r"\(док\.")                          # <id>: the backlog marks documentation evidence "(док.: ...)"
+
+
 def parse_section4(markdown: str) -> list[dict]:
     """Every row of section 4 (first definition wins, repeats add to ``locations``) as
     {backlog_id, priority, state, text, row, section, line, locations, open}.
@@ -546,6 +550,9 @@ def parse_section4(markdown: str) -> list[dict]:
             ti = next((k for k in range(1, len(cells)) if k not in (pi, si)
                        and not PRIO_CELL.fullmatch(cells[k].strip("`* "))), None)
         text = cells[ti] if ti is not None else ""
+        ai = _find_col(hdr, "acceptance", "проверка")
+        acceptance = cells[ai] if ai is not None and ai < len(cells) and ai != ti else ""
+        owner_cell = next((c.split(":", 1)[-1].strip() for k, c in enumerate(cells) if k and OWNER_CELL.search(c)), "")
         cls = classify_state(state if si is not None else row_text, si is not None)
         port_from = _port_of(state) if cls == "waiting" and si is not None else ""
         if port_from:
@@ -555,6 +562,7 @@ def parse_section4(markdown: str) -> list[dict]:
             cls, port_from = "waiting", ""
         seen[ident] = {"backlog_id": ident, "priority": "P" + pm.group(1) if pm else None,
                        "state": state, "text": text, "row": row_text, "section": section,
+                       "acceptance": acceptance, "owner_cell": owner_cell, "doc_marks": len(DOC_MARK.findall(row_text)),
                        "line": line_no, "locations": [{"line": line_no, "section": section}],
                        "open": cls == "open", "unknown": cls == "unknown", "port_from": port_from,
                        # only the formulation and the state decide: a service cell such as "как сказал владелец"
@@ -693,7 +701,9 @@ def parse_open_rows(backlog_path, repo_root, include_closed: bool = False) -> li
                     "text": "" if r["private"] else r["text"],
                     "private": r["private"], "mentioned_files": files, "mentioned_tests": tests,
                     "section": r["section"], "line": r["line"], "closed_at_head": closed,
-                    "text_len": len(r["text"]), "bare_names": _bare_names(row), "port_from": r.get("port_from", "")})
+                    "text_len": len(r["text"]), "bare_names": _bare_names(row), "port_from": r.get("port_from", ""),
+                    "acceptance": "" if r["private"] else r["acceptance"], "owner_cell": "" if r["private"] else r["owner_cell"],
+                    "doc_marks": r["doc_marks"]})
     out.sort(key=_sort_key)
     return out
 
@@ -1136,6 +1146,47 @@ def _bm25(query, tf, length, df, n, avg) -> float:
     return s
 
 
+def _bm25_field(profiles) -> dict:
+    """{tf, len, df, n, avg} of per-file word profiles: what _bm25 scores against."""
+    from collections import Counter
+    df = Counter(w for tf in profiles.values() for w in tf)
+    lens = {f: sum(tf.values()) or 1 for f, tf in profiles.items()}
+    return {"tf": profiles, "len": lens, "df": df, "n": max(1, len(profiles)),
+            "avg": (sum(lens.values()) / len(lens)) if lens else 1.0}
+
+
+def _census_field(path, only=None) -> dict:
+    """<id>: the owner census (tools/owner_census_sites.ndjson: family, owner, file, func, decides in Russian) as one word
+    profile per file, so the Russian row meets the code on what each place DECIDES.  Missing or damaged file -> empty."""
+    from collections import Counter
+    prof: dict = {}
+    try:
+        lines = Path(path).read_text(encoding="utf-8").splitlines()
+    except OSError:
+        lines = []
+    for line in lines:
+        try:
+            d = json.loads(line)
+        except ValueError:
+            continue
+        f = d.get("file") if isinstance(d, dict) else None
+        if isinstance(f, str) and (only is None or f in only):
+            prof.setdefault(f, Counter()).update(_words(" ".join(str(d.get(k) or "") for k in ("family", "owner", "func", "decides"))))
+    return _bm25_field(prof)
+
+
+CENSUS_WEIGHT = 0.5
+
+
+def census_rank(text: str, path, k: int = SCOPE_K) -> list:
+    """[(file, score)] best first of the census files against the row text (<id>, the same one candidate_files uses)."""
+    f = _census_field(path)
+    q = set(_words(text))
+    ranked = sorted(((rel, _bm25(q, tf, f["len"][rel], f["df"], f["n"], f["avg"])) for rel, tf in f["tf"].items()),
+                    key=lambda kv: (-kv[1], kv[0]))
+    return [(rel, round(sc, 2)) for rel, sc in ranked if sc > 0][:k]
+
+
 def _scope_index(root) -> dict:
     """What candidate_files ranks by, built once per (root, HEAD).  Files: echo_sync/** and tools/** that may be a
     scope (never tests, a package __init__ or a gate-protected file).  Per file: the ID tokens of its text, the names
@@ -1218,12 +1269,9 @@ def _scope_index(root) -> dict:
             for f in changed:
                 book[f] = book.get(f, 0) + 1
 
-    def field(profiles):
-        df = Counter(w for tf in profiles.values() for w in tf)
-        lens = {f: sum(tf.values()) or 1 for f, tf in profiles.items()}
-        return {"tf": profiles, "len": lens, "df": df, "n": max(1, len(profiles)),
-                "avg": (sum(lens.values()) / len(lens)) if lens else 1.0}
-    index = {"src": srcset, "ids": ids, "syms": syms, "git": git_ids, "code": field(code), "bridge": field(bridge)}
+    field = _bm25_field
+    index = {"src": srcset, "ids": ids, "syms": syms, "git": git_ids, "code": field(code), "bridge": field(bridge),
+             "census": _census_field(root / "tools" / "owner_census_sites.ndjson", srcset)}
     if head:
         _SCOPE_CACHE[str(root)] = (head, index)
     return index
@@ -1264,10 +1312,10 @@ def candidate_files(root, bid: str, text: str, k: int = SCOPE_K) -> list:
     for rel, names in sym.items():
         add(rel, 3.0 * len(names), "sym")
     query = set(_words(text))
-    for key, weight in (("code", 0.25), ("bridge", 0.5)):
+    for key, weight in (("code", 0.25), ("bridge", 0.5), ("census", CENSUS_WEIGHT)):
         f = ix[key]
         for rel, tf in f["tf"].items():
-            add(rel, weight * _bm25(query, tf, f["len"][rel], f["df"], f["n"], f["avg"]), "doc")
+            add(rel, weight * _bm25(query, tf, f["len"][rel], f["df"], f["n"], f["avg"]), key if key == "census" else "doc")
     ranked = sorted(score.items(), key=lambda kv: (-kv[1], kv[0]))[:k]
     memo[(bid, text, k)] = [(rel, round(sc, 2), list(tags[rel])) for rel, sc in ranked]
     return [(rel, sc, list(t)) for rel, sc, t in memo[(bid, text, k)]]
@@ -1338,8 +1386,45 @@ def weak_candidate_holds(root, backlog_path, bids) -> dict:
     return out
 
 
+BRIEF_ACCEPT = 600           # <id>: characters of the acceptance cell, of the row's owner cell and of one owner message in a goal
+BRIEF_OWNER = 400
+BRIEF_MESSAGES = 2
+
+
+def _row_brief(F, r, owner_words=None) -> str:
+    """<id>: what the coder and the critic must see besides the row's formulation: its acceptance cell, its owner-wording
+    cell (OWNER_CELL) and up to BRIEF_MESSAGES verbatim owner messages that name the ID (tools.backlog_register.owner_excerpts),
+    all clipped and redacted.  Live 21.11: a one-line synthesized goal made the free models invent APIs 6 times."""
+    parts = []
+    acc = F.redact(r.get("acceptance") or "").strip("`* ")
+    if acc and acc not in ("—", "-"):
+        parts.append("Приёмка строки: %s." % acc[:BRIEF_ACCEPT])
+    cell = F.redact(r.get("owner_cell") or "").strip("`* ")
+    if cell:
+        parts.append("Owner wording in the row: %s." % cell[:BRIEF_OWNER])
+    try:
+        from tools import backlog_register
+        words = backlog_register.owner_excerpts(r["backlog_id"], owner_words, k=BRIEF_MESSAGES, chars=BRIEF_OWNER)
+    except Exception:       # the words file is a convenience: the goal stays without it
+        words = []
+    for w in words:
+        parts.append("Owner verbatim: «%s»" % F.redact(w))
+    return (" " + " ".join(parts)) if parts else ""
+
+
+def _doc_only_row(r, cands) -> str:
+    """<id> (owner rule 2: non-code is cut before the executors): why a row is not a change of the code, or "".  By
+    structure, not by phrases: the row names no file, test or defined name, no commit or ID in the code makes a strong
+    candidate, and its evidence carries the backlog's documentation marker "(док.: ...)"."""
+    if r["mentioned_files"] or r["mentioned_tests"] or r["bare_names"] or not r.get("doc_marks"):
+        return ""
+    if strong_candidates(cands):
+        return ""
+    return "строка описывает документ или процесс: нет файла, теста, имени из кода и коммита с ID (метка «док.» ×%d)" % r["doc_marks"]
+
+
 def triage_portion(backlog_path, head_root, known_backlog_ids, limit, profile_attempts=None, known_parts=None, env_streak=0,
-                   scopes=None, ask=None, sweep=None, trace=None, force_slice=None) -> dict:
+                   scopes=None, ask=None, sweep=None, trace=None, force_slice=None, owner_words=None) -> dict:
     """K-E.3: next portion of the live backlog as plan tasks (nothing is written).
 
     Returns {"tasks", "holds": [{backlog_id, question}], "stale": [backlog_id],
@@ -1404,7 +1489,7 @@ def triage_portion(backlog_path, head_root, known_backlog_ids, limit, profile_at
     attempts = {k: v for k, v in (profile_attempts.items() if isinstance(profile_attempts, dict) else ())
                 if type(v) is int and v >= 0}      # a damaged value from an old state counts as 0
     out = {"tasks": [], "holds": [], "stale": [], "skipped": [], "skipped_unknown": list(rows.skipped_unknown), "events": events0, "deferred": [], "profile_attempts": {}, "parents": [], "env_streak": 0,
-           "already_green": [], "needs_trace": []}
+           "already_green": [], "needs_trace": [], "not_code": []}
     try:
         guards = AF.guard_map(AF.load_sweep(root, sweep), [r["backlog_id"] for r in rows])
     except Exception as e:                        # an unreadable feed is no feed: the old path decides
@@ -1490,6 +1575,16 @@ def triage_portion(backlog_path, head_root, known_backlog_ids, limit, profile_at
         guard_red = AF.red_paths(guards.get(bid)) if swept == "red" else []
         if guard_red:
             named_here = guard_red + [t for t in named_here if t not in guard_red]
+        if not private and not named_here and not guard_red:
+            try:
+                why = _doc_only_row(r, candidate_files(root, bid, r["text"])) if (r.get("doc_marks") and not r["mentioned_files"]
+                                                                                  and not r["mentioned_tests"] and not r["bare_names"]) else ""
+            except Exception:
+                why = ""
+            if why:
+                out["not_code"].append({"backlog_id": bid, "reason": why})
+                skip(bid, "не код: " + why)
+                continue
         suspects = ""
         if not touch and named_here and not private and _screen(F, bid, r["text"])[1]:
             # it will be held anyway: do not spend 30 s of profile and an attempt on it
@@ -1692,6 +1787,9 @@ def triage_portion(backlog_path, head_root, known_backlog_ids, limit, profile_at
                 continue
             if scope_note:          # the head's note (checked by the loop like an Opus note) joins the goal
                 text = "%s Указание по области: %s" % (text, scope_note)
+            brief = _row_brief(F, r, owner_words)       # <id>: the row's acceptance and the owner's words, once, for every task of the row
+            if brief:
+                text = text[:max(500, MAX_TEXT - len(brief) - 800)] + brief
         group = []
         base = {"backlog_id": bid, "priority": r["priority"] or "P4", "privacy_safe": not private,
                 "only_opus": private, "read_files": [], "task_type": "patch"}

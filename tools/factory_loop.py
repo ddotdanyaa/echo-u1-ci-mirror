@@ -1907,13 +1907,17 @@ class Loop:
         if not digest:      # the model already answered: not "later" (asked again at once), the normal 24 h repeat
             return record("unbooked", model, tokens)
         ls = self.ls()
+        self._not_code_set(ls, bid, why, digest)
+        self.save_ls(ls)
+        record("not_code", model, tokens)
+
+    def _not_code_set(self, ls, bid, why, digest) -> None:
+        """The ONE writer of the not_code book (the head's answer and the triage's structural cut, <id>)."""
         ls.setdefault("not_code", {})[bid] = {
             "hash": digest, "reason": ("не код: " + self._scrub(F.redact(str(why))))[:200],
             "until": self.clock() + self.cfg.not_code_term_s}
         ls["holds"].pop(bid, None)
         ls.get("hold_hash", {}).pop(bid, None)
-        self.save_ls(ls)
-        record("not_code", model, tokens)
 
     def _not_code_known(self, ls, now) -> set:
         """Rows of the not_code book whose term is live and whose text is unchanged; the rest leave the book."""
@@ -2663,6 +2667,15 @@ class Loop:
                 ls["holds"][bid] = self._scrub(F.redact(str(h.get("question", ""))))[:500]
                 new_holds.append(bid)
         self._take_parents(res.get("parents"), ls)
+        if res.get("not_code"):       # <id>: rows the triage cut by structure (documentation only) join the not_code book
+            try:
+                texts = self._row_hashes("text")
+            except Exception as e:
+                self.err("not_code: backlog unreadable", e)
+                texts = {}
+            for x in res["not_code"]:
+                if isinstance(x, dict) and texts.get(x.get("backlog_id")):
+                    self._not_code_set(ls, x["backlog_id"], x.get("reason") or "", texts[x["backlog_id"]])
         if ls.get("head_scope"):
             # <id>: a picked scope is used up once the triage reported its row (tasks, a hold or a skip); a deferred
             # row keeps it for the next portion; a row that left the backlog loses it
