@@ -673,7 +673,11 @@ REVIEW_CHECKS = (
     'error handling; (2) NO hard-coding: the candidate must not fit data or expectations to the '
     'test (special-casing test inputs, copying expected values) instead of fixing the behaviour; '
     '(3) NO scope creep: nothing outside the task and the listed files. A legitimate pass '
-    'statement is not itself a defect.')
+    'statement is not itself a defect. The task tests are the specification, fixed before the coder '
+    'started: never reject a candidate by disputing what a test expects; judge only whether the code '
+    'meets it honestly.')
+# A code task's critics rejected a correct candidate three times by arguing with the guard test's expectation
+# instead of the change (live 21.11): the tests are not theirs to judge.
 # A unit_test task writes ONLY the test; its code task comes after it. Live 19.11 19:14-19:16: with the checks of a
 # fix the reviewer rejected good tests "the patch only adds a test case but does not implement the fix".
 REVIEW_CHECKS_TEST = (
