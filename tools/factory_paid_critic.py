@@ -72,19 +72,37 @@ def _spend_file() -> Path:
     return state_dir() / 'paid_spend.json'
 
 
-def spent_today() -> float:
+def _spend_row() -> dict:
     try:
         data = json.loads(_spend_file().read_text(encoding='utf-8'))
         if data.get('date') == datetime.date.today().isoformat():
-            return float(data.get('usd') or 0)
+            return dict(data)
     except (OSError, ValueError, TypeError, AttributeError):
         pass
-    return 0.0
+    return {}
 
 
-def add_spend(usd: float) -> None:
+def spent_today() -> float:
+    try:
+        return float(_spend_row().get('usd') or 0)
+    except (ValueError, TypeError):
+        return 0.0
+
+
+def coder_spent_today() -> float:
+    """The part of today's spend that went to the paid escalation coder (it is counted inside ``usd`` too)."""
+    try:
+        return float(_spend_row().get('coder_usd') or 0)
+    except (ValueError, TypeError):
+        return 0.0
+
+
+def add_spend(usd: float, coder: bool = False) -> None:
     path = _spend_file()
     row = dict(date=datetime.date.today().isoformat(), usd=round(spent_today() + usd, 6))
+    own = coder_spent_today() + (usd if coder else 0.0)
+    if own:
+        row['coder_usd'] = round(own, 6)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix('.tmp')
@@ -141,9 +159,10 @@ def _slug(text: str) -> str:
     return re.sub(r'[^a-z0-9]+', '-', str(text).lower()).strip('-')[:60] or 'unnamed'
 
 
-def control(task, diff: str, failure: str = '') -> dict | None:
+def control(task, diff: str, failure: str = '', exclude_model: str = '') -> dict | None:
     """One paid judgement of a candidate, or None (no key, no budget, a refused model, any fault). The free verdict
-    stands when None. The dict never holds the key."""
+    stands when None. The dict never holds the key. ``exclude_model``: the coder's model never judges its own
+    candidate (a paid coder's Sonnet is judged by Haiku or not at all)."""
     if os.environ.get('PYTEST_CURRENT_TEST') and not os.environ.get('FACTORY_PAID_ENV'):
         return None                                     # a test never spends the real key
     env = load_env(env_path())
@@ -163,6 +182,8 @@ def control(task, diff: str, failure: str = '') -> dict | None:
         try:
             refuse_opus(model)
         except ValueError:
+            continue
+        if model == str(exclude_model).rpartition('/')[2]:
             continue
         body = dict(model=model, max_tokens=2000, output_config=dict(effort='low'),
                     messages=[dict(role='user', content=prompt)])

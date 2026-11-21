@@ -46,6 +46,10 @@ from . import factory_gate as gate
 from . import factory_tree
 from . import factory_quota as quota_ledger
 from . import factory_paid_critic as paid_critic
+try:        # the paid escalation coder is optional: without the module (or the key) the free contour is unchanged
+    from . import factory_paid_coder as paid_coder
+except ImportError:
+    paid_coder = None
 
 _log = logging.getLogger(__name__)
 ENV_ALLOW = ("PATH", "PATHEXT", "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC", "LANG")
@@ -2000,7 +2004,13 @@ def light_attempt(task: Task, workdir: Path, model: str, timeout: int = LIGHT_TI
     if task.only_opus:
         return 125, b'', b'opus-only-task'
     provider, _, model_id = model.partition('/')
-    url = LIGHT_ENDPOINTS.get(provider)
+    paid_kind = provider == 'anthropic'
+    if paid_kind:      # the paid escalation coder (owner rule 4): the Messages API, never Opus, capped, key from the env file
+        if paid_coder is None or 'opus' in model.lower() or model_id not in paid_coder.MODELS or not paid_coder.available():
+            return 125, b'', b'light: the paid coder is unavailable (no key, over the cap, or a refused model)'
+        url, post = paid_critic.URL, paid_coder.post_chat
+    else:
+        url = LIGHT_ENDPOINTS.get(provider)
     if url is None or not model_id:
         return 125, b'', b'light: unsupported provider'
     if not MODEL_ID.fullmatch(model):      # 0 rubles: an OpenRouter model without ':free' never leaves the machine
@@ -2008,7 +2018,7 @@ def light_attempt(task: Task, workdir: Path, model: str, timeout: int = LIGHT_TI
     prompt = prompt_override if prompt_override is not None else _default_prompt(task, workdir, light=True)
     if channels.prompt_too_big(prompt):
         return 125, b'', b'context-too-large'
-    key = os.environ.get(key_env or ('OPENROUTER_API_KEY' if provider == 'openrouter' else 'GOOGLE_GENERATIVE_AI_API_KEY'), '')
+    key = 'paid' if paid_kind else os.environ.get(key_env or ('OPENROUTER_API_KEY' if provider == 'openrouter' else 'GOOGLE_GENERATIVE_AI_API_KEY'), '')
     if not key:
         return 1, _light_error(401, b'{"error": {"message": "no API key in the environment"}}'), b''
     review = not task.touch_files
@@ -2369,7 +2379,12 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
         ctx['role'] = role
         if channels.prompt_too_big(prompt):
             raise PromptTooLarge(str(len(prompt)))
-        light = ctx['light'] = engine_for(role, call_task) == 'light'    # one request, the files travel in the prompt
+        # the paid escalation coder (owner rule 4): only a coder call of a pass after a free attempt (or a raised tier
+        # floor), once per pass, the first candidate; up to 8 files; any fault or refusal leaves the free route as it was
+        paid_try = (role == 'code' and paid_coder is not None and not later and not ctx.get('paid_tried')
+                    and len(call_task.touch_files) <= paid_coder.MAX_FILES and paid_coder.available()
+                    and paid_coder.wanted(attempt, ((ck.read().get('tasks') or {}).get(tid) or {}).get('tier_floor')))
+        light = ctx['light'] = paid_try or engine_for(role, call_task) == 'light'    # one request, the files travel in the prompt
         base_tokens = channels.estimate_tokens(len(prompt), 0 if light else ctx['read_chars'],
                                                overhead=LIGHT_OVERHEAD_TOKENS if light else None,
                                                cyrillic=channels.cyrillic_share(prompt))
@@ -2384,6 +2399,35 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
         suffix = ':review' if role == 'review' else ''      # a reviewer must not move the coder's remembered channel
         affinity = ['task:' + tid + suffix] + (['family:' + family + suffix] if family else [])
 
+        if paid_try:
+            ctx['paid_tried'] = True
+            def charge_paid(state, row):
+                charge_call(state, tid)
+                booked_one(row)
+            ck.commit(charge_paid)
+            ctx['last_tokens'] = base_tokens
+            began = time.monotonic()
+            directory = directory_for(0)
+            code, stdout, stderr = light_attempt(call_task, directory, paid_coder.MODEL, timeout=240,
+                                                 prompt_override=prompt, steps=1)
+            summary = event_summary(stdout, directory)
+            calls.append({'role': role, 'attempt': attempt, 'channel': 'paid-coder', 'model': paid_coder.MODEL,
+                          'reserved_tokens': base_tokens, 'actual_tokens': None, 'candidate': ctx.get('candidate', 0),
+                          'dur_s': round(time.monotonic() - began, 3), 'returncode': code,
+                          'error_class': None if code == 0 else 'paid_coder_failed',
+                          'input_tokens': summary['input_tokens'], 'output_tokens': summary['output_tokens'],
+                          'tool_events': summary['tool_events'], 'steps': summary['steps'],
+                          'finish_reason': summary['finish_reason']})
+            if code == 0:
+                events.append('paid_coder')
+                ctx['paid_coder'] = True
+                ctx['last_text'] = summary['text']
+                ctx['light_note'] = stderr.decode('utf-8', 'replace')[:300]
+                return code, stdout, stderr
+            events.append('paid_coder_failed')        # the free route below is asked as if the paid one never existed
+            if engine_for(role, call_task) != 'light':     # wider than the free engine takes: wait, never a half-booked Kilo run
+                raise channels.ChannelUnavailable('the paid coder failed on a task wider than the free engine takes',
+                                                  'paid_coder_failed', 300)
         hopped, last_info = [], None     # models that answered "overloaded" in THIS call: the next hop skips them
         for retry in range(1 + TRANSIENT_HOPS):
             selected, at, chosen, kwargs = None, None, preferred, {}
@@ -2824,8 +2868,10 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
         def widen(module: str, name: str) -> dict:
             """The task's scope misses a module the failing test runs and the model named: the loop adds it to
             touch_files (report scope_add, no strike); over LIGHT_MAX_FILES or a forbidden path: BLOCKED for Opus."""
+            limit = (paid_coder.files_limit(attempt, ((ck.read().get('tasks') or {}).get(tid) or {}).get('tier_floor'))
+                     if paid_coder is not None else LIGHT_MAX_FILES)     # the paid tier takes up to 8 files, the free one 5
             why = gate.is_forbidden(module, task.kind) or (
-                'more than %d files' % LIGHT_MAX_FILES if len(task.touch_files) + 1 > LIGHT_MAX_FILES else '')
+                'more than %d files' % limit if len(task.touch_files) + 1 > limit else '')
             if why:
                 return block('off_path', '%s (%s) runs in the failing test outside the task; it cannot be added: %s'
                              % (module, name, why))
@@ -3212,7 +3258,8 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                     if True:           # rule 4 of 21.11: the paid critic is the insurance second voice when no free
                         paid_second = paid_critic.control(   # model is left (live 17:20-17:50: 19 chains cut short)
                             task, unified_diff(ctx['baseline'], ctx['workdir'], task.touch_files, paid_critic.DIFF_LIMIT)
-                            if ctx['baseline'] is not None else '', (exec_text + '\n' + told)[-paid_critic.FAIL_LIMIT:])
+                            if ctx['baseline'] is not None else '', (exec_text + '\n' + told)[-paid_critic.FAIL_LIMIT:],
+                            exclude_model=ctx.get('coder_model') or '')
                         if paid_second is not None:          # no key, no budget, a fault: the free wait below, as before
                             ctx['paid_done'] = paid_second
                             events.append('paid_second_critic')
@@ -3264,13 +3311,16 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
         # A reject goes back like a free critic's; the catch enters the error-class registry the free review reads.
         paid = ctx.get('paid_done') or paid_critic.control(task, unified_diff(ctx['baseline'], ctx['workdir'], task.touch_files,
                                                       paid_critic.DIFF_LIMIT) if ctx['baseline'] is not None else '',
-                                   (exec_text + '\n' + told)[-paid_critic.FAIL_LIMIT:])
+                                   (exec_text + '\n' + told)[-paid_critic.FAIL_LIMIT:],
+                                   exclude_model=ctx.get('coder_model') or '')    # the coder's model never judges its own work
         if paid is not None:
             report['paid_critic'] = paid
             if paid['verdict'] == 'reject':
                 paid_critic.record_class(task, paid)
                 why = scrub(redact('paid critic [%s]: %s' % (paid['class'], paid['reason'] or paid['symptom'])))
                 return reject('review', 'review: ' + why, why, changed)
+        if ctx.get('paid_coder') and paid_coder is not None:     # a paid coder solved it: the free prompts learn the class
+            paid_coder.record_lesson(task, str(row.get('feedback') or '')[-200:])
         reviewed = staging / "for-review" / tid
         if reviewed.exists():
             shutil.rmtree(reviewed)  # left over from an earlier candidate of this task
