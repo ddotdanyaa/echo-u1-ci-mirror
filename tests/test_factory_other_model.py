@@ -76,21 +76,34 @@ def test_a_dead_other_model_is_no_other_model(tmp_path, monkeypatch):
     assert not any(e.startswith('other_model_than') for e in second['events'])
 
 
-def test_an_other_model_that_cannot_take_the_call_now_is_no_stop(tmp_path, monkeypatch):
+def test_an_other_model_that_cannot_take_the_call_now_is_waited_for_then_no_stop(tmp_path, monkeypatch):
     """21.11 13:11: the only unused model had a key (so it passed the pre-check) but could not take the call now; the
-    call raised 'no channel' and the task waited 1 h. The call is repeated on any model."""
+    call raised 'no channel' and the task waited 1 h. 13:23: taking any model at once let one flash-lite spend all 6
+    attempts in 3 min. Now: the task alone waits a minute for a fresh model (no attempt spent) FRESH_WAITS times,
+    then the call is repeated on any model."""
     import time
+    from tools import agent_factory_runner as W
     from tools import factory_channels as CH
     rig = Rig(tmp_path, monkeypatch)
     sent = _wire(rig, monkeypatch, lambda model: WRONG, lambda model, n: APPROVE)
     rig.once(channel_config=_cfg(tmp_path, 'two.json'), max_attempts=F.MAX_ATTEMPTS)
-    rig.ready_again()
-    state = rig.state()
-    quotas = state['channel_quotas'] = {}
-    CH.cool_channel(quotas, {'id': 'c3'}, now=time.time(), seconds=3600)
-    rig.state_path.write_text(json.dumps(state), encoding='utf-8')
-    sent.clear()
-    second = rig.once(channel_config=_cfg(tmp_path, 'three.json', [_third()]), max_attempts=F.MAX_ATTEMPTS)
+    three = _cfg(tmp_path, 'three.json', [_third()])
+
+    def cooled_pass():
+        rig.ready_again()
+        state = rig.state()
+        CH.cool_channel(state.setdefault('channel_quotas', {}), {'id': 'c3'}, now=time.time(), seconds=3600)
+        rig.state_path.write_text(json.dumps(state), encoding='utf-8')
+        sent.clear()
+        return rig.once(channel_config=three, max_attempts=F.MAX_ATTEMPTS)
+
+    attempts = rig.state()['tasks']['T1'].get('attempts')
+    for _ in range(W.FRESH_WAITS):
+        waited = cooled_pass()
+        assert waited['status'] == 'READY' and waited['reason'] == 'fresh_model_busy', waited
+        assert not [s for s in sent if not s['review']]                       # no coder call, no attempt spent
+        assert rig.state()['tasks']['T1'].get('attempts') == attempts
+    second = cooled_pass()
     assert second['status'] == 'READY' and second.get('channel_reason') is None, second
     assert [s['model'] for s in sent if not s['review']][:1] == ['x']
     assert 'other_model_none_free' in second['events']

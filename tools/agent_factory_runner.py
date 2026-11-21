@@ -113,6 +113,11 @@ ESCALATE = frozenset(("gate_unknown", "provider_error", "no_independent_reviewer
                       "review_chain_short"))
 ESCALATE_AFTER = 3          # the same postponement this many times in a row becomes BLOCKED
 INFRA_CHANNEL_REASONS = frozenset(("dead", "no_key", "no_channels", "reservation_exceeds_tpm"))
+FRESH_WAITS, FRESH_WAIT_S = 2, 60   # a task waits for a model that has not failed it at most this many times this long
+
+
+class _FreshBusy(Exception):
+    """Only models that already failed this task can take the coder call now (handled inside once())."""
 REVIEW_HINT = ("The file is large: read the places you need with the read tool by line numbers from the "
                "outline. Do not edit anything: you only judge the diff.")
 LIGHT_REVIEW_HINT = "The file is large: only its outline and the parts below are shown. You only judge the diff."
@@ -2887,14 +2892,19 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                     except channels.ChannelUnavailable:
                         if len(excluded or ()) <= len(tried):
                             raise
-                        # live 21.11 13:11: the only unused models could not take the call now (one dead, one out of
-                        # quota) and the task waited 1 h. Another model is a preference, never a stop: take any.
+                        # live 21.11 13:23: <id> spent all 6 attempts on one flash-lite in 3 min while the fresh models
+                        # were busy for a minute. The first pass waits for a fresh model (this task only, a minute,
+                        # no attempt spent) up to FRESH_WAITS times; after that it takes any model (13:11: never a stop).
+                        if not k and defer_streak(ck.read(), tid, 'fresh_model_busy') < FRESH_WAITS:
+                            raise _FreshBusy()
                         events.append('other_model_none_free')
                         return call(role, task, dir_for, chosen, k_prompt, exclude_model=list(tried) or None,
                                     skip_tiers=skip)
 
                 try:
                     rc, out, err = timed('code_s', coder_call)
+                except _FreshBusy:
+                    return release('fresh_model_busy', FRESH_WAIT_S)
                 except (ChannelFault, channels.ChannelUnavailable, NoIndependentReviewer):
                     if not k:
                         raise

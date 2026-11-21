@@ -128,7 +128,7 @@ CHANNEL_REASONS = DEAD_CHANNEL | frozenset(("rate_minute", "rate_day", "region",
 # an exponential, jittered pause. They never grow the brake series. A permanent break (a dead channel, a dead
 # runner, "infra" without such a reason) still does.
 TEMPORARY_CHANNEL = frozenset(("rate_limited_suspect", "rate_limited", "429", "channel_timeout"))
-TEMPORARY_TASK = frozenset(("transient", "env_shortage"))
+TEMPORARY_TASK = frozenset(("transient", "env_shortage", "fresh_model_busy"))
 BACKOFF_FIRST_S, BACKOFF_MAX_S = 60, 1800
 GLOBAL_WAIT_MAX_S = 300   # owner: a dead route gets 5 min, then the fallback. A wait no channel owns holds the
                           # whole loop, so it never exceeds this (live 21.11 12:22: an unnamed 'dead' held 12 tasks 1 h)

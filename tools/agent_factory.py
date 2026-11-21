@@ -610,6 +610,7 @@ DEFER_REASONS = frozenset(("rate_minute", "rate_day", "transient", "network", "r
                            "provider_error", "gate_unknown", "no_independent_reviewer",
                            "channel_wait", "reviewer_failed", "budget_exhausted", "os_error",
                            "review_chain_short",   # one critic approved, no other model now: the candidate waits
+                           "fresh_model_busy",     # only models that failed this task are free now: a minute, not an attempt
                            "env_shortage",    # no slot / RAM: never a strike, never a block
                            "off_path"))      # the failing test runs a module outside the task: the loop widens it
 
