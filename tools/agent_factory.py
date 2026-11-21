@@ -22,6 +22,7 @@ import xml.etree.ElementTree as ET
 
 STATES = frozenset(("READY", "RUNNING", "REVIEW", "DONE", "PROMOTED", "FAILED", "BLOCKED"))
 SATISFIED = frozenset(("DONE", "PROMOTED"))  # dependency is met
+REFEED_SUFFIX = "_g"   # id suffix of the guard-backed re-feed of a failed row (tools.factory_autofeed.refeed_rows)
 FEEDBACK_SOURCES = frozenset(("gate", "review", "opus"))
 MAX_STRIKES = 6   # 21.11 (was 3): the line a quarantine needs. A plain red (gate/review/no effect) is a retry and saturates one below it
 UNSAFE_STRIKE = 2  # strikes one unsafe rejection counts (MAX_STRIKES // 3: three unsafe candidates quarantine)
@@ -1076,7 +1077,8 @@ def append_tasks(plan_path: Path, tasks: list[dict], *,
             if rid in known_ids:
                 result.skipped.append({"id": rid, "backlog_id": bid, "reason": "duplicate id"})
                 continue
-            if bid and (bid, row.get("kind", "code")) in known_backlog:  # a unit_test sub-task shares its backlog_id
+            if (bid and (bid, row.get("kind", "code")) in known_backlog   # a unit_test sub-task shares its backlog_id
+                    and not rid.endswith(REFEED_SUFFIX)):                 # a guard re-feed of a failed row (its own id: no duplicate)
                 result.skipped.append({"id": rid, "backlog_id": bid,
                                        "reason": "duplicate backlog_id"})
                 continue

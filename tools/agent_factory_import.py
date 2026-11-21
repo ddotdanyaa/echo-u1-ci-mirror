@@ -1429,7 +1429,7 @@ def _doc_only_row(r, cands) -> str:
 
 
 def triage_portion(backlog_path, head_root, known_backlog_ids, limit, profile_attempts=None, known_parts=None, env_streak=0,
-                   scopes=None, ask=None, sweep=None, trace=None, force_slice=None, owner_words=None) -> dict:
+                   scopes=None, ask=None, sweep=None, trace=None, force_slice=None, owner_words=None, refeed=None) -> dict:
     """K-E.3: next portion of the live backlog as plan tasks (nothing is written).
 
     Returns {"tasks", "holds": [{backlog_id, question}], "stale": [backlog_id],
@@ -1454,6 +1454,9 @@ def triage_portion(backlog_path, head_root, known_backlog_ids, limit, profile_at
       all is a skip ``needs_trace`` plus an ``out["needs_trace"]`` record, never a hold for Opus.  A row whose guard
       is green is not queued: skip ``already_green`` plus an ``out["already_green"]`` record.  Rows without a
       sweep verdict take the old path.
+    - RE-FEED (owner rule 3, a red guard is a new method): ``refeed`` = {backlog_id} (the caller proved, with
+      tools.factory_autofeed.refeed_rows, that the row's old tasks all failed without the guard; it also took the row out of
+      known_backlog_ids): the row's task id gets the suffix ``_g`` (the old task history stays) and the row is never cut into parts.
     - rows closed at HEAD (``<ID>:`` commit, or listed in the sidecar closed_by_commit.json, which this call keeps
       up to date from the git log: the one thing besides the plan the triage writes) -> stale; IDs in known_backlog_ids -> skipped; two IDs
       that give the same task id (<id> / <id>) -> both skipped "коллизия id";
@@ -1482,6 +1485,7 @@ def triage_portion(backlog_path, head_root, known_backlog_ids, limit, profile_at
     be looked at for its imports."""
     from tools import agent_factory as F
     root = Path(head_root)
+    refeed = set(refeed or ())
     events0: list = []
     try:
         synced = AF.sync_closed(root)             # before the rows are read: a fresh '<ID>:' commit closes its row at once
@@ -1545,7 +1549,7 @@ def triage_portion(backlog_path, head_root, known_backlog_ids, limit, profile_at
         if bid in collide:
             skip(bid, "коллизия id: " + " и ".join(collide[bid]))
             continue
-        if r.get("port_from"):
+        if r.get("port_from") and bid not in refeed:
             made = _port_task(r, root, all_tests)
             if "hold" in made:
                 out["holds"].append({"backlog_id": bid, "question": made["hold"]})
@@ -1721,6 +1725,9 @@ def triage_portion(backlog_path, head_root, known_backlog_ids, limit, profile_at
             out["holds"].append({"backlog_id": bid, "question": pfx + "область защищена воротами: " + ", ".join(prot) + "; решает Opus"})
             continue
         forced = bid in (force_slice or ()) and len(touch) >= 2
+        if bid in refeed and (len(touch) > SLICE_FILES or r["text_len"] > MAX_TEXT):
+            skip(bid, "refeed_wide: %d файлов, текст %d: части дали бы чужие id задач" % (len(touch), r["text_len"]))
+            continue
         if len(touch) > SLICE_FILES or forced or r["text_len"] > MAX_TEXT:
             # Automatic decomposition (<id>): one file per part (a chain of one-file sub-tasks); more files than MAX_PARTS ->
             # import-affine groups of <= MAX_TOUCH.  Not possible honestly -> the Opus question as before.
@@ -1773,7 +1780,7 @@ def triage_portion(backlog_path, head_root, known_backlog_ids, limit, profile_at
                 why += "; частей получилось больше %d" % MAX_PARTS
             out["holds"].append({"backlog_id": bid, "question": pfx + "разбить на подзадачи: " + why})
             continue
-        tid = _task_id(bid)
+        tid = _task_id(bid) + ("_g" if bid in refeed else "")
         named = _tests_named_by_id(bid, all_tests)
         if guard_red:
             named = guard_red + [t for t in named if t not in guard_red]

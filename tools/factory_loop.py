@@ -2712,6 +2712,8 @@ class Loop:
                   if rec.get("children") and all(c in known for c in rec["children"])}   # all parts exist: no re-import
         slicing = {b for b in self._stalled()["slice"] if b not in (ls.get("parents") or {})}
         known -= slicing                                    # <id>: a row whose task stalled is imported again, cut into one-file parts
+        refeed = self._refeed_pick(state, tasks, ls)        # owner rule 3: a red guard is a new method for a failed row
+        known -= set(refeed)
         t0 = self.clock()
         kwargs = dict(backlog_path=cfg.backlog, head_root=cfg.worktree,
                       known_backlog_ids=known, limit=cfg.triage_limit)
@@ -2728,7 +2730,52 @@ class Loop:
             kwargs["trace"] = self._guard_traces(state)
         if _accepts(fn, "ask"):
             kwargs["ask"] = self._locate_ask(ls, quotas)
-        return {"fn": fn, "kwargs": kwargs, "mtime": mtime, "dropped": dropped, "t0": t0, "now": now}
+        if refeed and _accepts(fn, "refeed"):
+            kwargs["refeed"] = set(refeed)
+        else:
+            refeed = {}
+        return {"fn": fn, "kwargs": kwargs, "mtime": mtime, "dropped": dropped, "t0": t0, "now": now, "refeed": refeed}
+
+    def _refeed_pick(self, state, tasks, ls) -> dict:
+        """{backlog_id: {guards, supersede}} of the rows to re-feed by their red guard (tools.factory_autofeed.refeed_rows);
+        a row the loop holds or closed is left alone. A fault is no re-feed."""
+        try:
+            from tools import factory_autofeed as AF
+            ids = {str(r.get("backlog_id") or "").split("#")[0] for r in state["tasks"].values()} - {""}
+            guards = AF.guard_map(AF.load_sweep(self.cfg.worktree), sorted(ids))
+            got = AF.refeed_rows(state["tasks"], tasks, guards, ls.get("refed") or {})
+            return {b: v for b, v in got.items() if b not in ls["holds"] and b not in ls["closed"]}
+        except Exception as e:
+            self.err("refeed pick", e)
+            return {}
+
+    def _refeed_book(self, ctx, portion, added, ls) -> None:
+        """The rows whose _g task was really added: one re-feed per row per guard file is recorded, and the old READY code tasks
+        that waited on a FAILED dependency of the row are closed (FAILED superseded_by_guard, no more attempts)."""
+        refeed = ctx.get("refeed") or {}
+        done = [t["backlog_id"] for t in portion if isinstance(t, dict) and str(t.get("id", "")).endswith(F.REFEED_SUFFIX)
+                and t.get("backlog_id") in refeed and t["id"] in set(added)]
+        if not done:
+            return
+        stalled = self._stalled()
+        close = []
+        for bid in done:
+            ls.setdefault("refed", {})[bid] = sorted(set(ls.get("refed", {}).get(bid, [])) | set(refeed[bid]["guards"]))
+            close += refeed[bid]["supersede"]
+            for tid in refeed[bid]["supersede"]:
+                stalled["quarantine"][tid] = {"backlog_id": bid, "reason": "superseded_by_guard", "at": self.clock()}
+        F.save_atomic(self._stalled_path(), stalled)
+
+        def settle(st):
+            for tid in close:
+                row = st["tasks"].get(tid)
+                if row is not None and row.get("status") == "READY":
+                    row.update(status="FAILED", reason="superseded_by_guard", lease=None, deadline=None)
+                    for key in ("pending_review", "candidate", "not_before", "began", "blocked_reason"):
+                        row.pop(key, None)
+        self._tx(settle)
+        self.event("triage", status="refed", reason="guard re-feed of %s; closed %d waiting tasks" % (
+            ",".join(done)[:100], len(close)))
 
     @staticmethod
     def _guard_traces(state) -> dict:
@@ -2783,6 +2830,10 @@ class Loop:
                 ls["holds"][bid] = self._scrub(F.redact(str(h.get("question", ""))))[:500]
                 new_holds.append(bid)
         self._take_parents(res.get("parents"), ls)
+        try:
+            self._refeed_book(ctx, portion, added, ls)
+        except Exception as e:
+            self.err("refeed book", e)
         self._sync_stale_rows(res.get("stale") or ())
         if res.get("not_code"):       # <id>: rows the triage cut by structure (documentation only) join the not_code book
             try:

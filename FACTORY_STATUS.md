@@ -1,10 +1,13 @@
 # Factory status (generated, structured data only)
 
-Generated: 2026-11-21T21:34:34Z
-Source commit: sha56d3d8db6d94
+Generated: 2026-11-21T22:09:32Z
+Source commit: sha3965ff526166
 
 ## Commits (sha, time)
+- sha3965ff52 2026-11-22T00:39:51+03:00
+- shadc5292c4 2026-11-22T00:35:48+03:00
 - sha56d3d8db 2026-11-22T00:33:25+03:00
+- sha6aab7c34 2026-11-22T00:31:26+03:00
 - shae70a80aa 2026-11-22T00:28:25+03:00
 - sha3ee534fd 2026-11-22T00:21:39+03:00
 - sha54ec7cfb 2026-11-22T00:21:39+03:00
@@ -21,9 +24,6 @@ Source commit: sha56d3d8db6d94
 - shac3ec61c9 2026-11-21T23:17:06+03:00
 - sha1afaedda 2026-11-21T23:17:00+03:00
 - shafb6ec4c0 2026-11-21T23:10:57+03:00
-- shab8d6b511 2026-11-21T23:10:51+03:00
-- shab799e8b7 2026-11-21T23:07:11+03:00
-- sha88fd8dd0 2026-11-21T23:06:02+03:00
 
 ## Funnel
 | step | count |
@@ -33,43 +33,43 @@ Source commit: sha56d3d8db6d94
 | coded | 71 |
 | found_in_backlog | unknown |
 | gate_pass | 31 |
-| known_to_loop | 259 |
+| known_to_loop | 168 |
 | promoted | 29 |
-| ready | 29 |
-| reviewed | 61 |
+| ready | 27 |
+| reviewed | 62 |
 | triaged | 106 |
 
-Side counters: blocked=3, parked=0, requeued=2
-Tasks now: BLOCKED=3, DONE=68, FAILED=54, PROMOTED=5, READY=29, RUNNING=1
+Side counters: blocked=1, parked=0, requeued=2
+Tasks now: BLOCKED=1, DONE=68, FAILED=58, PROMOTED=5, READY=27, RUNNING=1
 Accepted: 5
 Promoted: 29
-Free RAM, GB: 2.13
-Telemetry rows: 17839 recognised, 0 unrecognised
+Free RAM, GB: 3.31
+Telemetry rows: 18583 recognised, 0 unrecognised
 
 ## Spend per model
 | model | calls | tokens_in | tokens_out | usage_unknown | http_429 | errors |
 |---|---|---|---|---|---|---|
-| google/gemini-3.1-flash-lite | 1012 | 6354218 | 407121 | 44 | 0 | 44 |
-| google/gemini-3.5-flash-lite | 1298 | 8656947 | 403726 | 24 | 0 | 24 |
+| google/gemini-3.1-flash-lite | 1086 | 6797526 | 432354 | 44 | 0 | 44 |
+| google/gemini-3.5-flash-lite | 1371 | 9093364 | 417833 | 24 | 0 | 24 |
 | google/gemini-3.6-flash | 99 | 383453 | 17290 | 39 | 1 | 39 |
 | google/gemini-3.8-flash | 7 | 21237 | 15 | 4 | 2 | 4 |
-| google/gemma-4-26b-a4b-it | 148 | 327722 | 31667 | 84 | 0 | 84 |
-| google/gemma-4-31b-it | 161 | 174129 | 5167 | 115 | 0 | 115 |
+| google/gemma-4-26b-a4b-it | 150 | 327722 | 31667 | 86 | 0 | 86 |
+| google/gemma-4-31b-it | 163 | 174129 | 5167 | 117 | 0 | 117 |
 | openrouter/cohere/north-mini-code:free | 22 | 69376 | 10273 | 5 | 0 | 6 |
 | openrouter/nvidia/nemotron-3-ultra-550b-a55b:free | 95 | 551204 | 147387 | 1 | 1 | 1 |
 
 ## Spans
 | span | rows | calls |
 |---|---|---|
-| answer | 494 | 0 |
-| gate | 2688 | 0 |
-| infra | 658 | 0 |
-| loop | 3247 | 0 |
-| other | 2352 | 0 |
+| answer | 503 | 0 |
+| gate | 2833 | 0 |
+| infra | 659 | 0 |
+| loop | 3333 | 0 |
+| other | 2438 | 0 |
 | promote | 40 | 0 |
-| review | 1209 | 659 |
-| run | 6982 | 2183 |
-| triage | 169 | 0 |
+| review | 1323 | 718 |
+| run | 7281 | 2275 |
+| triage | 173 | 0 |
 
 ## Channels (model ids)
 - 1db4ab-gemini-3-8-flash
@@ -97,7 +97,7 @@ Telemetry rows: 17839 recognised, 0 unrecognised
 ## Published files
 Modules: 25
 Tests in the cloud: 115
-Tests not in the cloud: 49
+Tests not in the cloud: 50
 - tests/test_agent_factory.py (backlog-id, call-word, env-path, long-run, pid-port)
 - tests/test_factory_asked_memory.py (backlog-id)
 - tests/test_factory_autofeed.py (backlog-id)
@@ -134,6 +134,7 @@ Tests not in the cloud: 49
 - tests/test_factory_path.py (dependency)
 - tests/test_factory_port_wiring.py (dependency)
 - <redacted-name> (backlog-id, long-run)
+- tests/test_factory_refeed.py (backlog-id)
 - tests/test_factory_regex_lock.py (call-word, key)
 - tests/test_factory_registry.py (backlog-id, owner-words)
 - tests/test_factory_reject_apply.py (dependency)
