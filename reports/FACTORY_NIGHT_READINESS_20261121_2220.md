@@ -37,7 +37,7 @@
 ## Проверяемые ссылки
 
 - [Снимок фабрики F57](https://github.com/ddotdanyaa/echo-u1-ci-mirror/tree/7bc8787a69cd0b00f1ddca22f2859a6c247f10e0) · [Финальная матрица F57, 29 success и 1 skipped](https://github.com/ddotdanyaa/echo-u1-ci-mirror/actions/runs/44938047306)
-- [Тесты нарезчика F57](https://github.com/ddotdanyaa/echo-u1-ci-mirror/blob/7bc8787a69cd0b00f1ddca22f2859a6c247f10e0/tests/test_factory_f57_slicer.py) · [Привязка слов владельца](https://github.com/ddotdanyaa/echo-u1-ci-mirror/blob/7bc8787a69cd0b00f1ddca22f2859a6c247f10e0/tools/backlog_register.py)
+- [Публичный код формирования задания](https://github.com/ddotdanyaa/echo-u1-ci-mirror/blob/7bc8787a69cd0b00f1ddca22f2859a6c247f10e0/tools/agent_factory_import.py). Тестовый файл `tests/test_factory_f57_slicer.py` и `tools/backlog_register.py` есть в рабочем репозитории. По тем же путям в публичном снимке получен 404, поэтому зелёную матрицу не следует считать подтверждением прогона именно этого тестового файла.
 - Предыдущий продуктовый [снимок пакета 4](https://github.com/ddotdanyaa/echo-u1-ci-mirror/tree/1f654efa6ab2a09a8092a07fcd3ebc82ef31ffa9) остаётся ориентиром для интегрированного продукта. Работа в процессе и зелёная матрица фабрики не являются новыми принятыми правками ECHO.
 
 В этом аудите исходники, процессы фабрики и голосовой сервер не изменялись. Опубликован только отчёт.
