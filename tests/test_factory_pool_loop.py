@@ -124,7 +124,8 @@ def test_runs_disjoint_tasks_together_and_never_two_that_share_a_test(tmp_path, 
 
 def test_k_follows_free_ram_and_quota(tmp_path, monkeypatch):
     # a Kilo-engine task (more than LIGHT_MAX_FILES files) needs the gate's 2 GB floor; a light one only LIGHT_FLOOR
-    rows = [task_row(i, touch_files=["tools/x%d_%d.py" % (i, n) for n in range(4)]) for i in (1, 2, 3)]
+    from tools.agent_factory_runner import LIGHT_MAX_FILES
+    rows = [task_row(i, touch_files=["tools/x%d_%d.py" % (i, n) for n in range(LIGHT_MAX_FILES + 1)]) for i in (1, 2, 3)]
     monkeypatch.setenv("POOL_SLEEP", "0.6")
     monkeypatch.setenv("POOL_STATUS", "DONE")
     # 1.9 GB free: nothing starts

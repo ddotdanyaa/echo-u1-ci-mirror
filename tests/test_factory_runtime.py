@@ -602,7 +602,7 @@ def test_weakening_is_rejected_before_any_test_runs_on_the_candidate(rig):
     result = rig.once()
     assert result['status'] == 'READY' and result['reason'].startswith('weakening')
     assert len(rig.runs) == 1  # only the red-before run on the base
-    assert rig.state()['strikes'] == {'bl:BL1': 1}
+    assert rig.state()['strikes'] == {'bl:BL1': F.UNSAFE_STRIKE}   # 21.11: a weakened check is an unsafe rejection (was 1)
 
 
 def test_scope_violation_names_its_reason(rig):
@@ -2334,16 +2334,19 @@ def next_pass(rig):
     rig.edit_state(fn)
 
 
-def test_one_idle_timeout_is_a_rate_limit_but_the_third_in_a_row_is_infrastructure(tmp_path, monkeypatch):
+def test_idle_timeouts_are_rate_limits_up_to_the_allowance_and_the_next_is_infrastructure(tmp_path, monkeypatch):
     rig = Rig(tmp_path, monkeypatch)
-    rig.coder_script = [(124, b'', b'worker-timeout')] * 3
+    allowed = rig.w.IDLE_SUSPECTS_ALLOWED       # 21.11: 4 (was 2, the third in a row was infrastructure)
+    assert allowed == 4
+    rig.coder_script = [(124, b'', b'worker-timeout')] * (allowed + 1)
     first = rig.once()
     assert first['reason'] == 'rate_minute' and first['infra'] is False
+    for _ in range(allowed - 1):
+        next_pass(rig)
+        assert rig.once()['reason'] == 'rate_minute'
     next_pass(rig)
-    assert rig.once()['reason'] == 'rate_minute'
-    next_pass(rig)
-    third = rig.once()
-    assert third['status'] == 'BLOCKED' and third['reason'] == 'worker_timeout' and third['infra'] is True
+    last = rig.once()
+    assert last['status'] == 'BLOCKED' and last['reason'] == 'worker_timeout' and last['infra'] is True
 
 
 def test_a_real_step_resets_the_idle_counter(tmp_path, monkeypatch):
@@ -2364,13 +2367,14 @@ def test_a_real_step_resets_the_idle_counter(tmp_path, monkeypatch):
 
 def test_the_third_idle_reviewer_timeout_on_one_task_parks_it_as_reviewer_failed(tmp_path, monkeypatch):
     rig = Rig(tmp_path, monkeypatch)
-    rig.review_script = [(124, b'', b'')] * 3
+    allowed = rig.w.IDLE_SUSPECTS_ALLOWED
+    rig.review_script = [(124, b'', b'')] * (allowed + 1)
     seen = []
-    for _ in range(3):
+    for _ in range(allowed + 1):
         seen.append(rig.once()['status'])
         next_pass(rig)
     row = rig.state()['tasks']['T1']
-    assert seen == ['READY', 'READY', 'BLOCKED'] and row['blocked_reason'] == 'reviewer_failed'
+    assert seen == ['READY'] * allowed + ['BLOCKED'] and row['blocked_reason'] == 'reviewer_failed'
     parked = rig.tmp / 'stage' / 'parked' / 'T1.diff'
     assert parked.is_file() and 'a+b' in parked.read_text(encoding='utf-8')      # the paid candidate is kept
 
@@ -2548,8 +2552,8 @@ def test_many_env_shortages_in_a_row_get_a_long_hold_but_still_keep_the_candidat
 
 def test_idle_counters_are_per_role_and_cleared_when_the_task_is_blocked(tmp_path, monkeypatch):
     rig = Rig(tmp_path, monkeypatch)
-    rig.coder_script = [(124, b'', b'')] * 3
-    for _ in range(3):
+    rig.coder_script = [(124, b'', b'')] * (rig.w.IDLE_SUSPECTS_ALLOWED + 1)
+    for _ in range(rig.w.IDLE_SUSPECTS_ALLOWED + 1):
         rig.once()
         next_pass(rig)
         counters = rig.state().get('factory_env', {}).get('idle', {})
@@ -2642,15 +2646,19 @@ def test_two_tasks_on_one_channel_the_second_is_not_blocked_by_the_first_ones_id
     first = json.loads(rig.plan.read_text())[0]
     second = dict(first, id='T2a', backlog_id='BL2', title='Fix sum again')
     rig.plan.write_text(json.dumps([first, second]))
-    rig.coder_script = [(124, b'', b'')] * 4
-    for index in range(3):
+    allowed = rig.w.IDLE_SUSPECTS_ALLOWED
+    rig.coder_script = [(124, b'', b'')] * (allowed + 2)
+    for index in range(allowed + 1):
         rig.once()
-        if index < 2:
+        if index < allowed:
             next_pass(rig)
     st = rig.state()
     assert st['tasks']['T1']['status'] == 'BLOCKED'
     assert st['channel_quotas']['p']['cool_until'] > time.time() + 800           # the channel is cooled at the ceiling
-    assert not any(k.startswith('channel:') for k in st.get('factory_env', {}).get('idle', {}))
+    # 21.11: with a longer allowance the router moves to the next channel of the group meanwhile; the channel series
+    # stay short of the task's allowance and the ceiling popped the last channel's counter
+    assert all(v <= 3 for k, v in st.get('factory_env', {}).get('idle', {}).items() if k.startswith('channel:'))
+    assert 'channel:c2' not in st.get('factory_env', {}).get('idle', {})
     next_pass(rig)
     result = rig.once()
     assert result['task_id'] == 'T2a' and result['status'] == 'READY' and result['reason'] == 'rate_minute'
@@ -2747,12 +2755,13 @@ def test_a_light_reviewer_that_never_answers_in_time_reaches_the_reviewer_ceilin
             return None, b'TimeoutError'
         return ok_post(url, key, body, timeout)
     rig.mp.setattr(rig.w, '_light_post', post)
+    allowed = rig.w.IDLE_SUSPECTS_ALLOWED
     seen = []
-    for _ in range(3):
+    for _ in range(allowed + 1):
         seen.append(rig.once()['status'])
         next_pass(rig)
     row = rig.state()['tasks']['T1']
-    assert seen == ['READY', 'READY', 'BLOCKED'] and row['blocked_reason'] == 'reviewer_failed'
+    assert seen == ['READY'] * allowed + ['BLOCKED'] and row['blocked_reason'] == 'reviewer_failed'
 
 
 def test_no_connection_is_infrastructure_and_spends_no_provider_request(rig):

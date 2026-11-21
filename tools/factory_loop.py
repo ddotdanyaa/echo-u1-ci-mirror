@@ -130,7 +130,7 @@ CHANNEL_REASONS = DEAD_CHANNEL | frozenset(("rate_minute", "rate_day", "region",
 TEMPORARY_CHANNEL = frozenset(("rate_limited_suspect", "rate_limited", "429", "channel_timeout"))
 TEMPORARY_TASK = frozenset(("transient", "env_shortage"))
 BACKOFF_FIRST_S, BACKOFF_MAX_S = 60, 1800
-BRAKE_SPAN_S, BRAKE_MAX_S = 1800, 7200          # the brake has a term; a failed trial doubles it up to 2 h
+BRAKE_SPAN_S, BRAKE_MAX_S = 600, 1800           # 21.11 (was 1800, 7200): the brake has a term; a failed trial doubles it up to 30 min
 TIER_ORDER = ("small", "main", "escalation")
 ERROR_MEMORY_MAX = 200
 BEFORE_MODEL = frozenset(("already_green", "context_too_large", "scope_violation", "no_diff"))
@@ -289,17 +289,17 @@ class Config:
     large_model: str = "google/gemini-3.5-flash-lite"
     review_model: str = "google/gemini-3.1-flash-lite"
     env_file: Path | None = None
-    max_attempts: int = 3
+    max_attempts: int = F.MAX_ATTEMPTS   # 21.11: one owner (6); the runner refuses more than F.MAX_ATTEMPTS
     max_model_calls: int = 0        # 0: the day's capacity of the channel registry (Loop._call_budget)
     max_infra: int = 5
     triage_limit: int = 12
-    hold_sleep: int = 300
-    done_sleep: int = 900
+    hold_sleep: int = 60            # 21.11 (was 300)
+    done_sleep: int = 300           # 21.11 (was 900)
     chunk: int = 60
-    triage_retry_s: int = 1800
+    triage_retry_s: int = 600       # 21.11 (was 1800)
     triage_idle_sleep: int = 120
-    seen_retry_s: int = 21600       # <id>: a skipped/stale backlog row is triaged again after this term, edit or not
-    requeue_term_s: int = 3600      # <id>: a FAILED task of a retryable class is given back this long after its last try
+    seen_retry_s: int = 3600        # 21.11 (was 21600) <id>: a skipped/stale backlog row is triaged again after this term, edit or not
+    requeue_term_s: int = 900       # 21.11 (was 3600) <id>: a FAILED task of a retryable class is given back this long after its last try
     not_code_term_s: int = 7 * 86400   # <id>: a row the head model called not code is looked at again after this term
 
 
@@ -958,6 +958,13 @@ class Loop:
             self._tx(lambda st: F.note_infra(st, True) if st.get("infra_streak") else None)
         except Exception as e:
             self.err("series reset", e)
+        try:
+            ls = self.ls()
+            if ls.get("series_ch"):
+                ls["series_ch"] = {}                    # the series ended: its failed channels are forgiven
+                self.save_ls(ls)
+        except Exception as e:
+            self.err("series channels reset", e)
 
     def clear_brake(self) -> None:
         self.dir.mkdir(parents=True, exist_ok=True)
@@ -970,6 +977,7 @@ class Loop:
         try:
             ls = self.ls()
             ls["no_proof"] = {}
+            ls["series_ch"] = {}
             ls["brake"] = None
             self.save_ls(ls)
         except OSError as e:
@@ -987,6 +995,7 @@ class Loop:
         except Exception as e:  # a. one error never kills the loop
             reason = "%s: %s" % (type(e).__name__, F.redact(str(e))[:300])
             streak = self.note_infra(None)
+            self._series_charge([], self.clock())            # a loop error belongs to no channel: the series is global
             self.event("infra", status="error", reason=reason, infra_streak=streak,
                        base_sha=self.base_sha or None)
             out = Outcome(sleep=60, action="CRASH", reason=reason, status="infra")
@@ -1010,8 +1019,8 @@ class Loop:
         return out
 
     def _brake(self, streak: int, out: Outcome) -> Outcome:
-        """The brake has a term (30 min). After it ONE trial pass runs (half-open): a proof closes the brake, an
-        infrastructure failure brakes again for twice as long (at most 2 h)."""
+        """The brake has a term (BRAKE_SPAN_S, 10 min). After it ONE trial pass runs (half-open): a proof closes the
+        brake, an infrastructure failure brakes again for twice as long (at most BRAKE_MAX_S, 30 min)."""
         now = self.clock()
         ls = self.ls()
         old = ls.get("brake") if isinstance(ls.get("brake"), dict) else {}
@@ -1032,7 +1041,7 @@ class Loop:
         return dt.datetime.fromtimestamp(t).astimezone().isoformat(timespec="seconds")
 
     def _brake_gate(self) -> bool:
-        """True = stay stopped. A BRAKE file with no recorded term (manual or old) gets 30 min from now."""
+        """True = stay stopped. A BRAKE file with no recorded term (manual or old) gets BRAKE_SPAN_S from now."""
         if not self.brake.exists():
             return False
         now = self.clock()
@@ -1065,6 +1074,51 @@ class Loop:
             self.event("infra", status="brake_closed", reason="the trial pass proved the pipeline works")
         except OSError as e:
             self.err("brake close", e)
+
+    # -- 21.11: an infrastructure failure series is charged to the channel that failed (that channel cools down);
+    # the global brake needs every usable channel in the series. "*" = a failure no channel owns (a crashed runner,
+    # a loop error): the whole path is the suspect, as before.
+    SERIES_ANY = "*"
+
+    def _series_charge(self, names: list, now: float) -> None:
+        """Book the failed channels of this series; each one cools 60, 120 ... s (BACKOFF_*), never shorter than it was."""
+        try:
+            ls = self.ls()
+            book = ls.get("series_ch") if isinstance(ls.get("series_ch"), dict) else {}
+            ls["series_ch"] = book
+            for name in names or [self.SERIES_ANY]:
+                book[name] = int(book.get(name, 0) or 0) + 1
+            self.save_ls(ls)
+        except Exception as e:
+            self.err("series charge", e)
+            return
+        for name in names:
+            if name == self.SERIES_ANY:
+                continue
+            secs = min(BACKOFF_MAX_S, BACKOFF_FIRST_S * 2 ** min(book.get(name, 1) - 1, 10))
+            try:
+                self._tx(lambda st, n=name, s=secs: CH.cool_channel(st.setdefault("channel_quotas", {}), {"id": n},
+                                                                    now=now, seconds=s))
+            except Exception as e:
+                self.err("channel cool", e)
+        if names:
+            self.event("infra", status="channel_charged", reason=",".join(self.rs(n, 60) for n in names),
+                       scope="channel", backoff_n=max(book.get(n, 1) for n in names))
+
+    def _series_all_failed(self) -> bool:
+        """True = the brake may fire: a failure nobody owns is in the series, or every usable channel failed in it.
+        Unknown (unreadable registry or state) = True, the old behaviour."""
+        try:
+            book = self.ls().get("series_ch")
+            if not isinstance(book, dict) or not book or self.SERIES_ANY in book:
+                return True
+            configured = json.loads(Path(self.cfg.channels).read_text(encoding="utf-8"))["channels"]
+            quota = self.load()[1].get("channel_quotas")
+            live = CH.usable(configured, quota if isinstance(quota, dict) else {}, {**os.environ, **self.extra_env})
+            return not [c["id"] for c in live if c["id"] not in book]
+        except Exception as e:
+            self.err("series check", e)
+            return True
 
     # -- temporary faults: a pause for their own channel or task only
     def _temporary(self, rkey: str, ckey: str, res: dict, no_result: bool) -> str:
@@ -1339,7 +1393,7 @@ class Loop:
         except Exception as e:
             self.err("brake check", e)
             streak = due
-        if streak >= self.cfg.max_infra and not proof:
+        if streak >= self.cfg.max_infra and not proof and self._series_all_failed():
             return self._brake(streak, out)
         out.proof = out.proof or proof
         if out.proof:
@@ -1561,7 +1615,7 @@ class Loop:
 
     # -- the free head answers the mechanical holds (which file to change): at once when idle, when READY is
     # low after HOLDS_LOW_EVERY_S, else every 20 min. With live workers the asks run in the background thread.
-    HOLDS_EVERY_S = 1200
+    HOLDS_EVERY_S = 600             # 21.11 (was 1200)
     HOLDS_LOW_EVERY_S = 30        # READY below the pool: the next picks are not held back for the 20 minutes
     READY_FLOOR = 2               # the pool size taken for the READY-low rule when fewer workers are live
     _last_out = None
@@ -1979,12 +2033,14 @@ class Loop:
             row["port_from"] = str(ans["port_from"])
         if ans.get("kind") == "unit_test":
             row["kind"] = "unit_test"
-        goal, private, unclean = self._backlog_text(bid)
+        goal, private, unclean, known = self._backlog_row(bid)
         released_row = False
         internal = private or unclean
         if ans.get("goal"):
-            if private and not ans.get("release_private"):  # private or unknown row: explicit release
-                raise F.InvalidPlan("row %s is private or unknown: a public --goal needs "
+            # 21.11: the manual release is for a row private BY CONTENT (the narrowed class: keys, passwords, tokens,
+            # .env, SECRETS_LOCAL, call recordings and logs); an unknown id carries none: Opus' goal is checked below
+            if private and known and not ans.get("release_private"):
+                raise F.InvalidPlan("row %s is private: a public --goal needs "
                                     "--release-private" % bid)
             # Opus' own technical wording (checked: no owner words/quotes/times/secrets) replaces a
             # row that left residue (or, released explicitly, a private one): THIS text only goes out
@@ -2141,6 +2197,11 @@ class Loop:
         """(public goal, private, unclean) through the existing parser. The row text goes through
         public_goal + residue: the owner's quotes/times/speech never reach an external model.
         private: a private row. unclean: the text did not pass the public check (goal is empty)."""
+        return self._backlog_row(bid)[:3]
+
+    def _backlog_row(self, bid: str) -> tuple[str, bool, bool, bool]:
+        """_backlog_text plus ``known``: False = the id is not in the parse (private for free models, fail closed,
+        but not private BY CONTENT: Opus' own public goal for it needs no --release-private, 21.11)."""
         try:
             from tools import agent_factory_import as imp
             for r in imp.parse_open_rows(self.cfg.backlog, self.cfg.worktree, include_closed=True):
@@ -2148,14 +2209,14 @@ class Loop:
                     continue
                 text = str(r.get("text") or "")
                 if r.get("private") or not text:
-                    return "", bool(r.get("private")), False
+                    return "", bool(r.get("private")), False, True
                 goal, _classes = imp.screen(text, imp.MIN_PUBLIC_CHARS)
                 if goal is None:
-                    return "", False, True
-                return F.redact(goal)[:1500], False, False
+                    return "", False, True, True
+                return F.redact(goal)[:F.GOAL_MAX], False, False, True
         except Exception as e:
             raise _Later("backlog parser failed: %s: %s" % (type(e).__name__, F.redact(str(e))[:200])) from e
-        return "", True, False  # not in the parse (or unparsable as open): fail closed, private
+        return "", True, False, False  # not in the parse (or unparsable as open): fail closed, private
 
     PHONE = re.compile(r"(?<![\w.])(?:\+\d[\d\s().-]{8,}\d|\(\d{3,4}\)[\s.-]?\d[\d\s.-]{5,}\d|"
                        r"\d{3}[\s.-]\d{3}[\s.-]\d{2}[\s.-]\d{2}|[78][3489]\d{9})(?![\w.])")
@@ -2208,7 +2269,7 @@ class Loop:
         hit = cls._privacy_hit(str(text))
         if hit:
             raise F.InvalidPlan("goal contains %s: it can never go to an external model" % hit)
-        return F.redact(goal)[:1500]
+        return F.redact(goal)[:F.GOAL_MAX]
 
     # -- backlog polling
     def _has_more(self, ls: dict, now: float) -> bool:
@@ -3106,8 +3167,17 @@ class Loop:
             out.sleep, out.status = 60, "infra"
             self.event("infra", task_id=tid or None, status="run_failed", infra_streak=streak,
                        reason=F.redact(str(reason or st))[:200], same_incident=None if counted else True)
-            if counted and streak >= cfg.max_infra:
-                return self._brake_or_wait(streak, out)
+            if counted:
+                # 21.11: the failure is the channel's, not the factory's: that channel cools, the others work on.
+                # A dead runner (no result) owns no channel and charges the whole path.
+                names = [] if no_result else list(dict.fromkeys(
+                    [str(c["channel"]) for c in calls if c.get("channel")]
+                    + ([str(res["channel"])] if res.get("channel") else [])))
+                self._series_charge(names, self.clock())
+                if streak >= cfg.max_infra:
+                    if self._series_all_failed():
+                        return self._brake_or_wait(streak, out)
+                    out.sleep = 5                           # other channels are free: no brake, no 60 s pause
         else:
             self._learn_from_run(tid, tasks, rkey, res)
             out.proof = self._is_proof(res, calls, st, rkey)
@@ -3353,6 +3423,7 @@ class Loop:
         hist: dict = {}
         for label in ls["no_proof"].values():
             hist[label] = hist.get(label, 0) + 1
+        self._series_charge([], self.clock())       # K different tasks, no channel to blame: the global brake stands
         self._tx(lambda fresh: fresh.__setitem__("infra_streak", max(int(fresh.get("infra_streak", 0)),
                                                                      self.cfg.max_infra)))
         out.reason = "%d different tasks failed without any proof of work: %s" % (
@@ -4095,7 +4166,8 @@ def answer_main(argv) -> int:
                    help="the coordinator accepts a PROMOTED task (PROMOTED = merged, ACCEPTED = taken)")
     p.add_argument("--reject", action="store_true", help="the coordinator rejects a PROMOTED task: back to READY with --note")
     p.add_argument("--release-private", action="store_true",
-                   help="allow a public --goal for a private/unknown backlog row (explicit release)")
+                   help="allow a public --goal for a row private by content (keys, passwords, recordings); "
+                        "other rows need no flag")
     p.add_argument("--goal", help="technical wording for the coder (checked: no owner words)")
     p.add_argument("--kind", choices=("code", "unit_test"), help="for a new task from a hold")
     p.add_argument("--port", help="a port task: the old-branch commit whose behaviour it brings over (its diff is "
@@ -4115,9 +4187,9 @@ def answer_main(argv) -> int:
     if a.goal:
         from tools import agent_factory_import as imp
         clean, bad = imp.screen(a.goal, imp.MIN_PUBLIC_CHARS)
-        if clean is None or bad or len(a.goal) > 1500:
+        if clean is None or bad or len(a.goal) > F.GOAL_MAX:
             p.error("--goal fails the public check (%s): give a technical wording without the "
-                    "owner's words, quotes or times (up to 1500 characters)" % ",".join(bad))
+                    "owner's words, quotes or times (up to %d characters)" % (",".join(bad), F.GOAL_MAX))
         hit = Loop._privacy_hit(a.goal)
         if hit:
             p.error("--goal contains %s: it can never go to an external model" % hit)

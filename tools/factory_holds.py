@@ -18,7 +18,7 @@ REPEAT_S = 24 * 3600
 # A pick must fit the light engine (agent_factory_runner.LIGHT_MAX_FILES; the lock test ties the two): live 20.11
 # 02:18-02:23 the head picked all three candidates of <id>, the task went to the Kilo engine and burned its three
 # attempts in two minutes (steps exhausted; Kilo 0 of 4 that night). A change of more files is a skip for Opus.
-MAX_FILES = 2
+MAX_FILES = 4          # 2 -> 4 (21.11): bounded by the prompt, still <= LIGHT_MAX_FILES (the lock test ties the two)
 NOTE_MAX = 300
 _PATH = re.compile(r"(?<![\w/.-])((?:echo_sync|tools|tests)/[\w./-]*?\.py)(?![\w])")
 _PRIO = re.compile(r"\((P\d)\)")

@@ -42,7 +42,7 @@ def test_stats_json_written(env):
 # ---- HOLD / DONE ------------------------------------------------------------------------
 
 def test_hold_only_without_expired_blocks_writes_questions_and_sleeps_long(env):
-    """<id>: HOLD stays only while no block's term is over; it sleeps at most hold_sleep (300) and never past the
+    """<id>: HOLD stays only while no block's term is over; it sleeps at most hold_sleep (60) and never past the
     earliest term; an expired term is lifted by the loop (UNBLOCK), not held."""
     env.set_row("T1", status="BLOCKED", blocked_reason="scope_violation", blocked_at=env.clock.t,
                 block_until=env.clock.t + 10_000)
@@ -50,7 +50,7 @@ def test_hold_only_without_expired_blocks_writes_questions_and_sleeps_long(env):
     loop.step()  # TRIAGE (empty)
     out = loop.step()  # HOLD
     assert env.loop_events()[-1]["action"] == "HOLD"
-    assert out.sleep == 300
+    assert out.sleep == 60                            # 21.11: hold_sleep 300 -> 60
     text = (env.state_dir / "opus_questions.md").read_text(encoding="utf-8")
     assert "T1" in text and "scope_violation" in text
     env.set_row("T1", block_until=env.clock.t + 42)
@@ -60,12 +60,12 @@ def test_hold_only_without_expired_blocks_writes_questions_and_sleeps_long(env):
     assert out.action == "UNBLOCK" and env.state()["tasks"]["T1"]["status"] == "READY"
 
 
-def test_done_sleeps_900(env):
+def test_done_sleeps_300(env):
     env.set_row("T1", status="DONE")
     loop = env.loop(triage_fn=lambda **kw: {"tasks": [], "holds": [], "stale": [], "skipped": []})
     loop.step()
     out = loop.step()
-    assert env.loop_events()[-1]["action"] == "DONE" and out.sleep == 900
+    assert env.loop_events()[-1]["action"] == "DONE" and out.sleep == 300     # 21.11: was 900
 
 
 # ---- CLI --------------------------------------------------------------------------------

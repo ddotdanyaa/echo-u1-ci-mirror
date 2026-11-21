@@ -54,7 +54,7 @@ SKIP_HOLD_S = OPEN_MAX_S   # a class the head skipped is not asked again sooner 
 INVALID_HOLD_S = 6 * 3600  # nor a class whose answer was not a valid task (else the most frequent class, gate-red,
                            # took every hourly turn with invalid answers and starved the other classes)
 HOLD_S = {'skipped': SKIP_HOLD_S, 'invalid': INVALID_HOLD_S}
-MAX_TRIES = 3              # failed self-fixes of one class before the class stops spawning them (left to the backlog)
+MAX_TRIES = 5              # 21.11 (was 3): failed self-fixes of one class before the class stops spawning them (left to the backlog)
 WAITING = ('REVIEW', 'DONE')   # a candidate waits for the coordinator's acceptance: not a failure, never aged out
 LEDGER = 'selffix_ledger.json'   # the register of self-fixes, in the factory's self dir: one for every project
 

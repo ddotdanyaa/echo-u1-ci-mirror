@@ -54,7 +54,7 @@ OVERLOAD_FORGET_S = 1800       # no overload of the model for half an hour: the 
 # series (live 20.11: g-gemma-4-31b failed 9 calls in a row over 5 h, 1317 s went into calls after 3 failures in a row)
 STREAK_FAILS = 3
 STREAK_COOL_S = 600
-STREAK_COOL_MAX_S = 14400
+STREAK_COOL_MAX_S = 3600       # 21.11 (was 14400)
 # Reliability of a model (recent calls, from note_outcome): the last RATING_WINDOW outcomes of all its channels; fewer than
 # RATING_MIN of them say nothing (healthy). A model below RATING_BAD goes last within its tier, and a sticky choice never
 # keeps it. A channel whose last MISSING_STREAK calls all answered 404 is skipped until its config changes.

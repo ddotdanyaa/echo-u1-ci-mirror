@@ -110,17 +110,19 @@ CLASS_LABEL = re.compile(r"^\W*(?:обязательство|улучшение|
 # with 80 are a size in bytes, not a number.
 PHONE = re.compile(r"(?<![\w.])(?:(?:\+7|[78])[\s(-]*[3489]\d{2}[\s)-]*\d{3}[\s-]*\d{2}[\s-]*\d{2}"
                    r"|\(\s*[3489]\d{2,3}\s*\)[\s.-]*\d{3}[\s-]*\d{2}[\s-]*\d{2})(?!\d)")
+# 21.11 order: only passwords, keys, tokens, .env, SECRETS_LOCAL, call recordings and call logs/transcripts are private.  A row that
+# merely mentions a call, the owner, the phone, proxy or the call logic is an ordinary code row (the owner's <private-marker>/<private-marker> markers, "the
+# owner said", "personal data" are gone from this list); a literal phone number, e-mail and profile folder stay (identifiers).
 PRIVATE = re.compile(_B % (
-    r"<private-marker>|<private-marker>"                                                                    # the owner's own markers
-    r"|запис\w*\s+(?:\w+\s+)?(?:звонк|разговор|аудио|голос)\w*"                   # recordings of calls and talks
-    r"|(?:звонк|разговор|диалог)\w*\s+владельц\w*|владельц\w*\s+(?:из\s+)?(?:звонк|разговор|диалог)\w*"
-    r"|транскрипт\w*\s+(?:\w+\s+)?(?:звонк|разговор|владельц|запис)\w*|расшифровк\w*\s+(?:\w+\s+)?(?:звонк|разговор|диалог)\w*|аудиозапис\w*"
-    r"|личн\w*\s+(?:\w+\s+)?(?:аудио|запис|диалог|материал|данн|профил|разговор|голос)\w*"   # personal material and profile
-    r"|(?:материал|слова|цитат|речь|голос)\w*\s+владельц\w*|персональн\w*"
-    r"|владелец\s+(?:сказал|просил|написал|велел|хотел|ответил|недоволен|недовольна|жалуется|жаловался|требует|потребовал)\w*|вы\s+(?:сказали|просили|написали|велели)"   # unquoted words of the owner
+    r"запис\w*\s+(?:\w+\s+)?(?:звонк|разговор|аудио|голос)\w*"                    # recordings of calls and talks
+    r"|(?:журнал\w*|лог(?:и|ов|ами)?)\s+(?:\w+\s+)?звонк\w*|call[- ]?(?:logs?|recordings?)|(?:voice|audio)[- ]?recordings?"   # call logs ("логика звонка" is code)
+    r"|голос\w*\s+запис\w*"                                                       # a voice recording
+    r"|транскрипт\w*\s+(?:\w+\s+)?(?:звонк|разговор|запис)\w*|расшифровк\w*\s+(?:\w+\s+)?(?:звонк|разговор|диалог)\w*|аудиозапис\w*"
+    r"|личн\w*\s+(?:\w+\s+)?(?:аудио|запис|диалог|разговор|голос)\w*"             # personal audio and dialogue
+    r"|SECRETS_LOCAL|evidence[\\/][\w./\\-]*\.(?:wav|mp3|m4a|ogg)"                # the secrets folder, evidence audio
     r"|/home/[\w.-]+|[A-Za-z]:[\\/]Users[\\/][\w.-]+"                                      # a person's home folder
     r"|" + PHONE.pattern + r"|[\w.+-]+@[\w-]+\.[\w.-]+"                                  # phone numbers (the one owner: PHONE), e-mail
-    r"|api[- ]?ключ\w*|ключ\w*\s+(?:api|доступа|канал\w*|провайдер\w*)|секрет(?:ы|ов|а|у|ом|е|ами)?|парол\w*|\.env"   # keys, tokens, passwords
+    r"|api[- ]?keys?|(?:private|secret|access)[- ]keys?|api[- ]?ключ\w*|ключ\w*\s+(?:api|доступа|канал\w*|провайдер\w*)|секрет(?:ы|ов|а|у|ом|е|ами)?|парол\w*|\.env"   # keys, tokens, passwords
     r"|токен\w*\s+(?:доступа|авторизац\w*|бот\w*|канал\w*|провайдер\w*|api)|(?:api|auth|bearer|telegram)[- ]?token"
 ), re.I)
 
@@ -140,7 +142,8 @@ _CLOCK = re.compile(r"(?<![\d:.])\d{1,2}:\d{2}(?::\d{2})?:?(?!\d)")             
 # HH.MM only with a time-of-day marker (class 2): "до 2.50 с", "в 1.20 раза", "к 06.11" are technical, not a clock
 _DOT_TIME = re.compile(r"(?<![\d.])(?:[01]?\d|2[0-3])\.[0-5]\d\s*(?:МСК|мск|ч(?![\w])|утра|вечера)")
 _LREF = re.compile(r"(?<![\w])L\s?\d{3,}(?![\w])")
-MIN_PUBLIC_CHARS = 60
+MIN_PUBLIC_CHARS = 30    # 60 -> 30 (21.11): a short technical wording is a goal
+SCREEN_OPEN = frozenset(("quote", "time"))   # residue classes that no longer stop a goal (the owner role word: see screen)
 MIN_ROW_TEXT = 20     # a row text shorter than one short sentence (a bare priority, one word, nothing) is a question
                       # for Opus, never a goal; 35 characters such as "the controller is silent on a neighbour" are a task
 
@@ -360,6 +363,17 @@ def _name_pattern(name: str):
 _CYR_RE = re.compile(r"[А-Яа-яЁё]")
 
 
+def _plain(text: str) -> str:
+    """The text without pure-code backticked pieces (identifiers, paths, calls)."""
+    return re.sub(r"`[^`\n]*`", lambda m: " " if _code_span(m.group(0)) else m.group(0), text)
+
+
+def _name_hit(text: str) -> bool:
+    """The profile name of this machine's person is in the text (anywhere in a token; product terms about owners are not a name)."""
+    owned = _PRODUCT_OWNER.sub(" ", _plain(text))
+    return any(_name_pattern(n).search(owned) for n in _owner_names())
+
+
 def residue(text: str) -> list[str]:
     """Classes of owner material that survived the cuts: "quote", "time", "owner", "speech", "person", "debris".
     Empty = nothing found.  The caller must not send a text with a non-empty residue to an external model.
@@ -368,7 +382,7 @@ def residue(text: str) -> list[str]:
     in a backticked piece of fewer than 3 Cyrillic words (``вы`` in an API note), and a list of 3+ pronoun forms is
     a list, not a person."""
     whole = text                          # debris is judged on the text as it stands: "(`x`)" is a bracket with code, not a stump
-    plain = re.sub(r"`[^`\n]*`", lambda m: " " if _code_span(m.group(0)) else m.group(0), text)
+    plain = _plain(text)
     # a backticked Cyrillic phrase of 2+ words is ordinary text (`хочу быстро` is speech with or without quotes);
     # one word (`вы` in an API note) and code are not looked at for speech and pronouns
     words_only = re.sub(r"`[^`\n]*`", lambda m: m.group(0) if len(re.findall(r"[А-Яа-яЁё]{2,}", m.group(0))) >= 2 else " ", text)
@@ -378,7 +392,7 @@ def residue(text: str) -> list[str]:
     if _RES_TIME.search(plain):
         out.append("time")
     owned = _PRODUCT_OWNER.sub(" ", plain)
-    if _RES_OWNER.search(owned) or any(_name_pattern(n).search(owned) for n in _owner_names()):
+    if _RES_OWNER.search(owned) or _name_hit(text):
         out.append("owner")
     words = re.findall(r"[\w-]+", _RES_LIST.sub(" ", words_only).lower())
     said = any(_RES_VERB.match(w) and any(_RES_SUBJ.match(x) for x in words[max(0, i - 3):i + 4]) for i, w in enumerate(words))
@@ -396,10 +410,12 @@ def screen(text: str, min_chars: int = MIN_PUBLIC_CHARS):
 
     redact -> cut (quotes, references, times, labels, call dates) -> lock.  goal is None when any class is left:
     the residue classes above, plus "cut" when anything was cut and the text is cut up (three or more "…", or
-    fewer than ``min_chars`` characters of meaningful text without "…" and code).  An uncut text is never "cut"."""
+    fewer than ``min_chars`` characters of meaningful text without "…" and code).  An uncut text is never "cut".
+    21.11: an owner quote, a time or L-reference and the word "owner" are not private (only secrets, recordings and
+    dialogue are): they do not stop a goal.  Speech, a person, debris and the machine's profile name still do."""
     from tools import agent_factory as _F
     clean, cut = _cut(_F.redact(text).strip("`* "))
-    classes = residue(clean)
+    classes = [c for c in residue(clean) if c not in SCREEN_OPEN and not (c == "owner" and not _name_hit(clean))]
     if cut:
         meaningful = len(re.sub(r"…|`[^`\n]*`", "", clean).strip())
         if clean.count("…") >= 3 or meaningful < min_chars:
@@ -684,10 +700,10 @@ def parse_open_rows(backlog_path, repo_root, include_closed: bool = False) -> li
 
 _CYR = dict(zip("АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ", "A B V G D E E ZH Z I Y K L M N O P R S T U F KH TS CH SH SCH _ Y _ E YU YA".split()))
 _CYR.update({k.lower(): v.lower() for k, v in list(_CYR.items())})
-MAX_TOUCH = 3
-MAX_TEXT = 1500
-MAX_TESTS = 3
-MAX_PARTS = 6          # a row is cut into at most this many parts (each part = a test task + a code task)
+MAX_TOUCH = 5           # 3 -> 5 (21.11): the prompt (factory_channels.PROMPT_LIMIT_CHARS) is the real bound, not the file count
+MAX_TEXT = 6000          # 1500 -> 6000 (21.11)
+MAX_TESTS = 5           # 3 -> 5 (21.11)
+MAX_PARTS = 10         # a row is cut into at most this many parts (each part = a test task + a code task)
 PART_TEXT = 900        # the row text kept in each part (the part tail names its files and number)
 
 
@@ -743,10 +759,9 @@ def _protected(path: str) -> bool:
 PROFILE_TIMEOUT_S = 30
 PROFILE_SIBLINGS = 2
 PROFILE_MAX_ATTEMPTS = 3
-ENV_STREAK_MAX = 5           # consecutive portions without pytest (no slot / no RAM) before Opus is asked
-ENV_HOLD_ID = "ENV-PYTEST"    # the question is not about one row
+ENV_STREAK_MAX = 5           # consecutive portions without pytest (no slot / no RAM): an event "env_starved" is written, nobody is asked (21.11: tests run in the cloud)
 _mono = time.monotonic       # seam for tests with a fake clock
-PORTION_DEADLINE_S = 150      # after this the remaining rows wait for the next portion instead of being profiled
+PORTION_DEADLINE_S = 600      # 150 -> 600 (21.11: triage is a model call, not heavy); after this the remaining rows wait for the next portion instead of being profiled
 SECOND_MODULE_RATIO = 0.9
 
 
@@ -1314,7 +1329,7 @@ def triage_portion(backlog_path, head_root, known_backlog_ids, limit, profile_at
     already known; ``known_parts`` {child backlog_id: [files]} lets a changed layout skip the row),
     "profile_attempts": {backlog_id: n} (failed profile runs so far; the caller passes the old ones back as
     ``profile_attempts`` and stores the new ones), "env_streak": consecutive portions that could not profile for the
-    environment (the caller passes the old value back as ``env_streak``; at 5 an event and a hold "ENV-PYTEST" appear), "deferred": [{backlog_id, reason}] (rows left for the next portion by the profiling deadline: NOT skipped,
+    environment (the caller passes the old value back as ``env_streak``; at 5 an event "env_starved" appears, no hold: tests run in the cloud), "deferred": [{backlog_id, reason}] (rows left for the next portion by the profiling deadline: NOT skipped,
     so a caller that marks skipped rows as seen does not lose them)} in <id> -> <id> order.
     - <id>/<id>: a row that names no file is a hold factory_holds.candidate_question (paths and tags only) instead of a
       skip ONLY with a strong signal (strong_candidates: its ID in the code, a commit subject with the ID, a name the
@@ -1347,7 +1362,7 @@ def triage_portion(backlog_path, head_root, known_backlog_ids, limit, profile_at
       adds regression neighbours itself).  Order: test_v_<ID>, then named, then alphabetical.  No
       such test -> sub-task kind=unit_test ``<id>_test`` on tests/test_factory_<slug>.py (an existing
       file is reused as the task's test, not rewritten) and the main task depends_on it;
-    - > 3 touch files or text > 1500 chars -> hold "split into sub-tasks";
+    - > MAX_TOUCH touch files or text > MAX_TEXT chars -> split into parts (<= MAX_PARTS), else hold "split into sub-tasks";
     - task id = ``bl_`` + transliterated backlog_id (agent_factory.TASK_ID); backlog_id is a field;
     - every task group passes agent_factory.read_plan before it is returned; at most ``limit`` tasks
       (sub-tasks count).
@@ -1576,7 +1591,7 @@ def triage_portion(backlog_path, head_root, known_backlog_ids, limit, profile_at
             out["holds"].append({"backlog_id": bid, "question": pfx + "область защищена воротами: " + ", ".join(prot) + "; решает Opus"})
             continue
         if len(touch) > MAX_TOUCH or r["text_len"] > MAX_TEXT:
-            # Automatic decomposition: by files (import-affine groups of <= 3), or one file per part when only the
+            # Automatic decomposition: by files (import-affine groups of <= MAX_TOUCH), or one file per part when only the
             # text is too long.  Not possible honestly -> the Opus question as before.
             chunks = None
             if not private and len(touch) > MAX_TOUCH:
@@ -1683,7 +1698,7 @@ def triage_portion(backlog_path, head_root, known_backlog_ids, limit, profile_at
                     "исправления. Первой строкой файла напиши комментарий «# factory-backlog-id: %s».%s%s "
                     "Упомянутые тесты (не дублировать): %s. Строка: %s" % (bid, _import_hint(touch), ex_hint, ", ".join(extra) or "нет", text))
             group.append(dict(base, id=tid + "_test", title=("Тест для %s" % bid)[:120],
-                              goal=goal[:1500], depends_on=[],
+                              goal=goal[:MAX_TEXT], depends_on=[],
                               touch_files=[tpath], tests=[tpath], kind="unit_test",
                               read_files=_test_reads(touch, read_files + ex_reads)))
             ordered = [tpath]
@@ -1715,7 +1730,6 @@ def triage_portion(backlog_path, head_root, known_backlog_ids, limit, profile_at
     out["env_streak"] = (int(env_streak or 0) + 1) if env_blocked else 0
     if out["env_streak"] >= ENV_STREAK_MAX:
         out["events"].append({"backlog_id": env_first, "event": "env_starved", "reason": "%d порций подряд: %s" % (out["env_streak"], env_blocked[:150])})
-        out["holds"].append({"backlog_id": ENV_HOLD_ID, "question": "среда не даёт pytest: RAM/слоты (%d порций подряд, строки ждут без попыток, начиная с %s): освободить память/слоты или поднять лимит ожидания?" % (out["env_streak"], env_first)})
     return out
 
 

@@ -23,13 +23,16 @@ import xml.etree.ElementTree as ET
 STATES = frozenset(("READY", "RUNNING", "REVIEW", "DONE", "PROMOTED", "FAILED", "BLOCKED"))
 SATISFIED = frozenset(("DONE", "PROMOTED"))  # dependency is met
 FEEDBACK_SOURCES = frozenset(("gate", "review", "opus"))
-MAX_STRIKES = 3
+MAX_STRIKES = 6   # 21.11 (was 3): the line a quarantine needs. A plain red (gate/review/no effect) is a retry and saturates one below it
+UNSAFE_STRIKE = 2  # strikes one unsafe rejection counts (MAX_STRIKES // 3: three unsafe candidates quarantine)
+GOAL_MAX = 6000  # 21.11: the task text a coder gets, same as the triage MAX_TEXT (was 1500)
+MAX_ATTEMPTS = 6  # 21.11 (was 3 in the loop, 2 here): attempts of one task; each next one on another model where the router allows
 # <id> (owner: «пока есть задачи, петля не стоит в HOLD дольше 5 минут ... у каждого запрета или блокировки есть причина
 # и срок»): every BLOCKED row has a reason and a term; the loop lifts an expired block itself, AUTO_UNBLOCK_MAX times per
 # task (shared with the new-version requeue ledger), then escalates. The term is fixed, not growing: a growing term
 # would keep the loop in HOLD longer than 5 minutes when one blocked task is all that is left.
 BLOCK_TERM_S = 300.0
-AUTO_UNBLOCK_MAX = 3
+AUTO_UNBLOCK_MAX = 6   # 21.11 (was 3)
 OWNER_RULES = frozenset(("private", "only_opus"))   # the owner's rules: the only blocks without a term
 LEASE_LIFETIME_S = 1800.0   # one lease length: acquire() and the stale work-copy cleanup share it
 FEEDBACK_KEEP = 3
@@ -55,6 +58,26 @@ REDACT_EXTRA = re.compile(
     r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}|"
     r"[A-Za-z]:[\\/]+Users[\\/]+[^\\/\s\"'<>|:]+"
 )
+# 21.11 (owner): the ONLY private class is passwords, API keys, tokens, .env, SECRETS_LOCAL, call recordings and call
+# logs. A task whose title/goal names one is never sent to a free model (privacy_safe False); everything else is
+# sendable. Words about call LOGIC, the owner, proxy, backlog ids or times are code work, not private. The importer
+# classifies the rows first (agent_factory_import.PRIVATE); this regex is the same class as a second, narrow net.
+PRIVATE_CLASS = re.compile(
+    r"(?i)(?:\.env\b|secrets?[_ -]?local|\bpasswords?\b|парол\w*|"
+    r"\bapi[ _-]?keys?\b|\b(?:private|secret|access)\s+keys?\b|(?:секретн|приватн)\w*\s+ключ\w*|ключ\w*\s+api\b|\bapi[ _-]?ключ\w*|"
+    r"\b(?:auth|access|bearer|api|bot|oauth|secret|refresh)[ _-]?tokens?\b|токен\w*\s+(?:доступа|бота|авторизац\w*)|"
+    r"\b(?:call|звон)\w*\s+(?:recordings?|logs?|audio|transcripts?|запис(?:и|ь|ей)|журнал\w*|логи?|логов|аудио|"
+    r"транскрипт\w*)\b|"
+    r"\b(?:recordings?|logs?|transcripts?)\s+of\s+(?:the\s+)?calls?\b|"
+    r"\b(?:запис(?:и|ь|ей)|журнал\w*|логи?|логов|аудио\w*|транскрипт\w*)\s+звон\w*)"
+)
+
+
+def is_private_text(text: str) -> bool:
+    """The text names the owner's private class (PRIVATE_CLASS): such a task never goes to a free model."""
+    return bool(PRIVATE_CLASS.search(str(text or "")[:20_000]))
+
+
 WINDOWS_DEVICE = re.compile(r"^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?$", re.I)
 TASK_ID = re.compile(r"^[a-zA-Z][a-zA-Z0-9_-]{0,63}$")
 PORT_SHA = re.compile(r"^[0-9a-f]{7,40}$")   # Task.port_from: an abbreviated or full commit id, nothing else
@@ -123,7 +146,7 @@ class Task:
     backlog_id: str = ""
     priority: int = 5
     kind: str = "code"  # "code" | "unit_test" (creates its own test file)
-    goal: str = ""      # the backlog row text the coder works from (<= 1500 chars)
+    goal: str = ""      # the backlog row text the coder works from (<= GOAL_MAX chars)
     port_from: str = ""  # a port task: the old-branch commit whose behaviour it brings over (its diff is a reference)
 
     @property
@@ -143,7 +166,9 @@ def _parse_priority(value: object) -> int:
 def read_plan(plan: object) -> dict[str, Task]:
     """Tasks require explicit scope, dependencies and privacy classification.
 
-    Missing privacy_safe is private, never sent to free third-party models.
+    21.11: a task is private only when the row says so or its title/goal names the owner's private class
+    (passwords, keys, tokens, .env, SECRETS_LOCAL, call recordings and logs: PRIVATE_CLASS); a private task is
+    never sent to a free third-party model. A row without privacy_safe is sendable otherwise.
     """
     data = plan.get("tasks") if isinstance(plan, dict) else plan
     if not isinstance(data, list):
@@ -209,7 +234,7 @@ def read_plan(plan: object) -> dict[str, Task]:
         goal = row.get("goal", "")
         if not isinstance(goal, str):
             raise InvalidPlan("goal must be a string")
-        goal = goal.strip()[:1500]
+        goal = goal.strip()[:GOAL_MAX]
         port_from = row.get("port_from", "")
         if not isinstance(port_from, str) or (port_from and not PORT_SHA.fullmatch(port_from)):
             raise InvalidPlan("port_from must be a commit sha")
@@ -218,7 +243,7 @@ def read_plan(plan: object) -> dict[str, Task]:
             raise InvalidPlan('context target outside approved files')
         result[tid] = Task(tid, title.strip(), fields["depends_on"],
                            files["touch_files"], files["read_files"], files["tests"],
-                           row.get("privacy_safe", False), size, opus,
+                           row.get("privacy_safe", True) and not is_private_text(title + "\n" + goal), size, opus,
                            tuple(sorted(targets.items())), kind, budget,
                            backlog_id, priority, work_kind, goal, port_from)
     for task in result.values():
@@ -410,13 +435,15 @@ def unclaim(state: dict, tid: str, token: str) -> None:
 
 
 def settle(state: dict, tid: str, token: str, *,
-           tests_ok: bool, evidence: str, max_attempts: int = 2,
-           strike: bool = True) -> str:
+           tests_ok: bool, evidence: str, max_attempts: int = MAX_ATTEMPTS,
+           strike: bool = True, unsafe: bool = False, failed_models=()) -> str:
     """Fenced completion. Green requires manual review, never auto-DONE.
 
     A red result is a strike by backlog_id unless strike=False (channel/provider
-    faults are not the candidate's fault). If the task's backlog_id is already
-    quarantined when it settles, it ends FAILED(quarantine) even when green."""
+    faults are not the candidate's fault). ``unsafe`` (a weakened check, a frozen file rewritten): the strike
+    counts UNSAFE_STRIKE; a plain red never reaches the quarantine line (add_strike). ``failed_models``: the models whose
+    candidates were rejected; the next attempt starts on another one (failed_models_of). If the task's backlog_id is
+    already quarantined when it settles, it ends FAILED(quarantine) even when green."""
     fence(state, tid, token)
     row = state["tasks"][tid]
     if not isinstance(evidence, str) or not re.fullmatch(r"[0-9a-f]{64}", evidence):
@@ -431,7 +458,8 @@ def settle(state: dict, tid: str, token: str, *,
         row["candidate"] = dict(row["pending_review"])   # kept while the row is in REVIEW: a requeue may resume it
     if not tests_ok and strike:
         # A strike is only a candidate failing the gate/reviewer (never a channel fault).
-        add_strike(state, tid)
+        add_strike(state, tid, unsafe=unsafe)
+        note_failed_models(row, failed_models)
     if state.get("strikes", {}).get(_strike_key(row, tid), 0) >= MAX_STRIKES:
         next_status = "FAILED"
         row.update(status="FAILED", reason="quarantine")
@@ -447,6 +475,36 @@ def _strike_key(row: dict, tid: str) -> str:
     return "bl:" + row["backlog_id"] if row.get("backlog_id") else "task:" + tid
 
 
+FAILED_MODELS_KEEP = 8   # distinct models remembered per task (the pool of free models is not much bigger)
+
+
+def note_failed_models(row: dict, models) -> None:
+    """Remember the models whose candidates were rejected (newest last, distinct, FAILED_MODELS_KEEP at most): the
+    next attempt of the task starts on another model where the router has one (failed_models_of)."""
+    seen = [m for m in (row.get("coder_failed") or []) if isinstance(m, str)]
+    for model in models or ():
+        if isinstance(model, str) and model and len(model) <= 120:
+            seen = [m for m in seen if m != model] + [model]
+    if seen:
+        row["coder_failed"] = seen[-FAILED_MODELS_KEEP:]
+
+
+def failed_models_of(row: dict) -> list[str]:
+    """The models that already failed this task (never raises on a hand-edited row)."""
+    models = row.get("coder_failed") if isinstance(row, dict) else None
+    return [m for m in models if isinstance(m, str)] if isinstance(models, list) else []
+
+
+UNSAFE_REJECTS = ("weakening", "gate: immutable file")   # the reasons the runner's reject() gives for an unsafe candidate
+
+
+def is_unsafe_reject(reason: str) -> bool:
+    """A rejection reason of the unsafe class: a weakened check or a frozen file rewritten by the candidate. The one
+    class that quarantines a task (add_strike); every other red is a retry. A secret in a candidate and a forbidden
+    path never reach a rejection: inspect_changes raises and the pass BLOCKS (scope_violation)."""
+    return str(reason or "").startswith(UNSAFE_REJECTS)
+
+
 def strikes_for(state: dict, backlog_id: str) -> int:
     return int(state.get("strikes", {}).get("bl:" + backlog_id, 0))
 
@@ -455,15 +513,23 @@ def is_quarantined(state: dict, backlog_id: str) -> bool:
     return bool(backlog_id) and strikes_for(state, backlog_id) >= MAX_STRIKES
 
 
-def add_strike(state: dict, tid: str) -> int:
-    """Global strike keyed "bl:<backlog_id>" (or "task:<id>" when empty). 3 =>
+def add_strike(state: dict, tid: str, *, unsafe: bool = False) -> int:
+    """Global strike keyed "bl:<backlog_id>" (or "task:<id>" when empty). MAX_STRIKES =>
     quarantine: READY/BLOCKED tasks of that key become FAILED(quarantine); REVIEW
     is left alone (it already passed the gates and is being merged); a RUNNING
-    one is failed when it settles. Returns the new count."""
+    one is failed when it settles. Returns the new count.
+    21.11: only UNSAFE rejections (a weakened check, a frozen file rewritten) reach the quarantine line, each one
+    counts UNSAFE_STRIKE (three in a row quarantine; the next attempt runs on another model meanwhile); a plain red
+    (gate, review, no effect) counts up to MAX_STRIKES - 1 and stops there: it is a retry (the attempts cap ends the
+    task as an ordinary FAILED that the loop requeues), not a quarantine."""
     row = state["tasks"][tid]
     key = _strike_key(row, tid)
     strikes = state.setdefault("strikes", {})
-    strikes[key] = strikes.get(key, 0) + 1
+    now = strikes.get(key, 0)
+    if unsafe or now >= MAX_STRIKES:
+        strikes[key] = now + UNSAFE_STRIKE
+    else:
+        strikes[key] = min(now + 1, MAX_STRIKES - 1)
     if strikes[key] >= MAX_STRIKES:
         for other, orow in state["tasks"].items():
             if (_strike_key(orow, other) == key and
@@ -678,6 +744,7 @@ def unblock(state: dict, tid: str, note: str | None) -> None:
     row.pop("candidate", None)
     row.pop("defer_streak", None)
     row.pop("orphan_releases", None)
+    row.pop("coder_failed", None)      # new instructions: every model starts fresh
     if note is not None:
         add_feedback(state, tid, "opus", note)
 

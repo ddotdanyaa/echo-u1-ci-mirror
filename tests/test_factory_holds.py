@@ -41,7 +41,7 @@ def test_prompt_holds_rules_goal_question_outlines():
         assert part in text
 
 
-FILES = ["echo_sync/a.py", "echo_sync/b.py", "echo_sync/c.py", "echo_sync/d.py"]
+FILES = ["echo_sync/a.py", "echo_sync/b.py", "echo_sync/c.py", "echo_sync/d.py", "echo_sync/e.py"]
 
 
 def test_parse_good_takes_first_object_and_cleans_note():
@@ -51,7 +51,7 @@ def test_parse_good_takes_first_object_and_cleans_note():
 
 def test_parse_rejects_bad_answers():
     assert H.parse('{"touch_files": ["echo_sync/zzz.py"], "note": "x"}', FILES) is None
-    assert H.parse(json.dumps({"touch_files": FILES, "note": "x"}), FILES) is None
+    assert H.parse(json.dumps({"touch_files": FILES, "note": "x"}), FILES) is None       # five files: over MAX_FILES (4)
     assert H.parse('{"touch_files": [], "note": "x"}', FILES) is None
     assert H.parse('{"touch_files": ["echo_sync/a.py"], "note": "%s"}' % ("w" * 301), FILES) is None
     assert H.parse("no json at all", FILES) is None
@@ -59,11 +59,14 @@ def test_parse_rejects_bad_answers():
 
 
 def test_a_pick_fits_the_light_engine():
-    """Live 20.11 02:18: three picked files sent <id> to the Kilo engine, three attempts burned in two minutes."""
+    """Live 20.11 02:18: three picked files sent <id> to the Kilo engine, three attempts burned in two minutes.
+    21.11: the cap is 4 files (was 2), and it still may not exceed what the light engine takes."""
     from tools import agent_factory_runner as W
+    assert H.MAX_FILES == 4
     assert H.MAX_FILES <= W.LIGHT_MAX_FILES
-    assert H.parse(json.dumps({"touch_files": FILES[:3], "note": "x"}), FILES) is None
-    assert H.parse(json.dumps({"touch_files": FILES[:2], "note": "x"}), FILES)["touch_files"] == FILES[:2]
+    assert H.parse(json.dumps({"touch_files": FILES[:5], "note": "x"}), FILES) is None
+    assert H.parse(json.dumps({"touch_files": FILES[:4], "note": "x"}), FILES)["touch_files"] == FILES[:4]
+    assert H.parse(json.dumps({"touch_files": FILES[:3], "note": "x"}), FILES)["touch_files"] == FILES[:3]
 
 
 def test_parse_skip():

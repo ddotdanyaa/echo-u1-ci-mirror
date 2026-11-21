@@ -301,8 +301,8 @@ def test_at_most_limit_rows_are_profiled(tmp_path, monkeypatch):
     assert len(calls) <= 2
 
 
-def test_more_than_three_tied_modules_is_a_hold(tmp_path, monkeypatch):
-    calls = {T: {("echo_sync/m%d.py" % i, "f", 1) for i in range(4)}}
+def test_more_than_five_tied_modules_is_a_hold(tmp_path, monkeypatch):
+    calls = {T: {("echo_sync/m%d.py" % i, "f", 1) for i in range(imp.MAX_TOUCH + 1)}}      # 21.11: MAX_TOUCH 3 -> 5
     r = _triage_with(tmp_path, monkeypatch, _fake({T: "failed"}, calls))
     q = {h["backlog_id"]: h["question"] for h in r["holds"]}["E70000"]
     assert q.startswith("локализация неоднозначна") and not r["tasks"]

@@ -37,7 +37,7 @@ def test_brake_carries_a_term_and_holds_until_it_ends(tmp_path, monkeypatch):
     t0 = e.clock.now()
     assert e.loop().run() == 3
     b = _ls(e)["brake"]
-    assert b["span"] == 1800 and b["until"] >= t0 + 1800 and not b["half_open"]
+    assert b["span"] == L.BRAKE_SPAN_S == 600 and b["until"] >= t0 + 600 and not b["half_open"]   # 21.11: was 1800
     assert e.loop().run() == 3                      # inside the term: nothing runs
     assert e.runs() == 5
     assert any(x.get("reason") == "brake_active" and x.get("retry_at") for x in e.events())
@@ -47,7 +47,7 @@ def test_after_the_term_one_trial_pass_runs_and_a_proof_closes_the_brake(tmp_pat
     e = Env(tmp_path, monkeypatch, tasks=[task_row(i) for i in range(1, 6)])
     e.runner_says({"status": "READY", "task": "T1", "reason": "runner_dead", "infra": True, "calls": []})
     assert e.loop().run() == 3
-    e.clock.t += 1801
+    e.clock.t += 601
     e.runner_says({"status": "REVIEW", "task": "T%d" % 2, "calls": [REAL_CALL]})
     assert e.loop(once=True).run() == 0
     assert not (e.state_dir / "BRAKE").exists() and _ls(e)["brake"] is None
@@ -55,7 +55,7 @@ def test_after_the_term_one_trial_pass_runs_and_a_proof_closes_the_brake(tmp_pat
     assert e.state()["infra_streak"] == 0
 
 
-def test_a_failed_trial_doubles_the_term_up_to_two_hours(tmp_path, monkeypatch):
+def test_a_failed_trial_doubles_the_term_up_to_half_an_hour(tmp_path, monkeypatch):
     e = Env(tmp_path, monkeypatch, tasks=[task_row(i) for i in range(1, 6)])
     e.runner_says({"status": "READY", "task": "T1", "reason": "runner_dead", "infra": True, "calls": []})
     assert e.loop().run() == 3
@@ -64,16 +64,16 @@ def test_a_failed_trial_doubles_the_term_up_to_two_hours(tmp_path, monkeypatch):
         e.clock.t += _ls(e)["brake"]["span"] + 1
         assert e.loop().run() == 3
         spans.append(_ls(e)["brake"]["span"])
-    assert spans == [1800, 3600, 7200, 7200, 7200]
+    assert spans == [600, 1200, 1800, 1800, 1800]      # 21.11: was [1800, 3600, 7200, 7200, 7200]
     assert any(x.get("doubled") for x in _events(e, "brake"))
 
 
-def test_a_brake_file_without_a_recorded_term_gets_half_an_hour(env):
+def test_a_brake_file_without_a_recorded_term_gets_ten_minutes(env):
     (env.state_dir / "BRAKE").write_text("brake: made by hand\n", encoding="utf-8")
     assert env.loop().run() == 3
     b = _ls(env)["brake"]
-    assert b["span"] == 1800
-    env.clock.t += 1801
+    assert b["span"] == 600
+    env.clock.t += 601
     env.runner_says({"status": "REVIEW", "task": "T1", "calls": [REAL_CALL]})
     assert env.loop(once=True).run() == 0 and not (env.state_dir / "BRAKE").exists()
 

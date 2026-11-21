@@ -31,10 +31,11 @@ import urllib.request
 import dataclasses
 from dataclasses import replace
 
-from .agent_factory import (BudgetExhausted, DEFER_REASONS, LEASE_LIFETIME_S, MODEL_ID, InputTooLarge, InvalidPlan, Lease,
-                            LockBusy, StaleLease, Task, add_feedback, begin, charge_call, claim, defer, defer_streak,
-                            seconds_to_local_midnight, read_plan, ready, redact, REPEAT_MARK, route, quarantine,
-                            safe_path, safe_source, settle, snapshot, txn, unclaim)
+from .agent_factory import (BudgetExhausted, DEFER_REASONS, LEASE_LIFETIME_S, MAX_ATTEMPTS, MODEL_ID, InputTooLarge,
+                            InvalidPlan, Lease, LockBusy, StaleLease, Task, add_feedback, begin, charge_call, claim,
+                            defer, defer_streak, failed_models_of, is_unsafe_reject, seconds_to_local_midnight,
+                            read_plan, ready, redact, REPEAT_MARK, route, quarantine, safe_path, safe_source, settle,
+                            snapshot, txn, unclaim)
 from .factory_context import (LARGE_FILE_CHARS, asked_names, failing_names, identifier_tokens, keywords_from, packet,
                               render, scrub_paths)
 from .factory_process import kilo_argv, run_owned
@@ -55,7 +56,7 @@ ENV_HOLD_S = 1800
 ENV_OTHER_CEILING = 3         # a persistent non-slot environment failure (a missing package...) is parked after this many
 RED_BEFORE_WAIT_S = 120      # the base run before the coder call waits for a slot at most this long (its own ceiling)
 SLOT_BUDGET_S = 300         # ONE wait for a pytest slot / free RAM per runner pass, shared by every gate run
-IDLE_SUSPECTS_ALLOWED = 2   # idle timeouts treated as a rate limit; the next one is a worker fault (infra)
+IDLE_SUSPECTS_ALLOWED = 4   # 21.11 (was 2) idle timeouts treated as a rate limit; the next one is a worker fault (infra)
 
 
 def factory_env(state: dict) -> dict:
@@ -741,7 +742,7 @@ OFF_PATH_NOTE = ('\nThe failing test also runs, outside the files you may change
 PATH_FOCUS_MAX = 12
 OFF_PATH_SHORT = 8
 OFF_PATH_WAIT_S = 30
-NO_EFFECT_BLOCK_AFTER = 2
+NO_EFFECT_BLOCK_AFTER = 4   # 21.11 (was 2)
 _ADDRESS = re.compile(r'0x[0-9A-Fa-f]{4,}')
 _WORKDIR = re.compile(r'task-[\w.-]+')
 _SECONDS = re.compile(r'\b\d+(?:\.\d+)?s\b')
@@ -1119,7 +1120,7 @@ def model_attempt(task: Task, workdir: Path, model: str, timeout: int,
 # a coder task that changes more files is a multi-file edit: Kilo. 3 since 20.11 (telemetry of the whole run: Kilo 0 of
 # 14 passes ever reached a review, every one of the 17 promoted candidates came from the light engine; 08:44-08:46 a
 # 3-file row burned its three passes on 'steps exhausted'); the triage's MAX_TOUCH is 3, so no triaged task goes to Kilo
-LIGHT_MAX_FILES = 3
+LIGHT_MAX_FILES = 5   # 21.11 (was 3): the same as the triage's MAX_TOUCH
 LIGHT_OVERHEAD_TOKENS = 600      # the rules below and the chat wrapper (Kilo: 5 300-7 300)
 LIGHT_TIMEOUT_S = 180
 LIGHT_MAX_OUTPUT = 8192
@@ -1947,7 +1948,7 @@ def _drop_claim(kwargs: dict, box: dict) -> None:
 def _once(*, root: Path, plan: Path, checkpoint: Path, staging: Path,
          small_model: str, large_model: str, execute: bool = False,
          acknowledge: bool = False, review_model: str | None = None,
-         channel_config: Path | None = None, max_attempts: int = 2,
+         channel_config: Path | None = None, max_attempts: int = MAX_ATTEMPTS,
          max_model_calls: int | None = None, base_sha: str | None = None,
          small_follow_up: bool = True, port_repo: Path | None = None,
          task_id: str | None = None, lease: str | None = None, _box: dict | None = None) -> dict:
@@ -2170,8 +2171,10 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
             add_feedback(state, tid, source, '[attempt %d] %s' % (attempt, text))
             if mark is not None:
                 mark(row)
+            failed = (list(ctx.get('tried', ())) + [m for m, _ in ctx.get('gate_red', ()) if m]
+                      + ([ctx['coder_model']] if ctx.get('coder_model') else []))   # every model this pass tried
             status = settle(state, tid, token, tests_ok=False, evidence=_digest(reason, text),
-                            max_attempts=max_attempts)
+                            max_attempts=max_attempts, unsafe=is_unsafe_reject(reason), failed_models=failed)
             row.pop('pending_review', None)
             return status, None
         return end(apply, reason=reason, reason_detail=redact(text)[:400])
@@ -2840,8 +2843,26 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                 fixed = len(TOURNAMENT_GATE_NOTE % '')
                 return TOURNAMENT_GATE_NOTE % output[:max(0, room - fixed)] if room > fixed else ''
 
+            def coder_exclusions(tried_now):
+                """``exclude_model`` of a coder call. ``tried_now`` (this pass's earlier candidates) are always out; the
+                models that failed this task in earlier attempts are out too while the router has another model for
+                the call (a preference, never a reason to stop: with none left the call takes any)."""
+                now_out = list(tried_now)
+                older = [m for m in failed_models_of(row) if m not in now_out]
+                if older and configured:
+                    live_now = ck.read().get('channel_quotas') or {}
+                    if channels.route_order(configured, 'code', attempt, channels.estimate_tokens(len(prompt), 0),
+                                            exclude_model=now_out + older, state=live_now,
+                                            skip_tiers=() if small_follow_up or not now_out else ('small',)):
+                        tag = 'other_model_than_%d' % len(older)
+                        if tag not in events:
+                            events.append(tag)
+                        return now_out + older
+                return now_out or None
+
             size = TOURNAMENT_SIZE if configured and engine_for(role, task) == 'light' else 1
             tried, k_prompt, held, gate_failed, next_note = [], prompt, None, [], ''
+            ctx['tried'] = tried     # the models of this pass's earlier candidates: reject() remembers them as failed
             asked = frozenset()      # code an earlier candidate of this pass asked for: every later one is shown it
             for k in range(size):
                 if k:
@@ -2858,7 +2879,7 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                 ctx['candidate'] = k
                 try:
                     rc, out, err = timed('code_s', lambda: call(
-                        role, task, dir_for, chosen, k_prompt, exclude_model=tried or None,
+                        role, task, dir_for, chosen, k_prompt, exclude_model=coder_exclusions(tried),
                         skip_tiers=() if small_follow_up or not k else ('small',)))   # <id> small_follow_up
                 except (ChannelFault, channels.ChannelUnavailable, NoIndependentReviewer):
                     if not k:
@@ -3070,8 +3091,8 @@ def main(argv=None):
     p.add_argument("--ack-host-access-risk", action="store_true")
     p.add_argument("--max-tasks", type=int, default=1,
                    help="execute at most N sequential tasks; no implicit daemon")
-    p.add_argument("--max-attempts", type=int, default=2,
-                   help="strikes: a task becomes FAILED after N failed attempts")
+    p.add_argument("--max-attempts", type=int, default=MAX_ATTEMPTS,
+                   help="a task becomes FAILED after N failed attempts (each next one on another model where possible)")
     p.add_argument("--max-model-calls", type=int,
                    help="explicit model-call budget written into this checkpoint")
     p.add_argument("--small-follow-up", choices=("on", "off"), default="on",
@@ -3083,8 +3104,8 @@ def main(argv=None):
     args = p.parse_args(argv)
     if not 1 <= args.max_tasks <= 10:
         p.error("--max-tasks must be in 1..10")
-    if not 1 <= args.max_attempts <= 5:
-        p.error("--max-attempts must be in 1..5")
+    if not 1 <= args.max_attempts <= MAX_ATTEMPTS:
+        p.error("--max-attempts must be in 1..%d" % MAX_ATTEMPTS)
     if args.max_model_calls is not None and not 1 <= args.max_model_calls <= MAX_MODEL_CALLS:
         p.error("--max-model-calls must be in 1..%d" % MAX_MODEL_CALLS)
     if args.execute and args.staging.resolve().is_relative_to(args.root.resolve()):

@@ -392,8 +392,8 @@ def test_every_further_failure_of_the_series_doubles_the_term_up_to_the_ceiling(
     state = {}
     terms = [C.note_outcome(state, CH, False, now=100 * k)['cool_s'] for k in range(1, 11)]
     assert terms[:3] == [0, 0, 600]
-    assert terms[3:6] == [1200, 2400, 4800]                 # the probe after a cooling failed again: twice as long
-    assert max(terms) == C.STREAK_COOL_MAX_S == 14400       # never longer than the ceiling
+    assert terms[3:6] == [1200, 2400, 3600]                 # the probe after a cooling failed again: twice as long
+    assert max(terms) == C.STREAK_COOL_MAX_S == 3600        # never longer than the ceiling (21.11: was 14400, 4800)
 
 
 def test_a_successful_call_resets_the_series():

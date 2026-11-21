@@ -54,6 +54,8 @@ OWNER_PATHS = frozenset((
     'tools/__init__.py',
     # the localization the triage runs with the channel keys in the process (agent_factory_import._localized_scope):
     'tools/slicer_localize.py',
+    # the cloud route of the gate (lazy import of factory_cloud_gate): it publishes trees and runs git/gh
+    'tools/echo_cloud.py',
     # the data that decides the verdicts of the acceptance tools (critic 19.11).
     'tools/data/push_guard_allow.txt', 'tools/data/known_red.txt', 'tools/owner_census_caps.json'))
 OWNER_GLOBS = ('tools/factory_*.py', 'tools/agent_factory*.py')
