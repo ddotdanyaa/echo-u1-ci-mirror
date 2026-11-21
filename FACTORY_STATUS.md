@@ -1,9 +1,10 @@
 # Factory status (generated, structured data only)
 
-Generated: 2026-11-21T11:00:10Z
-Source commit: sha394863d3db22
+Generated: 2026-11-21T11:16:35Z
+Source commit: sha3e12fb8880a2
 
 ## Commits (sha, time)
+- sha3e12fb88 2026-11-21T14:16:05+03:00
 - sha394863d3 2026-11-21T13:59:27+03:00
 - shad603c05a 2026-11-21T13:12:43+03:00
 - sha81c72fa7 2026-11-21T13:04:34+03:00
@@ -23,7 +24,6 @@ Source commit: sha394863d3db22
 - sha5d0cd220 2026-11-21T02:30:23+03:00
 - shabd4a32eb 2026-11-21T00:41:03+03:00
 - sha775a5669 2026-11-21T00:29:42+03:00
-- sha46cd666c 2026-11-21T00:27:07+03:00
 
 ## Funnel
 | step | count |
@@ -39,22 +39,22 @@ Source commit: sha394863d3db22
 | reviewed | 40 |
 | triaged | 82 |
 
-Side counters: blocked=2, parked=0, requeued=2
-Tasks now: BLOCKED=2, DONE=64, FAILED=32, PROMOTED=4, READY=6, RUNNING=4
+Side counters: blocked=0, parked=0, requeued=2
+Tasks now: DONE=64, FAILED=33, PROMOTED=4, READY=6, RUNNING=5
 Accepted: 4
 Promoted: 28
-Free RAM, GB: 2.59
-Telemetry rows: 9752 recognised, 0 unrecognised
+Free RAM, GB: 2.65
+Telemetry rows: 10022 recognised, 0 unrecognised
 
 ## Spend per model
 | model | calls | tokens_in | tokens_out | usage_unknown | http_429 | errors |
 |---|---|---|---|---|---|---|
-| google/gemini-3.1-flash-lite | 588 | 3701236 | 265841 | 29 | 0 | 29 |
-| google/gemini-3.5-flash-lite | 830 | 5591520 | 294806 | 21 | 0 | 21 |
-| google/gemini-3.6-flash | 77 | 294499 | 14683 | 31 | 1 | 31 |
+| google/gemini-3.1-flash-lite | 591 | 3717868 | 266984 | 30 | 0 | 30 |
+| google/gemini-3.5-flash-lite | 849 | 5718982 | 299423 | 21 | 0 | 21 |
+| google/gemini-3.6-flash | 80 | 294499 | 14683 | 34 | 1 | 34 |
 | google/gemini-3.8-flash | 7 | 21237 | 15 | 4 | 2 | 4 |
-| google/gemma-4-26b-a4b-it | 102 | 253075 | 30404 | 51 | 0 | 51 |
-| google/gemma-4-31b-it | 119 | 140353 | 4594 | 80 | 0 | 80 |
+| google/gemma-4-26b-a4b-it | 103 | 257080 | 30476 | 51 | 0 | 51 |
+| google/gemma-4-31b-it | 120 | 140353 | 4594 | 81 | 0 | 81 |
 | openrouter/cohere/north-mini-code:free | 22 | 69376 | 10273 | 5 | 0 | 6 |
 | openrouter/nvidia/nemotron-3-ultra-550b-a55b:free | 95 | 551204 | 147387 | 1 | 1 | 1 |
 
@@ -62,14 +62,14 @@ Telemetry rows: 9752 recognised, 0 unrecognised
 | span | rows | calls |
 |---|---|---|
 | answer | 431 | 0 |
-| gate | 1516 | 0 |
-| infra | 144 | 0 |
-| loop | 1972 | 0 |
-| other | 1049 | 0 |
+| gate | 1536 | 0 |
+| infra | 172 | 0 |
+| loop | 2020 | 0 |
+| other | 1096 | 0 |
 | promote | 39 | 0 |
-| review | 600 | 326 |
-| run | 3889 | 1514 |
-| triage | 112 | 0 |
+| review | 603 | 328 |
+| run | 4012 | 1539 |
+| triage | 113 | 0 |
 
 ## Channels (model ids)
 - 1db4ab-gemini-3-8-flash

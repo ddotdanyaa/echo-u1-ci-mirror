@@ -166,3 +166,21 @@ def test_a_lease_that_expires_by_time_still_counts_and_blocks_at_the_third():
         state["tasks"]["T1"].update(status="RUNNING", lease="a" * 32, deadline=10.0)
         assert F.release_expired(state, 11.0) == ["T1"] and state["tasks"]["T1"]["lease_expiries"] == n
     assert state["tasks"]["T1"]["status"] == "BLOCKED" and state["tasks"]["T1"]["blocked_reason"] == "lease_expired"
+
+
+def test_a_mkdir_refused_while_the_old_lockdir_is_being_removed_is_a_wait_not_a_crash(tmp_path, monkeypatch):
+    """Live 21.11 14:13: Windows answered mkdir of state.json.lockdir with WinError 5 while the old one was being
+    removed (delete pending); the loop crashed. A refused mkdir is the lock being busy: wait and take it."""
+    from pathlib import Path
+    real, calls = Path.mkdir, []
+
+    def flaky(self, *a, **k):
+        if self.name.endswith('.lockdir') and not calls:
+            calls.append(self)
+            raise PermissionError(5, 'Access is denied', str(self))
+        return real(self, *a, **k)
+    monkeypatch.setattr(Path, 'mkdir', flaky)
+    target = tmp_path / 'state.json'
+    with F._dir_lock(target, timeout_s=2):
+        assert (tmp_path / 'state.json.lockdir').is_dir()
+    assert calls, 'the refused mkdir was not exercised'

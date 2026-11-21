@@ -953,7 +953,8 @@ def _dir_lock(path: Path, timeout_s: float):
         try:
             lock.mkdir()
             break
-        except FileExistsError:
+        except (FileExistsError, PermissionError):   # PermissionError: Windows answers a mkdir while the old lockdir
+            # is being removed (delete pending) with WinError 5, not "exists" (live 21.11 14:13 crashed the loop)
             try:
                 age = time.time() - lock.stat().st_mtime
             except OSError:
