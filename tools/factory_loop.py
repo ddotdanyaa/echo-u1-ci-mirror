@@ -130,6 +130,8 @@ CHANNEL_REASONS = DEAD_CHANNEL | frozenset(("rate_minute", "rate_day", "region",
 TEMPORARY_CHANNEL = frozenset(("rate_limited_suspect", "rate_limited", "429", "channel_timeout"))
 TEMPORARY_TASK = frozenset(("transient", "env_shortage"))
 BACKOFF_FIRST_S, BACKOFF_MAX_S = 60, 1800
+GLOBAL_WAIT_MAX_S = 300   # owner: a dead route gets 5 min, then the fallback. A wait no channel owns holds the
+                          # whole loop, so it never exceeds this (live 21.11 12:22: an unnamed 'dead' held 12 tasks 1 h)
 BRAKE_SPAN_S, BRAKE_MAX_S = 600, 1800           # 21.11 (was 1800, 7200): the brake has a term; a failed trial doubles it up to 30 min
 TIER_ORDER = ("small", "main", "escalation")
 ERROR_MEMORY_MAX = 200
@@ -1155,7 +1157,7 @@ class Loop:
             self._tx(lambda st, n=name, s=delay: CH.cool_channel(    # channel's 429 held the whole loop 30 min)
                 st.setdefault("channel_quotas", {}), {"id": n}, now=now, seconds=s))
         elif channel:
-            ls["channel_until"] = max(float(ls.get("channel_until", 0)), until)
+            ls["channel_until"] = max(float(ls.get("channel_until", 0)), now + min(delay, GLOBAL_WAIT_MAX_S))
         self.save_ls(ls)
         if not channel and tid:
             def postpone(state):
@@ -3138,7 +3140,8 @@ class Loop:
                 self._tx(lambda st, n=named, s=float(wait_s): CH.cool_channel(
                     st.setdefault("channel_quotas", {}), {"id": n}, now=self.clock(), seconds=s))
             else:
-                ls["channel_until"] = max(float(ls.get("channel_until", 0)), self.clock() + wait_s)
+                ls["channel_until"] = max(float(ls.get("channel_until", 0)),
+                                          self.clock() + min(float(wait_s), GLOBAL_WAIT_MAX_S))
         self.save_ls(ls)
         out = Outcome(action="RUN", reason=str(reason or st), status=str(st))
         # Infra = no result / timeout of the process, the runner's own honest flag (dead channel,

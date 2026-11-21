@@ -49,3 +49,14 @@ def test_channel_reasons_stop_everything(tmp_path, monkeypatch, reason):
     loop = e.loop()
     loop.step()
     assert loop.step().action == "WAIT"
+
+
+def test_a_wait_no_channel_owns_holds_the_loop_at_most_five_minutes(tmp_path, monkeypatch):
+    """Live 21.11 12:22: WAITING_CHANNEL 'dead' with no channel named set the global wait to 3600 s; 12 READY tasks
+    sat an hour. Owner: a dead route gets 5 min, then the fallback."""
+    e = two_tasks(tmp_path, monkeypatch)
+    e.runner_says({"status": "WAITING_CHANNEL", "task": "T1", "reason": "channel_wait", "channel_reason": "dead",
+                   "wait_s": 3600, "calls": []})
+    e.loop().step()
+    ls = json.loads((e.state_dir / "loop_state.json").read_text(encoding="utf-8"))
+    assert 0 < ls.get("channel_until", 0) - e.clock.t <= 300

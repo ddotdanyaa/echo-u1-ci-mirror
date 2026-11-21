@@ -1,17 +1,17 @@
 {
  "accepted": 4,
- "free_ram_gb": 2.55,
+ "free_ram_gb": 3.29,
  "funnel": {
   "accepted": 4,
   "claimed": 95,
   "coded": 47,
   "found_in_backlog": "unknown",
   "gate_pass": 30,
-  "known_to_loop": 347,
+  "known_to_loop": 238,
   "promoted": 28,
-  "ready": 3,
+  "ready": 12,
   "reviewed": 39,
-  "triaged": 73
+  "triaged": 82
  },
  "model": {
   "google/gemini-3.1-flash-lite": {
@@ -102,7 +102,7 @@
   }
  },
  "promoted": 28,
- "rows_recognized": 9207,
+ "rows_recognized": 9252,
  "schema": 3,
  "side": {
   "blocked": 0,
@@ -110,7 +110,7 @@
   "requeued": 2
  },
  "skipped_files": 0,
- "source_sha": "shaae6391e1608c",
+ "source_sha": "sha81c72fa7ad32",
  "span": {
   "answer": {
    "calls": 0,
@@ -161,23 +161,23 @@
    "calls_usage_unknown": 0,
    "errors": {},
    "http_429": 0,
-   "rows": 1839,
+   "rows": 1881,
    "status": {
     "BLOCKED": 89,
     "FAILED": 210,
     "READY": 578,
     "REVIEW": 39,
     "WAITING_CHANNEL": 32,
-    "added": 13,
+    "added": 14,
     "brake": 3,
     "deferred": 39,
-    "empty": 49,
+    "empty": 50,
     "infra": 9,
-    "ok": 703,
+    "ok": 741,
     "other": 42,
     "refused": 1,
     "requeued": 2,
-    "stop": 30
+    "stop": 32
    },
    "tokens_in": 0,
    "tokens_out": 0
@@ -187,10 +187,10 @@
    "calls_usage_unknown": 0,
    "errors": {},
    "http_429": 0,
-   "rows": 977,
+   "rows": 978,
    "status": {
     "ok": 2,
-    "other": 952,
+    "other": 953,
     "rejected": 23
    },
    "tokens_in": 0,
@@ -256,10 +256,10 @@
    "calls_usage_unknown": 0,
    "errors": {},
    "http_429": 0,
-   "rows": 110,
+   "rows": 112,
    "status": {
-    "added": 28,
-    "empty": 80,
+    "added": 29,
+    "empty": 81,
     "hold_dropped": 2
    },
    "tokens_in": 0,
@@ -272,33 +272,33 @@
   "READY": 1198,
   "REVIEW": 78,
   "WAITING_CHANNEL": 68,
-  "added": 41,
+  "added": 43,
   "applied": 410,
   "approved": 39,
   "brake": 6,
   "brake_cleared": 1,
   "cleared": 54,
   "deferred": 78,
-  "empty": 129,
+  "empty": 131,
   "error": 206,
   "hold_dropped": 2,
   "infra": 9,
-  "ok": 5132,
-  "other": 1058,
+  "ok": 5170,
+  "other": 1059,
   "parked": 8,
   "refused": 2,
   "rejected": 37,
   "released": 8,
   "requeued": 4,
   "run_failed": 10,
-  "stop": 30
+  "stop": 32
  },
  "summary": "ok",
  "tasks_now": {
   "DONE": 64,
   "FAILED": 32,
   "PROMOTED": 4,
-  "READY": 3
+  "READY": 12
  },
  "unrecognized_rows": 0
 }
