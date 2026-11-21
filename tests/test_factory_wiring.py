@@ -12,7 +12,7 @@ def _kilo_engine(monkeypatch):
     monkeypatch.setattr(runner, 'engine_for', lambda role, task: 'kilo')
 
 
-def test_the_candidate_gate_run_gets_the_changed_files_and_the_base_run_does_not(tmp_path, monkeypatch):
+def test_the_candidate_gate_run_gets_the_changed_files_and_the_base_run_an_empty_list(tmp_path, monkeypatch):
     rig = Rig(tmp_path, monkeypatch)
     seen = []
 
@@ -22,8 +22,8 @@ def test_the_candidate_gate_run_gets_the_changed_files_and_the_base_run_does_not
     monkeypatch.setattr(rig.w.gate, 'run_tests', run_tests)
     result = rig.once()
     assert result['status'] == 'REVIEW'
-    assert seen[0] is None                                   # the red-before run on the base: local only
-    assert [tuple(t) for t in seen if t is not None] == [('calc.py',)]
+    assert seen[0] == ()                                     # the red-before run on the base: no changed files, the cloud may run it
+    assert [tuple(t) for t in seen if t] == [('calc.py',)]
 
 
 def test_an_approval_without_a_real_cited_line_does_not_pass_the_live_chain(tmp_path, monkeypatch):

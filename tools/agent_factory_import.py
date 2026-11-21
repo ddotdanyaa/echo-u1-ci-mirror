@@ -19,6 +19,13 @@ import subprocess
 import sys
 from pathlib import Path, PurePosixPath
 
+try:
+    from tools import factory_autofeed as AF
+except ImportError:      # the public mirror (tools.factory_mirror.MODULES) does not carry the feed: the old path, no sweep, no sidecar
+    from types import SimpleNamespace as _NS
+    AF = _NS(closed_ids=lambda root: set(), sync_closed=lambda root, path=None: {"path": None, "added": [], "total": 0},
+             load_sweep=lambda root, sweep=None: {}, guard_map=lambda sweep, ids: {}, verdict=lambda entries: None,
+             red_paths=lambda entries: [])
 from tools import id_query
 
 
@@ -598,7 +605,7 @@ def _closed_set(root) -> set:
             # (a failure raises ClosedCheckError).
             subjects = _git(root, "log", "--format=%s").splitlines()
         cached = _CLOSED_CACHE[key] = (head, {i for s in subjects for i in _closing_ids(s)})
-    return cached[1]
+    return cached[1] | AF.closed_ids(root)        # + the sidecar closed_by_commit.json (a record that outlives the history)
 
 
 def is_closed_at_head(backlog_id: str, repo_root) -> bool:
@@ -1032,6 +1039,26 @@ def _port_task(r: dict, root: Path, all_tests: list) -> dict:
                      "touch_files": touch, "tests": guard[:1], "kind": "code", "port_from": sha}}
 
 
+def _trace_touch(root: Path, bid: str, text: str, guards: list, graph=None) -> list:
+    """Provisional writing scope of a row that is red in the cloud and names no file (at most 2 existing, writable
+    source files): the best candidates of the row (candidate_files, any strength: the red guard proves a code defect),
+    else the source modules the guard files import.  [] when there is nothing."""
+    try:
+        picks = [c[0] for c in candidate_files(root, bid, text) if c[1] >= CAND_MIN]
+    except Exception:
+        picks = []
+    picks = [f for f in picks if _is_src(f) and _exists(root, f) and not _protected(f)]
+    if not picks:
+        try:
+            if graph is None:
+                from tools.affected_tests import Graph
+                graph = Graph(root)
+            picks = sorted({d for t in guards for d in graph.edges.get(t, ()) if _is_src(d) and _exists(root, d) and not _protected(d)})
+        except Exception:
+            picks = []
+    return picks[:2]
+
+
 # ---- <id>: candidate files for a row that names no file (deterministic, no model) ----
 SCOPE_K = 5                  # candidates in a hold
 CAND_MIN = 1.0               # the best candidate must reach this score, or the row stays a skip
@@ -1278,7 +1305,7 @@ def weak_candidate_holds(root, backlog_path, bids) -> dict:
 
 
 def triage_portion(backlog_path, head_root, known_backlog_ids, limit, profile_attempts=None, known_parts=None, env_streak=0,
-                   scopes=None, ask=None) -> dict:
+                   scopes=None, ask=None, sweep=None) -> dict:
     """K-E.3: next portion of the live backlog as plan tasks (nothing is written).
 
     Returns {"tasks", "holds": [{backlog_id, question}], "stale": [backlog_id],
@@ -1294,7 +1321,17 @@ def triage_portion(backlog_path, head_root, known_backlog_ids, limit, profile_at
       source defines), public row or owner words; words alone -> skip "кандидаты слабые"; ``scopes`` {backlog_id:
       {touch_files, note}} are the head model's picks: a row without touch takes their existing, writable source
       files and goes the normal way (unit_test sub-task, privacy screen, gate rules), the note joins the goal;
-    - rows closed at HEAD (``<ID>:`` commit) -> stale; IDs in known_backlog_ids -> skipped; two IDs
+    - AUTO-FEED (owner): ``sweep`` = {guard test path: red} (or a path; default the newest
+      ``guard_sweep_*.json`` of the factory folder, tools.factory_autofeed) is the cloud's verdict on the product's
+      guard files tests/verify/**/test_v_<ID>.py.  An open row whose guard is red is a code task by itself:
+      tests = the red guard file(s), goal = the row text, and NO local profile run (the cloud has measured it).  When
+      the row names no file and no scope is found, the touch is provisional (the row's best candidate files, then the
+      guard's own imports) and the task carries ``needs_trace: True`` for the localizer; a row with no candidate at
+      all is a skip ``needs_trace`` plus an ``out["needs_trace"]`` record, never a hold for Opus.  A row whose guard
+      is green is not queued: skip ``already_green`` plus an ``out["already_green"]`` record.  Rows without a
+      sweep verdict take the old path.
+    - rows closed at HEAD (``<ID>:`` commit, or listed in the sidecar closed_by_commit.json, which this call keeps
+      up to date from the git log: the one thing besides the plan the triage writes) -> stale; IDs in known_backlog_ids -> skipped; two IDs
       that give the same task id (<id> / <id>) -> both skipped "коллизия id";
     - private rows (<private-marker>/<private-marker>, call records, keys, .env, personal data) are checked FIRST: hold, plus an
       only_opus, privacy_safe=False task when a scope exists.  The hold is written only when the group
@@ -1318,10 +1355,24 @@ def triage_portion(backlog_path, head_root, known_backlog_ids, limit, profile_at
     be looked at for its imports."""
     from tools import agent_factory as F
     root = Path(head_root)
+    events0: list = []
+    try:
+        synced = AF.sync_closed(root)             # before the rows are read: a fresh '<ID>:' commit closes its row at once
+        if synced["added"]:
+            events0.append({"backlog_id": ",".join(synced["added"][:10]), "event": "closed_by_commit",
+                            "reason": "%d IDs added to the sidecar" % len(synced["added"])})
+    except Exception as e:                        # the sidecar is a convenience: git still answers
+        events0.append({"backlog_id": "", "event": "closed_sidecar_failed", "reason": ("%s: %s" % (type(e).__name__, e))[:200]})
     rows = parse_open_rows(backlog_path, root, include_closed=True)
     attempts = {k: v for k, v in (profile_attempts.items() if isinstance(profile_attempts, dict) else ())
                 if type(v) is int and v >= 0}      # a damaged value from an old state counts as 0
-    out = {"tasks": [], "holds": [], "stale": [], "skipped": [], "skipped_unknown": list(rows.skipped_unknown), "events": [], "deferred": [], "profile_attempts": {}, "parents": [], "env_streak": 0}
+    out = {"tasks": [], "holds": [], "stale": [], "skipped": [], "skipped_unknown": list(rows.skipped_unknown), "events": events0, "deferred": [], "profile_attempts": {}, "parents": [], "env_streak": 0,
+           "already_green": [], "needs_trace": []}
+    try:
+        guards = AF.guard_map(AF.load_sweep(root, sweep), [r["backlog_id"] for r in rows])
+    except Exception as e:                        # an unreadable feed is no feed: the old path decides
+        guards = {}
+        out["events"].append({"backlog_id": "", "event": "sweep_failed", "reason": ("%s: %s" % (type(e).__name__, e))[:200]})
     idx = _module_index(root)
     all_tests = sorted(p for paths in idx.values() for p in paths if p.startswith("tests/"))
     graph = None
@@ -1392,12 +1443,20 @@ def triage_portion(backlog_path, head_root, known_backlog_ids, limit, profile_at
         read_files: list[str] = []
         ctx: dict[str, str] = {}
         named_here = _tests_named_by_id(bid, all_tests)
+        swept = AF.verdict(guards.get(bid))             # the cloud's verdict on the row's guard file(s): "red" | "green" | None
+        if swept == "green":
+            out["already_green"].append({"backlog_id": bid, "tests": [p for p, _ in guards[bid]]})
+            skip(bid, "already_green: страж %s зелёный в облачном прогоне, задача не ставится" % PurePosixPath(guards[bid][0][0]).name)
+            continue
+        guard_red = AF.red_paths(guards.get(bid)) if swept == "red" else []
+        if guard_red:
+            named_here = guard_red + [t for t in named_here if t not in guard_red]
         suspects = ""
         if not touch and named_here and not private and _screen(F, bid, r["text"])[1]:
             # it will be held anyway: do not spend 30 s of profile and an attempt on it
             out["holds"].append({"backlog_id": bid, "question": _screen(F, bid, r["text"])[1]})
             continue
-        if not touch and named_here and profiled < limit:
+        if not touch and named_here and profiled < limit and not guard_red:        # a red sweep verdict is the measurement: no local run
             left = PORTION_DEADLINE_S - (_mono() - started)
             if left <= 0:
                 out["deferred"].append({"backlog_id": bid, "reason": "отложено: дедлайн профилирования порции, строка ждёт следующей порции"})
@@ -1465,7 +1524,7 @@ def triage_portion(backlog_path, head_root, known_backlog_ids, limit, profile_at
                     head = ("профиль не удался (%s)" % why) if kind == "unknown" else "профиль прошёл, но функций исходников в вызовах цели нет"
                     out["holds"].append({"backlog_id": bid, "question": pfx + head + ": дать область? Кандидаты по импортам теста (подсказка, не область): %s" % (", ".join(hints[:6]) or "нет")})
                 continue
-        if not touch and named_here and profiled >= limit:
+        if not touch and named_here and profiled >= limit and not guard_red:
             out["deferred"].append({"backlog_id": bid, "reason": "отложено: лимит профилей порции (%d)" % limit})
             continue
         if not touch and tests:
@@ -1473,10 +1532,10 @@ def triage_portion(backlog_path, head_root, known_backlog_ids, limit, profile_at
                 from tools.affected_tests import Graph
                 graph = Graph(root)
             mods = sorted({d for t in tests for d in graph.edges.get(t, ()) if _is_src(d)})
-            if len(mods) > 2:
+            if len(mods) > 2 and not guard_red:
                 out["holds"].append({"backlog_id": bid, "question": pfx + "уточнить область: тест(ы) %s импортируют %d модулей (%s); какие менять?" % (", ".join(tests), len(mods), ", ".join(mods[:6]))})
                 continue
-            touch = mods
+            touch = mods if len(mods) <= 2 else []        # a red guard: too many modules are no scope, the trace below decides
         scope_note = ""
         picked = (scopes or {}).get(bid) if isinstance(scopes, dict) else None
         if not touch and not private and isinstance(picked, dict):
@@ -1485,6 +1544,16 @@ def triage_portion(backlog_path, head_root, known_backlog_ids, limit, profile_at
             scope_note = " ".join(str(picked.get("note") or "").split())[:300] if touch else ""
         if not touch and not private and ask is not None:
             touch, scope_note = _localized_scope(root, bid, r["text"], ask, out["events"])
+        needs_trace = False
+        if not touch and guard_red and not private:
+            # the row is red in the cloud and names no file: a provisional scope for the localizer, never a hold for Opus
+            touch = _trace_touch(root, bid, r["text"], guard_red, graph)
+            if not touch:
+                out["needs_trace"].append({"backlog_id": bid, "tests": guard_red})
+                skip(bid, "needs_trace: страж красный, но кандидатов файла нет (ни по строке, ни по импортам стража)")
+                continue
+            needs_trace = True
+            scope_note = scope_note or "Файл строкой не назван: файлы выше предположительны, сначала найди по падению стража, какой модуль виноват."
         if not touch:
             if private:
                 out["holds"].append(private_hold)
@@ -1558,6 +1627,8 @@ def triage_portion(backlog_path, head_root, known_backlog_ids, limit, profile_at
             continue
         tid = _task_id(bid)
         named = _tests_named_by_id(bid, all_tests)
+        if guard_red:
+            named = guard_red + [t for t in named if t not in guard_red]
         vnamed = sorted(t for t in named if PurePosixPath(t).name.lower().startswith("test_v_"))
         mentioned = sorted(tests)
         slug = tid[3:].lower()
@@ -1594,6 +1665,8 @@ def triage_portion(backlog_path, head_root, known_backlog_ids, limit, profile_at
         for t in vnamed + sorted(named):
             if t not in ordered:
                 ordered.append(t)
+        if guard_red:
+            ordered = list(guard_red)      # the task's red target is the guard(s) the cloud found red, nothing else
         if not named:
             if graph is None:        # the example's second source: tests importing the touch files directly
                 from tools.affected_tests import Graph
@@ -1620,6 +1693,8 @@ def triage_portion(backlog_path, head_root, known_backlog_ids, limit, profile_at
         if read_files:
             group[-1]["read_files"] = read_files
             group[-1]["context_targets"] = ctx
+        if needs_trace:
+            group[-1]["needs_trace"] = True
         if len(out["tasks"]) + len(group) > limit:
             if not out["tasks"]:      # it would never fit: a question, not an endless deferral
                 out["holds"].append({"backlog_id": bid, "question": "limit меньше группы (%d задач при limit %d): поднять limit или ответить: answer --backlog-id %s --touch <файл> --tests <тест> --note \"<указание кодеру>\"" % (len(group), limit, bid)})

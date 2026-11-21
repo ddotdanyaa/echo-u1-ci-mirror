@@ -43,6 +43,10 @@ if str(_ROOT) not in sys.path:
 
 from tools import agent_factory as F  # noqa: <id>
 from tools import factory_channels as CH  # noqa: <id>
+try:                                   # the public mirror (factory_mirror.MODULES) does not carry the cloud gate: there is no cloud route
+    from tools import factory_cloud_gate  # noqa: <id>
+except ImportError:
+    factory_cloud_gate = None
 from tools import factory_process  # noqa: <id>
 from tools import factory_quota as quota_ledger  # noqa: <id>
 
@@ -53,6 +57,9 @@ EST_KEEP, EST_MIN_SAMPLES = 20, 5
 # A worker of the light engine is one HTTP call with the files in the prompt (peak 40-120 MB); only a Kilo worker
 # needs the gate's 2 GB floor. The floor admits light workers on a 3 GB machine; the estimate still limits how many.
 LIGHT_FLOOR = 768 * 2 ** 20
+# While the cloud answers the candidate checks run there (no local slot, no RAM budget): the pool counts no RAM per worker
+# and takes up to factory_cloud_gate.MAX_LIVE tasks; only this emergency floor of the whole machine stays.
+CLOUD_FLOOR = 256 * 2 ** 20
 WAIT_CHUNK_S = 3.0                    # real seconds between two looks at the pool while workers run
 STALE_INDEX_LOCK_S = 120
 ES_CONTINUOUS = 0x80000000
@@ -431,13 +438,21 @@ class Prefetch:
             self.done.set()
 
 
+def _cloud_up(fn) -> bool:
+    """True when the cloud-gate probe ``fn`` says the cloud answers; no probe or any fault of it: the local rules."""
+    try:
+        return bool(fn and fn())
+    except Exception:           # noqa: BLE001  a probe that breaks is "no cloud", never a stopped pool
+        return False
+
+
 class Loop:
     TXN_WAIT_S = 10.0       # a transaction on the state waits at most this long for the lock (a commit lasts ms)
     CLAIM_WAIT_S = 2.0      # the claim waits less: a held lock is WAIT state_locked, not a stalled loop
 
     def __init__(self, cfg: Config, *, triage_fn=None, runner_cmd=None, clock=time.time,
                  sleep=time.sleep, power_fn=set_execution_state, free_ram_fn=free_ram_bytes,
-                 extra_env=None, startup_notes=None, rng=None, wait_fn=None):
+                 extra_env=None, startup_notes=None, rng=None, wait_fn=None, cloud_fn=None):
         if cfg.review_model in (cfg.small_model, cfg.large_model):
             raise ValueError("review model must differ from the code model: " + cfg.review_model)
         self.cfg = cfg
@@ -449,6 +464,7 @@ class Loop:
                                               "tools.agent_factory_runner"])
         self.clock, self.sleep_fn = clock, sleep
         self.power_fn, self.free_ram_fn = power_fn, free_ram_fn
+        self.cloud_fn = cloud_fn      # () -> bool: does the cloud gate answer now (main gives factory_cloud_gate.available)
         d = Path(cfg.state_dir)
         self.dir = d
         self.plan_path, self.ckpt = d / "plan.json", d / "state.json"
@@ -2746,15 +2762,20 @@ class Loop:
     def _capacity(self, task) -> str:
         """'' when one more worker may start now, else the reason. K is nothing but this: free RAM (the floor, plus what
         the live workers have not used yet, plus one more estimate) and free quota (first calls that can still be
-        booked beyond those the live workers have not booked). With no live worker only today's rules count."""
+        booked beyond those the live workers have not booked). With no live worker only today's rules count. While the cloud
+        gate answers (``cloud_fn``) the checks of a candidate run there and hold no slot: RAM is not counted per worker
+        (only CLOUD_FLOOR of the machine stays) and the pool takes up to factory_cloud_gate.MAX_LIVE tasks."""
         self._headroom_seen = None
         free = self.free_ram_fn()
-        floor = self._floor(task)
+        cloud = _cloud_up(getattr(self, "cloud_fn", None))   # the checks of a candidate run in the cloud: no RAM budget
+        floor = CLOUD_FLOOR if cloud else self._floor(task)
         if free < floor:
             return "low_ram"
         live = list(self.pool.workers.values())
         if not live:
             return ""
+        if cloud and len(live) >= factory_cloud_gate.MAX_LIVE:
+            return "cloud_cap"
         if self._ending() or self._brake_due is not None:
             return "ending"                      # STOP, the deadline or a due brake: the pool only drains
         if self.cfg.once:
@@ -2764,13 +2785,14 @@ class Loop:
                 return "brake_trial"             # the half-open brake lets ONE trial pass through
         except Exception as e:
             self.err("capacity brake", e)
-        est = self._estimate()
-        pending = 0
-        for w in live:
-            seen = (w.owned.peak_bytes() if w.owned is not None else None) or 0
-            pending += max(0, est - seen)        # the memory a live worker has not used yet is not free
-        if free - pending < floor + est:
-            return "low_ram"
+        if not cloud:
+            est = self._estimate()
+            pending = 0
+            for w in live:
+                seen = (w.owned.peak_bytes() if w.owned is not None else None) or 0
+                pending += max(0, est - seen)    # the memory a live worker has not used yet is not free
+            if free - pending < floor + est:
+                return "low_ram"
         try:
             state = self.load()[1]
             unbooked = sum(1 for w in live if not (state["tasks"].get(w.tid, {}).get("began") or {}).get("booked"))
@@ -4205,7 +4227,8 @@ def main(argv=None) -> int:
                  small_model=a.small_model, large_model=a.large_model,
                  review_model=a.review_model, env_file=a.env_file, clear_brake=a.clear_brake)
     try:
-        loop = Loop(cfg, extra_env=keys, startup_notes=["no key for channel env " + n for n in absent])
+        loop = Loop(cfg, extra_env=keys, startup_notes=["no key for channel env " + n for n in absent],
+                    cloud_fn=getattr(factory_cloud_gate, "available", None))
     except ValueError as e:
         raise SystemExit(str(e))
     return loop.run()

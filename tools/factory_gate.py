@@ -330,7 +330,7 @@ def run_tests(root, tests, timeout_s, workdir=None, wait_s=None, hung=(), budget
     than 30 s under load). ``hung``: what was cut on the base (files or single tests): the run then starts file by
     file, a test of that list runs alone and its file runs without it (the joint call would only spend the limit
     again). ``touched`` (the candidate's changed files; None = unknown): with it the first call of a factory-code
-    task may run in the cloud gate (_cloud_attempt), any other call stays local. The continuation spends at most ``budget_s`` (SPLIT_BUDGET_S) seconds. ``trace``: source prefixes whose
+    task (mirror route) or of any tree with a ``touched`` of () or more (product route) may run in the cloud gate (_cloud_attempt), a continuation call stays local. The continuation spends at most ``budget_s`` (SPLIT_BUDGET_S) seconds. ``trace``: source prefixes whose
     functions the failing tests ran are recorded in GateResult.path (the verdict never depends on it)."""
     deadline = time.monotonic() + (SPLIT_BUDGET_S if budget_s is None else budget_s)
     if not hung:
@@ -449,10 +449,10 @@ def _run_once_raw(root, tests, timeout_s, workdir, wait_s, progress, deselect, w
     tests = [_node(t) for t in tests]
     if not tests:
         return _failure(-1, 'no tests given')
-    if touched is not None and not deselect and not trace:
+    if touched is not None and not deselect:    # a trace is dropped by the product route (path stays empty)
         cloud = _cloud_attempt(root, tests, touched)
         if cloud is not None:
-            return cloud
+            return cloud                         # no slot is taken and no RAM is waited for: the run was not here
     # ignore_cleanup_errors: a handle still held after the tree was killed must not crash the pass.
     with tempfile.TemporaryDirectory(prefix='factory-gate-', dir=workdir, ignore_cleanup_errors=True) as d:
         xml = Path(d) / 'result.xml'
@@ -503,18 +503,48 @@ def _cloud_attempt(root, tests, touched):
     unchanged. Any fault of the cloud path is None, never a verdict."""
     try:
         from . import factory_cloud_gate
-        got = factory_cloud_gate.run(root, tests, touched)
+        got = factory_cloud_gate.attempt(root, tests, touched)
         if not got:
             return None
-        xml_text, rc = got
+        xml_text, rc, trusted = got
         result = parse_junit(xml_text, tests, rc, root)
     except Exception:           # noqa: BLE001  the cloud is an optional first try
         return None
-    # Only a clean green is taken from the cloud: the mirror tree can differ from the local base, so a red is
+    if trusted:
+        return result if _conclusive(result) else None
+    # The mirror tree can differ from the local base: only a clean green is taken from the mirror route, a red is
     # confirmed by the local run instead of being charged as a strike.
     clean = (result.collected and result.rc == 0 and not result.failed and not result.errors
              and not result.missing and not result.crashed)
     return result if clean else None
+
+
+def _conclusive(result: GateResult) -> bool:
+    """A cloud answer about the candidate's own tree is taken, red or green, when every asked test ran there and nothing is
+    environmental (a package the cloud lacks, a missing data file): then the local run decides."""
+    return bool(result.collected) and not result.missing and not result.env_reason
+
+
+def cloud_each(root, names):
+    """``{name: GateResult}`` of several test names from ONE cloud run (the neighbour tests of a candidate), each judged
+    by the same code as a local call of that name alone; a name the cloud did not settle (no answer, environmental, not
+    all of it ran) is left out and the caller runs it locally. {} when the cloud cannot answer. Never raises."""
+    try:
+        from . import factory_cloud_gate
+        got = factory_cloud_gate.run_product(root, list(names))
+        if not got:
+            return {}
+        cases = list(ET.fromstring(got[0]).iter('testcase'))
+    except Exception:           # noqa: BLE001
+        return {}
+    out = {}
+    for name in names:
+        mine = [c for c in cases if _covered([c], _node(name))]
+        rc = 1 if any(c.find('failure') is not None or c.find('error') is not None for c in mine) else 0
+        result = _judge(mine, [_node(name)], rc, '', Path(root))
+        if _conclusive(result):
+            out[name] = result
+    return out
 
 
 def parse_junit(xml_text, tests, rc, root, tail='') -> GateResult:
@@ -671,7 +701,7 @@ def candidate_import(result: GateResult, base_root, tree, changed) -> GateResult
 EMPTY_BASE = GateResult(0, 0, 0, 0, 0, 0, True, 'unit_test: no base tests')
 
 
-def red_before(base_root, tests, timeout_s, kind=None, wait_s=None, workdir=None, trace=()):
+def red_before(base_root, tests, timeout_s, kind=None, wait_s=None, workdir=None, trace=(), touched=None):
     """``(verdict, GateResult)``, verdict in red | green | unknown. ``trace``: see run_tests (GateResult.path).
 
     red: at least one task test fails on the base (not by a missing module/data: that is unknown). green: junit_ok and nothing red (the task is
@@ -679,7 +709,8 @@ def red_before(base_root, tests, timeout_s, kind=None, wait_s=None, workdir=None
     """
     if kind == 'unit_test':
         return 'red', EMPTY_BASE
-    result = run_tests(base_root, tests, timeout_s, workdir=workdir, wait_s=wait_s, **_traced(trace))
+    result = run_tests(base_root, tests, timeout_s, workdir=workdir, wait_s=wait_s, **_traced(trace),
+                       **({'touched': touched} if touched is not None else {}))   # () = the cloud may run the base too
     if result.failed + result.errors > 0:
         # a file killed at the limit (run_tests) is not a doubt about the red of the files that ran
         only_timed_out = bool(result.timed_out) and _within(result.missing, result.timed_out)

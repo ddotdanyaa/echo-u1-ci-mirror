@@ -2543,7 +2543,7 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
             verdict, base = timed('red_before_s', lambda: gate.red_before(
                 base_root() if task.kind != 'unit_test' else root, task.tests, GATE_TIMEOUT_S, task.kind,
                 wait_s=(min(RED_BEFORE_WAIT_S, max(0.0, slot['left'])) if slot['armed'] else RED_BEFORE_WAIT_S),
-                workdir=gate_tmp, **({'trace': path_trace(task)} if path_trace(task) else {})))
+                workdir=gate_tmp, touched=(), **({'trace': path_trace(task)} if path_trace(task) else {})))
             keep_red = (key and verdict == 'red' and not base.env_reason and task.kind != 'unit_test')
 
             def note_base(state, row):
@@ -2722,8 +2722,9 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                         def neighbours():
                             skipped_count = 0
                             last_result = None
+                            settled = gate.cloud_each(tree, near)     # one cloud run for all of them; {} = not answered: local
                             for name in near:
-                                mine = gate_run(tree, [name])
+                                mine = settled[name] if name in settled else gate_run(tree, [name])
                                 last_result = mine
                                 if mine.env_reason:
                                     return 'env', mine
@@ -2731,7 +2732,7 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                                     skipped_count += 1
                                     continue
                                 if mine.failed + mine.errors > 0:
-                                    theirs = gate_run(base_root(), [name])
+                                    theirs = gate_run(base_root(), [name], touched=())
                                     last_result = theirs
                                     if theirs.env_reason:
                                         return 'env', theirs
@@ -3113,4 +3114,6 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
+    from . import factory_cloud_gate
+    factory_cloud_gate.enable_product()     # only the worker process the loop starts may send a candidate tree to the cloud gate
     sys.exit(main())
