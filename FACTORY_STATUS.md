@@ -1,9 +1,10 @@
 # Factory status (generated, structured data only)
 
-Generated: 2026-11-21T07:28:43Z
-Source commit: sha39c023a7c170
+Generated: 2026-11-21T07:44:22Z
+Source commit: shab588f7e6647b
 
 ## Commits (sha, time)
+- shab588f7e6 2026-11-21T10:43:56+03:00
 - sha39c023a7 2026-11-21T10:28:16+03:00
 - shaf33c430c 2026-11-21T10:23:50+03:00
 - sha1a4510c0 2026-11-21T10:21:03+03:00
@@ -23,7 +24,6 @@ Source commit: sha39c023a7c170
 - sha1a8b7a7a 2026-11-20T23:24:06+03:00
 - sha1f928dc3 2026-11-20T23:22:22+03:00
 - sha0e14abf3 2026-11-20T22:47:28+03:00
-- shaacd8f831 2026-11-20T21:55:25+03:00
 
 ## Funnel
 | step | count |
@@ -35,22 +35,22 @@ Source commit: sha39c023a7c170
 | gate_pass | 30 |
 | known_to_loop | 347 |
 | promoted | 28 |
-| ready | 0 |
+| ready | 3 |
 | reviewed | 39 |
 | triaged | 73 |
 
 Side counters: blocked=0, parked=0, requeued=2
-Tasks now: DONE=64, FAILED=35, PROMOTED=4
+Tasks now: DONE=64, FAILED=32, PROMOTED=4, READY=3
 Accepted: 4
 Promoted: 28
-Free RAM, GB: 3.51
-Telemetry rows: 8955 recognised, 0 unrecognised
+Free RAM, GB: 4.01
+Telemetry rows: 8999 recognised, 0 unrecognised
 
 ## Spend per model
 | model | calls | tokens_in | tokens_out | usage_unknown | http_429 | errors |
 |---|---|---|---|---|---|---|
-| google/gemini-3.1-flash-lite | 566 | 3567337 | 249805 | 26 | 0 | 26 |
-| google/gemini-3.5-flash-lite | 765 | 5136936 | 266952 | 20 | 0 | 20 |
+| google/gemini-3.1-flash-lite | 569 | 3586239 | 259047 | 26 | 0 | 26 |
+| google/gemini-3.5-flash-lite | 768 | 5154053 | 269280 | 20 | 0 | 20 |
 | google/gemini-3.6-flash | 59 | 261862 | 13302 | 18 | 1 | 18 |
 | google/gemini-3.8-flash | 1 | 0 | 0 | 1 | 1 | 1 |
 | google/gemma-4-26b-a4b-it | 100 | 253075 | 30404 | 49 | 0 | 49 |
@@ -61,15 +61,15 @@ Telemetry rows: 8955 recognised, 0 unrecognised
 ## Spans
 | span | rows | calls |
 |---|---|---|
-| answer | 421 | 0 |
-| gate | 1451 | 0 |
+| answer | 424 | 0 |
+| gate | 1453 | 0 |
 | infra | 134 | 0 |
-| loop | 1716 | 0 |
-| other | 953 | 0 |
+| loop | 1732 | 0 |
+| other | 958 | 0 |
 | promote | 39 | 0 |
 | review | 597 | 324 |
-| run | 3545 | 1401 |
-| triage | 99 | 0 |
+| run | 3561 | 1407 |
+| triage | 101 | 0 |
 
 ## Channels (model ids)
 - 1db4ab-gemini-3-8-flash

@@ -1151,7 +1151,10 @@ class Loop:
         book[key] = {"n": n, "at": now, "until": until}
         for old in sorted(book, key=lambda k: float((book[k] or {}).get("at", 0)))[:-64]:
             book.pop(old, None)
-        if channel:
+        if channel and name != "*":     # a named channel cools alone; the other channels keep working (live 21.11: one
+            self._tx(lambda st, n=name, s=delay: CH.cool_channel(    # channel's 429 held the whole loop 30 min)
+                st.setdefault("channel_quotas", {}), {"id": n}, now=now, seconds=s))
+        elif channel:
             ls["channel_until"] = max(float(ls.get("channel_until", 0)), until)
         self.save_ls(ls)
         if not channel and tid:
@@ -3129,7 +3132,13 @@ class Loop:
         if st == "WAITING_CHANNEL":
             wait_s = wait_s or 75
         if channel_wide and isinstance(wait_s, (int, float)) and wait_s > 0:
-            ls["channel_until"] = max(float(ls.get("channel_until", 0)), self.clock() + wait_s)
+            named = next((str(c.get("channel")) for c in (res.get("calls") or []) if isinstance(c, dict)
+                          and c.get("channel")), "") or str(res.get("channel") or "")
+            if named:                   # its own channel only; the global wait is for a fault no channel owns
+                self._tx(lambda st, n=named, s=float(wait_s): CH.cool_channel(
+                    st.setdefault("channel_quotas", {}), {"id": n}, now=self.clock(), seconds=s))
+            else:
+                ls["channel_until"] = max(float(ls.get("channel_until", 0)), self.clock() + wait_s)
         self.save_ls(ls)
         out = Outcome(action="RUN", reason=str(reason or st), status=str(st))
         # Infra = no result / timeout of the process, the runner's own honest flag (dead channel,

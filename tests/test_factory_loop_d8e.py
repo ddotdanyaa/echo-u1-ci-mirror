@@ -30,7 +30,8 @@ def test_a_channel_fault_pauses_the_channel_not_the_task(env):
     now = env.clock.now()
     loop.step()
     ls = _ls(env)
-    assert ls["channel_until"] >= now + 54
+    assert not ls.get("channel_until")                          # the loop does not wait: only c1 cools (21.11)
+    assert env.state()["channel_quotas"]["channel_cool"]["c1"] >= now + 54
     assert not env.state()["tasks"]["T1"].get("not_before")
     ev = _events(env, "deferred")[-1]
     assert ev["scope"] == "channel" and ev["key"] == "ch:c1" and ev["backoff_n"] == 1
