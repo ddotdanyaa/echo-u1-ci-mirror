@@ -24,7 +24,7 @@ TIMEOUT_S = 90
 DIFF_LIMIT = 30000
 GOAL_LIMIT = 3000
 FAIL_LIMIT = 3000
-LESSONS_MAX = 600
+LESSONS_MAX = 400
 LESSONS_COUNT = 3
 # USD per million tokens (input, output). Source: the claude-api skill's model table (cached 2026-11-03, Anthropic
 # first-party prices): Sonnet 5.5 $2 / $10; Haiku 5.5 $0.10 / $0.50 for prompts up to 100K tokens, $0.50 / $2.50 above.
@@ -183,49 +183,19 @@ def control(task, diff: str, failure: str = '') -> dict | None:
 
 
 def record_class(task, result: dict, *, ts: str = '') -> None:
-    """A paid reject of a candidate the free chain approved: the free chain missed it, so it goes to the registry."""
-    row = dict(ts=ts or datetime.datetime.now().isoformat(timespec='seconds'), task=getattr(task, 'id', ''),
-               title=str(getattr(task, 'title', ''))[:120], kind=getattr(task, 'kind', ''),
-               files=[str(f) for f in getattr(task, 'touch_files', ())][:8], **{'class': result['class']},
-               symptom=result['symptom'] or result['reason'], free_missed=True)
+    """A paid reject of a candidate the free chain approved: the free chain missed it, so it goes to the registry of
+    error classes (tools/factory_classes.py, the one registry)."""
+    from tools import factory_classes
     try:
-        path = state_dir() / 'error_classes.jsonl'
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open('a', encoding='utf-8') as fh:
-            fh.write(json.dumps(row, ensure_ascii=False) + '\n')
+        factory_classes.record_paid(getattr(task, 'id', ''), getattr(task, 'title', ''),
+                                    [str(f) for f in getattr(task, 'touch_files', ())][:8], result['class'],
+                                    result['symptom'] or result['reason'], ts=ts)
     except OSError:
         pass
 
 
-def _names(files) -> set:
-    return {str(f).replace('\\', '/').rsplit('/', 1)[-1].lower() for f in files}
-
-
-def lessons_for(task) -> str:
-    """The most relevant past catches (by the task's files, then by words of its title), at most 600 characters."""
-    if os.environ.get('PYTEST_CURRENT_TEST') and not os.environ.get('FACTORY_PAID_DIR'):
-        return ''                                       # a test never reads the live registry
-    try:
-        lines = (state_dir() / 'error_classes.jsonl').read_text(encoding='utf-8').splitlines()
-    except OSError:
-        return ''
-    mine, words = _names(getattr(task, 'touch_files', ())), set(re.findall(r'[a-z0-9_]{4,}', str(getattr(task, 'title', '')).lower()))
-    scored = []
-    for n, line in enumerate(lines):
-        try:
-            row = json.loads(line)
-            overlap = len(mine & _names(row.get('files') or ())) * 3 + len(words & set(
-                re.findall(r'[a-z0-9_]{4,}', str(row.get('title', '')).lower())))
-        except (ValueError, AttributeError, TypeError):
-            continue
-        if overlap:
-            scored.append((overlap + (1 if row.get('kind') == getattr(task, 'kind', None) else 0), n, row))
-    scored.sort(key=lambda s: (-s[0], -s[1]))
-    head = 'Past defects the free critics missed (check for them):'
-    text = head
-    for _, _, row in scored[:LESSONS_COUNT]:
-        item = '\n- %s: %s' % (str(row.get('class', ''))[:60], str(row.get('symptom', ''))[:160])
-        if len(text) + len(item) > LESSONS_MAX:
-            break
-        text += item
-    return text if text != head else ''
+def lessons_for(task, failure: str = '') -> str:
+    """What the free critic is told of past catches: the matched class's short lesson and the paid catches related by
+    files, at most LESSONS_MAX characters (factory_classes.critic_lesson)."""
+    from tools import factory_classes
+    return factory_classes.critic_lesson(task, failure)

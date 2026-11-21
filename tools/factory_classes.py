@@ -1,7 +1,10 @@
 """<id>, the register of failure classes: every failed attempt of the loop gets a class, classes are counted over the telemetry, a class that repeated and has no open self-fix becomes a self-fix question for the head."""
 
+import json
+import os
 import re
 from datetime import datetime
+from pathlib import Path
 
 CLASSES = (
     # first: a leak or a waste is named by its own word whatever gate, critic or block reported it
@@ -77,13 +80,18 @@ def remedy_of(cls):
     return next((rem for cid, _, _, rem in CLASSES if cid == cls), '')
 
 
-def cases(rows, cls, exclude_task='', k=3, clean=None):
+def cases(rows, cls, exclude_task='', k=3, clean=None, files_of=None, mine=None):
     """The newest distinct 'reason: detail' examples of class ``cls`` from tasks other than ``exclude_task``; ``clean``
-    (text -> text or None) screens each one, a refused example is skipped."""
+    (text -> text or None) screens each one, a refused example is skipped. With ``mine`` (the files of the asking task)
+    and ``files_of`` (task id -> its files) only a case of a task touching one of those files counts: a failure of an
+    unrelated task never goes into a prompt (live 21.11: <id> was shown <id>, <id> and <id>)."""
     res = []
+    want = set(_names(mine)) if mine is not None else None
     for r in reversed(list(rows)):
         reason = r.get('reason')
         if not reason or r.get('task_id') == exclude_task:
+            continue
+        if want is not None and not want & set(_names(files_of(r.get('task_id')) if files_of else ())):
             continue
         detail = r.get('reason_detail') or ''
         if classify(reason, detail) != cls:
@@ -98,8 +106,9 @@ def cases(rows, cls, exclude_task='', k=3, clean=None):
 
 
 def note(cls, examples):
-    """One line for the coder of a task refused with class ``cls``: the class, its known remedy, past cases."""
-    return f"[класс {cls}] known remedy: {remedy_of(cls)}; past cases: " + ' | '.join(e.replace('\n', ' ') for e in examples)
+    """One line for the coder of a task refused with class ``cls``: the class, its known remedy, past cases
+    (the same text as lesson(), without the registry's counters)."""
+    return _compose(cls, examples)
 
 
 # a local path (drive or UNC) up to the next blank, quote or separator: it names the machine, never the defect
@@ -127,3 +136,218 @@ def question(cls, info, k=6, clean=None, width=300, max_tasks=12):
                 break
     examples = '\n'.join(f"- {e}" for e in reversed(picked))
     return f"Self-fix {cls}: failed {n} times (tasks: {tasks}). Examples:\n{examples}\nknown remedy: {remedy}"
+
+
+# ---- the living registry (rule 3 of 21.11): hits, last cases, lesson counters of every class, built-in or paid ------
+LESSON_MAX = 400      # one lesson, whatever the class: it is the only registry text a coder or a critic ever reads
+LESSON_CASES = 2      # past cases in a lesson, of the same class and related files
+CASES_KEPT = 5        # last cases the registry keeps per class
+WEAK_AFTER = 5        # a lesson shown this often with no pass after it is a weak hypothesis and is not shown
+_CASE_WIDTH = 95
+
+
+def registry_dir():
+    """Where classes.json lives: FACTORY_CLASSES_DIR, else the paid critic's state dir; None inside a test without
+    either (a test never touches the live registry)."""
+    d = os.environ.get('FACTORY_CLASSES_DIR') or os.environ.get('FACTORY_PAID_DIR')
+    if d:
+        return Path(d)
+    if os.environ.get('PYTEST_CURRENT_TEST'):
+        return None
+    from tools import factory_paid_critic
+    return factory_paid_critic.state_dir()
+
+
+def _path(base):
+    base = Path(base) if base else registry_dir()
+    return base / 'classes.json' if base else None
+
+
+def _load(base):
+    path = _path(base)
+    try:
+        data = json.loads(path.read_text(encoding='utf-8')) if path else {}
+    except (OSError, ValueError):
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    data.setdefault('classes', {})
+    data.setdefault('pending', {})
+    return data
+
+
+def _save(base, data):
+    path = _path(base)
+    if not path:
+        return
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(path.name + '.tmp')
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding='utf-8')
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
+def _names(files):
+    return [str(f).replace('\\', '/').rsplit('/', 1)[-1].lower() for f in (files or ()) if str(f).strip()]
+
+
+def _builtin(cls):
+    return next(((sym, rem) for cid, _, sym, rem in CLASSES if cid == cls), None)
+
+
+def _blank(cls):
+    b = _builtin(cls)
+    return {'hits': 0, 'shown': 0, 'helped': 0, 'weak': False, 'last_cases': [], 'paid': b is None,
+            'hypothesis': ('showing this lesson makes the next attempt pass: ' + b[0]) if b else '',
+            'lock': b[1] if b else ''}
+
+
+def _slot(data, cls):
+    e = data['classes'].setdefault(cls, _blank(cls))
+    for k, v in _blank(cls).items():
+        e.setdefault(k, v)
+    return e
+
+
+def entry(cls, base=None):
+    """The registry row of ``cls`` (a copy; zero counters when the class was never seen)."""
+    return dict(_slot(_load(base), cls))
+
+
+def match(reason, detail='', base=None):
+    """The class of a failure, mechanically: the built-in regex table first, then the paid classes whose slug words
+    all occur in the text; 'unknown' otherwise."""
+    text = f"{reason} {detail}".lower()
+    for cid, e in _load(base)['classes'].items():       # a paid class is the more specific: its slug words, all of them
+        words = [w for w in re.split(r'[^a-z0-9]+', cid) if len(w) > 2]
+        if e.get('paid') and len(words) >= 2 and all(w[:max(3, len(w) - 2)] in text for w in words):
+            return cid
+    return classify(reason, detail)
+
+
+def _case(task_id, files, text, ts):
+    text = _LOCAL_PATH.sub('<path>', str(text)).replace('\r', ' ').replace('\n', ' ')[:300]
+    return {'task': task_id, 'files': _names(files)[:6], 'text': text, 'ts': ts or datetime.now().isoformat(timespec='seconds')}
+
+
+def _add_case(e, case):
+    e['hits'] += 1
+    e['last_cases'] = (e['last_cases'] + [case])[-CASES_KEPT:]
+
+
+def _settle(data, task_id, passed):
+    """The lesson shown to ``task_id`` before this attempt did its work if the attempt passed."""
+    cls = data['pending'].pop(task_id, None)
+    if cls and passed:
+        _slot(data, cls)['helped'] += 1
+
+
+def record_failure(task_id, files, reason, detail='', *, ts='', base=None):
+    """A failed attempt: count it in its class, keep it as a last case, and the pending lesson did not help."""
+    if not reason or (base is None and registry_dir() is None):
+        return 'unknown'
+    data = _load(base)
+    cls = match(reason, detail, base)
+    _settle(data, task_id, False)
+    if cls != 'unknown':
+        _add_case(_slot(data, cls), _case(task_id, files, f"{reason}: {detail}".strip(': '), ts))
+    _save(base, data)
+    return cls
+
+
+def record_pass(task_id, base=None):
+    """A passed attempt: the lesson shown to the task before it, if any, helped."""
+    if base is None and registry_dir() is None:
+        return
+    data = _load(base)
+    if task_id in data['pending']:
+        _settle(data, task_id, True)
+        _save(base, data)
+
+
+def record_paid(task_id, title, files, cls, symptom, *, ts='', base=None):
+    """A catch of the paid critic that the free chain missed: the same registry, marked paid."""
+    if not cls or (base is None and registry_dir() is None):
+        return
+    data = _load(base)
+    e = _slot(data, cls)
+    if _builtin(cls) is None:
+        e['paid'] = True
+        e['lock'] = e['lock'] or str(symptom)[:160]
+        e['hypothesis'] = e['hypothesis'] or 'checking for this defect makes the free critic catch it: ' + str(symptom)[:160]
+    c = _case(task_id, files, symptom, ts)
+    c['title'] = str(title)[:80]
+    _add_case(e, c)
+    _save(base, data)
+
+
+def _compose(cls, examples, limit=LESSON_MAX):
+    b = _builtin(cls)
+    cases = [str(x).replace('\n', ' ')[:_CASE_WIDTH] for x in examples][:LESSON_CASES]
+    tail = ('; past cases: ' + ' | '.join(cases)) if cases else ''
+    room = limit - len(tail)
+    for head in ((f"[класс {cls}] {b[0]}; known remedy: {b[1]}", f"[класс {cls}] known remedy: {b[1]}") if b
+                 else (f"[класс {cls}] known defect",)):
+        if len(head) <= room:
+            return head + tail
+    return (head[:max(room, 60)] + tail)[:limit]
+
+
+def lesson(cls, task_id, files, *, base=None, clean=None, examples=None):
+    """The one short lesson of class ``cls`` for the next coder of ``task_id`` (touching ``files``): '' while the class
+    is a weak hypothesis (shown WEAK_AFTER times and never followed by a pass). Past cases are the registry's, of the same
+    class and files that overlap ``files`` (or the ``examples`` the caller already chose); the show is counted and left
+    pending until the task's next outcome (record_failure / record_pass) says whether it helped."""
+    data = _load(base)
+    e = _slot(data, cls)
+    if e.get('weak'):
+        return ''
+    if examples is None:
+        mine = set(_names(files))
+        examples = []
+        for c in reversed(e['last_cases']):
+            if c['task'] == task_id or not mine & set(c.get('files') or ()):
+                continue
+            t = clean(c['text']) if clean else c['text']
+            if t and t not in examples:
+                examples.append(t)
+            if len(examples) >= LESSON_CASES:
+                break
+    text = _compose(cls, examples)
+    if base is not None or registry_dir() is not None:
+        e['shown'] += 1
+        if e['shown'] >= WEAK_AFTER and e['helped'] == 0:
+            e['weak'] = True
+        data['pending'][task_id] = cls
+        _save(base, data)
+    return text
+
+
+def critic_lesson(task, failure='', *, base=None):
+    """For the free critic: the lesson of the class matched to the earlier rejections (no cases) and the paid catches
+    related by files, all in LESSON_MAX characters. '' when nothing matches."""
+    if base is None and registry_dir() is None:
+        return ''
+    data = _load(base)
+    parts = []
+    cls = match('review: ' + str(failure), str(failure), base) if failure else 'unknown'
+    if cls != 'unknown' and not (data['classes'].get(cls) or {}).get('weak'):
+        b = _builtin(cls)
+        parts.append(f"{cls}: {b[0]}; look for it" if b else f"{cls}: {(data['classes'][cls].get('lock') or '')[:120]}")
+    mine = set(_names(getattr(task, 'touch_files', ())))
+    paid = []
+    for cid, e in data['classes'].items():
+        if e.get('paid') and cid != cls and e.get('last_cases') and mine & {n for c in e['last_cases'] for n in c.get('files') or ()}:
+            paid.append(f"{cid}: {(e['lock'] or '')[:100]}")
+    parts += paid[:LESSON_CASES]
+    if not parts:
+        return ''
+    head = 'Known defect classes to check:'
+    out = head
+    for p in parts:
+        if len(out) + len(p) + 3 > LESSON_MAX:
+            break
+        out += '\n- ' + p
+    return out if out != head else ''

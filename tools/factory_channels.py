@@ -87,13 +87,38 @@ class ChannelUnavailable(InvalidPlan):
         self.wait_s = float(wait_s)
 
 
-def estimate_tokens(prompt_chars: int, read_chars: int = 0, overhead: int | None = None) -> int:
-    """INPUT tokens of ONE request: the prompt + the files the model will read with its tool (chars / 3.5) +
-    the engine overhead: Kilo's system prompt and tool schemas by default, ``overhead`` for the light engine
-    (one REST request, no tools). TPM counts input tokens only (see the module docstring), so the answer is not
-    booked."""
-    return (math.ceil(max(0, prompt_chars) / CHARS_PER_TOKEN) + math.ceil(max(0, read_chars) / CHARS_PER_TOKEN)
-            + (KILO_OVERHEAD_TOKENS if overhead is None else max(0, overhead)))
+# Russian text is 2-3x more tokens per char than English (a Cyrillic word splits into many pieces): 3.5 chars a
+# token is the Latin rate, about 1.4 is the Cyrillic one (<id>: a Russian file broke the 16K TPM window of Gemma).
+CYRILLIC_CHARS_PER_TOKEN = 1.4
+# Output limits per model family (<id>); a model that is not listed has the caller's default. Gemma 4 spends its
+# output limit on reasoning, so its answer is capped lower and a cut answer is never judged.
+MODEL_MAX_OUTPUT = (('google/gemma-4', 4096),)
+
+
+def max_output_for(model, default: int) -> int:
+    for prefix, limit in MODEL_MAX_OUTPUT:
+        if str(model or '').startswith(prefix):
+            return min(default, limit)
+    return default
+
+
+def cyrillic_share(text) -> float:
+    """Share of the letters of ``text`` that are Cyrillic (0.0 for no letters)."""
+    letters = [c for c in str(text or '') if c.isalpha()]
+    if not letters:
+        return 0.0
+    return sum('Ѐ' <= c <= 'ӿ' for c in letters) / len(letters)
+
+
+def estimate_tokens(prompt_chars: int, read_chars: int = 0, overhead: int | None = None, cyrillic: float = 0.0) -> int:
+    """INPUT tokens of ONE request: the prompt + the files the model will read with its tool (chars / 3.5, or
+    / 1.4 for the ``cyrillic`` share of them) + the engine overhead: Kilo's system prompt and tool schemas by
+    default, ``overhead`` for the light engine (one REST request, no tools). TPM counts input tokens only (see
+    the module docstring), so the answer is not booked."""
+    share = min(1.0, max(0.0, cyrillic))
+    per_char = (1 - share) / CHARS_PER_TOKEN + share / CYRILLIC_CHARS_PER_TOKEN
+    chars = max(0, prompt_chars) + max(0, read_chars)
+    return math.ceil(chars * per_char) + (KILO_OVERHEAD_TOKENS if overhead is None else max(0, overhead))
 
 
 def validate(channels):
@@ -201,7 +226,8 @@ def missing_for_good(state, channel) -> bool:
             and type(row.get('missing')) is int and row['missing'] >= MISSING_STREAK)
 
 
-def route_order(channels, role, attempt, tokens, *, preferred=None, exclude_model=None, skip_tiers=(), state=None):
+def route_order(channels, role, attempt, tokens, *, preferred=None, exclude_model=None, skip_tiers=(), state=None,
+                later=False):
     """Channels in the order a call tries them. Coder, attempt 1: main, small (only when ``tokens`` fit its tpm),
     escalation; attempt 2 and later: escalation, main. Reviewer: small first; cross-review: main first.
     ``exclude_model`` (the coder's model) never reviews its own work; a collection of models excludes them all (the
@@ -209,7 +235,8 @@ def route_order(channels, role, attempt, tokens, *, preferred=None, exclude_mode
     ``skip_tiers``: tiers this call may not use (<id> small_follow_up 'off': no small-tier model as a later
     tournament candidate). ``state`` (the quota state): inside a tier the models that keep failing go last, the
     rest follow the live reliability rating (``preferred`` first among equals), and a channel that answers 404 on
-    every call is left out until its config changes."""
+    every call is left out until its config changes. ``later``: a later candidate of one tournament (<id>): the
+    earlier one already spent part of the same minute, so the small tier needs room for two runs."""
     key = ('code', 1 if attempt <= 1 else 2) if role == 'code' else role
     ranks = _ROLE_TIERS[key]
     excluded = excluded_models(exclude_model)
@@ -218,7 +245,7 @@ def route_order(channels, role, attempt, tokens, *, preferred=None, exclude_mode
         tier = tier_of(channel)
         if tier not in ranks or tier in skip_tiers or channel['model'] in excluded:
             continue
-        if tier == 'small' and small_minute_need(tokens, channel) > channel['tpm']:    # Gemma only when a minute of it fits
+        if tier == 'small' and small_minute_need(tokens, channel) * (2 if later else 1) > channel['tpm']:    # Gemma only when a minute of it fits
             continue
         if state is not None and missing_for_good(state, channel):
             continue
@@ -596,6 +623,9 @@ def _walk_details(body):
     return quota, retry
 
 
+_TOKEN_LIMIT_TEXT = re.compile(r'token.{0,60}(exceed|limit|too (many|large|long)|maximum)|(exceed|too (many|large|long)).{0,40}token|context.{0,10}(length|window)', re.I | re.S)
+
+
 def _find(obj, key, depth=0):
     """First value of ``key`` anywhere inside a parsed event (nested dicts/lists), else None."""
     if depth > 6:
@@ -638,6 +668,11 @@ def _classify_error_event(error: dict):
     if status is None and isinstance(body, dict) and type(body.get('error', {}).get('code')) is int:
         status = body['error']['code']
     quota, retry = _walk_details(body)
+    header = _find(body, '_retry_after')
+    if retry is None and isinstance(header, (int, float)) and not isinstance(header, bool) and header > 0:
+        retry = float(header)      # the Retry-After header of the answer (the runner puts it into the body)
+    if text and status == 400 and _TOKEN_LIMIT_TEXT.search(text):
+        return _info('too_big', status, name, message)      # the request is over the model's window: shrink it
     quota_text = ' '.join(quota) or text
     if _REGION_TEXT.search(text) or status == 403:
         return _info('region', status, name, message)
@@ -669,7 +704,7 @@ def _classify_error_event(error: dict):
         if _find(body, 'provider_code') is not None:       # the UPSTREAM provider of one model, not the account
             info['scope'] = 'model'
         return info
-    if status is None and name == 'EmptyAnswer':
+    if status is None and name in ('EmptyAnswer', 'TruncatedAnswer'):
         # HTTP 200 and no answer: the model spent its whole output limit (on reasoning); the model, not the account
         return _info('transient', None, name, message)
     if status is None and name == 'NetworkError':
@@ -783,7 +818,7 @@ def apply_failure(state, channel, info, *, env=None, now=None) -> dict:
             return cool_channel(state, channel, now=now, seconds=seconds)
         cool(state, channel, now=now, seconds=seconds)     # a daily quota or the account's own budget: the whole key
         return {'action': 'cool', 'cool_s': seconds}
-    if kind == 'transient' and (info.get('status') in OVERLOAD_STATUSES or info.get('name') == 'EmptyAnswer'):
+    if kind == 'transient' and (info.get('status') in OVERLOAD_STATUSES or info.get('name') in ('EmptyAnswer', 'TruncatedAnswer')):
         # "This model is currently experiencing high demand" (503): the MODEL is overloaded, not the account. Cooled,
         # the retry and the next pass take another channel (live 19.11 18:18-18:20: two passes were deferred on a
         # 503 of gemini-3.5-flash-lite while three other channels idled).

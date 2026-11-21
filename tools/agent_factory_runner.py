@@ -878,7 +878,7 @@ def review_candidate(task: Task, workdir: Path, model: str, invoke, *,
                 '\nReject this candidate if it still has a defect named there.\n') if rejected else ''
         # acceptance 20.11 (<id> and six before): the critics saw only the title ("Тест для <id>") and judged "the
         # described defect" by the test's own comment. They get the task text the coder got (same redaction, same cap).
-        lessons = paid_critic.lessons_for(task)   # owner: catches of the paid critic that free critics missed
+        lessons = paid_critic.lessons_for(task, rejected or '')   # owner: catches of the paid critic that free critics missed
         goal = getattr(task, 'goal', '') or ''
         said_goal = ('Task text (what the coder was asked):\n' + redact(scrub_paths(goal))[:1500] + '\n') if goal else ''
         head = ('Review this patch task: ' + redact(task.title) + '.\n' + said_goal + checks + GATE_PASSED + '\n' + told +
@@ -1443,6 +1443,15 @@ def _squeeze(line: str) -> str:
     return code + ('#' + comment[1:] if mark else '')
 
 
+_LITERAL = re.compile(r'''"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*\'''')
+
+
+def _bracket_depth(line: str) -> int:
+    """Brackets a code line opens minus the ones it closes (string literals and the comment left out)."""
+    code = _LITERAL.sub('', line).partition('#')[0]
+    return sum(code.count(c) for c in '([{') - sum(code.count(c) for c in ')]}')
+
+
 def _replace_squeezed(lines: list, want: list, replace: str) -> str | None:
     """The SEARCH lines equal ONE place of the file once the whitespace inside each line is ignored (the file may be
     written compactly, 'f(a,b)', the model in PEP8, 'f(a, b)'); line breaks must agree. The REPLACE lines stay as the
@@ -1458,14 +1467,17 @@ def _replace_squeezed(lines: list, want: list, replace: str) -> str | None:
 
     def shift_at(i):
         """The one indent difference of every code line of the place, or None when the lines disagree."""
-        found = None
+        found, depth = None, 0
         for got, wanted in zip(lines[i:i + n], want):
             if not wanted.strip():
                 continue
             delta = len(lead(got)) - len(lead(wanted))
-            if found is not None and delta != found:
+            # <id> (replay 21.11): a continuation line of an open bracket is aligned by the model by eye, a column
+            # off ('def f(a,' / '      b):'); its words are equal (the keys), only a statement line is pinned
+            if found is not None and delta != found and depth <= 0:
                 return None
-            found = delta
+            found = delta if found is None else found
+            depth += _bracket_depth(got)
         return found
 
     places = [i for i in range(len(lines) - n + 1)
@@ -1724,6 +1736,28 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 _LIGHT_OPENER = urllib.request.build_opener(_NoRedirect)
 
 
+def _with_retry_after(raw: bytes, header) -> bytes:
+    """<id>: the Retry-After header (seconds) of an error answer travels in the body as ``_retry_after``, where
+    classify() reads it; a date or garbage is ignored, a body that is not JSON is wrapped."""
+    try:
+        seconds = float(str(header).strip())
+    except (TypeError, ValueError):
+        return raw
+    if not 0 < seconds <= 3600:
+        return raw
+    try:
+        body = json.loads(raw.decode('utf-8'))
+    except (ValueError, UnicodeDecodeError):
+        body = None
+    if isinstance(body, dict):
+        body['_retry_after'] = seconds
+    elif isinstance(body, list) and len(body) == 1 and isinstance(body[0], dict):
+        body = dict(body[0], _retry_after=seconds)
+    else:
+        body = {'error': {'message': (raw or b'')[:300].decode('utf-8', 'replace')}, '_retry_after': seconds}
+    return json.dumps(body).encode('utf-8')
+
+
 def _light_post(url: str, key: str, body: dict, timeout: float) -> tuple[int | None, bytes]:
     """(HTTP status or None, body). The key travels only in the Authorization header, never in a log."""
     request = urllib.request.Request(url, data=json.dumps(body).encode('utf-8'), method='POST',
@@ -1733,7 +1767,7 @@ def _light_post(url: str, key: str, body: dict, timeout: float) -> tuple[int | N
             return response.status, response.read()
     except urllib.error.HTTPError as error:
         try:
-            return error.code, error.read()
+            return error.code, _with_retry_after(error.read(), error.headers.get('Retry-After') if error.headers else None)
         except (OSError, http.client.HTTPException):
             return error.code, b''
     except (OSError, ValueError, http.client.HTTPException) as error:   # URLError, timeouts, resets
@@ -1824,9 +1858,16 @@ def _keep_answer(workdir: Path, text: str) -> None:
         pass
 
 
+CANDIDATE_TEMPERATURES = (0.2, 0.5, 0.8)   # <id>: every tournament candidate samples differently, not the same answer again
+
+
+def candidate_temperature(k: int) -> float:
+    return CANDIDATE_TEMPERATURES[min(max(0, int(k)), len(CANDIDATE_TEMPERATURES) - 1)]
+
+
 def light_attempt(task: Task, workdir: Path, model: str, timeout: int = LIGHT_TIMEOUT_S,
                   *, prompt_override: str | None = None, steps: int | None = None,
-                  key_env: str | None = None, post=None) -> tuple[int, bytes, bytes]:
+                  key_env: str | None = None, post=None, temperature: float = 0.2) -> tuple[int, bytes, bytes]:
     """The light engine with model_attempt's contract: ``(rc, Kilo-shaped events, note)``. A task without
     touch_files (the reviewer's copy) only answers; a coder task gets its edit blocks applied in ``workdir``.
     ``post`` replaces the HTTP call (tests never reach the network)."""
@@ -1845,7 +1886,8 @@ def light_attempt(task: Task, workdir: Path, model: str, timeout: int = LIGHT_TI
     if not key:
         return 1, _light_error(401, b'{"error": {"message": "no API key in the environment"}}'), b''
     review = not task.touch_files
-    body = {'model': model_id, 'max_tokens': LIGHT_MAX_OUTPUT, 'temperature': 0 if review else 0.2,
+    body = {'model': model_id, 'max_tokens': channels.max_output_for(model, LIGHT_MAX_OUTPUT),
+            'temperature': 0 if review else temperature,
             'messages': [{'role': 'system', 'content': LIGHT_REVIEW_RULES if review else light_rules(task, workdir)},
                          {'role': 'user', 'content': prompt}]}
     if provider == 'openrouter':
@@ -1872,6 +1914,9 @@ def light_attempt(task: Task, workdir: Path, model: str, timeout: int = LIGHT_TI
         text = _LIGHT_THOUGHT.sub('', str(content)).strip()
     except (ValueError, KeyError, IndexError, TypeError, AttributeError):
         return 1, _light_error(None, b'unreadable answer', 'UnreadableAnswer'), b''
+    if choice.get('finish_reason') in ('length', 'max_tokens') and text and not text.lstrip().upper().startswith('CANNOT'):
+        # <id>: an answer cut by the output limit is a half edit: never applied, never judged; the next candidate is told
+        return 1, _light_error(None, b'the answer was cut by the output limit', 'TruncatedAnswer'), b''
     if not text and choice.get('finish_reason') in ('length', 'max_tokens'):
         # the whole output limit went into reasoning (Gemma 4, live 20.11: 13 of 16 coder calls since midnight, ~100 s
         # each; the API refuses a thinking budget or level for it): no answer from this model now, another one is asked
@@ -2188,7 +2233,7 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
         return end(apply, reason=reason, reason_detail=redact(text)[:400])
 
     def call(role: str, call_task: Task, directory_for, preferred: str, prompt: str,
-             *, exclude_model: str | None = None, skip_tiers: tuple = ()) -> tuple[int, bytes, bytes]:
+             *, exclude_model: str | None = None, skip_tiers: tuple = (), later: bool = False) -> tuple[int, bytes, bytes]:
         """One real model call with reservation, charging, classification, one transient retry. ``skip_tiers``:
         channel tiers this call may not use (factory_channels.route_order)."""
         ctx['role'] = role
@@ -2196,7 +2241,8 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
             raise PromptTooLarge(str(len(prompt)))
         light = ctx['light'] = engine_for(role, call_task) == 'light'    # one request, the files travel in the prompt
         base_tokens = channels.estimate_tokens(len(prompt), 0 if light else ctx['read_chars'],
-                                               overhead=LIGHT_OVERHEAD_TOKENS if light else None)
+                                               overhead=LIGHT_OVERHEAD_TOKENS if light else None,
+                                               cyrillic=channels.cyrillic_share(prompt))
         steps = 1 if light else (REVIEW_STEPS if role == 'review' else PROVIDER_STEPS)
         booked = 1 if light else requests_for(steps)   # the whole run: what choose() checks and reserve() books; reconcile() writes the fact
         def booked_one(row) -> None:
@@ -2214,11 +2260,12 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                 route = 'review' if role == 'review' else 'code'
                 live_state = ck.read().get('channel_quotas') or {}    # a fresh private copy: ratings, parked 404s, cooling
                 order = channels.route_order(configured, route, attempt, base_tokens, preferred=preferred,
-                                             exclude_model=exclude_model, skip_tiers=skip_tiers, state=live_state)
+                                             exclude_model=exclude_model, skip_tiers=skip_tiers, state=live_state,
+                                             later=later)
                 if not order and route == 'code':     # no escalation/main channel at all: any channel is better than none
                     order = channels.route_order(configured, route, 1, 0, preferred=preferred,
                                                  exclude_model=exclude_model,   # never a model the tournament tried
-                                                 skip_tiers=skip_tiers, state=live_state)
+                                                 skip_tiers=skip_tiers, state=live_state, later=later)
                 if not order:
                     raise NoIndependentReviewer()
                 if not light:
@@ -2259,6 +2306,8 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
             try:
                 directory = directory_for(retry)
                 engine = light_attempt if light else model_attempt
+                if light:
+                    kwargs['temperature'] = candidate_temperature(ctx.get('candidate') or 0)
                 code, stdout, stderr = engine(call_task, directory, chosen, timeout=240,
                                               prompt_override=prompt, steps=steps, **kwargs)
             except BaseException:
@@ -2891,7 +2940,7 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                     skip = () if small_follow_up or not k else ('small',)        # <id> small_follow_up
                     excluded = coder_exclusions(tried)
                     try:
-                        return call(role, task, dir_for, chosen, k_prompt, exclude_model=excluded, skip_tiers=skip)
+                        return call(role, task, dir_for, chosen, k_prompt, exclude_model=excluded, skip_tiers=skip, later=bool(k))
                     except channels.ChannelUnavailable:
                         if len(excluded or ()) <= len(tried):
                             raise
@@ -2902,7 +2951,7 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                             raise _FreshBusy()
                         events.append('other_model_none_free')
                         return call(role, task, dir_for, chosen, k_prompt, exclude_model=list(tried) or None,
-                                    skip_tiers=skip)
+                                    skip_tiers=skip, later=bool(k))
 
                 try:
                     rc, out, err = timed('code_s', coder_call)

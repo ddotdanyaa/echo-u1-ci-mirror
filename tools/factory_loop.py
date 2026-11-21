@@ -47,7 +47,9 @@ try:                                   # the public mirror (factory_mirror.MODUL
     from tools import factory_cloud_gate  # noqa: <id>
 except ImportError:
     factory_cloud_gate = None
+from tools import factory_closures, factory_metrics  # noqa: <id>  (<id> hourly report, <id> closures writer)
 from tools import factory_process  # noqa: <id>
+from tools import factory_survive as SV  # noqa: <id>
 from tools import factory_quota as quota_ledger  # noqa: <id>
 
 RUNNER_TIMEOUT_S = int(F.LEASE_LIFETIME_S)  # one runner pass = one lease; not a switch
@@ -300,6 +302,8 @@ class Config:
     chunk: int = 60
     triage_retry_s: int = 600       # 21.11 (was 1800)
     triage_idle_sleep: int = 120
+    metrics_since: str = ""         # <id>: cohort start (ISO time) of the hourly metrics span; empty = everything
+    metrics_every_s: int = 3600     # <id>: one metrics span per hour
     seen_retry_s: int = 3600        # 21.11 (was 21600) <id>: a skipped/stale backlog row is triaged again after this term, edit or not
     requeue_term_s: int = 900       # 21.11 (was 3600) <id>: a FAILED task of a retryable class is given back this long after its last try
     not_code_term_s: int = 7 * 86400   # <id>: a row the head model called not code is looked at again after this term
@@ -454,7 +458,7 @@ class Loop:
 
     def __init__(self, cfg: Config, *, triage_fn=None, runner_cmd=None, clock=time.time,
                  sleep=time.sleep, power_fn=set_execution_state, free_ram_fn=free_ram_bytes,
-                 extra_env=None, startup_notes=None, rng=None, wait_fn=None, cloud_fn=None):
+                 extra_env=None, startup_notes=None, rng=None, wait_fn=None, cloud_fn=None, reap_fn=None):
         if cfg.review_model in (cfg.small_model, cfg.large_model):
             raise ValueError("review model must differ from the code model: " + cfg.review_model)
         self.cfg = cfg
@@ -498,6 +502,9 @@ class Loop:
         self._bg = None            # the one background job in flight (Prefetch) or None
         self._bg_cancel = threading.Event()
         self._tel_lock = threading.RLock()
+        self.reap_fn = reap_fn          # None: no reaping (tests); main passes the real one
+        self._idle = SV.IdleWatch()
+        self._reap_at = -1e18
 
     def arm(self, tid: str, name: str, ls: dict | None = None) -> str:
         """<id>: the decided winner of the experiment, else the task's stable hash arm."""
@@ -690,6 +697,8 @@ class Loop:
                     self.event("infra", status="refused", reason="already_running", pid=other)
                     return False
                 self.event("infra", status="cleared", reason="stale_pid", pid=other)
+                if other:
+                    self.event("loop", action="RECOVER", status="ok", reason="crash_recovery", pid=other)
                 try:
                     self.pidfile.unlink()
                 except OSError as e2:
@@ -842,6 +851,42 @@ class Loop:
             pass
         except OSError as e:
             self.err("release pid", e)
+
+    def _reap_real(self, **kw) -> list:
+        return SV.reap(procs_fn=SV.list_processes, kill_fn=SV.kill_tree, **kw)
+
+    def _survive_tick(self) -> None:
+        """<id>: once per REAP_EVERY_S the orphan reaper (factory-owned children only), the telemetry tail is kept
+        by _rotate_telemetry, and the idle watchdog: READY>0 and RUNNING=0 for 10 min -> one event and the stale
+        global / task waits are healed. An aid: it never raises into the loop."""
+        try:
+            now = self.clock()
+            if self.reap_fn is not None and now - self._reap_at >= SV.REAP_EVERY_S:
+                self._reap_at = now
+                markers = [str(self.stage), str(self.dir / "workers"), str(self.cfg.worktree)]
+                live = [w.owned.pid for w in self.pool.workers.values() if getattr(w, "owned", None) is not None]
+                killed = self.reap_fn(now=now, markers=markers, live_pids=live, self_pid=os.getpid())
+                if killed:
+                    self.event("infra", status="reaped", reason="orphan_children", pids=list(killed)[:20])
+            if self.pool.workers:
+                self._idle.observe(ready=0, running=1, now=now)
+                return
+            _tasks, state = self.load()
+            rows = state["tasks"].values()
+            ready = sum(1 for r in rows if r.get("status") == "READY")
+            running = sum(1 for r in rows if r.get("status") == "RUNNING")
+            if not self._idle.observe(ready=ready, running=running, now=now):
+                return
+            ls = self.ls()
+
+            def fix(st):
+                return SV.heal(st, ls, now=now)
+            got = self._tx(fix)
+            self.save_ls(ls)
+            self.event("infra", status="healed", reason="idle_selfheal", ready=ready,
+                       global_wait=got["global_wait"], tasks=len(got["tasks"]), task_ids=got["tasks"][:10])
+        except Exception as e:
+            self.err("survive tick", e)
 
     def release_orphan_leases(self) -> None:
         """At START no runner of this state can be alive (one loop instance by loop.pid; its runners die with
@@ -1018,7 +1063,22 @@ class Loop:
                    base_sha=self.base_sha or None, iteration=self.iterations,
                    experiments=exps or None)
         self._stats()
+        self._hourly_metrics()
         return out
+
+    def _hourly_metrics(self) -> None:
+        """<id>: once an hour a light, LLM-free report of accepted/hour, time and calls per accepted, ECHO vs fac-*."""
+        now = self.clock()
+        last = getattr(self, "_metrics_at", None)
+        if last is not None and now - last < self.cfg.metrics_every_s:
+            return
+        self._metrics_at = now
+        try:
+            rep = factory_metrics.build_report(self.dir, since=self.cfg.metrics_since or None, now=self.ts(),
+                                               paid_spend=factory_metrics_spend_file())
+            self.event("metrics", status="ok", **factory_metrics.span_fields(rep))
+        except Exception as e:
+            self.err("metrics", e)
 
     def _brake(self, streak: int, out: Outcome) -> Outcome:
         """The brake has a term (BRAKE_SPAN_S, 10 min). After it ONE trial pass runs (half-open): a proof closes the
@@ -1041,6 +1101,25 @@ class Loop:
 
     def _iso(self, t: float) -> str:
         return dt.datetime.fromtimestamp(t).astimezone().isoformat(timespec="seconds")
+
+    def _wait_out_brake(self) -> bool:
+        """Owner rule 3 (tactical brakes lift by themselves): a continuous loop (--until) sits the brake's term
+        out in this process and then runs the half-open trial pass, instead of exiting with EXIT_BRAKE for a restart
+        nobody makes (no scheduler is allowed; live 21.11 14:36 the factory stood dead 40 min). True = go on;
+        False = not continuous (--once / no --until), or STOP / the deadline came while waiting."""
+        cfg = self.cfg
+        if not cfg.until or cfg.once:
+            return False
+        self.event("loop", action="BRAKE_WAIT", status="brake", reason="sitting the brake term out")
+        while True:
+            if self.stop.exists() or dt.datetime.fromtimestamp(self.clock()) >= cfg.until:
+                return False
+            b = self.ls().get("brake")
+            b = b if isinstance(b, dict) else {}
+            left = float(b.get("until", 0) or 0) - self.clock()
+            if left <= 0 or b.get("half_open"):
+                return not self._brake_gate()       # flips to half-open: one trial pass
+            self._sleep(min(WAIT_CHUNK_S, left))
 
     def _brake_gate(self) -> bool:
         """True = stay stopped. A BRAKE file with no recorded term (manual or old) gets BRAKE_SPAN_S from now."""
@@ -2122,7 +2201,19 @@ class Loop:
         self.save_ls(ls)
         bid = bid or state["tasks"][tid].get("backlog_id")
         self.event("accept", task_id=tid, backlog_id=bid, status="accepted", reason="accepted_by_coordinator")
+        self._write_closure(tid, bid, state["tasks"][tid])
         return {"task_id": tid, "backlog_id": bid, "reason": "accepted"}
+
+    def _write_closure(self, tid, bid, row) -> None:
+        """<id>: an ACCEPTED ECHO task goes into the backlog's closures table (one atomic idempotent writer); fac-* never."""
+        sha = row.get("commit")
+        if not bid or not sha or str(bid).lower().startswith("fac-"):
+            return
+        try:
+            res = factory_closures.record_closure(self.cfg.backlog, bid, str(sha), "бесплатный контур, принято координатором")
+            self.event("closure", task_id=tid, backlog_id=bid, status=res)
+        except Exception as e:
+            self.err("closure", e)
 
     def _reject_answer(self, tid, bid, state, note) -> dict:
         if not tid or tid not in state["tasks"]:
@@ -3126,6 +3217,14 @@ class Loop:
                        model=self.rs(paid.get("model")), usd=paid.get("usd"), tokens_in=self._num(paid, "tokens_in"),
                        tokens_out=self._num(paid, "tokens_out"), error_class=self.rs(paid.get("class")) or None,
                        base_sha=base)
+        from tools import factory_classes as K_
+        try:        # owner rule 3: the registry counts the failure by class; a pass says the lesson shown before it helped
+            if reason:
+                K_.record_failure(tid, getattr(tasks.get(tid), "touch_files", ()), str(reason), str(res.get("reason_detail") or ""))
+            elif tid:
+                K_.record_pass(tid)
+        except Exception as e:
+            self.err("class registry", e)
         tot = ls["totals"]
         tot["tokens_in"] = tot.get("tokens_in", 0) + (tin or 0)     # unknown usage adds nothing, it is not a zero
         tot["tokens_out"] = tot.get("tokens_out", 0) + (tout or 0)
@@ -3301,10 +3400,17 @@ class Loop:
                       if getattr(t, "privacy_safe", False) is True and not getattr(t, "only_opus", True)}
             rows = [r for r in self._telemetry_rows() if r.get("span") == "run" and r.get("attempt")
                     and r.get("reason") and r.get("task_id") in public]
-            examples = K.cases(rows, cls, exclude_task=tid, k=self.CLASS_CASES, clean=clean)
+            mine = getattr(tasks.get(tid), "touch_files", ()) if tasks else ()
+
+            def files_of(t):
+                return getattr(tasks.get(t), "touch_files", ())
+            examples = K.cases(rows, cls, exclude_task=tid, k=K.LESSON_CASES, clean=clean, files_of=files_of, mine=mine)
             if not examples:
                 return
-            note = F.redact(F.REPEAT_MARK + " " + K.note(cls, examples))[:F.FEEDBACK_MAX_CHARS]
+            lesson = K.lesson(cls, tid, mine, examples=examples)     # '' while the lesson is a weak hypothesis
+            if not lesson:
+                return
+            note = F.redact(F.REPEAT_MARK + " " + lesson)[:F.FEEDBACK_MAX_CHARS]
 
             def add(st):
                 row = st["tasks"].get(tid)
@@ -3907,7 +4013,8 @@ class Loop:
             if cfg.clear_brake:  # only the instance that owns loop.pid may touch the state
                 self.clear_brake()
             if self._brake_gate():
-                return EXIT_BRAKE
+                if not self._wait_out_brake():
+                    return EXIT_BRAKE if not cfg.until or cfg.once else EXIT_OK
             self.clear_stale_lockdir()
             self.release_orphan_leases()
             self._snapshot_answers()   # before the first step: a failing step must still sleep
@@ -3928,10 +4035,18 @@ class Loop:
                     self._drain_before_exit()
                     self.event("loop", action="EXIT", status="deadline", reason="deadline")
                     return EXIT_OK
+                self._survive_tick()                # <id>: reaper, idle watchdog
                 self._selffix()                     # at most once an hour (<id>)
                 self._head_holds()                  # idle: at once, busy: every 20 min (<id>/<id>)
                 out = self.step()
                 self._last_out = out
+                if out.code == EXIT_BRAKE and self.cfg.until and not self.cfg.once:
+                    if self._wait_out_brake():
+                        continue                    # the term is over: the trial pass runs in this process
+                    self._drain_before_exit()       # STOP or the deadline came during the term: a normal end
+                    self.event("loop", action="EXIT", status="stop" if self.stop.exists() else "deadline",
+                               reason="STOP" if self.stop.exists() else "deadline")
+                    return EXIT_OK
                 if out.code is not None:
                     return out.code
                 if cfg.once:
@@ -4108,6 +4223,14 @@ def summary(state_dir, backlog=None, free_ram_fn=free_ram_bytes) -> dict:
             "rows_recognized": rows, "unrecognized_rows": bad, "skipped_files": skipped,
             "free_ram_gb": ram,
             "workers": {"max": max(ks), "mean_k": round(sum(ks) / len(ks), 2)} if ks else None}
+
+
+def factory_metrics_spend_file():
+    try:
+        from tools import factory_paid_critic
+        return factory_paid_critic._spend_file()
+    except Exception:
+        return None
 
 
 def summary_main(argv) -> int:
@@ -4318,7 +4441,7 @@ def main(argv=None) -> int:
                  review_model=a.review_model, env_file=a.env_file, clear_brake=a.clear_brake)
     try:
         loop = Loop(cfg, extra_env=keys, startup_notes=["no key for channel env " + n for n in absent],
-                    cloud_fn=getattr(factory_cloud_gate, "available", None))
+                    cloud_fn=getattr(factory_cloud_gate, "available", None), reap_fn=Loop._reap_real_fn)
     except ValueError as e:
         raise SystemExit(str(e))
     return loop.run()

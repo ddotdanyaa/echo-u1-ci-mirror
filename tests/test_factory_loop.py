@@ -345,3 +345,15 @@ def test_stale_runner_lockdir_is_removed_at_start(env):
 
 
 # ---- telemetry --------------------------------------------------------------------------
+
+
+def test_a_continuous_loop_sits_the_brake_out_and_works_on(env):
+    """Owner rule 3: tactical brakes lift by themselves. Live 21.11 14:36 a brake made the --until loop exit
+    (EXIT_BRAKE) and nothing restarted it for 40 min (no scheduler is allowed). Now the continuous loop waits the
+    term out in the process, runs the half-open trial pass, and works on to its deadline."""
+    import datetime as dt
+    (env.state_dir / "BRAKE").write_text("brake: test\n", encoding="utf-8")
+    until = dt.datetime.fromtimestamp(env.clock.t + 900)          # the brake term is 600 s
+    assert env.loop(until=until).run() == 0                       # the deadline ends it, not the brake
+    assert env.runs() >= 1                                        # the trial pass ran in the same process
+    assert any(x.get("action") == "BRAKE_WAIT" for x in env.events())
