@@ -3206,14 +3206,17 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                     approved = panel_verdict(votes, True, mech_ok)   # no further model: a split goes to the ranking
                     if approved is not None:
                         break
-                    if all(votes):     # rule 4 of 21.11: the paid critic is the insurance second voice when no free
+                    # 22.11 01:50: a lone free REJECT also waited (17 short chains in 30 min, the candidate neither
+                    # accepted nor rejected): the paid critic is the deciding second voice either way; a lone free reject
+                    # is overruled only when the mechanical checks are clean too.
+                    if True:           # rule 4 of 21.11: the paid critic is the insurance second voice when no free
                         paid_second = paid_critic.control(   # model is left (live 17:20-17:50: 19 chains cut short)
                             task, unified_diff(ctx['baseline'], ctx['workdir'], task.touch_files, paid_critic.DIFF_LIMIT)
                             if ctx['baseline'] is not None else '', (exec_text + '\n' + told)[-paid_critic.FAIL_LIMIT:])
                         if paid_second is not None:          # no key, no budget, a fault: the free wait below, as before
                             ctx['paid_done'] = paid_second
                             events.append('paid_second_critic')
-                            approved = paid_second['verdict'] != 'reject'
+                            approved = paid_second['verdict'] != 'reject' and (all(votes) or mech_ok)
                             if not approved:
                                 paid_critic.record_class(task, paid_second)
                                 rejections.append(scrub(redact('paid critic [%s]: %s' % (
