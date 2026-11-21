@@ -3172,6 +3172,19 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                     approved = panel_verdict(votes, True, mech_ok)   # no further model: a split goes to the ranking
                     if approved is not None:
                         break
+                    if all(votes):     # rule 4 of 21.11: the paid critic is the insurance second voice when no free
+                        paid_second = paid_critic.control(   # model is left (live 17:20-17:50: 19 chains cut short)
+                            task, unified_diff(ctx['baseline'], ctx['workdir'], task.touch_files, paid_critic.DIFF_LIMIT)
+                            if ctx['baseline'] is not None else '', (exec_text + '\n' + told)[-paid_critic.FAIL_LIMIT:])
+                        if paid_second is not None:          # no key, no budget, a fault: the free wait below, as before
+                            ctx['paid_done'] = paid_second
+                            events.append('paid_second_critic')
+                            approved = paid_second['verdict'] != 'reject'
+                            if not approved:
+                                paid_critic.record_class(task, paid_second)
+                                rejections.append(scrub(redact('paid critic [%s]: %s' % (
+                                    paid_second['class'], paid_second['reason'] or paid_second['symptom']))))
+                            break
                     # no further model now: one critic never approves alone (live 20.11 16:46, <id> approved by one
                     # critic, its commit rejected 4 min later). The candidate stays pending, the chain starts again
                     # on a later pass; the same postponement ESCALATE_AFTER times in a row is BLOCKED (the term).
@@ -3212,7 +3225,7 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
             return reject('review', 'review: ' + '; '.join(reasons), '; '.join(reasons), changed)
         # owner rule 4: the paid control critic sees only would-be promotions (free chain approved, gates passed).
         # A reject goes back like a free critic's; the catch enters the error-class registry the free review reads.
-        paid = paid_critic.control(task, unified_diff(ctx['baseline'], ctx['workdir'], task.touch_files,
+        paid = ctx.get('paid_done') or paid_critic.control(task, unified_diff(ctx['baseline'], ctx['workdir'], task.touch_files,
                                                       paid_critic.DIFF_LIMIT) if ctx['baseline'] is not None else '',
                                    (exec_text + '\n' + told)[-paid_critic.FAIL_LIMIT:])
         if paid is not None:
