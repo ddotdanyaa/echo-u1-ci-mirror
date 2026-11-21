@@ -51,6 +51,7 @@ ENV_ALLOW = ("PATH", "PATHEXT", "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC"
 POLICY_FILE = "kilo.jsonc"
 PROVIDER_STEPS = 8   # coder: outline -> read by lines -> grep -> edit needs room (3 was too few)
 REVIEW_STEPS = 4     # the reviewer only reads and answers
+TRANSIENT_HOPS = 4   # an overloaded (503) model: up to this many other models at once in the same call, no wait
 
 
 ENV_HOLD_AFTER = 10          # consecutive environment shortages before the long hold (the candidate is kept)
@@ -2365,18 +2366,22 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
         suffix = ':review' if role == 'review' else ''      # a reviewer must not move the coder's remembered channel
         affinity = ['task:' + tid + suffix] + (['family:' + family + suffix] if family else [])
 
-        for retry in (0, 1):
+        hopped, last_info = [], None     # models that answered "overloaded" in THIS call: the next hop skips them
+        for retry in range(1 + TRANSIENT_HOPS):
             selected, at, chosen, kwargs = None, None, preferred, {}
             if configured:
                 route = 'review' if role == 'review' else 'code'
                 live_state = ck.read().get('channel_quotas') or {}    # a fresh private copy: ratings, parked 404s, cooling
+                excl = sorted(channels.excluded_models(exclude_model) | set(hopped)) or None
                 order = channels.route_order(configured, route, attempt, base_tokens, preferred=preferred,
-                                             exclude_model=exclude_model, skip_tiers=skip_tiers, state=live_state,
+                                             exclude_model=excl, skip_tiers=skip_tiers, state=live_state,
                                              later=later)
                 if not order and route == 'code':     # no escalation/main channel at all: any channel is better than none
                     order = channels.route_order(configured, route, 1, 0, preferred=preferred,
-                                                 exclude_model=exclude_model,   # never a model the tournament tried
+                                                 exclude_model=excl,   # never a model the tournament tried
                                                  skip_tiers=skip_tiers, state=live_state, later=later)
+                if not order and hopped:              # every other model is overloaded too: the old transient path
+                    raise ChannelFault(last_info or {'kind': 'transient'})
                 if not order:
                     raise NoIndependentReviewer()
                 if not light:
@@ -2525,6 +2530,13 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                 done = ck.commit(failure)
             else:
                 done = {'cool_s': info.get('retry_after_s') or 0}
+            if kind == 'transient' and selected is not None and retry < TRANSIENT_HOPS:
+                # owner: on a 503 the step does not wait or throw the candidate away, it moves to a free model at
+                # once (live 21.11 20:41-21:01: <id>_test lost three gate-passed candidates, 4-7 min each, because both
+                # review channels were one overloaded Gemma). Only this call skips the model; its cooling is the channel's.
+                hopped.append(chosen)
+                last_info = info
+                continue
             if kind in ('transient', 'network') and retry == 0:
                 if done.get('action') != 'cool_model' and not info.get('streak_cool'):   # cooled: the retry takes another one at once
                     time.sleep(channels.TRANSIENT_RETRY_S)   # (live 20.11: a 503 of Gemma cost ~67 s, 20 s of it here)

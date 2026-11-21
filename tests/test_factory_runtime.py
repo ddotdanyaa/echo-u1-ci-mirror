@@ -522,9 +522,23 @@ def test_server_error_is_retried_once_on_another_model_at_once_without_a_strike(
 def test_apierror_without_a_code_is_transient_and_two_failures_do_not_fail_the_task(rig):
     rig.coder_script = [(1, error_out(None), b''), (1, error_out(None), b'')]
     result = rig.once(max_attempts=1)
-    assert result['status'] == 'READY' and result['reason'] == 'transient'
-    assert rig.sleeps == [20]                     # no model was cooled: the retry waits the transient pause
-    assert rig.state()['tasks']['T1']['status'] == 'READY' and not rig.state().get('strikes')
+    coder = [c for c in result['calls'] if c['role'] == 'code']
+    # owner: a transient fault moves the step to another model at once, without the 20 s pause
+    assert [c['error_class'] for c in coder[:2]] == ['transient', 'transient'] and len(set(c['model'] for c in coder)) == len(coder)
+    assert rig.sleeps == [] and result['status'] == 'REVIEW'
+    assert not rig.state().get('strikes')
+
+
+def test_an_overloaded_reviewer_moves_to_a_third_model_instead_of_deferring_the_candidate(rig):
+    """Live 21.11 20:41-21:01: both review channels were one overloaded Gemma family; <id>_test lost three candidates
+    that had passed the gate (4-7 min each). The review hops to any other free model in the same call."""
+    rig.review_script = [(1, error_out(503), b'')]          # the next model: the rig's approval
+    result = rig.once()
+    review = [c for c in result['calls'] if c['role'] == 'review']
+    assert review[0]['error_class'] == 'transient' and review[1]['error_class'] is None
+    assert review[0]['model'] != review[1]['model'] and rig.sleeps == []      # another model at once, no pause
+    # the review went on (the rig's 3 models leave no second critic: the chain is short, the candidate stays pending)
+    assert result.get('reason') != 'transient' and result.get('pending_review') is True
 
 
 def test_gate_failure_sends_diag_and_previous_diff_to_the_next_attempt(rig):
@@ -1755,8 +1769,8 @@ def test_inside_staging_is_false_when_resolve_leads_outside_even_without_symlink
 def test_task_or_model_trouble_never_counts_toward_the_loop_brake(rig, case):
     if case == 'gate_unknown':
         rig.run_tests_fn = lambda root, tests, timeout_s: G.GateResult(-1, 0, 0, 0, 0, 0, False, 'timeout')
-    elif case == 'transient':
-        rig.coder_script = [(1, error_out(503), b''), (1, error_out(503), b'')]
+    elif case == 'transient':      # every model of the hop chain is overloaded: only then the pass is deferred
+        rig.coder_script = [(1, error_out(503), b'')] * (1 + W.TRANSIENT_HOPS)
     elif case == 'reviewer_failed':
         rig.review_script = [(0, ev(dict(type='text', part=dict(text='prose, not json')), finish()), b'')]
     elif case == 'provider_error':
