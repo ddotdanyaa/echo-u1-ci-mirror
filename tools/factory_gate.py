@@ -451,8 +451,8 @@ def _run_once_raw(root, tests, timeout_s, workdir, wait_s, progress, deselect, w
     tests = [_node(t) for t in tests]
     if not tests:
         return _failure(-1, 'no tests given')
-    if touched is not None and not deselect:    # a trace is dropped by the product route (path stays empty)
-        cloud = _cloud_attempt(root, tests, touched)
+    if touched is not None and not deselect:    # the product route runs the profile plugin in its shards too (same path)
+        cloud = _cloud_attempt(root, tests, touched, trace)
         if cloud is not None:
             return cloud                         # no slot is taken and no RAM is waited for: the run was not here
     # ignore_cleanup_errors: a handle still held after the tree was killed must not crash the pass.
@@ -500,12 +500,13 @@ def _run_once_raw(root, tests, timeout_s, workdir, wait_s, progress, deselect, w
     return _judge(cases, tests, run.returncode, tail, root, path)
 
 
-def _cloud_attempt(root, tests, touched):
+def _cloud_attempt(root, tests, touched, trace=()):
     """The verdict of the cloud gate, or None (ineligible, error, no answer in time): the caller then runs locally,
-    unchanged. Any fault of the cloud path is None, never a verdict."""
+    unchanged. Any fault of the cloud path is None, never a verdict. ``trace``: as in run_tests; the cloud shards run the
+    same profile plugin and the JUnit comes back with the path of the failing tests (parse_junit fills GateResult.path)."""
     try:
         from . import factory_cloud_gate
-        got = factory_cloud_gate.attempt(root, tests, touched)
+        got = factory_cloud_gate.attempt(root, tests, touched, **_traced(trace))
         if not got:
             return None
         xml_text, rc, trusted = got
@@ -552,10 +553,11 @@ def cloud_each(root, names):
 def parse_junit(xml_text, tests, rc, root, tail='') -> GateResult:
     """The verdict of a JUnit XML produced elsewhere (the cloud gate): the same judgement as a local call."""
     try:
-        cases = list(ET.fromstring(xml_text).iter('testcase'))
+        top = ET.fromstring(xml_text)
+        cases = list(top.iter('testcase'))
     except (ET.ParseError, ValueError, TypeError):
         return _failure(rc, 'no readable JUnit XML: ' + str(tail)[-600:])
-    return _judge(cases, [_node(t) for t in tests], rc, str(tail)[-600:], Path(root))
+    return _judge(cases, [_node(t) for t in tests], rc, str(tail)[-600:], Path(root), xml_path(top))
 
 
 def _judge(cases, tests, rc, tail, root, path=()) -> GateResult:
@@ -604,15 +606,36 @@ PROFILE_PLUGIN = 'factory_profile_plugin'
 PATH_MAX = 5000      # entries of GateResult.path kept (it rides in the state's base_red record)
 
 
-def _failing_path(profile) -> tuple:
-    """The union of the functions the failed / erroring tests of a profile file ran; () on any fault."""
+PATH_PROPERTY = 'factory-path'   # the <property> of a merged cloud JUnit that carries GateResult.path (JSON [[rel, qual, line], ..])
+
+
+def path_of(data) -> tuple:
+    """The union of the functions the failed / erroring tests of a profile (the plugin's JSON, parsed) ran; () on any fault."""
     try:
-        data = json.loads(Path(profile).read_text(encoding='utf-8'))
         found = {(str(c[0]), str(c[1]), int(c[2])) for v in data['tests'].values()
                  if isinstance(v, dict) and v.get('outcome') in ('failed', 'error') for c in v.get('calls') or ()}
-    except (OSError, ValueError, KeyError, TypeError, AttributeError, IndexError):
+    except (ValueError, KeyError, TypeError, AttributeError, IndexError):
         return ()
     return tuple(sorted(found))[:PATH_MAX]
+
+
+def _failing_path(profile) -> tuple:
+    """path_of a profile FILE; () on any fault."""
+    try:
+        return path_of(json.loads(Path(profile).read_text(encoding='utf-8')))
+    except (OSError, ValueError):
+        return ()
+
+
+def xml_path(top) -> tuple:
+    """GateResult.path carried by a merged cloud JUnit (its PATH_PROPERTY); () when absent or unreadable."""
+    try:
+        for prop in top.findall('properties/property'):     # the root's own, never a test's record_property
+            if prop.get('name') == PATH_PROPERTY:
+                return tuple(sorted((str(c[0]), str(c[1]), int(c[2])) for c in json.loads(prop.get('value') or '[]')))[:PATH_MAX]
+    except (ValueError, TypeError, IndexError, AttributeError):
+        pass
+    return ()
 
 
 def _exception_text(node) -> str:

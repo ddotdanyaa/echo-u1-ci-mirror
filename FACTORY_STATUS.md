@@ -1,9 +1,11 @@
 # Factory status (generated, structured data only)
 
-Generated: 2026-11-21T07:44:22Z
-Source commit: shab588f7e6647b
+Generated: 2026-11-21T08:35:28Z
+Source commit: sha95469ae98347
 
 ## Commits (sha, time)
+- sha95469ae9 2026-11-21T11:34:35+03:00
+- sha442be6e2 2026-11-21T11:03:23+03:00
 - shab588f7e6 2026-11-21T10:43:56+03:00
 - sha39c023a7 2026-11-21T10:28:16+03:00
 - shaf33c430c 2026-11-21T10:23:50+03:00
@@ -22,8 +24,6 @@ Source commit: shab588f7e6647b
 - sha85d04614 2026-11-20T23:41:52+03:00
 - sha22cce829 2026-11-20T23:31:32+03:00
 - sha1a8b7a7a 2026-11-20T23:24:06+03:00
-- sha1f928dc3 2026-11-20T23:22:22+03:00
-- sha0e14abf3 2026-11-20T22:47:28+03:00
 
 ## Funnel
 | step | count |
@@ -43,16 +43,16 @@ Side counters: blocked=0, parked=0, requeued=2
 Tasks now: DONE=64, FAILED=32, PROMOTED=4, READY=3
 Accepted: 4
 Promoted: 28
-Free RAM, GB: 4.01
-Telemetry rows: 8999 recognised, 0 unrecognised
+Free RAM, GB: 3.06
+Telemetry rows: 9144 recognised, 0 unrecognised
 
 ## Spend per model
 | model | calls | tokens_in | tokens_out | usage_unknown | http_429 | errors |
 |---|---|---|---|---|---|---|
 | google/gemini-3.1-flash-lite | 569 | 3586239 | 259047 | 26 | 0 | 26 |
 | google/gemini-3.5-flash-lite | 768 | 5154053 | 269280 | 20 | 0 | 20 |
-| google/gemini-3.6-flash | 59 | 261862 | 13302 | 18 | 1 | 18 |
-| google/gemini-3.8-flash | 1 | 0 | 0 | 1 | 1 | 1 |
+| google/gemini-3.6-flash | 67 | 281805 | 14037 | 23 | 1 | 23 |
+| google/gemini-3.8-flash | 6 | 21237 | 15 | 3 | 1 | 3 |
 | google/gemma-4-26b-a4b-it | 100 | 253075 | 30404 | 49 | 0 | 49 |
 | google/gemma-4-31b-it | 117 | 140353 | 4594 | 78 | 0 | 78 |
 | openrouter/cohere/north-mini-code:free | 22 | 69376 | 10273 | 5 | 0 | 6 |
@@ -62,14 +62,14 @@ Telemetry rows: 8999 recognised, 0 unrecognised
 | span | rows | calls |
 |---|---|---|
 | answer | 424 | 0 |
-| gate | 1453 | 0 |
-| infra | 134 | 0 |
-| loop | 1732 | 0 |
-| other | 958 | 0 |
+| gate | 1458 | 0 |
+| infra | 137 | 0 |
+| loop | 1795 | 0 |
+| other | 974 | 0 |
 | promote | 39 | 0 |
 | review | 597 | 324 |
-| run | 3561 | 1407 |
-| triage | 101 | 0 |
+| run | 3614 | 1420 |
+| triage | 106 | 0 |
 
 ## Channels (model ids)
 - 1db4ab-gemini-3-8-flash
@@ -97,10 +97,11 @@ Telemetry rows: 8999 recognised, 0 unrecognised
 ## Published files
 Modules: 20
 Tests in the cloud: 112
-Tests not in the cloud: 33
+Tests not in the cloud: 34
 - tests/test_agent_factory.py (backlog-id, call-word, env-path, long-run, pid-port)
 - tests/test_factory_autofeed.py (backlog-id)
 - tests/test_factory_class_cases.py (backlog-id, call-word, path, phone)
+- tests/test_factory_cloud_path.py (email)
 - tests/test_factory_cloud_product.py (long-run)
 - tests/test_factory_context_pinned.py (path)
 - tests/test_factory_decompose.py (backlog-id, call-word, email)
