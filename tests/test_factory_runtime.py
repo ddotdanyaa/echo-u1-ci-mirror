@@ -1125,7 +1125,7 @@ def test_corrupt_defer_streak_and_pending_review_are_treated_as_absent(rig):
     assert F.defer_streak(st, 'T1', 'transient') == 0
     result = rig.once()
     assert result['status'] == 'REVIEW', result
-    rig.coder_script = [(1, error_out(503), b''), (1, error_out(503), b'')]
+    rig.coder_script = [(1, error_out(503), b'')] * (1 + W.TRANSIENT_HOPS)
     rig.edit_state(lambda s: s['tasks']['T1'].update(status='READY', defer_streak=['x'], pending_review=5))
     assert rig.once()['reason'] == 'transient'
 
@@ -2034,7 +2034,7 @@ def shutil_rmtree(path):
 
 
 def test_os_errors_have_their_own_series_apart_from_provider_server_errors(rig):
-    rig.coder_script = [(1, error_out(503), b''), (1, error_out(503), b'')]   # one pass of two 503s: transient streak 1
+    rig.coder_script = [(1, error_out(503), b'')] * (1 + W.TRANSIENT_HOPS)   # every hop overloaded: transient streak 1
     assert rig.once()['reason'] == 'transient'
     rig.ready_again()
     rig.coder_script = []
