@@ -1,75 +1,75 @@
 # Factory status (generated, structured data only)
 
-Generated: 2026-11-21T19:23:29Z
-Source commit: sha40dd40223fe1
+Generated: 2026-11-21T20:51:23Z
+Source commit: sha92f9852a0755
 
 ## Commits (sha, time)
-- sha40dd4022 2026-11-21T22:22:53+03:00
-- shad2fa13dd 2026-11-21T21:52:50+03:00
-- sha9cc1a501 2026-11-21T21:43:03+03:00
-- sha4e4d48f6 2026-11-21T21:43:03+03:00
-- sha506da15f 2026-11-21T21:43:03+03:00
-- sha3ddd7246 2026-11-21T21:26:36+03:00
-- sha86718ac7 2026-11-21T21:17:50+03:00
-- shad538a50e 2026-11-21T20:48:21+03:00
-- shaa65f87a0 2026-11-21T20:38:22+03:00
-- shabeb76b51 2026-11-21T17:58:54+03:00
-- shab23d4d2a 2026-11-21T15:53:59+03:00
-- sha3afe6e29 2026-11-21T15:49:08+03:00
-- sha4ce1d324 2026-11-21T15:43:46+03:00
-- sha3aa2e980 2026-11-21T15:42:35+03:00
-- shaa6a06179 2026-11-21T15:39:50+03:00
-- sha48e62bb7 2026-11-21T15:39:10+03:00
-- sha6e6721b7 2026-11-21T15:34:26+03:00
-- sha05ec65e6 2026-11-21T15:34:25+03:00
-- sha560f1dcc 2026-11-21T15:30:15+03:00
-- sha0226ae1e 2026-11-21T15:30:12+03:00
+- sha92f9852a 2026-11-21T23:50:23+03:00
+- sha9e19658b 2026-11-21T23:19:49+03:00
+- shaed33a6f0 2026-11-21T23:17:14+03:00
+- sha1715ff1b 2026-11-21T23:17:09+03:00
+- shac3ec61c9 2026-11-21T23:17:06+03:00
+- sha1afaedda 2026-11-21T23:17:00+03:00
+- shafb6ec4c0 2026-11-21T23:10:57+03:00
+- shab8d6b511 2026-11-21T23:10:51+03:00
+- shab799e8b7 2026-11-21T23:07:11+03:00
+- sha88fd8dd0 2026-11-21T23:06:02+03:00
+- sha251545fc 2026-11-21T23:03:25+03:00
+- shac05bcb56 2026-11-21T23:01:24+03:00
+- shafe025ebd 2026-11-21T23:00:50+03:00
+- shad3964a4a 2026-11-21T23:00:37+03:00
+- shaa82e051f 2026-11-21T22:59:26+03:00
+- sha28b6507d 2026-11-21T22:59:22+03:00
+- sha91e652cf 2026-11-21T22:58:11+03:00
+- shaedfae999 2026-11-21T22:58:02+03:00
+- shaeb12c561 2026-11-21T22:55:58+03:00
+- shae3b6c6da 2026-11-21T22:55:44+03:00
 
 ## Funnel
 | step | count |
 |---|---|
 | accepted | 5 |
-| claimed | 117 |
-| coded | 61 |
+| claimed | 124 |
+| coded | 67 |
 | found_in_backlog | unknown |
 | gate_pass | 31 |
-| known_to_loop | 251 |
+| known_to_loop | 255 |
 | promoted | 29 |
-| ready | 40 |
-| reviewed | 51 |
-| triaged | 96 |
+| ready | 24 |
+| reviewed | 58 |
+| triaged | 102 |
 
-Side counters: blocked=7, parked=0, requeued=2
-Tasks now: BLOCKED=7, DONE=68, FAILED=20, PROMOTED=5, READY=40
+Side counters: blocked=1, parked=0, requeued=2
+Tasks now: BLOCKED=1, DONE=68, FAILED=50, PROMOTED=5, READY=24, RUNNING=4
 Accepted: 5
 Promoted: 29
-Free RAM, GB: 2.42
-Telemetry rows: 14721 recognised, 0 unrecognised
+Free RAM, GB: 3.1
+Telemetry rows: 17075 recognised, 0 unrecognised
 
 ## Spend per model
 | model | calls | tokens_in | tokens_out | usage_unknown | http_429 | errors |
 |---|---|---|---|---|---|---|
-| google/gemini-3.1-flash-lite | 808 | 5017060 | 330469 | 43 | 0 | 43 |
-| google/gemini-3.5-flash-lite | 1103 | 7337543 | 359090 | 23 | 0 | 23 |
+| google/gemini-3.1-flash-lite | 947 | 5953246 | 383324 | 44 | 0 | 44 |
+| google/gemini-3.5-flash-lite | 1232 | 8244147 | 389725 | 23 | 0 | 23 |
 | google/gemini-3.6-flash | 99 | 383453 | 17290 | 39 | 1 | 39 |
 | google/gemini-3.8-flash | 7 | 21237 | 15 | 4 | 2 | 4 |
-| google/gemma-4-26b-a4b-it | 136 | 306955 | 31178 | 75 | 0 | 75 |
-| google/gemma-4-31b-it | 149 | 167413 | 4909 | 105 | 0 | 105 |
+| google/gemma-4-26b-a4b-it | 141 | 314367 | 31255 | 79 | 0 | 79 |
+| google/gemma-4-31b-it | 156 | 174129 | 5167 | 110 | 0 | 110 |
 | openrouter/cohere/north-mini-code:free | 22 | 69376 | 10273 | 5 | 0 | 6 |
 | openrouter/nvidia/nemotron-3-ultra-550b-a55b:free | 95 | 551204 | 147387 | 1 | 1 | 1 |
 
 ## Spans
 | span | rows | calls |
 |---|---|---|
-| answer | 486 | 0 |
-| gate | 2167 | 0 |
-| infra | 476 | 0 |
-| loop | 2805 | 0 |
-| other | 1895 | 0 |
+| answer | 487 | 0 |
+| gate | 2546 | 0 |
+| infra | 649 | 0 |
+| loop | 3145 | 0 |
+| other | 2259 | 0 |
 | promote | 40 | 0 |
-| review | 928 | 508 |
-| run | 5762 | 1911 |
-| triage | 162 | 0 |
+| review | 1115 | 607 |
+| run | 6669 | 2092 |
+| triage | 165 | 0 |
 
 ## Channels (model ids)
 - 1db4ab-gemini-3-8-flash
@@ -95,9 +95,9 @@ Telemetry rows: 14721 recognised, 0 unrecognised
 - or-north-mini-code
 
 ## Published files
-Modules: 24
-Tests in the cloud: 114
-Tests not in the cloud: 46
+Modules: 25
+Tests in the cloud: 115
+Tests not in the cloud: 48
 - tests/test_agent_factory.py (backlog-id, call-word, env-path, long-run, pid-port)
 - tests/test_factory_asked_memory.py (backlog-id)
 - tests/test_factory_autofeed.py (backlog-id)
@@ -139,9 +139,11 @@ Tests not in the cloud: 46
 - tests/test_factory_reject_apply.py (dependency)
 - tests/test_factory_reject_note.py (dependency)
 - tests/test_factory_round7.py (backlog-id, call-word, owner-name, path, phone, user-path)
+- tests/test_factory_route_d.py (backlog-id, long-run)
 - tests/test_factory_status.py (dependency)
 - tests/test_factory_survive.py (path, pid-port, user-path)
 - tests/test_factory_test_order.py (dependency)
+- tests/test_factory_tree.py (dependency)
 - tests/test_factory_triage.py (backlog-id, call-word, email, env-path, key, phone, tunnel-host)
 - tests/test_factory_triage_example.py (dependency)
 

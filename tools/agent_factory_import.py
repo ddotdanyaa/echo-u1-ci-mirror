@@ -1495,6 +1495,12 @@ def triage_portion(backlog_path, head_root, known_backlog_ids, limit, profile_at
     except Exception as e:                        # an unreadable feed is no feed: the old path decides
         guards = {}
         out["events"].append({"backlog_id": "", "event": "sweep_failed", "reason": ("%s: %s" % (type(e).__name__, e))[:200]})
+    try:        # A-feed: rows with a red guard are the first supply (fast guards first), raw rows after them in their own order
+        secs = AF.sweep_seconds(root, sweep)
+        rows = sorted(rows, key=lambda r: ((0, min((secs.get(p, 1e9) for p in AF.red_paths(guards.get(r["backlog_id"]))), default=1e9))
+                                            if AF.verdict(guards.get(r["backlog_id"])) == "red" else (1, 0)))
+    except Exception as e:
+        out["events"].append({"backlog_id": "", "event": "feed_order_failed", "reason": ("%s: %s" % (type(e).__name__, e))[:200]})
     idx = _module_index(root)
     all_tests = sorted(p for paths in idx.values() for p in paths if p.startswith("tests/"))
     graph = None

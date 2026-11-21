@@ -388,6 +388,8 @@ class Rig:
         self.runs.append((str(root), tuple(tests), timeout_s))
         self.gate_workdirs.append(workdir)
         self.gate_waits.append(wait_s)
+        from tools import factory_tree
+        factory_tree.materialize(root)      # the real run_tests fills a sparse candidate tree in before a local pytest
         return self.run_tests_fn(root, tests, timeout_s)
 
     def once(self, **extra):

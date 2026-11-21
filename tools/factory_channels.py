@@ -61,6 +61,7 @@ STREAK_COOL_MAX_S = 3600       # 21.11 (was 14400)
 RATING_WINDOW = 20
 RATING_MIN = 5
 RATING_BAD = 0.5
+RATING_SHAKY = 0.8
 MISSING_STREAK = 3
 # Steps of one task, and tasks of one module family, prefer the key+model they used last while it has room
 # (fewer key switches, and Gemini's implicit prompt cache stays warm); the memory is forgotten after this long.
@@ -119,6 +120,28 @@ def estimate_tokens(prompt_chars: int, read_chars: int = 0, overhead: int | None
     per_char = (1 - share) / CHARS_PER_TOKEN + share / CYRILLIC_CHARS_PER_TOKEN
     chars = max(0, prompt_chars) + max(0, read_chars)
     return math.ceil(chars * per_char) + (KILO_OVERHEAD_TOKENS if overhead is None else max(0, overhead))
+
+
+def prompt_too_big(prompt) -> bool:
+    """A prompt over PROMPT_LIMIT_CHARS Latin characters of weight: Cyrillic text weighs 3.5 / 1.4 = 2.5 times more
+    per character (D #23), so its share shortens the limit."""
+    text = str(prompt or '')
+    share = cyrillic_share(text)
+    per_char = (1 - share) / CHARS_PER_TOKEN + share / CYRILLIC_CHARS_PER_TOKEN
+    return len(text) * per_char * CHARS_PER_TOKEN > PROMPT_LIMIT_CHARS
+
+
+prompt_too_large = prompt_too_big
+
+# OpenRouter models that take the unified ``reasoning`` field (D #24; supported_parameters of the model list, 21.11);
+# a model that is not listed gets no field, the provider may refuse an unknown parameter.
+REASONING_MODELS = ('openrouter/nvidia/nemotron', 'openrouter/google/gemma', 'openrouter/inclusionai/',
+                    'openrouter/baidu/', 'openrouter/thinkingmachines/', 'openrouter/recursive/',
+                    'openrouter/dots-studio/', 'openrouter/cohere/', 'openrouter/particle-ai/')
+
+
+def supports_reasoning(model) -> bool:
+    return str(model or '').startswith(REASONING_MODELS)
 
 
 def validate(channels):
@@ -227,7 +250,7 @@ def missing_for_good(state, channel) -> bool:
 
 
 def route_order(channels, role, attempt, tokens, *, preferred=None, exclude_model=None, skip_tiers=(), state=None,
-                later=False):
+                later=False, tier_floor=None):
     """Channels in the order a call tries them. Coder, attempt 1: main, small (only when ``tokens`` fit its tpm),
     escalation; attempt 2 and later: escalation, main. Reviewer: small first; cross-review: main first.
     ``exclude_model`` (the coder's model) never reviews its own work; a collection of models excludes them all (the
@@ -236,9 +259,15 @@ def route_order(channels, role, attempt, tokens, *, preferred=None, exclude_mode
     tournament candidate). ``state`` (the quota state): inside a tier the models that keep failing go last, the
     rest follow the live reliability rating (``preferred`` first among equals), and a channel that answers 404 on
     every call is left out until its config changes. ``later``: a later candidate of one tournament (<id>): the
-    earlier one already spent part of the same minute, so the small tier needs room for two runs."""
+    earlier one already spent part of the same minute, so the small tier needs room for two runs.
+    ``tier_floor`` (D #20, the loop raises it after a repeated error): a code call tries the tiers at or above the
+    floor first (the escalation tier first for 'escalation'), the lower ones only after them."""
     key = ('code', 1 if attempt <= 1 else 2) if role == 'code' else role
     ranks = _ROLE_TIERS[key]
+    if role == 'code' and tier_floor in TIERS and tier_floor != TIERS[0]:
+        floor = TIERS.index(tier_floor)
+        high = tuple(t for t in ranks if TIERS.index(t) >= floor)
+        ranks = high + tuple(t for t in ranks if t not in high)      # the lower tiers only after the floor's tiers
     excluded = excluded_models(exclude_model)
     picked = []
     for channel in channels:
@@ -254,7 +283,8 @@ def route_order(channels, role, attempt, tokens, *, preferred=None, exclude_mode
         return sorted(picked, key=lambda c: (ranks.index(tier_of(c)), c['model'] != preferred))
     def live(c):
         r = rating(state, c['model'])
-        return (ranks.index(tier_of(c)), r < RATING_BAD, c['model'] != preferred, -round(r, 1))
+        # a model that fails often (503s after its cooling ended) is behind the healthy ones even when preferred (D #25)
+        return (ranks.index(tier_of(c)), r < RATING_BAD, r < RATING_SHAKY, c['model'] != preferred, -round(r, 1))
     return sorted(picked, key=live)
 
 
@@ -552,6 +582,7 @@ def cool_channel(state, channel, *, now=None, seconds=DEFAULT_COOL_S) -> dict:
 _KEY_TEXT = re.compile(r'api[_ ]?key[_ ]?(?:is )?(?:not )?invalid|api key not valid|invalid api key', re.I)
 _REGION_TEXT = re.compile(r'location is not supported|not available in your (?:country|region)', re.I)
 _PERDAY = re.compile(r'PerDay|per[ -]day|daily', re.I)
+_PERMODEL = re.compile(r'PerModel', re.I)     # Google quotaId ...PerDayPerProjectPerModel-FreeTier: one model of the key
 _PERMIN = re.compile(r'PerMinute|per minute', re.I)
 _RETRY = re.compile(r'retryDelay"?\s*[:=]\s*"?(\d+(?:\.\d+)?)s', re.I)
 _STATUS_TEXT = re.compile(r'\b(?:HTTP(?:/\d(?:\.\d)?)?|status(?:Code)?|code)\D{0,3}([45]\d\d)\b(?!:\d)', re.I)  # never bare numbers: stack lines are file.js:429:15
@@ -698,11 +729,20 @@ def _classify_error_event(error: dict):
                          math.ceil(at - now) if at else seconds_to_daily_reset(now), quota_text)
             if at:
                 info['reset_at'] = at
+            if _PERMODEL.search(quota_text):      # a per-model-per-project daily quota: only this model on this key
+                info['scope'] = 'channel'
             return info
         wait = math.ceil(retry) if retry else DEFAULT_COOL_S
         info = _info('rate_minute', status, name, message, wait, quota_text)
         if _find(body, 'provider_code') is not None:       # the UPSTREAM provider of one model, not the account
             info['scope'] = 'model'
+        return info
+    if status is None and name == 'EmptyAnswer':
+        # HTTP 200 and no answer: the model spent its whole output limit on reasoning for THIS task. Not an outage
+        # of the model: the call hops to another model, and the rating/streak (note_outcome) judges a model that
+        # does it again and again (D #22).
+        info = _info('transient', None, name, message)
+        info['scope'] = 'task'
         return info
     if status is None and name in ('EmptyAnswer', 'TruncatedAnswer'):
         # HTTP 200 and no answer: the model spent its whole output limit (on reasoning); the model, not the account
@@ -812,12 +852,15 @@ def apply_failure(state, channel, info, *, env=None, now=None) -> dict:
         seconds = _day_cool(channel, info, now) if kind == 'rate_day' else int(info.get('retry_after_s') or DEFAULT_COOL_S)
         if info.get('scope') == 'model':     # an upstream provider of ONE model: the rest of the account is fine
             return _cool_model(state, channel, now, seconds)
-        if kind == 'rate_minute' and info.get('status') != 402:
+        if info.get('scope') == 'channel' or (kind == 'rate_minute' and info.get('status') != 402):
+            # a per-model daily quota (D #18) or a per-minute limit is the limit of one model on one key
             # a per-minute limit is the limit of one model on one key: the other models of the project keep working
             # (live 20.11: 15 suspected per-minute stalls each cooled a whole project for 15 minutes)
             return cool_channel(state, channel, now=now, seconds=seconds)
         cool(state, channel, now=now, seconds=seconds)     # a daily quota or the account's own budget: the whole key
         return {'action': 'cool', 'cool_s': seconds}
+    if kind == 'transient' and info.get('scope') == 'task':
+        return {'action': 'none', 'cool_s': 0}       # D #22: this task was too big for the model, the model is fine
     if kind == 'transient' and (info.get('status') in OVERLOAD_STATUSES or info.get('name') in ('EmptyAnswer', 'TruncatedAnswer')):
         # "This model is currently experiencing high demand" (503): the MODEL is overloaded, not the account. Cooled,
         # the retry and the next pass take another channel (live 19.11 18:18-18:20: two passes were deferred on a

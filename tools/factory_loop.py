@@ -202,6 +202,24 @@ def git_running() -> bool:
 LOCK_NOTES: list[str] = []  # drained into telemetry by the loop
 
 
+def three_way_merge(base: str, ours: str, theirs: str) -> tuple[str, bool]:
+    """git merge-file on three texts: (merged text, conflict). ``ours`` is the branch now, ``theirs`` the candidate."""
+    if ours == base or ours == theirs:
+        return theirs, False
+    if theirs == base:
+        return ours, False
+    with tempfile.TemporaryDirectory() as d:
+        paths = []
+        for name, text in (("ours", ours), ("base", base), ("theirs", theirs)):
+            q = Path(d) / name
+            q.write_bytes(text.encode("utf-8"))
+            paths.append(str(q))
+        proc = subprocess.run(["git", "merge-file", "-p", *paths], capture_output=True)
+    if proc.returncode < 0 or proc.returncode > 127:
+        raise RuntimeError("git merge-file failed")
+    return proc.stdout.decode("utf-8", errors="replace"), proc.returncode > 0
+
+
 def git_run(cwd: Path, *args: str, retry_lock: bool = True) -> str:
     cmd = ["git", "-c", "core.quotepath=off", "-C", str(cwd), *args]
     for attempt in (0, 1):
@@ -3849,7 +3867,7 @@ class Loop:
                                            + list(tasks[tid].tests))}
             hit = sorted(c for c in changed if c.casefold() in mine)
             if hit:
-                moved = "база сдвинулась: " + ", ".join(hit[:5])
+                moved = "база сдвинулась: " + ", ".join(hit[:5]) + "; " + self._merge_verdict(cfg.repo, base, cur, hit, src, rel)
             else:
                 # the factory's own promotes that landed while this pass worked: the candidate was gated without them
                 near = self._own_neighbours(tid, tasks.get(tid), base, cur)
@@ -3870,10 +3888,26 @@ class Loop:
             raise RuntimeError("merge worktree is dirty outside the package: " + ", ".join(outside[:5]))
         no_diff = False
         try:
+            git_run(cfg.repo, "tag", "-f", "factory/known-good", cur)    # #64: instant rollback point = pre-promote HEAD
+            conflicts = []
             for path, name in zip(files, rel):
                 dst = wt.joinpath(*name.split("/"))
                 dst.parent.mkdir(parents=True, exist_ok=True)
+                if base and base != cur and dst.exists():
+                    merged, bad = self._merge_file(cfg.repo, base, name, dst, path)
+                    if bad:
+                        conflicts.append(name)
+                    else:
+                        dst.write_bytes(merged.encode("utf-8"))
+                    continue
                 shutil.copyfile(path, dst)
+            if conflicts:
+                self._restore(wt, rel)
+                kept = self._tx(lambda st: self._requeue_review(st, tid, "3-way: конфликт слияния: " + ", ".join(conflicts[:5]), False))
+                shutil.rmtree(src, ignore_errors=True)
+                ls["bases"].pop(tid, None)
+                self.save_ls(ls)
+                return finish("requeued", "merge_conflict")
             git_run(wt, "add", "--", *rel)
             if subprocess.run(["git", "-C", str(wt), "diff", "--cached", "--quiet"]).returncode == 0:
                 no_diff = True
@@ -3924,6 +3958,37 @@ class Loop:
         F._block(row, reason, time.time() if now is None else now)     # <id>: a reason and a term
         row.pop("candidate", None)
         F.add_feedback(state, tid, "gate", note)
+
+    @staticmethod
+    def _blob(repo, rev, name) -> str:
+        try:
+            return git_run(repo, "show", rev + ":" + name)
+        except subprocess.CalledProcessError:
+            return ""
+
+    def _merge_file(self, repo, base, name, dst: Path, cand: Path) -> tuple[str, bool]:
+        """Candidate file onto the branch file as a 3-way merge from the candidate's base (never a blind copy)."""
+        ours = dst.read_text(encoding="utf-8", errors="replace")
+        theirs = cand.read_text(encoding="utf-8", errors="replace")
+        b = self._blob(repo, base, name)
+        if not b and ours != theirs:
+            return ours, True     # both sides added the file
+        return three_way_merge(b, ours, theirs)
+
+    def _merge_verdict(self, repo, base, cur, hit, src, rel) -> str:
+        """Why the candidate goes back: would a 3-way merge onto the new HEAD be clean (re-gate) or conflict."""
+        bad = []
+        for name in hit:
+            if name not in rel:
+                continue
+            try:
+                ours = self._blob(repo, cur, name)
+                theirs = src.joinpath(*name.split("/")).read_text(encoding="utf-8", errors="replace")
+                if three_way_merge(self._blob(repo, base, name), ours, theirs)[1]:
+                    bad.append(name)
+            except Exception:
+                bad.append(name)
+        return "3-way: конфликт слияния: " + ", ".join(bad[:5]) if bad else "3-way: слияние чистое, нужен перепрогон ворот"
 
     def _requeue_review(self, state, tid, note, keep) -> bool:
         """REVIEW -> READY. ``keep``: the approved candidate resumes at the gates on the new base, no coder call."""

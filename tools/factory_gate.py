@@ -25,6 +25,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from .agent_factory import redact
+from . import factory_tree
 from .factory_process import run_owned
 
 ENV_ALLOW = ('PATH', 'SYSTEMROOT', 'SYSTEMDRIVE', 'WINDIR', 'COMSPEC', 'PATHEXT', 'TEMP', 'TMP',
@@ -451,10 +452,14 @@ def _run_once_raw(root, tests, timeout_s, workdir, wait_s, progress, deselect, w
     tests = [_node(t) for t in tests]
     if not tests:
         return _failure(-1, 'no tests given')
-    if touched is not None and not deselect:    # the product route runs the profile plugin in its shards too (same path)
+    if touched is not None and not deselect and not _known_fast(root, tests):   # the product route runs the profile plugin too
         cloud = _cloud_attempt(root, tests, touched, trace)
         if cloud is not None:
             return cloud                         # no slot is taken and no RAM is waited for: the run was not here
+    try:
+        factory_tree.materialize(root)           # a sparse candidate tree is filled in only when pytest really runs here
+    except OSError as error:
+        return replace(_failure(-1, NOT_STARTED + 'tree'), env_reason='tree: ' + type(error).__name__)
     # ignore_cleanup_errors: a handle still held after the tree was killed must not crash the pass.
     with tempfile.TemporaryDirectory(prefix='factory-gate-', dir=workdir, ignore_cleanup_errors=True) as d:
         xml = Path(d) / 'result.xml'
@@ -498,6 +503,24 @@ def _run_once_raw(root, tests, timeout_s, workdir, wait_s, progress, deselect, w
             return _failure(run.returncode, 'no readable JUnit XML: ' + tail)
         path = _failing_path(profile) if trace else ()
     return _judge(cases, tests, run.returncode, tail, root, path)
+
+
+FAST_LOCAL_S = 3.0     # a run known to last this long or less is not worth a push and a queue: it runs in a local slot
+DURATIONS_FILE = 'tests/data/factory_durations.json'    # measured seconds per test file of the previous cloud run
+
+
+def _known_fast(root, tests) -> bool:
+    """True when EVERY file of ``tests`` has a recorded duration of FAST_LOCAL_S or less (the table of the base: a sparse tree
+    reads it from its base). One unknown or slow file sends the whole call to the cloud. Any fault: not known fast."""
+    try:
+        raw = factory_tree.read_bytes(root, DURATIONS_FILE)
+        table = json.loads(raw.decode('utf-8')) if raw else {}
+        files = {_node(t).split('::', 1)[0] for t in tests}
+        return bool(files) and isinstance(table, dict) and all(
+            isinstance(table.get(f), (int, float)) and not isinstance(table.get(f), bool) and table[f] <= FAST_LOCAL_S
+            for f in files)
+    except (ValueError, TypeError, OSError, UnicodeError):
+        return False
 
 
 def _cloud_attempt(root, tests, touched, trace=()):
@@ -1526,7 +1549,7 @@ def copy_tree(root, dest) -> Path:
 # "sys.monitoring" (3.12+): use_tool_id / register_callback / set_events(PY_START); the callback
 # returns sys.monitoring.DISABLE (one hit per code object) and restart_events() re-arms it at the
 # start of every test.  Caveat: functions run while a session/module-scoped fixture is created are
-# recorded for the FIRST test that needed it (later tests reuse the cached value), never for the others.  Without sys.monitoring: sys.setprofile / threading.setprofile ('call').
+# recorded for the FIRST test that needed it; pytest_fixture_setup keeps them per owner node and the end of the session gives them to every test it serves.  Without sys.monitoring: sys.setprofile / threading.setprofile ('call').
 _PROFILE_PLUGIN = r'''
 import json, os, sys, threading
 import pytest
@@ -1541,6 +1564,7 @@ _res = {}
 _tool = None
 _fallback = False
 _cache = {}
+_shared = {}        # node id of a module/package/session/class fixture's owner -> calls made while the fixture was built
 
 
 def _rel(filename):
@@ -1604,6 +1628,25 @@ def pytest_runtest_protocol(item, nextitem):
     _tests[item.nodeid] = sorted(_cur)
 
 
+@pytest.hookimpl(hookwrapper=True)
+def pytest_fixture_setup(fixturedef, request):
+    # a wide-scope fixture is built once, inside the FIRST test that needs it: its calls belong to every test it serves
+    global _cur
+    if fixturedef.scope == "function":
+        yield
+        return
+    saved, _cur = _cur, set()
+    try:
+        yield
+    finally:
+        got, _cur = _cur, saved
+        _cur |= got
+        try:
+            _shared.setdefault(request.node.nodeid, set()).update(got)
+        except Exception:
+            pass
+
+
 def pytest_runtest_logreport(report):
     st = _res.setdefault(report.nodeid, {"call": None, "error": False, "skipped": False, "msg": ""})
     if report.failed:
@@ -1625,7 +1668,11 @@ def pytest_sessionfinish(session):
     tests = {}
     for nodeid, st in _res.items():
         outcome = "error" if st["error"] else (st["call"] or ("skipped" if st["skipped"] else "error"))
-        tests[nodeid] = {"outcome": outcome, "calls": [list(c) for c in _tests.get(nodeid, [])],
+        mine = set(_tests.get(nodeid, []))
+        for owner, calls in _shared.items():
+            if not owner or nodeid == owner or nodeid.startswith(owner + "::") or nodeid.startswith(owner + "/"):
+                mine |= calls
+        tests[nodeid] = {"outcome": outcome, "calls": [list(c) for c in sorted(mine)],
                           "msg": st["msg"]}
     with open(_out, "w", encoding="utf-8") as f:
         json.dump({"fallback": _fallback, "tests": tests}, f)

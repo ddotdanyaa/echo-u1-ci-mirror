@@ -342,7 +342,9 @@ def test_an_answer_that_is_all_reasoning_is_the_models_overload_not_the_tasks_fa
                                                                                          completion_tokens=8192)))
         info = C.classify(out, note, rc)
         assert rc == 1 and info['kind'] == 'transient' and info['name'] == 'EmptyAnswer'
-        assert C.apply_failure({}, channel, info, now=1000.0) == {'action': 'cool_model', 'cool_s': C.OVERLOAD_COOL_S}
+        # D #22 (21.11): the task was too big for the model, not the model down: no instant cooling; the call hops to
+        # another model and a model that does it again and again is cooled by the failure streak (note_outcome)
+        assert C.apply_failure({}, channel, info, now=1000.0) == {'action': 'none', 'cool_s': 0}
     rc, _, note = W.light_attempt(task(), tmp_path, 'google/x', prompt_override='p', post=reply('CANNOT: add', finish='length'))
     assert rc == 0 and b'CANNOT' in note
 

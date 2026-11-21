@@ -43,6 +43,7 @@ from .factory_process import kilo_argv, run_owned
 from . import affected_tests
 from . import factory_channels as channels
 from . import factory_gate as gate
+from . import factory_tree
 from . import factory_quota as quota_ledger
 from . import factory_paid_critic as paid_critic
 
@@ -116,7 +117,9 @@ ESCALATE = frozenset(("gate_unknown", "provider_error", "no_independent_reviewer
                       "review_chain_short"))
 ESCALATE_AFTER = 3          # the same postponement this many times in a row becomes BLOCKED
 INFRA_CHANNEL_REASONS = frozenset(("dead", "no_key", "no_channels", "reservation_exceeds_tpm"))
-FRESH_WAITS, FRESH_WAIT_S = 2, 60   # a task waits for a model that has not failed it at most this many times this long
+# owner (barrier 15): no pause for a "fresh" model - 24 one-minute holds froze 7 tasks in one slice; the call
+# takes any free model at once (the tried models are still skipped while another one is free). Was 2, 60.
+FRESH_WAITS, FRESH_WAIT_S = 0, 60
 
 
 class _FreshBusy(Exception):
@@ -570,15 +573,11 @@ def staged_run(run, root: Path, tests, red=()):
 
 
 def candidate_tree(root: Path, workdir: Path, changed, into: Path) -> Path:
-    """Full copy of the source tree with the candidate files laid over it: real tests import
-    the whole package (conftest, sibling modules) that the model's narrow copy lacks."""
-    tree = into / "tree"
-    shutil.copytree(root, tree, ignore=COPY_IGNORE)
-    for name in changed:
-        dest = tree.joinpath(*name.split("/"))
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(workdir.joinpath(*name.split("/")), dest)
-    return tree
+    """The source tree with the candidate files laid over it, as a SPARSE tree: only the changed files and a marker naming
+    ``root`` (factory_tree). The cloud gate ships base + these files; the local gate fills the rest in right before pytest
+    (real tests import the whole package, conftest and siblings that the model's narrow copy lacks), so a check that
+    runs in the cloud copies nothing here."""
+    return factory_tree.sparse_tree(root, into, {name: workdir.joinpath(*name.split("/")) for name in changed})
 
 
 def _note_read(result: dict, part: dict, workdir: Path | None) -> None:
@@ -943,10 +942,9 @@ def review_candidate(task: Task, workdir: Path, model: str, invoke, *,
         if summary['provider_error'] or summary['finish_reason'] in ('length', 'max_tokens'):
             raise ReviewFault('reviewer provider error or truncated answer')
         text = summary['text'].strip()
-        try:   # the first JSON object of the answer: free models wrap it in prose or a ```json fence
-            answer, _ = json.JSONDecoder().raw_decode(text[text.index('{'):])
-        except ValueError as error:
-            raise ReviewFault('reviewer answer is not JSON') from error
+        answer = _last_json_object(text)   # the LAST JSON object: free models think aloud, wrap it in prose or a fence
+        if answer is None:
+            raise ReviewFault('reviewer answer is not JSON')
         if not isinstance(answer, dict) or type(answer.get('approved')) is not bool:
             raise ReviewFault('reviewer answer has no verdict')
         reasons = answer.get('reasons', answer.get('reason', []))
@@ -968,6 +966,26 @@ def review_candidate(task: Task, workdir: Path, model: str, invoke, *,
         if answer['approved']:
             return True, reasons          # an approving critic keeps its remarks: the next critic sees them
         return False, reasons or ['rejected without a stated reason']
+
+
+def _last_json_object(text: str):
+    """The last top-level JSON object of ``text`` (a verdict repeated after drafts counts once, at its end), else None.
+    Braces of prose are skipped; the verdict object is preferred when several objects stand in the answer."""
+    decoder, found, i = json.JSONDecoder(), [], 0
+    while True:
+        i = text.find('{', i)
+        if i < 0:
+            break
+        try:
+            value, end = decoder.raw_decode(text[i:])
+        except ValueError:
+            i += 1
+            continue
+        if isinstance(value, dict):
+            found.append(value)
+        i += end
+    verdicts = [v for v in found if 'approved' in v]
+    return (verdicts or found or [None])[-1]
 
 
 REFERENCE_MAX = 5000   # the old-branch diff of a port task in the coder prompt; the view of the files gets the rest
@@ -1099,7 +1117,7 @@ def model_attempt(task: Task, workdir: Path, model: str, timeout: int,
     if task.only_opus:
         return 125, b'', b'opus-only-task'
     prompt = prompt_override if prompt_override is not None else _default_prompt(task, workdir)
-    if len(prompt) > channels.PROMPT_LIMIT_CHARS:
+    if channels.prompt_too_big(prompt):
         return 125, b'', b'context-too-large'
     try:
         command = kilo_argv()
@@ -1988,7 +2006,7 @@ def light_attempt(task: Task, workdir: Path, model: str, timeout: int = LIGHT_TI
     if not MODEL_ID.fullmatch(model):      # 0 rubles: an OpenRouter model without ':free' never leaves the machine
         return 125, b'', b'light: model id refused (a paid or malformed model)'
     prompt = prompt_override if prompt_override is not None else _default_prompt(task, workdir, light=True)
-    if len(prompt) > channels.PROMPT_LIMIT_CHARS:
+    if channels.prompt_too_big(prompt):
         return 125, b'', b'context-too-large'
     key = os.environ.get(key_env or ('OPENROUTER_API_KEY' if provider == 'openrouter' else 'GOOGLE_GENERATIVE_AI_API_KEY'), '')
     if not key:
@@ -1998,7 +2016,7 @@ def light_attempt(task: Task, workdir: Path, model: str, timeout: int = LIGHT_TI
             'temperature': 0 if review else temperature,
             'messages': [{'role': 'system', 'content': LIGHT_REVIEW_RULES if review else light_rules(task, workdir)},
                          {'role': 'user', 'content': prompt}]}
-    if provider == 'openrouter':
+    if provider == 'openrouter' and channels.supports_reasoning(model):    # D #24: only where the model takes it
         body['reasoning'] = {'max_tokens': LIGHT_REASONING_TOKENS}
     status, raw = (post or _light_post)(url, key, body, max(10, min(int(timeout), LIGHT_TIMEOUT_S)))
     if status is None and raw == b'TimeoutError':
@@ -2111,7 +2129,7 @@ def _once(*, root: Path, plan: Path, checkpoint: Path, staging: Path,
          acknowledge: bool = False, review_model: str | None = None,
          channel_config: Path | None = None, max_attempts: int = MAX_ATTEMPTS,
          max_model_calls: int | None = None, base_sha: str | None = None,
-         small_follow_up: bool = True, port_repo: Path | None = None,
+         small_follow_up: bool = False, port_repo: Path | None = None,
          task_id: str | None = None, lease: str | None = None, _box: dict | None = None) -> dict:
     """One pass on ONE task. ``task_id`` + ``lease``: the loop (or the pool) claimed the task and hands over its lease
     token; without a lease the pass claims the task itself (``task_id``, else the first ready one). There is no lock
@@ -2205,7 +2223,7 @@ def _pass(task: Task, ck: Lease, **kwargs) -> dict:
 def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging: Path,
           small_model: str, large_model: str, review_model: str, configured: list,
           max_attempts: int, base_sha: str | None, swept_failed=(), ledger: Path | None = None,
-          small_follow_up: bool = True, port_repo: Path | None = None) -> dict:
+          small_follow_up: bool = False, port_repo: Path | None = None) -> dict:
     """The pass of the lease ``ck`` (the task is already RUNNING under it). It keeps read-only facts (``state`` and
     ``row`` are a copy taken at the start); every change of the state is ONE ``ck.commit`` on the FRESH state."""
     tid, token = task.id, ck.token
@@ -2349,7 +2367,7 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
         """One real model call with reservation, charging, classification, one transient retry. ``skip_tiers``:
         channel tiers this call may not use (factory_channels.route_order)."""
         ctx['role'] = role
-        if len(prompt) > channels.PROMPT_LIMIT_CHARS:
+        if channels.prompt_too_big(prompt):
             raise PromptTooLarge(str(len(prompt)))
         light = ctx['light'] = engine_for(role, call_task) == 'light'    # one request, the files travel in the prompt
         base_tokens = channels.estimate_tokens(len(prompt), 0 if light else ctx['read_chars'],
@@ -2371,11 +2389,13 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
             selected, at, chosen, kwargs = None, None, preferred, {}
             if configured:
                 route = 'review' if role == 'review' else 'code'
-                live_state = ck.read().get('channel_quotas') or {}    # a fresh private copy: ratings, parked 404s, cooling
+                whole = ck.read()
+                live_state = whole.get('channel_quotas') or {}    # a fresh private copy: ratings, parked 404s, cooling
+                floor = ((whole.get('tasks') or {}).get(tid) or {}).get('tier_floor')   # D #20: the loop's raised tier
                 excl = sorted(channels.excluded_models(exclude_model) | set(hopped)) or None
                 order = channels.route_order(configured, route, attempt, base_tokens, preferred=preferred,
                                              exclude_model=excl, skip_tiers=skip_tiers, state=live_state,
-                                             later=later)
+                                             later=later, tier_floor=floor)
                 if not order and route == 'code':     # no escalation/main channel at all: any channel is better than none
                     order = channels.route_order(configured, route, 1, 0, preferred=preferred,
                                                  exclude_model=excl,   # never a model the tournament tried
@@ -2651,7 +2671,7 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
         """Scratch copy of the source tree: the base runs execute untrusted tests, never in the live tree."""
         tree = Path(base_holder) / 'tree'
         if not tree.exists():
-            shutil.copytree(root, tree, ignore=COPY_IGNORE)
+            factory_tree.sparse_tree(root, base_holder, {})     # the copy is made by the local gate only, when pytest runs here
             ctx['roots'].append(tree)
         return tree
 
@@ -2876,6 +2896,8 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                 # pytest executes untrusted code: it may not rewrite the frozen tests or inputs.
                 for name in sorted((set(task.tests) | set(task.read_files)) - set(changed)):
                     original, after = root.joinpath(*name.split('/')), tree.joinpath(*name.split('/'))
+                    if factory_tree.is_sparse(tree):
+                        break                   # no pytest ran in this tree (the cloud ran it): nothing here could be rewritten
                     if original.is_file() and (not after.is_file() or after.read_bytes() != original.read_bytes()):
                         return reject('gate', 'gate: immutable file changed during pytest',
                                       'pytest changed a frozen file: ' + name, changed)
@@ -3067,7 +3089,7 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                     tried.append(ctx['coder_model'])
                     view = make_prompt(asked) if asked else prompt
                     k_prompt = view + next_note
-                    if len(k_prompt) > channels.PROMPT_LIMIT_CHARS:
+                    if channels.prompt_too_big(k_prompt):
                         k_prompt = view
                     ctx['workdir'] = staging / ('%s-cand-%d' % (prefix, k))
                     shutil.rmtree(ctx['workdir'], ignore_errors=True)
@@ -3337,7 +3359,7 @@ def main(argv=None):
                    help="a task becomes FAILED after N failed attempts (each next one on another model where possible)")
     p.add_argument("--max-model-calls", type=int,
                    help="explicit model-call budget written into this checkpoint")
-    p.add_argument("--small-follow-up", choices=("on", "off"), default="on",
+    p.add_argument("--small-follow-up", choices=("on", "off"), default="off",
                    help="may a small-tier model be a later tournament candidate (an A/B arm)")
     p.add_argument("--task", help="run this task (the one the loop claimed); default: the first ready one")
     p.add_argument("--lease", help="the lease token of --task, claimed by the caller (without it the pass claims its own)")

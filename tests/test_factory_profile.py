@@ -328,3 +328,17 @@ def test_neighbours_are_chosen_by_shared_imports_not_by_name(tmp_path):
     allt = sorted(p for v in idx.values() for p in v if p.startswith("tests/"))
     assert imp._neighbours(tmp_path, ["tests/test_v_E70000.py"], idx, allt)[0] in ("tests/test_zzz_shares.py", "tests/test_other.py")
     assert "tests/test_aaa.py" not in imp._neighbours(tmp_path, ["tests/test_v_E70000.py"], idx, allt)
+
+
+def test_module_fixture_calls_are_recorded_for_every_test_of_the_module(tmp_path):
+    _write(tmp_path, {
+        "echo_sync/__init__.py": "",
+        "echo_sync/m.py": "def build():\n    return 1\n\n\ndef bad():\n    return 2\n",
+        "tests/test_mod.py": ("import pytest\nfrom echo_sync.m import build, bad\n\n"
+                              "@pytest.fixture(scope='module')\ndef shared():\n    return build()\n\n"
+                              "def test_a(shared):\n    assert shared == 1\n\n"
+                              "def test_b(shared):\n    assert bad() == 3\n"),
+    })
+    r = G.profile_tests(tmp_path, ["tests/test_mod.py"], 60, ("echo_sync/",))
+    names = {k.split("::")[-1]: {q for _, q, _ in v} for k, v in r.calls.items()}
+    assert "build" in names["test_a"] and "build" in names["test_b"] and "bad" in names["test_b"]
