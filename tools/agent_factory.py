@@ -593,7 +593,8 @@ def quarantine(state: dict, tid: str, token: str, *, reason: str, now: float | N
                "provider_unavailable", "unsafe_windows_launcher",
                "worker_exception", "scope_violation", "already_green",
                "context_too_large", "no_independent_reviewer", "gate_unknown",
-               "provider_error", "no_diff", "reviewer_failed", "off_path", "review_chain_short"}
+               "provider_error", "no_diff", "reviewer_failed", "off_path", "review_chain_short",
+               "cannot_repeat"}
     if reason not in allowed:
         raise InvalidPlan("unknown quarantine reason")
     fence(state, tid, token)

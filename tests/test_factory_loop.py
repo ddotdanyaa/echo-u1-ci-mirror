@@ -111,6 +111,7 @@ class Env:
         extra = dict(extra or {})
         if rng is not None:
             extra["rng"] = rng
+        over.setdefault("ready_target", 0)     # <id>: the top-up triage is off in the rig unless a test asks for it
         cfg = L.Config(state_dir=self.state_dir, repo=self.repo, branch=BRANCH,
                        worktree=self.repo, backlog=self.backlog,
                        channels=self.tmp / "channels.json", **over)

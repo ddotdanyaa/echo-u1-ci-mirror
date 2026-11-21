@@ -1217,6 +1217,85 @@ def cannot_names(payload: str) -> list:
     return [w for w in words if any(c in w for c in '_./') or any(c.isupper() for c in w[1:])]
 
 
+_SCAN_SKIP = frozenset(('.git', 'node_modules', '__pycache__', 'venv', '.venv', 'site-packages', 'build', 'dist'))
+_SCAN_MAX_FILES = 20000
+
+
+def _repo_py_files(root) -> list:
+    """Repo-relative paths (posix) of the ``.py`` files under ``root``: the one code map of a CANNOT answer."""
+    out = []
+    for cur, dirs, files in os.walk(str(root)):
+        dirs[:] = [d for d in dirs if d not in _SCAN_SKIP and not d.startswith('.')]
+        for f in files:
+            if f.endswith('.py'):
+                out.append(os.path.relpath(os.path.join(cur, f), str(root)).replace(os.sep, '/'))
+        if len(out) > _SCAN_MAX_FILES:
+            break
+    return out
+
+
+def repo_scope_target(root, name: str, touch=(), kind='code'):
+    """The repo file a CANNOT name means when it lies outside ``touch``: an existing file (path, or a name found in
+    exactly one place) or a function/class defined in exactly one file; None when absent, ambiguous, already in the
+    task or forbidden (gate.is_forbidden: privacy, tests of other rows, the factory's own code). Never raises."""
+    try:
+        name = (name or '').strip().strip('`\'"*()[]:;,').replace(chr(92), '/')
+        while name.startswith('./'):
+            name = name[2:]
+        if not name:
+            return None
+        have = {str(t).replace(chr(92), '/') for t in touch}
+
+        def usable(rel):
+            return rel not in have and not gate.is_forbidden(rel, kind, touch)
+        direct = Path(root) / name
+        if '/' in name or name.endswith('.py') or name.startswith('.'):
+            if not name.endswith('.py'):
+                return None           # code files only: .env, keys, data and configs are never a scope
+            if direct.is_file() and '..' not in name.split('/'):
+                return name if usable(name) else None
+            hits = [f for f in _repo_py_files(root) if f.endswith('/' + name) and usable(f)]
+            return hits[0] if len(hits) == 1 else None
+        if not re.fullmatch(r'[A-Za-z_]\w*(\.[A-Za-z_]\w*)*', name):
+            return None
+        leaf = name.rpartition('.')[2]
+        rx = re.compile(r'^[ \t]*(?:async[ \t]+)?(?:def|class)[ \t]+' + re.escape(leaf) + r'\b', re.M)
+        hits = []
+        for rel in _repo_py_files(root):
+            if rel not in have and gate.is_forbidden(rel, kind, touch):
+                continue
+            try:
+                p = Path(root) / rel
+                if p.stat().st_size < 1_000_000 and rx.search(p.read_text(encoding='utf-8', errors='replace')):
+                    if rel in have:
+                        return None   # defined in the task's own files: the model must look there, not widen
+                    hits.append(rel)
+            except OSError:
+                continue
+        return hits[0] if len(hits) == 1 else None
+    except Exception:  # noqa: BLE001 - a widening is an extra: without it the CANNOT is judged as before
+        return None
+
+
+def _cannot_key(text: str, clean=lambda s: s) -> str:
+    """A CANNOT text as one comparable key: words only, folded, cut where the feedback line cuts it."""
+    return re.sub(r'\W+', ' ', clean(redact(text or ''))[:150]).strip().casefold()
+
+
+def cannot_repeats(feedback, payload: str, clean=lambda s: s) -> bool:
+    """True when the newest gate remark of the task is a CANNOT with the same text as ``payload`` (twice in a row)."""
+    key = _cannot_key(payload, clean)
+    if not key:
+        return False
+    for item in reversed(list(feedback or [])):
+        text = str(item.get('text', '')) if isinstance(item, dict) else ''
+        if not isinstance(item, dict) or item.get('source') != 'gate' or text.startswith(('[infra] ', REPEAT_MARK)):
+            continue
+        said = re.search(r'CANNOT:\s*(.*)', text, re.S)
+        return bool(said) and _cannot_key(said.group(1), clean) == key
+    return False
+
+
 def outside_names(text: str, allowed: tuple) -> list:
     """The file names an answer's edit blocks aimed at outside ``allowed`` (file-name lines, REPLACE FUNCTION paths)."""
     names = []
@@ -2652,17 +2731,30 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
         def scope_signal():
             """(module, name) when the last coder answer named a function of the failing test's path outside the task:
             a CANNOT name, or the file of an edit block outside the task; None otherwise."""
-            if not off_mods:
-                return None
             note, text = ctx.get('light_note') or '', ctx.get('last_text') or ''
             said = re.search(r'CANNOT:\s*(.*)', note) or re.search(r'(?im)^\W*CANNOT:\s*(.*)$', text)
             names = cannot_names(said.group(1)) if said else []
-            if 'outside the task' in note:           # the light engine's count of blocks for other files
+            if 'outside the task' in note and off_mods:   # the light engine's count of blocks for other files
                 names += outside_names(text, tuple(task.touch_files))
             for name in names:
-                module = gate.path_lookup(off_mods, name)
+                module = gate.path_lookup(off_mods, name) if off_mods else None
                 if module:
                     return module, name
+            if task.kind == 'code':     # 21.11: a CANNOT naming any repo file or function outside the task: same path
+                for name in cannot_names(said.group(1)) if said else []:
+                    module = repo_scope_target(root, name, task.touch_files, task.kind)
+                    if module:
+                        return module, name
+            return None
+
+        def cannot_loop():
+            """The same CANNOT text twice in a row and no widening possible: more attempts would only repeat it;
+            BLOCKED with the text as the reason (the existing quarantine), None otherwise."""
+            note, text = ctx.get('light_note') or '', ctx.get('last_text') or ''
+            said = re.search(r'CANNOT:\s*(.*)', note) or re.search(r'(?im)^\W*CANNOT:\s*(.*)$', text)
+            if said and cannot_repeats(row.get('feedback'), said.group(1), scrub):
+                return block('cannot_repeat', 'the model answered the same CANNOT twice in a row and no repo file or '
+                             'function it names can be added to the task: ' + said.group(1).strip()[:150])
             return None
 
         def widen(module: str, name: str) -> dict:
@@ -2970,6 +3062,9 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                 signal = scope_signal()
                 if signal:                           # it named code of the failing path outside the task
                     return widen(*signal)
+                stuck = cannot_loop()
+                if stuck:
+                    return stuck
                 if k + 1 >= size:
                     break                            # the tournament is full: this candidate stands
                 why = unusable()

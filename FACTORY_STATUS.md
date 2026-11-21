@@ -1,11 +1,18 @@
 # Factory status (generated, structured data only)
 
-Generated: 2026-11-21T12:31:04Z
-Source commit: sha0226ae1e433a
+Generated: 2026-11-21T12:40:57Z
+Source commit: shaa6a061798eff
 
 ## Commits (sha, time)
+- shaa6a06179 2026-11-21T15:39:50+03:00
+- sha6e6721b7 2026-11-21T15:34:26+03:00
+- sha05ec65e6 2026-11-21T15:34:25+03:00
+- sha560f1dcc 2026-11-21T15:30:15+03:00
 - sha0226ae1e 2026-11-21T15:30:12+03:00
+- sha8b1accf1 2026-11-21T15:29:04+03:00
+- shaa80df2ac 2026-11-21T15:27:53+03:00
 - sha7a868d1a 2026-11-21T15:24:27+03:00
+- shafc542b90 2026-11-21T15:22:01+03:00
 - shab241ed09 2026-11-21T15:21:32+03:00
 - sha6e22230b 2026-11-21T15:21:31+03:00
 - shae8dc738b 2026-11-21T15:21:05+03:00
@@ -15,15 +22,8 @@ Source commit: sha0226ae1e433a
 - shad3018729 2026-11-21T15:17:44+03:00
 - shad1418318 2026-11-21T15:17:26+03:00
 - sha9868c0b1 2026-11-21T15:16:26+03:00
+- shaa94d395c 2026-11-21T15:15:58+03:00
 - shab80664cc 2026-11-21T15:15:37+03:00
-- shaa6fdd2d9 2026-11-21T15:14:41+03:00
-- sha66c86faa 2026-11-21T15:14:23+03:00
-- sha653c9abd 2026-11-21T15:13:38+03:00
-- shaf5a8ff4b 2026-11-21T15:11:00+03:00
-- sha225d27f5 2026-11-21T15:10:06+03:00
-- shaf8e8df54 2026-11-21T15:10:02+03:00
-- shac3cffd2b 2026-11-21T15:09:49+03:00
-- shac53c0bd3 2026-11-21T15:09:04+03:00
 
 ## Funnel
 | step | count |
@@ -43,15 +43,15 @@ Side counters: blocked=2, parked=0, requeued=2
 Tasks now: BLOCKED=2, DONE=64, FAILED=34, PROMOTED=4, READY=8
 Accepted: 4
 Promoted: 28
-Free RAM, GB: 3.03
-Telemetry rows: 10457 recognised, 0 unrecognised
+Free RAM, GB: 2.17
+Telemetry rows: 10557 recognised, 0 unrecognised
 
 ## Spend per model
 | model | calls | tokens_in | tokens_out | usage_unknown | http_429 | errors |
 |---|---|---|---|---|---|---|
-| google/gemini-3.1-flash-lite | 597 | 3750535 | 270172 | 31 | 0 | 31 |
-| google/gemini-3.5-flash-lite | 879 | 5915310 | 309329 | 21 | 0 | 21 |
-| google/gemini-3.6-flash | 82 | 299985 | 14692 | 35 | 1 | 35 |
+| google/gemini-3.1-flash-lite | 598 | 3750535 | 270172 | 32 | 0 | 32 |
+| google/gemini-3.5-flash-lite | 880 | 5921628 | 309333 | 21 | 0 | 21 |
+| google/gemini-3.6-flash | 83 | 306228 | 14700 | 35 | 1 | 35 |
 | google/gemini-3.8-flash | 7 | 21237 | 15 | 4 | 2 | 4 |
 | google/gemma-4-26b-a4b-it | 104 | 261085 | 30548 | 51 | 0 | 51 |
 | google/gemma-4-31b-it | 121 | 140353 | 4594 | 82 | 0 | 82 |
@@ -62,13 +62,13 @@ Telemetry rows: 10457 recognised, 0 unrecognised
 | span | rows | calls |
 |---|---|---|
 | answer | 435 | 0 |
-| gate | 1559 | 0 |
-| infra | 214 | 0 |
-| loop | 2094 | 0 |
-| other | 1185 | 0 |
+| gate | 1560 | 0 |
+| infra | 216 | 0 |
+| loop | 2099 | 0 |
+| other | 1272 | 0 |
 | promote | 39 | 0 |
 | review | 606 | 330 |
-| run | 4210 | 1577 |
+| run | 4215 | 1580 |
 | triage | 115 | 0 |
 
 ## Channels (model ids)
@@ -97,15 +97,17 @@ Telemetry rows: 10457 recognised, 0 unrecognised
 ## Published files
 Modules: 24
 Tests in the cloud: 114
-Tests not in the cloud: 41
+Tests not in the cloud: 43
 - tests/test_agent_factory.py (backlog-id, call-word, env-path, long-run, pid-port)
 - tests/test_factory_autofeed.py (backlog-id)
+- tests/test_factory_cannot_scope.py (env-path)
 - tests/test_factory_class_cases.py (backlog-id, call-word, long-run, path, phone)
 - tests/test_factory_closures.py (backlog-id)
 - tests/test_factory_cloud_path.py (email)
 - tests/test_factory_cloud_product.py (long-run)
 - tests/test_factory_context_pinned.py (path)
 - tests/test_factory_decompose.py (backlog-id, call-word, email)
+- <redacted-name> (backlog-id)
 - <redacted-name> (backlog-id)
 - <redacted-name> (backlog-id, long-run)
 - tests/test_factory_intake.py (call-word, pid-port)

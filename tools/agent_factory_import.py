@@ -701,6 +701,7 @@ def parse_open_rows(backlog_path, repo_root, include_closed: bool = False) -> li
 _CYR = dict(zip("АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ", "A B V G D E E ZH Z I Y K L M N O P R S T U F KH TS CH SH SCH _ Y _ E YU YA".split()))
 _CYR.update({k.lower(): v.lower() for k, v in list(_CYR.items())})
 MAX_TOUCH = 5           # 3 -> 5 (21.11): the prompt (factory_channels.PROMPT_LIMIT_CHARS) is the real bound, not the file count
+SLICE_FILES = 3         # <id> (owner): a row of more than this many files is cut into a chain of one-file parts
 MAX_TEXT = 6000          # 1500 -> 6000 (21.11)
 MAX_TESTS = 5           # 3 -> 5 (21.11)
 MAX_PARTS = 10         # a row is cut into at most this many parts (each part = a test task + a code task)
@@ -951,7 +952,20 @@ def _import_hint(files) -> str:
     return (" Проверяемый код: %s (импортируй из этих модулей, других не выдумывай)." % ", ".join(mods)) if mods else ""
 
 
-def _children(F, root: Path, bid: str, tid: str, priority, text: str, chunks: list[list[str]], known, named: list[str], known_parts=None):
+def _trace_of(trace, bid):
+    """The trace entries of one row from the caller's {backlog_id: entries}; a damaged value is no trace."""
+    got = trace.get(bid) if isinstance(trace, dict) else None
+    return got if isinstance(got, (list, tuple)) else ()
+
+
+def _narrow(trace, files) -> list[str]:
+    """<id>: the functions of ``files`` that the failing guard ran (the cloud trace: (rel, qualname, line) entries of
+    factory_gate GateResult.path / base_red.result.path), sorted, at most 12; [] when the trace names none."""
+    own = set(files)
+    return sorted({str(q) for rel, q, *_ in (trace or ()) if rel in own})[:12]
+
+
+def _children(F, root: Path, bid: str, tid: str, priority, text: str, chunks: list[list[str]], known, named: list[str], known_parts=None, trace=None):
     """Parts of a too big row: for every group of files a pair "unit_test -> code".
 
     Part k (1-based) has the backlog_id ``<ID>#<k>``, task ids ``<tid>_c<k>`` (code) and ``<tid>_c<k>_test``
@@ -998,8 +1012,13 @@ def _children(F, root: Path, bid: str, tid: str, priority, text: str, chunks: li
                               "исправления. Первой строкой файла напиши комментарий «# factory-backlog-id: %s».%s Строка: %s"
                               % (k, n, cb, _import_hint(files), goal))[:MAX_TEXT],
                         touch_files=[tpath], tests=[tpath], kind="unit_test", read_files=_test_reads(files))
+        funcs = _narrow(trace, files)
+        if funcs:                                  # <id>: this part's own guard = the parent's failing test ids as they reach THIS file
+            goal = (goal + " Падающий страж строки доходит в этих файлах до функций: %s; чини их." % ", ".join(funcs))[:MAX_TEXT]
         code = dict(base, id=ctid, title=("%s часть %d/%d: %s" % (bid, k, n, piece))[:120], goal=goal,
                     depends_on=[ctid + "_test"] if test else [], touch_files=list(files), tests=[tpath], kind="code")
+        if funcs:
+            code["guard_functions"] = funcs
         pairs.append([t for t in (test, code) if t])
     return pairs, record, None
 
@@ -1320,7 +1339,7 @@ def weak_candidate_holds(root, backlog_path, bids) -> dict:
 
 
 def triage_portion(backlog_path, head_root, known_backlog_ids, limit, profile_attempts=None, known_parts=None, env_streak=0,
-                   scopes=None, ask=None, sweep=None) -> dict:
+                   scopes=None, ask=None, sweep=None, trace=None, force_slice=None) -> dict:
     """K-E.3: next portion of the live backlog as plan tasks (nothing is written).
 
     Returns {"tasks", "holds": [{backlog_id, question}], "stale": [backlog_id],
@@ -1362,7 +1381,10 @@ def triage_portion(backlog_path, head_root, known_backlog_ids, limit, profile_at
       adds regression neighbours itself).  Order: test_v_<ID>, then named, then alphabetical.  No
       such test -> sub-task kind=unit_test ``<id>_test`` on tests/test_factory_<slug>.py (an existing
       file is reused as the task's test, not rewritten) and the main task depends_on it;
-    - > MAX_TOUCH touch files or text > MAX_TEXT chars -> split into parts (<= MAX_PARTS), else hold "split into sub-tasks";
+    - > SLICE_FILES (3) touch files, a row in ``force_slice`` (a task of it failed twice after an escalation) with >= 2
+      files, or text > MAX_TEXT chars -> split into ONE-FILE parts (<= MAX_PARTS; more files: import-affine groups of
+      <= MAX_TOUCH), else hold "split into sub-tasks".  ``trace`` {backlog_id: [(rel, qualname, line)]} (the cloud
+      trace of the failing guard) narrows each part's guard to the functions of its file (field guard_functions);
     - task id = ``bl_`` + transliterated backlog_id (agent_factory.TASK_ID); backlog_id is a field;
     - every task group passes agent_factory.read_plan before it is returned; at most ``limit`` tasks
       (sub-tasks count).
@@ -1590,23 +1612,24 @@ def triage_portion(backlog_path, head_root, known_backlog_ids, limit, profile_at
         if prot:
             out["holds"].append({"backlog_id": bid, "question": pfx + "область защищена воротами: " + ", ".join(prot) + "; решает Opus"})
             continue
-        if len(touch) > MAX_TOUCH or r["text_len"] > MAX_TEXT:
-            # Automatic decomposition: by files (import-affine groups of <= MAX_TOUCH), or one file per part when only the
-            # text is too long.  Not possible honestly -> the Opus question as before.
+        forced = bid in (force_slice or ()) and len(touch) >= 2
+        if len(touch) > SLICE_FILES or forced or r["text_len"] > MAX_TEXT:
+            # Automatic decomposition (<id>): one file per part (a chain of one-file sub-tasks); more files than MAX_PARTS ->
+            # import-affine groups of <= MAX_TOUCH.  Not possible honestly -> the Opus question as before.
             chunks = None
-            if not private and len(touch) > MAX_TOUCH:
-                if graph is None:
-                    from tools.affected_tests import Graph
-                    graph = Graph(root)
-                chunks = _chunk_files(root, touch, graph)
-            elif not private and len(touch) >= 2:
+            if not private and len(touch) >= 2:
                 chunks = [[f] for f in sorted(touch)]
+                if len(chunks) > MAX_PARTS and len(touch) > MAX_TOUCH:
+                    if graph is None:
+                        from tools.affected_tests import Graph
+                        graph = Graph(root)
+                    chunks = _chunk_files(root, touch, graph)
             if chunks and len(chunks) <= MAX_PARTS:
                 ptext, question = _screen(F, bid, r["text"])
                 if question:
                     out["holds"].append({"backlog_id": bid, "question": question})
                     continue
-                pairs, record, error = _children(F, root, bid, _task_id(bid), r["priority"], ptext, chunks, known_backlog_ids, named_here, known_parts)
+                pairs, record, error = _children(F, root, bid, _task_id(bid), r["priority"], ptext, chunks, known_backlog_ids, named_here, known_parts, _trace_of(trace, bid))
                 if error:
                     skip(bid, error)
                     continue
@@ -1636,7 +1659,7 @@ def triage_portion(backlog_path, head_root, known_backlog_ids, limit, profile_at
                 if len(take) < len(pairs):
                     out["deferred"].append({"backlog_id": bid, "reason": "отложено: остальные части не поместились в limit"})
                 continue
-            why = ("затронуто %d файлов: %s" % (len(touch), ", ".join(touch)) if len(touch) > MAX_TOUCH
+            why = ("затронуто %d файлов: %s" % (len(touch), ", ".join(touch)) if len(touch) > SLICE_FILES
                    else "текст %d символов, предел %d" % (r["text_len"], MAX_TEXT))
             if chunks and len(chunks) > MAX_PARTS:
                 why += "; частей получилось больше %d" % MAX_PARTS

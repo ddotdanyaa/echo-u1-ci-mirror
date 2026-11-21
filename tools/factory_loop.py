@@ -306,6 +306,8 @@ class Config:
     metrics_every_s: int = 3600     # <id>: one metrics span per hour
     seen_retry_s: int = 3600        # 21.11 (was 21600) <id>: a skipped/stale backlog row is triaged again after this term, edit or not
     requeue_term_s: int = 900       # 21.11 (was 3600) <id>: a FAILED task of a retryable class is given back this long after its last try
+    ready_target: int = 15          # <id> (owner): the slicer keeps this many tasks READY (0: off)
+    ready_triage_s: int = 60        # <id>: READY below the target: the next top-up triage after this term (doubles while a portion is empty, up to triage_retry_s)
     not_code_term_s: int = 7 * 86400   # <id>: a row the head model called not code is looked at again after this term
 
 
@@ -1282,6 +1284,8 @@ class Loop:
         if out is not None:
             return out
         name, why = act["action"], act.get("reason", "")
+        if name != "TRIAGE":
+            self._ready_topup(state, tasks, ls, now)       # <id>: READY below the target: the slicer works ahead of the queue
         if name == "PROMOTE" and not self.pool.workers:
             return self._promote(act["task_id"], tasks, state, ls)
         if (name == "WAIT" and why == "channel_cooldown" and float(act.get("wait_s") or 0) >= 300
@@ -2459,12 +2463,92 @@ class Loop:
             return self._triage_failed(e, ctx, ls)
         return self._triage_finish(res, ctx, ls)
 
-    def _triage_prefetch(self, state, tasks, ls, now) -> bool:
+    ESC_FAILS = 2                   # <id> rule 3: failures of one signature AFTER the tier was raised that end a task's attempts
+
+    def _ready_topup(self, state, tasks, ls, now) -> bool:
+        """<id>: READY below cfg.ready_target and the backlog may give more: the next portion is prefetched at once, without
+        the empty-portion term (triage_retry_s) and without READY having to be empty. A portion that gave nothing doubles
+        the wait (up to triage_retry_s), so an exhausted backlog is not read every minute. Rows of the not_code book stay
+        known (never offered). True when a prefetch started."""
+        cfg = self.cfg
+        try:
+            if cfg.ready_target <= 0 or self._bg is not None or self._ending() or not cfg.backlog.exists():
+                return False
+            ready = sum(1 for r in state["tasks"].values() if r.get("status") == "READY")
+            if ready >= cfg.ready_target:
+                return False
+            wait = min(cfg.ready_triage_s * 2 ** int(ls.get("ready_triage_idle") or 0), cfg.triage_retry_s)
+            if now - float(ls.get("ready_triage_at") or 0) < wait:
+                return False
+            ls["ready_triage_at"] = now
+            return self._triage_prefetch(state, tasks, ls, now, limit=max(cfg.triage_limit, cfg.ready_target - ready), topup=True)
+        except Exception as e:                     # an aid: it never stops the loop
+            self.err("ready top-up", e)
+            return False
+
+    def _stalled_path(self) -> Path:
+        return self.dir / "stalled_tasks.json"
+
+    def _stalled(self) -> dict:
+        """<id> rule 3 book {"quarantine": {task id: record}, "slice": {backlog id: record}}. Its own file, not loop_state:
+        the pass that accounts a result saves its older copy of the loop state after the learning step."""
+        try:
+            book = json.loads(self._stalled_path().read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            book = {}
+        book = book if isinstance(book, dict) else {}
+        for key in ("quarantine", "slice"):
+            if not isinstance(book.get(key), dict):
+                book[key] = {}
+        return book
+
+    def _quarantined(self) -> set:
+        """<id> rule 3: task ids that get no more attempts (quarantine record, or sliced into one-file parts)."""
+        book = self._stalled()
+        out = set(book["quarantine"])
+        out |= {str(rec.get("task")) for rec in book["slice"].values() if isinstance(rec, dict) and rec.get("task")}
+        return out
+
+    def _stall(self, tid, tasks, state, sig, tier, rkey) -> None:
+        """<id> rule 3: the same failure again after the tier was raised ESC_FAILS times: no more attempts. A task of 2+
+        files goes to the slicer (ls['slice'][backlog_id]: the next triage cuts its row into one-file parts); any other
+        goes to a quarantine record with the reason. Either way the row is FAILED and never requeued."""
+        task = tasks.get(tid)
+        row0 = state["tasks"].get(tid) or {}
+        bid = str(row0.get("backlog_id") or (task.backlog_id if task else "") or "")
+        cls = self._reason_class(rkey)
+        book = self._stalled()
+        now = self.clock()
+        files = list(task.touch_files) if task else []
+        slice_it = bool(bid) and len(files) >= 2 and not (task and (task.only_opus or not task.privacy_safe))
+        if slice_it:
+            book["slice"][bid] = {"task": tid, "reason": cls, "at": now}
+            reason = ("sliced:" + cls)[:80]
+        else:
+            book["quarantine"][tid] = {"backlog_id": bid, "tier": tier, "reason": cls, "sig": sig[:120], "at": now}
+            reason = "quarantine"
+        F.save_atomic(self._stalled_path(), book)
+
+        def settle(st):
+            row = st["tasks"].get(tid)
+            if row is None:
+                return
+            row.update(status="FAILED", reason=reason, lease=None, deadline=None)
+            for key in ("pending_review", "candidate", "not_before", "began", "blocked_reason"):
+                row.pop(key, None)
+        self._tx(settle)
+        self.event("route", task_id=tid, backlog_id=bid or None, status="sliced" if slice_it else "quarantined",
+                   reason=self.rs(cls, 80), tier_from=tier, signature=self.rs(sig, 120))
+
+    def _triage_prefetch(self, state, tasks, ls, now, limit=None, topup=False) -> bool:
         """The same portion in the background thread: the loop keeps admitting and reaping meanwhile."""
         if self._bg is not None:
             return False
         quotas = copy.deepcopy(ls.get("locate_quotas") or {})     # private: merged back when the result is applied
         ctx = self._triage_prepare(state, tasks, ls, now, quotas=quotas)
+        if limit:
+            ctx["kwargs"]["limit"] = limit
+        ctx["topup"] = topup
         self.save_ls(ls)                                          # the seen reset and the weak drops are kept
         ctx["quotas"] = quotas
         return self._bg_start("triage", lambda: ctx["fn"](**ctx["kwargs"]), ctx)
@@ -2500,6 +2584,8 @@ class Loop:
         known |= self._not_code_known(ls, now)              # <id>: survives edits until the row's own text changes
         known |= {b for b, rec in (ls.get("parents") or {}).items()
                   if rec.get("children") and all(c in known for c in rec["children"])}   # all parts exist: no re-import
+        slicing = {b for b in self._stalled()["slice"] if b not in (ls.get("parents") or {})}
+        known -= slicing                                    # <id>: a row whose task stalled is imported again, cut into one-file parts
         t0 = self.clock()
         kwargs = dict(backlog_path=cfg.backlog, head_root=cfg.worktree,
                       known_backlog_ids=known, limit=cfg.triage_limit)
@@ -2510,9 +2596,28 @@ class Loop:
         scopes = {b: s for b, s in (ls.get("head_scope") or {}).items() if b not in known and isinstance(s, dict)}
         if scopes and _accepts(fn, "scopes"):
             kwargs["scopes"] = scopes
+        if slicing and _accepts(fn, "force_slice"):
+            kwargs["force_slice"] = slicing
+        if _accepts(fn, "trace"):
+            kwargs["trace"] = self._guard_traces(state)
         if _accepts(fn, "ask"):
             kwargs["ask"] = self._locate_ask(ls, quotas)
         return {"fn": fn, "kwargs": kwargs, "mtime": mtime, "dropped": dropped, "t0": t0, "now": now}
+
+    @staticmethod
+    def _guard_traces(state) -> dict:
+        """<id>: {backlog_id: [(rel, qualname, line)]} - the cloud trace of the failing guard the gate returned (base_red.result.path
+        of the row's task), for the slicer to narrow each one-file part's guard to its file's functions."""
+        out = {}
+        for row in (state.get("tasks") or {}).values():
+            try:
+                path = ((row.get("base_red") or {}).get("result") or {}).get("path") or ()
+                bid = row.get("backlog_id")
+                if bid and path:
+                    out[str(bid)] = [(str(c[0]), str(c[1]), int(c[2])) for c in path][:400]
+            except (TypeError, ValueError, IndexError, AttributeError):
+                continue
+        return out
 
     def _triage_failed(self, e, ctx, ls) -> Outcome:
         cfg, now, mtime = self.cfg, ctx["now"], ctx["mtime"]
@@ -2581,6 +2686,8 @@ class Loop:
             except Exception as e:
                 self.err("hold fingerprint", e)
         progress = bool(added) or bool(new_holds)
+        if ctx.get("topup"):                         # <id>: an empty top-up portion lengthens the wait of the next one
+            ls["ready_triage_idle"] = 0 if progress else min(int(ls.get("ready_triage_idle") or 0) + 1, 4)
         ls["triage_empty"] = None if (progress or deferred) else {"mtime": mtime,
                                                                    "until": now + cfg.triage_retry_s}
         self.save_ls(ls)
@@ -2664,6 +2771,9 @@ class Loop:
                 self.event("triage", status="parent_dropped", reason="cut row %s is not remembered (%s)" % (
                     self.rs(bid, 64), "table full" if len(book) >= self.PARENTS_MAX else "bad record"))
                 continue
+            book2 = self._stalled()
+            if book2["slice"].pop(bid, None) is not None:   # <id>: the stalled row is cut: its slice request is used up
+                F.save_atomic(self._stalled_path(), book2)
             book[bid] = {"backlog_id": bid, "parts": len(code), "children": kids,
                          "code_tasks": code, "test_tasks": tests[:20]}      # idempotent merge by backlog id
             files = rec.get("files")
@@ -3458,6 +3568,16 @@ class Loop:
             if not repeat:
                 seen.append(sig)
                 del seen[:-5]
+            stalled, tier0 = False, None
+            if repeat:                        # <id> rule 3: the same failure again after the tier was raised
+                tier0 = (state["tasks"].get(tid) or {}).get("tier_floor")
+                if tier0 in TIER_ORDER and tier0 != TIER_ORDER[0]:
+                    esc = mem.setdefault("esc", {})
+                    old = esc.get(tid) if isinstance(esc, dict) else None
+                    n = (old.get("n", 0) if isinstance(old, dict) and old.get("sig") == sig else 0) + 1
+                    if isinstance(esc, dict):
+                        esc[tid] = {"sig": sig, "n": n}
+                    stalled = n >= self.ESC_FAILS
             task = tasks2.get(tid)
             for f in (task.touch_files if task else ())[:10]:
                 bucket = per_file.setdefault(f, {})
@@ -3468,6 +3588,9 @@ class Loop:
                 while len(table) > ERROR_MEMORY_MAX:
                     table.pop(next(iter(table)))
             F.save_atomic(self._mem_path(), mem)
+            if stalled and tid in state["tasks"]:
+                self._stall(tid, tasks2, state, sig, tier0, rkey)
+                return
             if repeat and tid in state["tasks"]:
                 note = F.REPEAT_MARK + " " + (words or self._reason_class(rkey))
                 marks = {}
@@ -3968,6 +4091,7 @@ class Loop:
         self.save_ls(ls)
         skip = {tid for tid, t in tasks.items() if t.only_opus or not t.privacy_safe}
         skip |= set(state["tasks"]) - set(tasks)    # no plan row: privacy unknown, never given to an external model
+        skip |= self._quarantined()                 # <id> rule 3: no more attempts
         try:
             done = factory_requeue.run(self.cfg.state_dir, _ROOT.name, skip=skip, check=self._check_note,
                                        now=now, term_s=self.cfg.requeue_term_s)
@@ -3986,7 +4110,7 @@ class Loop:
         from tools import factory_requeue
         try:
             tasks, _ = self.load()
-            skip = {tid for tid, t in tasks.items() if t.only_opus or not t.privacy_safe}
+            skip = {tid for tid, t in tasks.items() if t.only_opus or not t.privacy_safe} | self._quarantined()
             done = factory_requeue.run(self.cfg.state_dir, _ROOT.name, skip=skip, check=self._check_note)
         except Exception as e:
             self.err("requeue", e)
