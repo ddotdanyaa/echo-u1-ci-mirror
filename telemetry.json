@@ -1,6 +1,6 @@
 {
  "accepted": 4,
- "free_ram_gb": 2.32,
+ "free_ram_gb": 2.78,
  "funnel": {
   "accepted": 4,
   "claimed": 104,
@@ -110,7 +110,7 @@
   "requeued": 2
  },
  "skipped_files": 0,
- "source_sha": "shaded08c31959f",
+ "source_sha": "shaf8e8df54df1c",
  "span": {
   "answer": {
    "calls": 0,
