@@ -56,6 +56,26 @@ def test_with_no_other_model_left_the_next_attempt_takes_any_model(tmp_path, mon
     assert second['status'] == 'READY'
 
 
+def test_a_dead_other_model_is_no_other_model(tmp_path, monkeypatch):
+    """21.11 12:22: the only unused model's channel was marked dead; the pre-check ignored the mark (no env), excluded
+    every live model, and the call stopped on 'dead' for an hour. A dead channel is no other model: take any model."""
+    import os
+    from tools import factory_channels as CH
+    rig = Rig(tmp_path, monkeypatch)
+    sent = _wire(rig, monkeypatch, lambda model: WRONG, lambda model, n: APPROVE)
+    rig.once(channel_config=_cfg(tmp_path, 'two.json'), max_attempts=F.MAX_ATTEMPTS)
+    rig.ready_again()
+    state = rig.state()
+    state['channel_quotas'] = {'dead': {'c3': {'key': CH._fingerprint(os.environ, _third()), 'since': 0,
+                                               'reason': 'model_missing', 'until': 4e9}}}
+    rig.state_path.write_text(json.dumps(state), encoding='utf-8')
+    sent.clear()
+    second = rig.once(channel_config=_cfg(tmp_path, 'three.json', [_third()]), max_attempts=F.MAX_ATTEMPTS)
+    assert second.get('channel_reason') != 'dead' and second['status'] == 'READY', second
+    assert [s['model'] for s in sent if not s['review']][:1] == ['x']
+    assert not any(e.startswith('other_model_than') for e in second['events'])
+
+
 def test_plain_attempts_end_as_failed_not_quarantine(tmp_path, monkeypatch):
     rig = Rig(tmp_path, monkeypatch)
     _wire(rig, monkeypatch, lambda model: WRONG, lambda model, n: APPROVE)

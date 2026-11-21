@@ -2851,9 +2851,11 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                 older = [m for m in failed_models_of(row) if m not in now_out]
                 if older and configured:
                     live_now = ck.read().get('channel_quotas') or {}
-                    if channels.route_order(configured, 'code', attempt, channels.estimate_tokens(len(prompt), 0),
-                                            exclude_model=now_out + older, state=live_now,
-                                            skip_tiers=() if small_follow_up or not now_out else ('small',)):
+                    if channels.usable(channels.route_order(
+                            configured, 'code', attempt, channels.estimate_tokens(len(prompt), 0),
+                            exclude_model=now_out + older, state=live_now,
+                            skip_tiers=() if small_follow_up or not now_out else ('small',)),
+                            live_now, os.environ):   # a dead channel (checked with the call's own env) is no other model
                         tag = 'other_model_than_%d' % len(older)
                         if tag not in events:
                             events.append(tag)
