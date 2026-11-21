@@ -1316,6 +1316,10 @@ class Loop:
         if name == "RUN":                      # work is ready but no worker may start: the reason is the wait
             return Outcome(sleep=60, action="WAIT", reason=self._refused or "not_runnable")
         if name == "WAIT":
+            if why == "not_before_or_lease":       # 21.11 rule 3: only delayed tasks are left; the jam gives FAILED ones back
+                got = self._idle_requeue(tasks, state, now)
+                if got is not None:
+                    return got
             return Outcome(sleep=min(max(float(act.get("wait_s") or 0), 5), 60),
                            action="WAIT", reason=why)
         if name in ("HOLD", "DONE"):
@@ -4107,9 +4111,16 @@ class Loop:
         skip = {tid for tid, t in tasks.items() if t.only_opus or not t.privacy_safe}
         skip |= set(state["tasks"]) - set(tasks)    # no plan row: privacy unknown, never given to an external model
         skip |= self._quarantined()                 # <id> rule 3: no more attempts
+        # 21.11 rule 3: a jam (nothing runnable, nothing running) lifts the max_times ceiling and the unclassified skip
+        # for the tasks above (one round per jam episode, factory_requeue.jam_of); FAILED test tasks that READY code
+        # tasks wait for come first. The skip above (owner rules, quarantine) is never lifted.
+        runnable = [] if self.pool.workers else F.ready(tasks, state, now=now)
+        jam = factory_requeue.jam_of(state, runnable) and not self.pool.workers
+        blocking = {dep for tid, t in tasks.items() if (state["tasks"].get(tid) or {}).get("status") == "READY"
+                    for dep in t.depends_on if (state["tasks"].get(dep) or {}).get("status") in ("FAILED", "BLOCKED")}
         try:
             done = factory_requeue.run(self.cfg.state_dir, _ROOT.name, skip=skip, check=self._check_note,
-                                       now=now, term_s=self.cfg.requeue_term_s)
+                                       now=now, term_s=self.cfg.requeue_term_s, jam=jam, blocking=blocking)
         except Exception as e:
             self.err("idle requeue", e)
             return None

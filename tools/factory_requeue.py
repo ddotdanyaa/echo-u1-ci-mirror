@@ -49,11 +49,33 @@ def last_try(ledger, tid) -> float:
     return max(times, default=0.0)
 
 
-def pick(state, code, ledger, max_times=3, skip=(), now=None, term_s=None) -> list:
+def jam_of(state, runnable) -> bool:
+    """21.11 rule 3 (a tactical brake lifts itself on a jam): nothing runnable now (``runnable``: the ids of
+    agent_factory.ready) and nothing RUNNING or in REVIEW, so only a return of a FAILED task can move the loop."""
+    return not runnable and not any(r.get('status') in ('RUNNING', 'REVIEW') for r in state.get('tasks', {}).values())
+
+
+def _progress(state) -> int:
+    """How many tasks are done: a jam round is given again only after this number grew (no progress -> no budget burnt)."""
+    return sum(1 for r in state.get('tasks', {}).values() if r.get('status') in F.SATISFIED)
+
+
+def _jam_round(state, tid, ledger) -> bool:
+    """One more round beyond max_times / an unclassified failure per jam episode: the episode ends when a task got done
+    since the last jam round of this task; at most F.AUTO_UNBLOCK_MAX jam rounds of one task, ever."""
+    rounds = [x for x in ledger.get('jam:' + tid) or [] if isinstance(x, int)]
+    return len(rounds) < F.AUTO_UNBLOCK_MAX and (not rounds or _progress(state) > rounds[-1])
+
+
+def pick(state, code, ledger, max_times=3, skip=(), now=None, term_s=None, jam=False, blocking=(), lifted=None) -> list:
     """<id> (live 20.11: 7 FAILED tasks of a retryable class waited for a new factory version that never came): with
     ``now`` and ``term_s`` a task already tried on this very version is tried again once its last return is older
-    than the term; max_times stays shared by every kind of return."""
+    than the term; max_times stays shared by every kind of return. ``jam`` (see jam_of): the max_times ceiling and the
+    unclassified-failure skip give way, one round per jam episode (_jam_round), the task id goes to ``lifted``;
+    ``blocking``: FAILED test tasks whose code tasks are READY and wait for them, tried first. The owner rules in SKIP
+    and the infrastructure / no-requeue classes are never lifted."""
     result = []
+    blocking = set(blocking)
     for tid in sorted(state.get('tasks', {})):
         row = state['tasks'][tid]
         if row.get('status') not in ('FAILED', 'BLOCKED'):
@@ -76,13 +98,24 @@ def pick(state, code, ledger, max_times=3, skip=(), now=None, term_s=None) -> li
             cls = _sibling(state, tid, row)[1]
         if cls == 'unknown':
             cls = _marker_class(row)
+        lift = False
+        if cls == 'unknown' and jam:
+            cls, lift = 'gate-red', True     # a jam: a failure nobody classified is a red gate, tried once more
         if cls == 'unknown' or cls in C.INFRASTRUCTURE_CLASSES or cls in C.NO_REQUEUE_CLASSES:
             continue
         if cls == 'gate-cut' and row.get('kind') == 'unit_test':
             cls = 'test-hang'            # a test task's own new test is what does not finish
         if len(history) >= max_times and not _audit_due(state, tid, row, cls, ledger):
-            continue
+            if not jam:
+                continue
+            lift = True
+        if lift:
+            if not _jam_round(state, tid, ledger):
+                continue
+            if lifted is not None:
+                lifted.add(tid)
         result.append((tid, cls))
+    result.sort(key=lambda x: x[0] not in blocking)      # stable: the blocking test tasks first
     return result
 
 
@@ -219,9 +252,10 @@ def _promoted_test(state, tid, row):
     return None
 
 
-def run(state_dir, code, *, skip=(), check=None, max_times=3, now=None, term_s=None) -> list:
-    """Write the retry answers. ``now``/``term_s``: see pick(); a return on the same version is booked as
-    'term:<time>', every return stamps 'at:<task>' so the next term starts from it."""
+def run(state_dir, code, *, skip=(), check=None, max_times=3, now=None, term_s=None, jam=False, blocking=()) -> list:
+    """Write the retry answers. ``now``/``term_s``/``jam``/``blocking``: see pick(); a return on the same version is
+    booked as 'term:<time>', every return stamps 'at:<task>' so the next term starts from it, a jam round beyond the
+    ceiling is booked as 'jam:<task>' (the done count then)."""
     state_dir = Path(state_dir)
     state = json.loads((state_dir / 'state.json').read_text(encoding='utf-8'))
     path = state_dir / 'requeue_ledger.json'
@@ -234,8 +268,12 @@ def run(state_dir, code, *, skip=(), check=None, max_times=3, now=None, term_s=N
         history.append(('term:' + datetime.fromtimestamp(at).astimezone().isoformat(timespec='seconds'))
                        if code in history else code)
         ledger['at:' + tid] = [at]
+        if tid in lifted:
+            ledger.setdefault('jam:' + tid, []).append(_progress(state))
 
-    for tid, cls in pick(state, code, ledger, max_times=max_times, skip=skip, now=now, term_s=term_s):
+    lifted = set()
+    for tid, cls in pick(state, code, ledger, max_times=max_times, skip=skip, now=now, term_s=term_s,
+                         jam=jam, blocking=blocking, lifted=lifted):
         row = state['tasks'][tid]
         test = (_promoted_test(state, tid, row) if cls == 'gate-red' and row.get('kind') in (None, 'code') else None)
         if test and len(ledger.get(tid, [])) >= AUDIT_AFTER and ('audit:' + test) not in ledger:
