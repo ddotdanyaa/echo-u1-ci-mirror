@@ -2879,10 +2879,22 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                     ctx['baseline'] = prepare(root, task, ctx['workdir'])
                     events.append('tournament_candidate_%d' % (k + 1))
                 ctx['candidate'] = k
+                def coder_call(tried=tried, k=k, k_prompt=k_prompt):
+                    skip = () if small_follow_up or not k else ('small',)        # <id> small_follow_up
+                    excluded = coder_exclusions(tried)
+                    try:
+                        return call(role, task, dir_for, chosen, k_prompt, exclude_model=excluded, skip_tiers=skip)
+                    except channels.ChannelUnavailable:
+                        if len(excluded or ()) <= len(tried):
+                            raise
+                        # live 21.11 13:11: the only unused models could not take the call now (one dead, one out of
+                        # quota) and the task waited 1 h. Another model is a preference, never a stop: take any.
+                        events.append('other_model_none_free')
+                        return call(role, task, dir_for, chosen, k_prompt, exclude_model=list(tried) or None,
+                                    skip_tiers=skip)
+
                 try:
-                    rc, out, err = timed('code_s', lambda: call(
-                        role, task, dir_for, chosen, k_prompt, exclude_model=coder_exclusions(tried),
-                        skip_tiers=() if small_follow_up or not k else ('small',)))   # <id> small_follow_up
+                    rc, out, err = timed('code_s', coder_call)
                 except (ChannelFault, channels.ChannelUnavailable, NoIndependentReviewer):
                     if not k:
                         raise

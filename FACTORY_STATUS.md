@@ -1,9 +1,10 @@
 # Factory status (generated, structured data only)
 
-Generated: 2026-11-21T10:05:02Z
-Source commit: sha81c72fa7ad32
+Generated: 2026-11-21T10:13:08Z
+Source commit: shad603c05af031
 
 ## Commits (sha, time)
+- shad603c05a 2026-11-21T13:12:43+03:00
 - sha81c72fa7 2026-11-21T13:04:34+03:00
 - shaae6391e1 2026-11-21T12:24:27+03:00
 - sha95469ae9 2026-11-21T11:34:35+03:00
@@ -23,14 +24,13 @@ Source commit: sha81c72fa7ad32
 - sha775a5669 2026-11-21T00:29:42+03:00
 - sha46cd666c 2026-11-21T00:27:07+03:00
 - sha8fecc977 2026-11-21T00:20:03+03:00
-- sha85d04614 2026-11-20T23:41:52+03:00
 
 ## Funnel
 | step | count |
 |---|---|
 | accepted | 4 |
-| claimed | 95 |
-| coded | 47 |
+| claimed | 100 |
+| coded | 52 |
 | found_in_backlog | unknown |
 | gate_pass | 30 |
 | known_to_loop | 238 |
@@ -43,16 +43,16 @@ Side counters: blocked=0, parked=0, requeued=2
 Tasks now: DONE=64, FAILED=32, PROMOTED=4, READY=12
 Accepted: 4
 Promoted: 28
-Free RAM, GB: 3.29
-Telemetry rows: 9252 recognised, 0 unrecognised
+Free RAM, GB: 2.62
+Telemetry rows: 9309 recognised, 0 unrecognised
 
 ## Spend per model
 | model | calls | tokens_in | tokens_out | usage_unknown | http_429 | errors |
 |---|---|---|---|---|---|---|
-| google/gemini-3.1-flash-lite | 569 | 3586239 | 259047 | 26 | 0 | 26 |
-| google/gemini-3.5-flash-lite | 768 | 5154053 | 269280 | 20 | 0 | 20 |
-| google/gemini-3.6-flash | 67 | 281805 | 14037 | 23 | 1 | 23 |
-| google/gemini-3.8-flash | 6 | 21237 | 15 | 3 | 1 | 3 |
+| google/gemini-3.1-flash-lite | 572 | 3608139 | 260248 | 26 | 0 | 26 |
+| google/gemini-3.5-flash-lite | 773 | 5186130 | 269973 | 20 | 0 | 20 |
+| google/gemini-3.6-flash | 68 | 281805 | 14037 | 24 | 1 | 24 |
+| google/gemini-3.8-flash | 7 | 21237 | 15 | 4 | 2 | 4 |
 | google/gemma-4-26b-a4b-it | 100 | 253075 | 30404 | 49 | 0 | 49 |
 | google/gemma-4-31b-it | 117 | 140353 | 4594 | 78 | 0 | 78 |
 | openrouter/cohere/north-mini-code:free | 22 | 69376 | 10273 | 5 | 0 | 6 |
@@ -62,13 +62,13 @@ Telemetry rows: 9252 recognised, 0 unrecognised
 | span | rows | calls |
 |---|---|---|
 | answer | 424 | 0 |
-| gate | 1461 | 0 |
-| infra | 140 | 0 |
-| loop | 1881 | 0 |
-| other | 978 | 0 |
+| gate | 1470 | 0 |
+| infra | 142 | 0 |
+| loop | 1895 | 0 |
+| other | 982 | 0 |
 | promote | 39 | 0 |
 | review | 597 | 324 |
-| run | 3620 | 1420 |
+| run | 3648 | 1430 |
 | triage | 112 | 0 |
 
 ## Channels (model ids)
