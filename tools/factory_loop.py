@@ -3120,6 +3120,12 @@ class Loop:
         if res.get("cross_review") is not None:
             self.event("review", task_id=tid or None, status="approved" if res["cross_review"]
                        else "rejected", model=self.rs(model), base_sha=base)
+        paid = res.get("paid_critic")          # owner rule 4: the paid control critic (never the key)
+        if isinstance(paid, dict):
+            self.event("paid_critic", task_id=tid or None, backlog_id=bid, status="ok", verdict=self.rs(paid.get("verdict")),
+                       model=self.rs(paid.get("model")), usd=paid.get("usd"), tokens_in=self._num(paid, "tokens_in"),
+                       tokens_out=self._num(paid, "tokens_out"), error_class=self.rs(paid.get("class")) or None,
+                       base_sha=base)
         tot = ls["totals"]
         tot["tokens_in"] = tot.get("tokens_in", 0) + (tin or 0)     # unknown usage adds nothing, it is not a zero
         tot["tokens_out"] = tot.get("tokens_out", 0) + (tout or 0)

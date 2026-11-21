@@ -43,6 +43,7 @@ from . import affected_tests
 from . import factory_channels as channels
 from . import factory_gate as gate
 from . import factory_quota as quota_ledger
+from . import factory_paid_critic as paid_critic
 
 _log = logging.getLogger(__name__)
 ENV_ALLOW = ("PATH", "PATHEXT", "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC", "LANG")
@@ -877,9 +878,11 @@ def review_candidate(task: Task, workdir: Path, model: str, invoke, *,
                 '\nReject this candidate if it still has a defect named there.\n') if rejected else ''
         # acceptance 20.11 (<id> and six before): the critics saw only the title ("Тест для <id>") and judged "the
         # described defect" by the test's own comment. They get the task text the coder got (same redaction, same cap).
+        lessons = paid_critic.lessons_for(task)   # owner: catches of the paid critic that free critics missed
         goal = getattr(task, 'goal', '') or ''
         said_goal = ('Task text (what the coder was asked):\n' + redact(scrub_paths(goal))[:1500] + '\n') if goal else ''
         head = ('Review this patch task: ' + redact(task.title) + '.\n' + said_goal + checks + GATE_PASSED + '\n' + told +
+                (lessons + '\n' if lessons else '') +
                 (' The task files are below: small files whole, a large file as its outline and the parts that '
                  'matter. Judge the candidate by its diff and the code shown; never reject it only because some '
                  'code is not shown.\n' if light else
@@ -3028,6 +3031,17 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
             return release_or_block('reviewer_failed', INFRA_DEFER_S)
         if not approved:
             return reject('review', 'review: ' + '; '.join(reasons), '; '.join(reasons), changed)
+        # owner rule 4: the paid control critic sees only would-be promotions (free chain approved, gates passed).
+        # A reject goes back like a free critic's; the catch enters the error-class registry the free review reads.
+        paid = paid_critic.control(task, unified_diff(ctx['baseline'], ctx['workdir'], task.touch_files,
+                                                      paid_critic.DIFF_LIMIT) if ctx['baseline'] is not None else '',
+                                   (exec_text + '\n' + told)[-paid_critic.FAIL_LIMIT:])
+        if paid is not None:
+            report['paid_critic'] = paid
+            if paid['verdict'] == 'reject':
+                paid_critic.record_class(task, paid)
+                why = scrub(redact('paid critic [%s]: %s' % (paid['class'], paid['reason'] or paid['symptom'])))
+                return reject('review', 'review: ' + why, why, changed)
         reviewed = staging / "for-review" / tid
         if reviewed.exists():
             shutil.rmtree(reviewed)  # left over from an earlier candidate of this task
