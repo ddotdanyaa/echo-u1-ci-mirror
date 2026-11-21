@@ -1,9 +1,10 @@
 # Factory status (generated, structured data only)
 
-Generated: 2026-11-21T12:26:04Z
-Source commit: sha7a868d1a67ed
+Generated: 2026-11-21T12:31:04Z
+Source commit: sha0226ae1e433a
 
 ## Commits (sha, time)
+- sha0226ae1e 2026-11-21T15:30:12+03:00
 - sha7a868d1a 2026-11-21T15:24:27+03:00
 - shab241ed09 2026-11-21T15:21:32+03:00
 - sha6e22230b 2026-11-21T15:21:31+03:00
@@ -23,7 +24,6 @@ Source commit: sha7a868d1a67ed
 - shaf8e8df54 2026-11-21T15:10:02+03:00
 - shac3cffd2b 2026-11-21T15:09:49+03:00
 - shac53c0bd3 2026-11-21T15:09:04+03:00
-- sha8dc5239a 2026-11-21T15:05:25+03:00
 
 ## Funnel
 | step | count |
@@ -43,7 +43,7 @@ Side counters: blocked=2, parked=0, requeued=2
 Tasks now: BLOCKED=2, DONE=64, FAILED=34, PROMOTED=4, READY=8
 Accepted: 4
 Promoted: 28
-Free RAM, GB: 2.65
+Free RAM, GB: 3.03
 Telemetry rows: 10457 recognised, 0 unrecognised
 
 ## Spend per model

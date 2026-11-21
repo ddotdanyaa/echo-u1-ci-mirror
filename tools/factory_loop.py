@@ -4441,7 +4441,7 @@ def main(argv=None) -> int:
                  review_model=a.review_model, env_file=a.env_file, clear_brake=a.clear_brake)
     try:
         loop = Loop(cfg, extra_env=keys, startup_notes=["no key for channel env " + n for n in absent],
-                    cloud_fn=getattr(factory_cloud_gate, "available", None), reap_fn=Loop._reap_real_fn)
+                    cloud_fn=getattr(factory_cloud_gate, "available", None), reap_fn=lambda **kw: SV.reap(procs_fn=SV.list_processes, kill_fn=SV.kill_tree, **kw))
     except ValueError as e:
         raise SystemExit(str(e))
     return loop.run()
