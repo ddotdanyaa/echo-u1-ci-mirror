@@ -18,6 +18,8 @@ def test_the_candidate_gate_run_gets_the_changed_files_and_the_base_run_an_empty
 
     def run_tests(root, tests, timeout_s, workdir=None, wait_s=None, hung=(), trace=(), touched=None):
         seen.append(touched)
+        from tools import factory_tree
+        factory_tree.materialize(root)      # as the real run_tests: a sparse candidate tree is filled in before pytest
         return rig._default_run_tests(root, tests, timeout_s)
     monkeypatch.setattr(rig.w.gate, 'run_tests', run_tests)
     result = rig.once()
