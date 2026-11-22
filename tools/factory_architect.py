@@ -26,7 +26,7 @@ _agent_lock = threading.Lock()
 _agent_count = 0
 _now, _sleep = time.monotonic, time.sleep
 DECISIONS = ('fix', 'not_code', 'cannot_reproduce', 'already_fixed')
-P2 = 'развилку решай сам: как удобнее пользователю и как уже работает соседняя механика; вопросов человеку нет'
+P2 = 'decide forks yourself: what is most convenient for the user and how the neighbouring mechanism already works; no questions to the owner'
 
 
 class ContractFault(ValueError):

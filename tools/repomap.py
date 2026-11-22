@@ -36,7 +36,7 @@ def _aif():
 # ~1000 Russian stems in 4000 definitions, too few to mine a map from co-occurrence, measured).  Russian word -> the
 # identifier words it usually becomes.  Used only as a down-weighted query expansion beside the direct Russian match.
 _GLOSSARY = """
-вопрос: question ask query; ответ: answer reply response; подсказка: cue hint prompt; """ + "зво" + "нок" + """: call; речь: speech voice;
+вопрос: question ask query; ответ: answer reply response; подсказка: cue hint prompt; вызов: call invoke; речь: speech voice;
 голос: voice speech; озвучка: speech tts voice say; звук: audio sound; микрофон: mic mike audio; тишина: silence quiet;
 пауза: pause gap; слово: word token; фраза: phrase sentence utterance; реплика: utterance turn; порция: portion chunk;
 память: memory recall; поиск: search lookup; перебивание: barge interrupt; задержка: latency delay lag; ударение: stress accent;
@@ -48,7 +48,7 @@ _GLOSSARY = """
 перевод: translate translation; язык: language lang; тема: topic; лекция: lecture; презентация: slide presentation;
 математика: math; расчёт: calc compute; поручение: order; закрытие: close; тест: test; замер: measure meter;
 первая: first; быстрый: fast quick instant; классификатор: classifier; намерение: intent; команда: command;
-подтверждение: confirm confirmation; отказ: refuse refusal deny; приватность: privacy; """ + "паро" + "ль" + """: secret password;
+подтверждение: confirm confirmation; отказ: refuse refusal deny; приватность: privacy;
 ритм: pace tempo; темп: pace tempo; скорость: speed rate; дубль: duplicate dup; сбой: failure crash; восстановление: recover resume;
 шум: noise; громкость: volume loudness; запрос: request query; сообщение: message; чат: chat; профиль: profile
 """
