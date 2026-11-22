@@ -4097,7 +4097,8 @@ class Loop:
         return row.get("backlog_id") or (tasks[tid].backlog_id if tid in tasks else None) or None
 
     # -- PROMOTE
-    def _after_merge(self, tid: str, sha: str, *, recovered: bool = False, ls: dict | None = None) -> None:
+    def _after_merge(self, tid: str, sha: str, *, recovered: bool = False, ls: dict | None = None,
+                     base_sha: str | None = None) -> None:
         """Complete the durable post-merge effects on both normal and recovery paths.  ``ls``: the caller's own loop state, which it
         saves itself (a second copy saved here would be overwritten by it); without it the state is read and saved here."""
         tasks, state = self.load()
@@ -4112,7 +4113,7 @@ class Loop:
             self._write_closure(tid, self._bid(state, tasks, tid), {"commit": sha}, "promoted")
         self.event("promote", task_id=tid, backlog_id=self._bid(state, tasks, tid),
                    status="promoted", reason="already_merged" if recovered else "promoted",
-                   commit=sha, recovered=recovered)
+                   commit=sha, recovered=recovered, base_sha=base_sha)
 
     def _promote(self, tid, tasks, state, ls) -> Outcome:
         cfg, wt = self.cfg, Path(self.cfg.worktree)
@@ -4166,7 +4167,7 @@ class Loop:
                 break
         if done_sha:
             self._tx(lambda st: F.mark_promoted(st, tid, done_sha))
-            self._after_merge(tid, done_sha, recovered=True, ls=ls)
+            self._after_merge(tid, done_sha, recovered=True, ls=ls, base_sha=fields["base_sha"])
             package_done()
             return Outcome(action="PROMOTE", reason="already_merged", status="promoted")
         try:
@@ -4269,7 +4270,7 @@ class Loop:
             return finish("no_diff", "no_diff", "no_diff")
         sha = git_run(wt, "rev-parse", "HEAD").strip()
         self._tx(lambda st: F.mark_promoted(st, tid, sha))
-        self._after_merge(tid, sha, ls=ls)
+        self._after_merge(tid, sha, ls=ls, base_sha=fields["base_sha"])
         self._clear_requeues(ls, tid)
         ls.get("promote_fail", {}).pop(tid, None)
         package_done()
