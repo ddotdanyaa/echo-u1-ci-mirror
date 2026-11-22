@@ -1,6 +1,6 @@
 # Factory status (generated, structured data only)
 
-Generated: 2026-11-22T22:26:41Z
+Generated: 2026-11-22T22:36:24Z
 Source commit: shab324ce212b76
 
 ## Commits (sha, time)
@@ -43,14 +43,14 @@ Side counters: blocked=0, parked=0, requeued=2
 Tasks now: DONE=68, FAILED=94, PROMOTED=5, READY=9, RUNNING=1
 Accepted: 5
 Promoted: 29
-Free RAM, GB: 5.41
-Telemetry rows: 21727 recognised, 0 unrecognised
+Free RAM, GB: 4.1
+Telemetry rows: 21759 recognised, 0 unrecognised
 
 ## Spend per model
 | model | calls | tokens_in | tokens_out | usage_unknown | http_429 | errors |
 |---|---|---|---|---|---|---|
-| google/gemini-3.1-flash-lite | 1304 | 8076762 | 514642 | 48 | 0 | 48 |
-| google/gemini-3.5-flash-lite | 1509 | 9959528 | 452511 | 27 | 0 | 27 |
+| google/gemini-3.1-flash-lite | 1306 | 8092873 | 515240 | 48 | 0 | 48 |
+| google/gemini-3.5-flash-lite | 1512 | 9983395 | 453415 | 27 | 0 | 27 |
 | google/gemini-3.6-flash | 99 | 383453 | 17290 | 39 | 1 | 39 |
 | google/gemini-3.8-flash | 7 | 21237 | 15 | 4 | 2 | 4 |
 | google/gemma-4-26b-a4b-it | 169 | 375266 | 32564 | 97 | 0 | 97 |
@@ -62,15 +62,15 @@ Telemetry rows: 21727 recognised, 0 unrecognised
 ## Spans
 | span | rows | calls |
 |---|---|---|
-| answer | 534 | 0 |
-| gate | 3256 | 0 |
-| infra | 755 | 0 |
-| loop | 4234 | 0 |
-| other | 2760 | 0 |
+| answer | 535 | 0 |
+| gate | 3261 | 0 |
+| infra | 756 | 0 |
+| loop | 4241 | 0 |
+| other | 2762 | 0 |
 | promote | 40 | 0 |
 | review | 1544 | 843 |
-| run | 8329 | 2600 |
-| triage | 275 | 0 |
+| run | 8344 | 2605 |
+| triage | 276 | 0 |
 
 ## Channels (model ids)
 - 1db4ab-gemini-3-8-flash
