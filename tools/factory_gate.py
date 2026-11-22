@@ -27,6 +27,10 @@ from pathlib import Path
 from .agent_factory import redact
 from . import factory_tree
 from .factory_process import run_owned
+try:                                       # the public mirror does not carry the cloud gate: its own number there
+    from .factory_cloud_gate import SLOT_QUEUE_S
+except ImportError:
+    SLOT_QUEUE_S = 900
 
 ENV_ALLOW = ('PATH', 'SYSTEMROOT', 'SYSTEMDRIVE', 'WINDIR', 'COMSPEC', 'PATHEXT', 'TEMP', 'TMP',
              'USERPROFILE', 'LOCALAPPDATA', 'APPDATA', 'HOMEDRIVE', 'HOMEPATH', 'HOME',
@@ -98,8 +102,7 @@ class GateResult:
 # --- laptop rule: at most 2 pytest machine-wide, and only while free RAM > 2 GB ---------------------
 SLOT_NAMES = ('night_pytest.lock', 'night_pytest.lock2')   # shared with verify_run.py and the executors
 SLOT_STALE_S = 120
-SLOT_WAIT_S = 120
-SLOT_POLL_S = 3
+SLOT_POLL_S = 3                      # a pytest slot is waited for as long as a cloud place (SLOT_QUEUE_S): one queue time
 SLOT_TOUCH_S = 30          # a holder refreshes its slot dir at least this often (stale = 120 s)
 NOT_STARTED = 'pytest not started: '   # diag prefix of a run that never began (no slot / no RAM)
 MIN_FREE_RAM = 2 * 2 ** 30
@@ -186,7 +189,7 @@ def pytest_slot(wait_s=None):
     if not dirs:                      # a gate with no slots would run unbounded: never silently
         raise RuntimeError('SLOT_DIRS is empty: the pytest slots are not configured')
     start = _clock()
-    deadline = start + (SLOT_WAIT_S if wait_s is None else wait_s)
+    deadline = start + (SLOT_QUEUE_S if wait_s is None else wait_s)
     held, why = None, 'no free pytest slot'
     while True:
         free = _free_ram()
@@ -549,22 +552,89 @@ def _cloud_sign(cg, got):
     return ''
 
 
+_companion = {'offer': (), 'root': None, 'xml': None, 'names': ()}   # the neighbour tests that ride in the candidate's cloud run
+
+
+def offer_companions(root, names):
+    """The neighbour tests ``names`` of the candidate tree ``root`` go to the cloud in the SAME run as the candidate's own
+    tests (one list of ids, one run) instead of a second run after it; ``cloud_each`` then finds their cases already there."""
+    _companion.update(offer=tuple(_node(n) for n in names), root=str(root), xml=None, names=())
+
+
+def _take_companions(root, tests):
+    if _companion['root'] != str(root) or not _companion['offer']:
+        return []
+    mine = {_node(t) for t in tests}
+    extra = [n for n in _companion['offer'] if n not in mine]
+    _companion['offer'] = ()                      # once: the first cloud call of the candidate carries them
+    return extra
+
+
+def _split_companions(root, xml_text, rc, tests, extra):
+    """``(xml_text, rc)`` of the candidate's own tests out of a run that carried ``extra`` neighbour tests too; the whole XML
+    is kept for ``cloud_each`` when every neighbour has its cases in it. Any fault: the XML as it came."""
+    try:
+        top = ET.fromstring(xml_text)
+        cases = list(top.iter('testcase'))
+        def mine(c):
+            return any(_covered([c], _node(t)) for t in tests)
+        def theirs(c):
+            return any(_covered([c], n) for n in extra)
+        own = [c for c in cases if mine(c) or not theirs(c)]
+        if all(_covered(cases, n) for n in extra):
+            _companion.update(root=str(root), xml=xml_text, names=tuple(extra))
+        only = ET.Element('testsuites')
+        for child in top:
+            if child.tag == 'properties':
+                only.append(child)
+        for c in own:
+            only.append(c)
+        bad = any(c.find('failure') is not None or c.find('error') is not None for c in own)
+        return ET.tostring(only, encoding='unicode'), (1 if bad else 0)
+    except (ET.ParseError, ValueError, TypeError):
+        return xml_text, rc
+
+
+def _held_companions(root, names):
+    """The testcases of the neighbour tests ``names`` from the candidate's own cloud run, or None (they did not ride in it)."""
+    if _companion['root'] != str(root) or not _companion['xml']:
+        return None
+    try:
+        cases = list(ET.fromstring(_companion['xml']).iter('testcase'))
+    except (ET.ParseError, ValueError, TypeError):
+        return None
+    if not all(_covered(cases, _node(n)) for n in names):
+        return None
+    _companion.update(xml=None, offer=(), names=())     # once
+    return cases
+
+
 def _cloud_attempt(root, tests, touched, trace=()):
     """The verdict of the cloud gate, or None (ineligible, error, no answer in time): the caller then runs locally,
     unchanged. Any fault of the cloud path is None, never a verdict. ``trace``: as in run_tests; the cloud shards run the
     same profile plugin and the JUnit comes back with the path of the failing tests (parse_junit fills GateResult.path)."""
     try:
         from . import factory_cloud_gate
-        got = factory_cloud_gate.attempt(root, tests, touched, **_traced(trace))
+        extra = _take_companions(root, tests)
+        got = factory_cloud_gate.attempt(root, tests, touched, **({'companions': extra} if extra else {}), **_traced(trace))
         sign = _cloud_sign(factory_cloud_gate, got)
         if sign:                 # the cloud gave no verdict: nothing runs here; the pass is released or the row re-sliced
             return replace(_failure(-1, NOT_STARTED + 'cloud: ' + sign), env_reason=sign)
         if not got:
             return None
         xml_text, rc, trusted = got
+        if extra:
+            xml_text, rc = _split_companions(root, xml_text, rc, tests, extra)
         result = parse_junit(xml_text, tests, rc, root)
-    except Exception:           # noqa: BLE001  the cloud is an optional first try
-        return None
+    except Exception:           # noqa: BLE001  a fault while reading the cloud's answer
+        # with the product route on there is no local fallback run: the pass waits for the cloud (cloud_down); None (the local
+        # gate decides) stays for a process whose product route is off
+        try:
+            from . import factory_cloud_gate as _cg
+            on = bool(_cg._product['on'])
+        except Exception:       # noqa: BLE001
+            on = False
+        return replace(_failure(-1, NOT_STARTED + 'cloud: cloud_down'), env_reason='cloud_down') if on else None
     if trusted:
         return result if _conclusive(result) else None
     # The mirror tree can differ from the local base: only a clean green is taken from the mirror route, a red is
@@ -587,14 +657,16 @@ def cloud_each(root, names):
     the answer is the sign of it instead of a dict: the env_reason string ``cloud_down`` / ``cloud_busy`` (no run is local
     then). Never raises."""
     try:
-        from . import factory_cloud_gate
-        got = factory_cloud_gate.run_product(root, list(names))
-        sign = _cloud_sign(factory_cloud_gate, got)
-        if sign:
-            return sign
-        if not got:
-            return {}
-        cases = list(ET.fromstring(got[0]).iter('testcase'))
+        cases = _held_companions(root, names)     # they rode in the candidate's own run: no second run
+        if cases is None:
+            from . import factory_cloud_gate
+            got = factory_cloud_gate.run_product(root, list(names))
+            sign = _cloud_sign(factory_cloud_gate, got)
+            if sign:
+                return sign
+            if not got:
+                return {}
+            cases = list(ET.fromstring(got[0]).iter('testcase'))
     except Exception:           # noqa: BLE001
         return {}
     out = {}

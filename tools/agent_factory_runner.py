@@ -3077,6 +3077,11 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                 ctx['roots'].append(tree)
                 # the gate decides whether a missing module is the environment or the candidate's own import (live
                 # 19.11 18:06-18:08: written tests imported modules that do not exist and went round as 'environment')
+                if task.kind != 'unit_test':     # the neighbour tests ride in the candidate's cloud run (one list of ids)
+                    try:
+                        gate.offer_companions(tree, gate_order(root, neighbor_tests(root, task)[:MAX_NEIGHBORS], ctx.get('neighbour_red', ())))
+                    except Exception:       # noqa: BLE001 - the neighbours then get a run of their own, as before
+                        pass
                 red_ids = [i for _, ids in ctx.get('gate_red', ()) for i in ids]
                 cand = gate.candidate_import(timed('gate_s', lambda: staged_run(
                     lambda part: gate_run(tree, part, touched=changed), root, task.tests,

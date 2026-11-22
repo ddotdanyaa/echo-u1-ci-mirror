@@ -1618,7 +1618,7 @@ def triage_portion(backlog_path, head_root, known_backlog_ids, limit, profile_at
             profiled += 1
             from tools import factory_gate as _G
             kind, payload, fb, pnotes = _localize(root, bid, named_here, idx, all_tests, min(PROFILE_TIMEOUT_S, left),
-                                                  wait_deadline=_mono() + max(0.0, min(_G.SLOT_WAIT_S, left)))
+                                                  wait_deadline=_mono() + max(0.0, min(_G.SLOT_QUEUE_S, left)))
             for ev, why in pnotes:
                 out["events"].append({"backlog_id": bid, "event": ev, "reason": why[:200]})
                 if ev == "profile_neighbours_env" and not env_blocked:    # the second run found no slot/RAM either: stop profiling the portion
