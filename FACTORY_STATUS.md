@@ -1,6 +1,6 @@
 # Factory status (generated, structured data only)
 
-Generated: 2026-11-22T20:24:33Z
+Generated: 2026-11-22T20:39:59Z
 Source commit: shabc71f2087067
 
 ## Commits (sha, time)
@@ -43,8 +43,8 @@ Side counters: blocked=0, parked=0, requeued=2
 Tasks now: DONE=68, FAILED=89, PROMOTED=5, READY=14
 Accepted: 5
 Promoted: 29
-Free RAM, GB: 3.93
-Telemetry rows: 21562 recognised, 0 unrecognised
+Free RAM, GB: 4.82
+Telemetry rows: 21581 recognised, 0 unrecognised
 
 ## Spend per model
 | model | calls | tokens_in | tokens_out | usage_unknown | http_429 | errors |
@@ -64,13 +64,13 @@ Telemetry rows: 21562 recognised, 0 unrecognised
 |---|---|---|
 | answer | 534 | 0 |
 | gate | 3255 | 0 |
-| infra | 745 | 0 |
-| loop | 4124 | 0 |
-| other | 2741 | 0 |
+| infra | 746 | 0 |
+| loop | 4139 | 0 |
+| other | 2742 | 0 |
 | promote | 40 | 0 |
 | review | 1544 | 843 |
 | run | 8325 | 2599 |
-| triage | 254 | 0 |
+| triage | 256 | 0 |
 
 ## Channels (model ids)
 - 1db4ab-gemini-3-8-flash
