@@ -219,12 +219,12 @@ def reserve(usd, architect=False, critic=False) -> bool:
         return True
 
 
-def settle(reserved, actual, architect=False, agent=False, critic=False):
+def settle(reserved, actual, architect=False, agent=False, critic=False, coder=False):
     reserved, actual = _amount(reserved), _amount(actual)
     with _spend_lock():
         row = _spend_row()
         row['reserved_usd'] = round(max(0, float(row.get('reserved_usd', 0)) - reserved), 9)
-        _add(row, actual, architect=architect, agent=agent, critic=critic)
+        _add(row, actual, coder=coder, architect=architect, agent=agent, critic=critic)
         _write_spend(row)
 
 
@@ -351,12 +351,16 @@ def control(task, diff: str, failure: str = '', exclude_model: str = '', *, base
     candidate (a paid coder's Sonnet is judged by Haiku or not at all)."""
     if os.environ.get('PYTEST_CURRENT_TEST') and not os.environ.get('FACTORY_PAID_ENV'):
         return None                                     # a test never spends the real key
-    env = load_env(env_path())
-    key = env.get('ANTHROPIC_API_KEY', '')
-    if not key:
-        return None
-    if credit_dead():
-        return None
+    try:
+        key = load_env(env_path()).get('ANTHROPIC_API_KEY', '')
+        if not key or credit_dead():
+            return None
+        return _control(task, diff, failure, exclude_model, baseline, workdir, key)
+    except (ValueError, TypeError, OSError, TimeoutError):
+        return None                                     # a broken state file or a busy lock: no paid voice, never a fault
+
+
+def _control(task, diff, failure, exclude_model, baseline, workdir, key):
     prompt = (ASK + 'Task: %s\nTask text:\n%s\nGuard test failure text (what the tests failed on before the fix):\n%s\n'
               'Candidate diff:\n%s\n') % (getattr(task, 'title', ''), str(getattr(task, 'goal', '') or '')[:GOAL_LIMIT],
                                           failure[-FAIL_LIMIT:], diff[:DIFF_LIMIT])
