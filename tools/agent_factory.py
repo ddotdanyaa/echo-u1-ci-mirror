@@ -584,18 +584,6 @@ def fail_row(state: dict, tid: str, token: str, reason: str) -> str:
     return "FAILED"
 
 
-def fail_review(state: dict, tid: str, reason: str = "reslice:stale") -> str:
-    """A candidate that waits in REVIEW cannot be merged any more (the three-way merge conflicts): the row goes back to
-    the slicer, cut afresh on the new code, without a strike. The same end as ``fail_row`` for a pass that holds a lease."""
-    if reason not in {"reslice", "reslice:stale"}:
-        raise InvalidPlan("invalid fail_row reason")
-    row = state["tasks"][tid]
-    row.update(status="FAILED", reason=reason, lease=None, deadline=None)
-    for key in ("began", "candidate", "pending_review", "defer_streak", "orphan_releases"):
-        row.pop(key, None)
-    return "FAILED"
-
-
 def _strike_key(row: dict, tid: str) -> str:
     return "bl:" + row["backlog_id"] if row.get("backlog_id") else "task:" + tid
 

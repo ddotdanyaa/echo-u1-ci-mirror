@@ -123,7 +123,7 @@ EDITOR_RULES = (
     "not shown, or the instruction cannot be carried out, answer one line: CANNOT: and the reason.")
 
 
-MAX_STAGE_PARTS = 10   # parts edited at once in one stage; LIGHT_MAX_FILES stays 5 (the triage's limit for touch_files, tests lock it)
+MAX_STAGE_PARTS = 10   # parts edited at once in one stage; the same number as the runner's LIGHT_MAX_FILES
 
 
 def stages(parts) -> list[list[dict]]:

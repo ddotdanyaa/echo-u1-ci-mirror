@@ -1516,7 +1516,7 @@ class Loop:
         return out
 
     def _light_ask(self, text: str, *, attempt: int, section: str, quotas: dict, max_tokens: int):
-        """One free model call outside the runner (the <id> spec pass, the <id> self-fix head): a registry channel in
+        """One free model call outside the runner (the <id> self-fix head): a registry channel in
         route_order (attempt 1: main first; 2: escalation first), booked in the shared quota ledger under `section`
         and cooled there on 429/5xx. Returns (status, model, answer, tokens): status 'ok', 'no_channel' or
         'http_<code>'; tokens = the usage of the answer, else the estimate."""
@@ -3933,6 +3933,13 @@ class Loop:
                 near = self._own_neighbours(tid, tasks.get(tid), base, cur)
                 if near:
                     moved, keep = "рядом сдвинулось (свой promote): " + ", ".join(near[:5]), True
+        if moved and "3-way: конфликт слияния" in moved and getattr(tasks.get(tid), "contract", ""):
+            # a card of a contract whose merge conflicts: cut again on the fresh code, no strike (AF.fail_row)
+            self._tx(lambda st: (self._lease_and_fail(st, tid), F.add_feedback(st, tid, "gate", moved)))
+            shutil.rmtree(src, ignore_errors=True)
+            ls["bases"].pop(tid, None)
+            self.save_ls(ls)
+            return finish("requeued", "merge_conflict")
         if moved:
             kept = self._tx(lambda st: self._requeue_review(st, tid, moved, keep))
             if not kept:
@@ -3964,7 +3971,7 @@ class Loop:
             if conflicts:
                 self._restore(wt, rel)
                 if getattr(tasks.get(tid), "contract", ""):       # a card of a contract: cut again on the fresh code
-                    self._tx(lambda st: (F.fail_review(st, tid),
+                    self._tx(lambda st: (self._lease_and_fail(st, tid),
                                          F.add_feedback(st, tid, "gate", "3-way: конфликт слияния: " + ", ".join(conflicts[:5]))))
                     shutil.rmtree(src, ignore_errors=True)
                     ls["bases"].pop(tid, None)
@@ -4057,6 +4064,14 @@ class Loop:
             except Exception:
                 bad.append(name)
         return "3-way: конфликт слияния: " + ", ".join(bad[:5]) if bad else "3-way: слияние чистое, нужен перепрогон ворот"
+
+    @staticmethod
+    def _lease_and_fail(state, tid) -> str:
+        """A REVIEW row holds no lease: it takes one for this write, then AF.fail_row sends the row back to the slicer
+        (reslice:stale, no strike)."""
+        token = "promote-" + uuid.uuid4().hex
+        state["tasks"][tid].update(status="RUNNING", lease=token)
+        return F.fail_row(state, tid, token, "reslice:stale")
 
     def _requeue_review(self, state, tid, note, keep) -> bool:
         """REVIEW -> READY. ``keep``: the approved candidate resumes at the gates on the new base, no coder call."""

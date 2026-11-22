@@ -1188,7 +1188,7 @@ def model_attempt(task: Task, workdir: Path, model: str, timeout: int,
 # a coder task that changes more files is a multi-file edit: Kilo. 3 since 20.11 (telemetry of the whole run: Kilo 0 of
 # 14 passes ever reached a review, every one of the 17 promoted candidates came from the light engine; 08:44-08:46 a
 # 3-file row burned its three passes on 'steps exhausted'); the triage's MAX_TOUCH is 3, so no triaged task goes to Kilo
-LIGHT_MAX_FILES = 5   # 21.11: the triage's MAX_TOUCH; the parts of one contract stage are cards of their own, one file each
+LIGHT_MAX_FILES = 10   # 23.11: a contract of up to 10 parts (one stage) is edited by the light engine, one card per file
 PART_RETRIES = 2      # a part whose answer cannot be applied is asked again this many times (no strike)
 PART_WAIT_S = 30      # a call waits for the nearest free channel at most this long, then the pass is deferred
 PART_RETRY_NOTE = ('\nYour previous answer for this file could not be used: %s\nAnswer again for this file only, '
@@ -2147,11 +2147,16 @@ def edit_parts(task: Task, parts: list, workdir: Path, call, failing: str = '') 
     workdir = Path(workdir)
     answers: list[str] = []
     lock = threading.Lock()
-    texts = {p['file']: (workdir / p['file']).read_text(encoding='utf-8-sig', errors='replace')
-             for p in parts if (workdir / p['file']).is_file()}
+
+    def current_texts() -> dict:
+        """The files of the parts as they are in ``workdir`` NOW: the parts of an earlier stage are already applied."""
+        with lock:
+            return {p['file']: (workdir / p['file']).read_text(encoding='utf-8-sig', errors='replace')
+                    for p in parts if (workdir / p['file']).is_file()}
 
     def one(index: int, part: dict):
         file = part['file']
+        texts = current_texts()
         source = texts.get(file, '')
         try:
             header, region = K.part_region(source, part.get('symbols') or [], part.get('anchor') or '')

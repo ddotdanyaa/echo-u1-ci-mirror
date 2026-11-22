@@ -7,7 +7,7 @@ from tools import factory_loop as L
 
 MB = 2 ** 20
 LIGHT = {'touch_files': ['calc.py']}
-KILO = {'touch_files': ['a.py', 'b.py', 'c.py', 'd.py', 'e.py', 'f.py']}      # over LIGHT_MAX_FILES (5)
+KILO = {'touch_files': ['f%d.py' % i for i in range(11)]}      # over LIGHT_MAX_FILES (10)
 
 
 def _loop(free, live=0, peaks=(), headroom=99):

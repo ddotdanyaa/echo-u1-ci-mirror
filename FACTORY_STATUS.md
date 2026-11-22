@@ -1,9 +1,10 @@
 # Factory status (generated, structured data only)
 
-Generated: 2026-11-22T23:14:03Z
-Source commit: sha94c4ff48c198
+Generated: 2026-11-22T23:27:25Z
+Source commit: sha1f432e80dd53
 
 ## Commits (sha, time)
+- sha1f432e80 2026-11-23T02:26:48+03:00
 - sha94c4ff48 2026-11-23T00:33:33+03:00
 - shaad39c64d 2026-11-23T00:14:18+03:00
 - shac5da0f06 2026-11-23T00:13:36+03:00
@@ -23,7 +24,6 @@ Source commit: sha94c4ff48c198
 - sha98c2b3fb 2026-11-22T03:25:24+03:00
 - sha743801c8 2026-11-22T02:51:24+03:00
 - sha7b5dd292 2026-11-22T02:29:47+03:00
-- sha57ca874c 2026-11-22T02:29:21+03:00
 
 ## Funnel
 | step | count |
@@ -39,21 +39,21 @@ Source commit: sha94c4ff48c198
 | reviewed | 65 |
 | triaged | 110 |
 
-Side counters: blocked=1, parked=0, requeued=2
-Tasks now: BLOCKED=1, DONE=68, FAILED=94, PROMOTED=5, READY=9
+Side counters: blocked=0, parked=0, requeued=2
+Tasks now: DONE=68, FAILED=94, PROMOTED=5, READY=9, RUNNING=1
 Accepted: 5
 Promoted: 29
-Free RAM, GB: 5.28
-Telemetry rows: 21849 recognised, 0 unrecognised
+Free RAM, GB: 5.11
+Telemetry rows: 21874 recognised, 0 unrecognised
 
 ## Spend per model
 | model | calls | tokens_in | tokens_out | usage_unknown | http_429 | errors |
 |---|---|---|---|---|---|---|
 | google/gemini-3-flash-preview | 2 | 0 | 0 | 2 | 2 | 2 |
 | google/gemini-3.1-flash-lite | 1310 | 8127750 | 517319 | 48 | 0 | 48 |
-| google/gemini-3.1-flash-lite-preview | 2 | 11809 | 1148 | 0 | 0 | 0 |
+| google/gemini-3.1-flash-lite-preview | 3 | 20209 | 1402 | 0 | 0 | 0 |
 | google/gemini-3.5-flash | 1 | 8402 | 347 | 0 | 0 | 0 |
-| google/gemini-3.5-flash-lite | 1517 | 10018010 | 454156 | 28 | 0 | 28 |
+| google/gemini-3.5-flash-lite | 1518 | 10027125 | 454164 | 28 | 0 | 28 |
 | google/gemini-3.6-flash | 99 | 383453 | 17290 | 39 | 1 | 39 |
 | google/gemini-3.7-flash | 1 | 9121 | 14 | 0 | 0 | 0 |
 | google/gemini-3.8-flash | 7 | 21237 | 15 | 4 | 2 | 4 |
@@ -67,14 +67,14 @@ Telemetry rows: 21849 recognised, 0 unrecognised
 | span | rows | calls |
 |---|---|---|
 | answer | 535 | 0 |
-| gate | 3266 | 0 |
-| infra | 760 | 0 |
-| loop | 4267 | 0 |
-| other | 2776 | 0 |
+| gate | 3267 | 0 |
+| infra | 761 | 0 |
+| loop | 4279 | 0 |
+| other | 2781 | 0 |
 | promote | 40 | 0 |
 | review | 1544 | 843 |
-| run | 8379 | 2621 |
-| triage | 282 | 0 |
+| run | 8384 | 2623 |
+| triage | 283 | 0 |
 
 ## Channels (model ids)
 - 1db4ab-gemini-3-8-flash
@@ -120,8 +120,8 @@ Telemetry rows: 21849 recognised, 0 unrecognised
 
 ## Published files
 Modules: 25
-Tests in the cloud: 114
-Tests not in the cloud: 53
+Tests in the cloud: 113
+Tests not in the cloud: 52
 - tests/test_agent_factory.py (backlog-id, call-word, env-path, long-run, pid-port)
 - tests/test_factory_asked_memory.py (backlog-id)
 - tests/test_factory_autofeed.py (backlog-id)
@@ -157,7 +157,7 @@ Tests not in the cloud: 53
 - tests/test_factory_owner_list.py (backlog-id, call-word, long-run)
 - tests/test_factory_paid_critic.py (env-path, key, url)
 - tests/test_factory_paid_critic_span.py (key)
-- tests/test_factory_path.py (dependency)
+- tests/test_factory_path.py (backlog-id)
 - tests/test_factory_port_wiring.py (dependency)
 - <redacted-name> (backlog-id, long-run)
 - tests/test_factory_refeed.py (backlog-id)
@@ -167,7 +167,6 @@ Tests not in the cloud: 53
 - tests/test_factory_reject_note.py (dependency)
 - tests/test_factory_round7.py (backlog-id, call-word, owner-name, path, phone, user-path)
 - tests/test_factory_route_d.py (backlog-id, long-run)
-- tests/test_factory_spec.py (dependency)
 - tests/test_factory_status.py (dependency)
 - tests/test_factory_survive.py (path, pid-port, user-path)
 - tests/test_factory_sync.py (backlog-id, email)
