@@ -1,6 +1,6 @@
 {
  "accepted": 5,
- "free_ram_gb": 5.96,
+ "free_ram_gb": 4.81,
  "funnel": {
   "accepted": 5,
   "claimed": 140,
@@ -111,7 +111,7 @@
   }
  },
  "promoted": 29,
- "rows_recognized": 21625,
+ "rows_recognized": 21649,
  "schema": 3,
  "side": {
   "blocked": 0,
@@ -119,7 +119,7 @@
   "requeued": 2
  },
  "skipped_files": 0,
- "source_sha": "shaad39c64d3517",
+ "source_sha": "sha94c4ff48c198",
  "span": {
   "answer": {
    "calls": 0,
@@ -151,14 +151,14 @@
    "calls_usage_unknown": 0,
    "errors": {},
    "http_429": 0,
-   "rows": 750,
+   "rows": 751,
    "status": {
     "brake": 8,
     "brake_cleared": 1,
     "cleared": 56,
     "deferred": 518,
     "error": 11,
-    "other": 116,
+    "other": 117,
     "parked": 18,
     "released": 9,
     "run_failed": 13
@@ -171,7 +171,7 @@
    "calls_usage_unknown": 0,
    "errors": {},
    "http_429": 0,
-   "rows": 4170,
+   "rows": 4188,
    "status": {
     "BLOCKED": 251,
     "FAILED": 282,
@@ -181,13 +181,13 @@
     "added": 15,
     "brake": 15,
     "deferred": 512,
-    "empty": 79,
+    "empty": 81,
     "infra": 17,
-    "ok": 1542,
+    "ok": 1557,
     "other": 43,
     "refused": 1,
     "requeued": 2,
-    "stop": 54
+    "stop": 55
    },
    "tokens_in": 0,
    "tokens_out": 0
@@ -197,10 +197,10 @@
    "calls_usage_unknown": 0,
    "errors": {},
    "http_429": 0,
-   "rows": 2745,
+   "rows": 2746,
    "status": {
     "added": 1,
-    "ok": 55,
+    "ok": 56,
     "other": 2666,
     "rejected": 23
    },
@@ -268,10 +268,10 @@
    "calls_usage_unknown": 0,
    "errors": {},
    "http_429": 0,
-   "rows": 262,
+   "rows": 266,
    "status": {
     "added": 42,
-    "empty": 213,
+    "empty": 217,
     "hold_dropped": 3,
     "other": 4
    },
@@ -292,19 +292,19 @@
   "brake_cleared": 1,
   "cleared": 56,
   "deferred": 1030,
-  "empty": 292,
+  "empty": 298,
   "error": 363,
   "hold_dropped": 3,
   "infra": 17,
-  "ok": 11831,
-  "other": 2902,
+  "ok": 11847,
+  "other": 2903,
   "parked": 18,
   "refused": 2,
   "rejected": 40,
   "released": 9,
   "requeued": 4,
   "run_failed": 13,
-  "stop": 54
+  "stop": 55
  },
  "summary": "ok",
  "tasks_now": {

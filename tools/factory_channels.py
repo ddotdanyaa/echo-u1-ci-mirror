@@ -196,16 +196,18 @@ def note_edit_outcome(state, tier, green, seconds, now=None):
     bucket.append([bool(green), max(0, seconds)])
     del bucket[:-30]
     experiment['pending'] = experiment.get('pending', 0) + 1
-    state['edit_by_tier'] = {t: {'cards': len(rows), 'green': sum(r[0] for r in rows),
-                                'median_s': statistics.median(r[1] for r in rows)}
+    totals = experiment.setdefault('totals', {})
+    totals[tier] = totals.get(tier, 0) + 1                  # the window below is cut to 30; the count is not
+    state['edit_by_tier'] = {t: {'cards': totals.get(t, len(rows)), 'green': sum(r[0] for r in rows),
+                                'median_s': statistics.median(r[1] for r in rows), 'window': len(rows)}
                              for t, rows in samples.items() if rows}
     small, main = (state['edit_by_tier'].get(t, {}) for t in ('small', 'main'))
-    if small.get('cards', 0) < 30 or not main.get('cards'):
+    if small.get('window', 0) < 30 or not main.get('window'):
         return None
     if experiment['pending'] < 30 and now - experiment.get('checked_at', 0) < 7200:
         return None
     experiment.update(pending=0, checked_at=now)
-    worse = (small['green'] / small['cards'] < .7 * main['green'] / main['cards']
+    worse = (small['green'] / small['window'] < .7 * main['green'] / main['window']
              or small['median_s'] > 1.5 * main['median_s'])
     route = 'small_second' if worse else 'small_first'
     prior = state.get('edit_route', 'small_first')

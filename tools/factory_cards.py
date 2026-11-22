@@ -123,6 +123,9 @@ EDITOR_RULES = (
     "not shown, or the instruction cannot be carried out, answer one line: CANNOT: and the reason.")
 
 
+MAX_STAGE_PARTS = 10   # parts edited at once in one stage; LIGHT_MAX_FILES stays 5 (the triage's limit for touch_files, tests lock it)
+
+
 def stages(parts) -> list[list[dict]]:
     """The parts grouped by their ``stage`` (no field: stage 1), the stages in ascending order."""
     grouped: dict[int, list[dict]] = {}
@@ -156,6 +159,9 @@ def contract_parts(task, root: Path) -> list[dict]:
         part = dict(raw, symbols=symbols, anchor=str(raw.get("anchor") or ""))
         defects.extend(resolve(root, part["file"], symbols, part["anchor"]))
         found.append(part)
+    for number, stage in enumerate(stages(found), 1):
+        if len(stage) > MAX_STAGE_PARTS:
+            defects.append("stage %d has %d parts, at most %d" % (number, len(stage), MAX_STAGE_PARTS))
     if defects:
         raise StaleContract("; ".join(defects))
     return found

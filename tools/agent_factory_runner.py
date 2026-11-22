@@ -2365,7 +2365,7 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
     stages: dict[str, float] = {}
     events: list[str] = ['sweep_failed'] if swept_failed else []
     ctx = {'workdir': staging / prefix, 'baseline': {}, 'coder_model': None, 'coder_models': set(), 'counts': None,
-           'role': 'code',
+           'role': 'code', 'lock': threading.Lock(),     # the lock guards what the threads of one card write: role, light, last_tokens
            'read_chars': 0, 'last_tokens': 0, 'last_text': '', 'roots': [root, staging]}
     scrub = lambda text: scrub_paths(text, ctx['roots'] + [ctx['workdir']])  # noqa: <id>
     report = {'task_id': tid, 'task': tid, 'backlog_id': task.backlog_id, 'base_sha': base_sha,
@@ -2382,11 +2382,11 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
             status, more = apply(state, row)
             edits = [c for c in calls if c['role'] == 'edit']
             if edits and (status == 'REVIEW' or extra.get('reason', '').startswith(('gate:', 'weakening:'))):
-                for c in edits:
-                    change = channels.note_edit_outcome(state.setdefault('channel_quotas', {}), c['tier'],
-                                                        status == 'REVIEW', time.monotonic() - started_pass)
-                    if change:
-                        report['edit_route_change'] = change
+                # one sample per card (pass), not per call: the tier that delivered, the time spent in edit calls only
+                change = channels.note_edit_outcome(state.setdefault('channel_quotas', {}), edits[-1]['tier'],
+                                                    status == 'REVIEW', sum(c.get('dur_s') or 0 for c in edits))
+                if change:
+                    report['edit_route_change'] = change
             if status not in ('READY', 'WAITING_CHANNEL'):      # settled, blocked or quarantined: every series is over
                 table = factory_env(state)
                 for key in ('task:%s:code' % tid, 'task:%s:review' % tid):
@@ -2503,10 +2503,11 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
         the model of the call is added to as soon as it is booked; ``on_booked(model)``: called at the same moment."""
         if candidate is None:
             candidate = ctx.get('candidate') or 0
-        ctx['role'] = role
         if channels.prompt_too_big(prompt):
             raise PromptTooLarge(str(len(prompt)))
-        light = ctx['light'] = engine_for(role, call_task) == 'light'
+        light = engine_for(role, call_task) == 'light'
+        with ctx['lock']:
+            ctx['role'], ctx['light'] = role, light
         base_tokens = channels.estimate_tokens(len(prompt), 0 if light else ctx['read_chars'],
                                                overhead=LIGHT_OVERHEAD_TOKENS if light else None,
                                                cyrillic=channels.cyrillic_share(prompt))
@@ -2573,7 +2574,8 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                     charge_call(state, tid)
                     booked_one(row)
                 ck.commit(charge)
-            ctx['last_tokens'] = tokens
+            with ctx['lock']:
+                ctx['last_tokens'] = tokens
             if models_out is not None:
                 models_out.add(chosen)
             if on_booked is not None:

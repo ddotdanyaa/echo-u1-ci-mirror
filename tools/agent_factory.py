@@ -475,9 +475,14 @@ def write_claims(task: Task) -> set[tuple[str, str | None]]:
 def _claims_clash(claims, in_use) -> bool:
     for name, symbol in claims:
         for other, other_symbol in in_use:
-            if name == other and (symbol is None or other_symbol is None or symbol == other_symbol):
+            if name == other and (symbol is None or other_symbol is None or _symbols_overlap(symbol, other_symbol)):
                 return True
     return False
+
+
+def _symbols_overlap(a: str, b: str) -> bool:
+    """The same name, or one inside the other: a class ``Foo`` holds its method ``Foo.bar``."""
+    return a == b or a.startswith(b + ".") or b.startswith(a + ".")
 
 
 def acquire(tasks: dict[str, Task], state: dict, tid: str, *,
