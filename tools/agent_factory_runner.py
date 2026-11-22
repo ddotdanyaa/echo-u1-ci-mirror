@@ -37,7 +37,7 @@ from .agent_factory import (BudgetExhausted, DEFER_REASONS, LEASE_LIFETIME_S, MA
                             defer, defer_streak, failed_models_of, is_unsafe_reject, seconds_to_local_midnight,
                             read_plan, ready, redact, REPEAT_MARK, route, quarantine, safe_path, safe_source, settle,
                             snapshot, txn, unclaim)
-from .agent_factory import TRACE_DIR, get_trace as agent_factory_get_trace, put_trace
+from .agent_factory import TRACE_DIR, load_trace as agent_factory_load_trace, put_trace
 from .factory_context import (LARGE_FILE_CHARS, asked_names, failing_names, identifier_tokens, keywords_from, packet,
                               render, scrub_paths)
 from .factory_process import kilo_argv, run_owned
@@ -462,7 +462,10 @@ def _held_base(row: dict, key: str | None, kind: str | None = None, state_dir: P
             name = Path(str(fields.pop('path_file'))).name
             if state_dir is None or not (Path(state_dir) / TRACE_DIR / name).is_file():
                 return None             # the file is gone: measure once more
-            fields['path'] = tuple(tuple(p) for p in agent_factory_get_trace(state_dir, row))
+            trace = agent_factory_load_trace(state_dir, row)
+            if trace is None:
+                return None             # the file is there but unreadable (torn write, garbage): measure once more
+            fields['path'] = tuple(tuple(p) for p in trace)
         if 'path' in fields:
             fields['path'] = tuple(tuple(p) for p in fields['path'])
         return gate.GateResult(**fields)

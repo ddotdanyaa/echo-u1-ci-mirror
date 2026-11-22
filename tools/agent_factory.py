@@ -1283,6 +1283,8 @@ TRACE_DIR = "traces"
 def put_trace(state_dir: Path, tid: str, path) -> str:
     """<id>: the cloud trace of a red base lives beside the state (traces/<tid>.json), not inside it; returns the file name."""
     name = re.sub(r"[^A-Za-z0-9_.-]", "_", str(tid))[:80] or "task"
+    if name != str(tid):                 # ids that clean to the same name (T/1, T_1) must not share a file
+        name += "-" + sha256(str(tid).encode("utf-8")).hexdigest()[:8]
     folder = Path(state_dir) / TRACE_DIR
     folder.mkdir(parents=True, exist_ok=True)
     save_atomic(folder / (name + ".json"), {"path": [[str(c[0]), str(c[1]), int(c[2])] for c in path]})
@@ -1290,7 +1292,12 @@ def put_trace(state_dir: Path, tid: str, path) -> str:
 
 
 def get_trace(state_dir: Path, row: dict) -> tuple:
-    """The trace of the row's red base as ((file, qualname, line), ...); () when there is none or the file is unreadable.
+    """The trace of the row's red base as ((file, qualname, line), ...); () when there is none or the file is unreadable."""
+    return load_trace(state_dir, row) or ()
+
+
+def load_trace(state_dir: Path, row: dict):
+    """Like get_trace, but None when the trace is unreadable (file missing, torn, garbage) - an empty trace is a real answer.
     A record that still carries the trace inline (written before <id>) is read as it is."""
     try:
         result = (row.get("base_red") or {}).get("result") or {}
@@ -1302,7 +1309,7 @@ def get_trace(state_dir: Path, row: dict) -> tuple:
             raw = result.get("path") or ()
         return tuple((str(c[0]), str(c[1]), int(c[2])) for c in raw)
     except (OSError, ValueError, TypeError, KeyError, IndexError, AttributeError):
-        return ()
+        return None
 
 
 def _move_traces(state_dir: Path, data: dict) -> None:
