@@ -1188,7 +1188,7 @@ def model_attempt(task: Task, workdir: Path, model: str, timeout: int,
 # a coder task that changes more files is a multi-file edit: Kilo. 3 since 20.11 (telemetry of the whole run: Kilo 0 of
 # 14 passes ever reached a review, every one of the 17 promoted candidates came from the light engine; 08:44-08:46 a
 # 3-file row burned its three passes on 'steps exhausted'); the triage's MAX_TOUCH is 3, so no triaged task goes to Kilo
-LIGHT_MAX_FILES = 10  # 22.11 (was 5): the parts of one contract stage are edited at once, one call per file
+LIGHT_MAX_FILES = 5   # 21.11: the triage's MAX_TOUCH; the parts of one contract stage are cards of their own, one file each
 PART_RETRIES = 2      # a part whose answer cannot be applied is asked again this many times (no strike)
 PART_WAIT_S = 30      # a call waits for the nearest free channel at most this long, then the pass is deferred
 PART_RETRY_NOTE = ('\nYour previous answer for this file could not be used: %s\nAnswer again for this file only, '
