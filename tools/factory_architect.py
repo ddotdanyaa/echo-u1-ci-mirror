@@ -76,8 +76,11 @@ def keywords_en(row_text, ask, cache: Path | None = None):
     except Exception:
         return []
     if path:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(result), encoding='utf-8')
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(result), encoding='utf-8')
+        except OSError:
+            pass        # the cache is a convenience: the words are already in hand
     return result
 
 

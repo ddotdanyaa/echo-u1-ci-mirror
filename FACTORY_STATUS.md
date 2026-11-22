@@ -1,9 +1,13 @@
 # Factory status (generated, structured data only)
 
-Generated: 2026-11-22T23:06:06Z
-Source commit: shaa087e15da0bf
+Generated: 2026-11-22T23:52:23Z
+Source commit: sha9071664a07e7
 
 ## Commits (sha, time)
+- sha9071664a 2026-11-23T02:24:22+03:00
+- sha13b577c0 2026-11-23T02:23:56+03:00
+- shad4e979d0 2026-11-23T02:23:16+03:00
+- sha775f48b0 2026-11-23T02:22:47+03:00
 - shaa087e15d 2026-11-23T00:57:44+03:00
 - sha9a3ab9bc 2026-11-23T00:54:44+03:00
 - sha24628bc7 2026-11-23T00:35:50+03:00
@@ -20,10 +24,6 @@ Source commit: shaa087e15da0bf
 - sha15951366 2026-11-22T22:13:50+03:00
 - sha7267beb4 2026-11-22T22:12:43+03:00
 - shab515ae15 2026-11-22T22:12:03+03:00
-- shacc51013f 2026-11-22T22:11:52+03:00
-- shab5f9b741 2026-11-22T03:51:11+03:00
-- sha67a8781b 2026-11-22T03:28:08+03:00
-- sha98c2b3fb 2026-11-22T03:25:24+03:00
 
 ## Funnel
 | step | count |
@@ -39,21 +39,21 @@ Source commit: shaa087e15da0bf
 | reviewed | 65 |
 | triaged | 110 |
 
-Side counters: blocked=1, parked=0, requeued=2
-Tasks now: BLOCKED=1, DONE=68, FAILED=94, PROMOTED=5, READY=9
+Side counters: blocked=0, parked=0, requeued=2
+Tasks now: DONE=68, FAILED=95, PROMOTED=5, READY=9
 Accepted: 5
 Promoted: 29
-Free RAM, GB: 4.3
-Telemetry rows: 21834 recognised, 0 unrecognised
+Free RAM, GB: 3.44
+Telemetry rows: 21936 recognised, 0 unrecognised
 
 ## Spend per model
 | model | calls | tokens_in | tokens_out | usage_unknown | http_429 | errors |
 |---|---|---|---|---|---|---|
 | google/gemini-3-flash-preview | 2 | 0 | 0 | 2 | 2 | 2 |
-| google/gemini-3.1-flash-lite | 1309 | 8119350 | 517065 | 48 | 0 | 48 |
-| google/gemini-3.1-flash-lite-preview | 1 | 3333 | 540 | 0 | 0 | 0 |
+| google/gemini-3.1-flash-lite | 1312 | 8145271 | 518629 | 48 | 0 | 48 |
+| google/gemini-3.1-flash-lite-preview | 3 | 20209 | 1402 | 0 | 0 | 0 |
 | google/gemini-3.5-flash | 1 | 8402 | 347 | 0 | 0 | 0 |
-| google/gemini-3.5-flash-lite | 1515 | 10008895 | 454149 | 27 | 0 | 27 |
+| google/gemini-3.5-flash-lite | 1520 | 10045003 | 454510 | 28 | 0 | 28 |
 | google/gemini-3.6-flash | 99 | 383453 | 17290 | 39 | 1 | 39 |
 | google/gemini-3.7-flash | 1 | 9121 | 14 | 0 | 0 | 0 |
 | google/gemini-3.8-flash | 7 | 21237 | 15 | 4 | 2 | 4 |
@@ -66,15 +66,15 @@ Telemetry rows: 21834 recognised, 0 unrecognised
 ## Spans
 | span | rows | calls |
 |---|---|---|
-| answer | 535 | 0 |
-| gate | 3265 | 0 |
-| infra | 759 | 0 |
-| loop | 4264 | 0 |
-| other | 2775 | 0 |
+| answer | 536 | 0 |
+| gate | 3269 | 0 |
+| infra | 765 | 0 |
+| loop | 4306 | 0 |
+| other | 2794 | 0 |
 | promote | 40 | 0 |
 | review | 1544 | 843 |
-| run | 8372 | 2617 |
-| triage | 280 | 0 |
+| run | 8394 | 2627 |
+| triage | 288 | 0 |
 
 ## Channels (model ids)
 - 1db4ab-gemini-3-8-flash
