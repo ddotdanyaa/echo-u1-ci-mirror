@@ -1,13 +1,13 @@
 name: factory-matrix
 on:
   push:
-    branches: ['factory-sync', 'gate/**']
+    branches: ['factory-sync*', 'gate/**']
   workflow_dispatch:
 permissions:
   contents: read
 jobs:
   tests:
-    if: github.ref == 'refs/heads/factory-sync' || github.event_name == 'workflow_dispatch'
+    if: startsWith(github.ref, 'refs/heads/factory-sync') || github.event_name == 'workflow_dispatch'
     strategy:
       fail-fast: false
       max-parallel: 20
