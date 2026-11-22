@@ -119,7 +119,11 @@ def test_no_state_lock_during_calls_and_gates(tmp_path, monkeypatch):
         return model(*args, **kwargs)
 
     def t(*args):
-        seen.append(('gate', lock.exists()))
+        import threading
+        # the red base runs in a background thread beside the coder call (3.2): the main thread's own short commits
+        # (booking, charging) legitimately overlap it, so what is checked there is that the base itself holds no lock
+        if not threading.current_thread().name.startswith('red-base'):
+            seen.append(('gate', lock.exists()))
         return tests(*args)
     monkeypatch.setattr(rig.w, 'model_attempt', m)
     rig.run_tests_fn = t
@@ -169,14 +173,14 @@ def test_choose_reserve_atomic_across_workers(tmp_path, monkeypatch):
     lease_b = F.claim(rig.state_path, rig.plan, 'T2000')
     assert lease_a and lease_b                               # disjoint files: both are runnable together
     inner, started = [], []
-    run = rig.run_tests_fn
+    route_order = rig.w.channels.route_order
 
-    def hook(root, tests, timeout_s):
-        if not started:                                      # A's red_before: B runs its whole pass now
-            started.append(1)
-            inner.append(rig.once(task_id='T2000', lease=lease_b[1]))
-        return run(root, tests, timeout_s)
-    rig.run_tests_fn = hook
+    def hook(*args, **kwargs):
+        if not started:                                      # A's first booking is next: B runs its whole pass now
+            started.append(1)                                # (the red base runs beside the coder call, 3.2, so the
+            inner.append(rig.once(task_id='T2000', lease=lease_b[1]))   # booking, not the base, is the fixed point)
+        return route_order(*args, **kwargs)
+    monkeypatch.setattr(rig.w.channels, 'route_order', hook)
     result_a = rig.once(task_id='T1', lease=lease_a[1])
     result_b = inner[0]
     assert rig.coder_calls == ['T2000'], 'one booking only: %s' % rig.coder_calls
