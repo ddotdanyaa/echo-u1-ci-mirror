@@ -1,6 +1,6 @@
 {
  "accepted": 5,
- "free_ram_gb": 5.23,
+ "free_ram_gb": 5.94,
  "funnel": {
   "accepted": 5,
   "claimed": 140,
@@ -111,7 +111,7 @@
   }
  },
  "promoted": 29,
- "rows_recognized": 21646,
+ "rows_recognized": 21663,
  "schema": 3,
  "side": {
   "blocked": 0,
@@ -171,7 +171,7 @@
    "calls_usage_unknown": 0,
    "errors": {},
    "http_429": 0,
-   "rows": 4186,
+   "rows": 4199,
    "status": {
     "BLOCKED": 251,
     "FAILED": 282,
@@ -181,13 +181,13 @@
     "added": 15,
     "brake": 15,
     "deferred": 512,
-    "empty": 81,
+    "empty": 82,
     "infra": 17,
-    "ok": 1555,
+    "ok": 1566,
     "other": 43,
     "refused": 1,
     "requeued": 2,
-    "stop": 55
+    "stop": 56
    },
    "tokens_in": 0,
    "tokens_out": 0
@@ -197,11 +197,11 @@
    "calls_usage_unknown": 0,
    "errors": {},
    "http_429": 0,
-   "rows": 2746,
+   "rows": 2748,
    "status": {
     "added": 1,
-    "ok": 56,
-    "other": 2666,
+    "ok": 57,
+    "other": 2667,
     "rejected": 23
    },
    "tokens_in": 0,
@@ -268,10 +268,10 @@
    "calls_usage_unknown": 0,
    "errors": {},
    "http_429": 0,
-   "rows": 265,
+   "rows": 267,
    "status": {
     "added": 42,
-    "empty": 216,
+    "empty": 218,
     "hold_dropped": 3,
     "other": 4
    },
@@ -292,19 +292,19 @@
   "brake_cleared": 1,
   "cleared": 56,
   "deferred": 1030,
-  "empty": 297,
+  "empty": 300,
   "error": 363,
   "hold_dropped": 3,
   "infra": 17,
-  "ok": 11845,
-  "other": 2903,
+  "ok": 11857,
+  "other": 2904,
   "parked": 18,
   "refused": 2,
   "rejected": 40,
   "released": 9,
   "requeued": 4,
   "run_failed": 13,
-  "stop": 55
+  "stop": 56
  },
  "summary": "ok",
  "tasks_now": {
