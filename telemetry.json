@@ -1,6 +1,6 @@
 {
  "accepted": 5,
- "free_ram_gb": 4.45,
+ "free_ram_gb": 4.62,
  "funnel": {
   "accepted": 5,
   "claimed": 140,
@@ -111,7 +111,7 @@
   }
  },
  "promoted": 29,
- "rows_recognized": 21680,
+ "rows_recognized": 21700,
  "schema": 3,
  "side": {
   "blocked": 0,
@@ -151,14 +151,14 @@
    "calls_usage_unknown": 0,
    "errors": {},
    "http_429": 0,
-   "rows": 752,
+   "rows": 753,
    "status": {
     "brake": 8,
     "brake_cleared": 1,
     "cleared": 56,
     "deferred": 518,
     "error": 11,
-    "other": 118,
+    "other": 119,
     "parked": 18,
     "released": 9,
     "run_failed": 13
@@ -171,7 +171,7 @@
    "calls_usage_unknown": 0,
    "errors": {},
    "http_429": 0,
-   "rows": 4211,
+   "rows": 4223,
    "status": {
     "BLOCKED": 251,
     "FAILED": 282,
@@ -181,13 +181,13 @@
     "added": 15,
     "brake": 15,
     "deferred": 512,
-    "empty": 83,
+    "empty": 84,
     "infra": 17,
-    "ok": 1577,
+    "ok": 1587,
     "other": 43,
     "refused": 1,
     "requeued": 2,
-    "stop": 56
+    "stop": 57
    },
    "tokens_in": 0,
    "tokens_out": 0
@@ -197,11 +197,12 @@
    "calls_usage_unknown": 0,
    "errors": {},
    "http_429": 0,
-   "rows": 2749,
+   "rows": 2754,
    "status": {
     "added": 1,
-    "ok": 57,
-    "other": 2668,
+    "failed": 2,
+    "ok": 58,
+    "other": 2670,
     "rejected": 23
    },
    "tokens_in": 0,
@@ -268,10 +269,10 @@
    "calls_usage_unknown": 0,
    "errors": {},
    "http_429": 0,
-   "rows": 270,
+   "rows": 272,
    "status": {
     "added": 42,
-    "empty": 221,
+    "empty": 223,
     "hold_dropped": 3,
     "other": 4
    },
@@ -292,19 +293,20 @@
   "brake_cleared": 1,
   "cleared": 56,
   "deferred": 1030,
-  "empty": 304,
+  "empty": 307,
   "error": 363,
+  "failed": 2,
   "hold_dropped": 3,
   "infra": 17,
-  "ok": 11868,
-  "other": 2906,
+  "ok": 11879,
+  "other": 2909,
   "parked": 18,
   "refused": 2,
   "rejected": 40,
   "released": 9,
   "requeued": 4,
   "run_failed": 13,
-  "stop": 56
+  "stop": 57
  },
  "summary": "ok",
  "tasks_now": {
