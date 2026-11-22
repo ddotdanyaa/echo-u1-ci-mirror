@@ -37,7 +37,8 @@ def _ledger(env):
 
 def _jam_plan():
     # <id> failed test task over the ceiling; <id> (READY) waits for it; <id> READY but delayed: the loop sat in WAIT
-    return [task_row(1), task_row(2, depends_on=['T1']), task_row(3)]
+    # <id> belongs to the failed row <id> (a ready task of another row behind a failed one is a row of its own now)
+    return [task_row(1), task_row(2, depends_on=['T1'], backlog_id='B1'), task_row(3)]
 
 
 def _jam_env(tmp_path, monkeypatch, plan=None, rows=None, ledger=None):
