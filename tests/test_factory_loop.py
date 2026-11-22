@@ -20,6 +20,21 @@ from tools import factory_loop as L
 PY = sys.executable
 BRANCH = "factory/test"
 
+EMPTY = {"tasks": [], "holds": [], "stale": [], "skipped": []}
+
+
+def _plan(*rows):
+    return F.read_plan({"tasks": list(rows)})
+
+
+def _reject(e, loop, remark="fails at index off by one in the helper because of the loop"):
+    st = e.state()
+    F.add_feedback(st, "T1", "gate", remark)
+    F.save_atomic(e.state_dir / "state.json", st)
+    e.runner_says({"status": "READY", "task": "T1", "reason": "gate:red", "calls": [],
+                   "tests": {"collected": 3}})
+    loop.step()
+
 FAKE_RUNNER = """\
 import os, sys
 with open(os.environ["FAKE_LOG"], "a", encoding="utf-8") as fh:
