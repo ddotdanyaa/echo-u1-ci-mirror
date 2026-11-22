@@ -2365,6 +2365,9 @@ class Loop:
         except Exception as e:              # the file cannot be read now: the build waits for the next tick
             self.err("release: backlog unreadable", e)
             return
+        shards = REL.shards_for(self._release_places())
+        if not shards:                      # fewer than the minimum places left over by the task cards: wait for the next tick
+            return
         snap = self._snapshot(self.base_sha)
         sha = self.base_sha
         ls["release_run"] = {"sha": sha, "tids": tids, "open_tests": sorted(open_tests),
@@ -2373,9 +2376,17 @@ class Loop:
         fn, state_dir = self.release_fn, self.cfg.state_dir
         self._rel_snap = snap
         self._rel = Prefetch("release", lambda: fn(sha=sha, snapshot=snap, state_dir=state_dir, open_ids=open_ids,
-                                                    open_tests=set(open_tests), shards=REL.SWEEP_SHARDS[1]), {})
+                                                    open_tests=set(open_tests), shards=shards), {})
         self._rel.thread.start()
         self.event("release", status="started", base_sha=sha, reason="final build: %d rows to accept" % len(tids))
+
+    def _release_places(self) -> int:
+        """Cloud job places the task cards leave free: the free plan's jobs minus what the live workers may hold (each one
+        a candidate run of PRODUCT_SHARDS jobs - an upper bound, so the sweep never starves a card)."""
+        if factory_cloud_gate is None:          # no cloud gate module: the cards hold no cloud places
+            return 10 ** 6
+        used = len(self.pool.workers) * factory_cloud_gate.PRODUCT_SHARDS
+        return max(0, factory_cloud_gate.FREE_PLAN_JOBS - used)
 
     def _release_near(self, task, red_files) -> bool:
         """True when the task's files are neighbours of a red test (the neighbour map of 3.1, <state>/neighbors/latest.json:
@@ -2433,6 +2444,16 @@ class Loop:
                 self.err("release: regressions", e)
         ls["release"] = {"sha": sha, "at": now, "promoted_total": int(run.get("promoted_total") or 0),
                          "status": status, "new_red": new_red}
+        if status == "green":                   # coordinator 22.11 23:20: a green build deploys only when the deploy exists
+            deploy = getattr(REL, "deploy", None)
+            if deploy is None:
+                ls["release"]["deploy_wait"] = "no_deploy_yet"
+            else:
+                try:
+                    deploy(sha=sha, state_dir=self.cfg.state_dir)
+                except Exception as e:
+                    ls["release"]["deploy_wait"] = "deploy_failed"
+                    self.err("release: deploy", e)
         ls.pop("release_retry_at", None)
         self.save_ls(ls)
         self.event("release", status=status, dur_s=round(job.dur_s, 3), base_sha=sha, reason=str(res.get("reason") or "")[:200],
