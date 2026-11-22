@@ -180,7 +180,8 @@ def test_stats_separate_blocked_from_quarantine(env):
     stats = json.loads((env.state_dir / "stats.json").read_text(encoding="utf-8"))
     assert stats["quarantine"] == 0 and stats["blocked"] == 1
     assert stats["blocked_by_reason"] == {"context_too_large": 1}
-    env.set_row("T1", status="FAILED", reason="quarantine")
+    # a quarantine of the current slicer version (one without a version is reopened at start, 1.3)
+    env.set_row("T1", status="FAILED", reason="quarantine", q_ver=F.slicer_version())
     env.loop(once=True).run()
     stats = json.loads((env.state_dir / "stats.json").read_text(encoding="utf-8"))
     assert stats["quarantine"] == 1 and stats["blocked"] == 0

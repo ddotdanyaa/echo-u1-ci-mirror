@@ -124,10 +124,20 @@ def test_an_http_error_leaves_the_spec_for_the_next_run_and_cools_the_channel(tm
 
 
 def test_a_task_parked_as_not_testable_is_never_requeued(tmp_path, monkeypatch):
-    from tools import factory_requeue as Q
+    # was: factory_requeue.pick(...) == []; the requeue is gone, the slicer queue replaces it: a parked row is no
+    # stuck row, so the slicer is never asked about it
+    from tools import agent_factory as F
     env, calls = make(tmp_path, monkeypatch), []
-    run_step(env, monkeypatch, calls, json.dumps({"testable": False, "why": "a phone check"}))
+    sliced = []
+    monkeypatch.setattr(L, "_light_post", fake_post(calls, json.dumps({"testable": False, "why": "a phone check"})))
+    (env.repo / "tools" / "x1.py").write_text(CODE, encoding="utf-8")
+    L.git_run(env.repo, "add", "-A")
+    L.git_run(env.repo, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "-m", "code")
+    loop = env.loop(extra={"extra_env": {"FAKE_KEY_ENV": "k"}, "slice_fn": lambda *a, **k: sliced.append(a) or None})
+    loop.step()
+    loop.step()
     state = env.state()
     assert state["tasks"]["T1"]["blocked_reason"] == "spec_not_testable"
-    assert Q.pick(state, "newcode", {}) == []
+    tasks = F.read_plan(json.loads((env.state_dir / "plan.json").read_text(encoding="utf-8")))
+    assert F.stuck_rows(state, tasks) == {} and sliced == []
 

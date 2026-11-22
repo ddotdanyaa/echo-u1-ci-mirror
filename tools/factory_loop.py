@@ -349,6 +349,7 @@ class Outcome:
     action: str = ""
     reason: str = ""
     status: str = "ok"
+    blockers: dict | None = None
     proof: bool = False   # evidence that the pipeline works: the only thing that resets the series
 
 
@@ -485,6 +486,7 @@ SLICE_PARALLEL = 12
 RESLICE_PER_STEP = 12
 RESLICE_SLEEP_S = 5
 SLICE_WAIT_S = 60
+QUARANTINE_TTL_S = 21600
 
 
 class SliceWait(Exception):
@@ -1109,7 +1111,7 @@ class Loop:
         self.event("loop", action=out.action, reason=out.reason, status=out.status,
                    sleep_s=out.sleep, dur_s=round(self.clock() - t0, 3),
                    base_sha=self.base_sha or None, iteration=self.iterations,
-                   experiments=exps or None)
+                   experiments=exps or None, blockers=out.blockers)
         self._stats()
         self._hourly_metrics()
         return out
@@ -1375,7 +1377,7 @@ class Loop:
             sleep = cfg.hold_sleep
             if isinstance(act.get("wait_s"), (int, float)):     # the earliest block term ends the HOLD
                 sleep = min(sleep, max(5.0, float(act["wait_s"])))
-            return Outcome(sleep=sleep, action="HOLD", reason=why)
+            return Outcome(sleep=sleep, action="HOLD", reason=why, blockers=act.get("blockers"))
         return Outcome(sleep=cfg.done_sleep, action="DONE", reason=why)
 
     def _auto_unblock(self, act) -> Outcome:
@@ -1963,12 +1965,13 @@ class Loop:
         """The ONE writer of the not_code book (the head's answer and the triage's structural cut, <id>)."""
         ls.setdefault("not_code", {})[bid] = {
             "hash": digest, "reason": ("не код: " + self._scrub(F.redact(str(why))))[:200],
-            "until": self.clock() + self.cfg.not_code_term_s}
+            "until": self.clock() + self.cfg.not_code_term_s, "slicer": F.slicer_version()}
         ls["holds"].pop(bid, None)
         ls.get("hold_hash", {}).pop(bid, None)
 
     def _not_code_known(self, ls, now) -> set:
         """Rows of the not_code book whose term is live and whose text is unchanged; the rest leave the book."""
+        self._expire_slicer_decisions(ls)
         book = ls.get("not_code")
         if not isinstance(book, dict) or not book:
             return set()
@@ -2390,7 +2393,7 @@ class Loop:
             r = st["tasks"][tid]
             if r["status"] != "PROMOTED":
                 raise F.InvalidPlan("only a PROMOTED task can be rejected (it is %s)" % r["status"])
-            r.update(status="READY", attempts=0, commit=None, lease=None, deadline=None)
+            r.update(status="READY", attempts=0, reds=0, commit=None, lease=None, deadline=None)
             F.add_feedback(st, tid, "opus", note or "rejected by Opus")
         self._tx(reset)
         bid = bid or row.get("backlog_id")
@@ -2797,6 +2800,87 @@ class Loop:
             cap = min(cap, max(1, self._headroom(None, self.load()[1])))
         return cap
 
+    def _reenter_rows(self, bids):
+        version = F.slicer_version()
+        def reopen(st):
+            for tid, row in st["tasks"].items():
+                if F.row_of(row.get("backlog_id") or tid) in bids and row.get("reason") == "quarantine":
+                    row["reason"] = "reenter"
+                    st.setdefault("strikes", {}).pop(F._strike_key(row, tid), None)
+            for bid in bids:
+                st.setdefault("strikes", {}).pop("bl:" + bid, None)
+        self._tx(reopen)
+
+    def _reenter_on_new_slicer(self) -> int:
+        tasks, state = self.load()
+        version, now, ls = F.slicer_version(), self.clock(), self.ls()
+        bids = {F.row_of(row.get("backlog_id") or tid) for tid, row in state["tasks"].items()
+                if row["status"] == "FAILED" and row.get("reason") == "quarantine" and row.get("q_ver") != version}
+        bids |= {bid for bid, rec in ls.get("quarantine", {}).items() if rec.get("version") != version}
+        if not bids:
+            return 0
+        self._reenter_rows(bids)
+        tasks, state = self.load()
+        owned = {F.row_of(r.get("backlog_id") or t) for t, r in state["tasks"].items()
+                 if r["status"] in ("READY", "BLOCKED", "FAILED", "RUNNING", "REVIEW") and not F.is_terminal(r.get("reason"))}
+        for bid in bids:
+            ls.get("quarantine", {}).pop(bid, None)
+            # A row record can exist without any task: only such a row goes back to the queue.
+            # A row with a re-entered task is stuck, and the slicer takes it from there.
+            if bid not in owned:
+                ls.setdefault("to_slice", {}).setdefault(bid, {"at": now, "hints": [], "guard": ""})
+        ls["reentry"] = {"version": version, "at": now, "rows": sorted(bids)}
+        self.save_ls(ls)
+        return len(bids)
+
+    def _quarantine_rows(self, tasks, state, ls, now):
+        version, ladder = F.slicer_version(), self._ladder_sig()
+        reopened = {bid for bid, rec in ls.get("quarantine", {}).items()
+                    if rec.get("ladder", "") != ladder or now - float(rec.get("at", 0)) >= QUARANTINE_TTL_S}
+        if reopened:
+            self._reenter_rows(reopened)
+            for bid in reopened:
+                ls["quarantine"].pop(bid, None)
+                ls.get("reslices", {}).get(bid, {})["used"] = 0
+                ls.setdefault("to_slice", {}).setdefault(bid, {"at": now, "hints": [], "guard": ""})
+            self.save_ls(ls)
+            tasks, state = self.load()
+        candidates = set(F.stuck_rows(state, tasks)) | set(ls.get("to_slice", {}))
+        for bid in sorted(candidates - set(ls.get("quarantine", {}))):
+            rec = ls.get("reslices", {}).get(bid, {})
+            if rec.get("version") != version or rec.get("used", 0) < F.MAX_RESLICES:
+                continue
+            # A stale return gets its free retry even when the charged budget is spent.
+            stuck = F.stuck_rows(state, tasks).get(bid, [])
+            if stuck and not rec.get("stale") and all(state["tasks"][t].get("reason") == "reslice:stale" for t in stuck):
+                continue
+            if ls.get("slice_wait", {}).get(bid, 0) > now:
+                continue
+            with self.txn() as (fresh, st):
+                for tid, task in fresh.items():
+                    row = st["tasks"][tid]
+                    if F.row_of(task.backlog_id or tid) == bid and row["status"] in ("READY", "BLOCKED", "FAILED") and not F.is_terminal(row.get("reason")):
+                        row.update(status="FAILED", reason="quarantine", q_ver=version)
+            ls.setdefault("quarantine", {})[bid] = {"version": version, "ladder": ladder, "at": now, "why": "reslice budget exhausted"}
+            ls.get("to_slice", {}).pop(bid, None)
+            ls.get("slice_wait", {}).pop(bid, None)
+            self.save_ls(ls)
+            self.event("reslice", status="quarantine", backlog_id=bid, reason="reslice budget exhausted")
+
+    def _expire_slicer_decisions(self, ls):
+        version = F.slicer_version()
+        for bid in list(ls["holds"]):
+            why = str(ls["holds"][bid]).lower()
+            if any(rule in why for rule in ("only_opus", "private", "приватн")):
+                continue
+            if ls.get("hold_ver", {}).get(bid, version) != version:
+                ls["holds"].pop(bid, None)
+                ls.get("hold_ver", {}).pop(bid, None)
+                ls.get("hold_hash", {}).pop(bid, None)
+        for bid, rec in list(ls.get("not_code", {}).items()):
+            if rec.get("slicer") != version:
+                ls["not_code"].pop(bid, None)
+
     def _resliceable(self, tasks, state, ls, now) -> dict:
         stuck = F.stuck_rows(state, tasks)
         out = {}
@@ -2825,10 +2909,10 @@ class Loop:
             out[bid] = cause
         return out
 
-    def _slice_record(self, ls, row, gen, cause, now):
+    def _slice_record(self, ls, row, gen, cause, now, void=False):
         old = ls.setdefault("reslices", {}).get(row, {})
         ls["reslices"][row] = {"n": max(gen, old.get("n", 0)),
-            "used": 0 if cause == "first" else old.get("used", 0) + (cause == "stuck"),
+            "used": 0 if cause == "first" else old.get("used", 0) + (cause == "stuck" or void),
             "stale": cause == "stale", "at": now, "version": F.slicer_version()}
 
     def _apply_portion(self, row, gen, portion, cause) -> int:
@@ -2850,11 +2934,12 @@ class Loop:
                 valid, why = False, str(exc)
         ls = self.ls()
         if not valid:
-            self._slice_record(ls, row, ls.get("reslices", {}).get(row, {}).get("n", 0), cause, now)
+            self._slice_record(ls, row, ls.get("reslices", {}).get(row, {}).get("n", 0), cause, now, void=True)
             if "rung" in portion:
                 ls["reslices"][row]["rung"] = portion["rung"]
                 if ls["reslices"][row]["used"] >= F.MAX_RESLICES:
-                    ls.setdefault("quarantine", {})[row] = dict(version=F.slicer_version(), ladder=self._ladder_sig())
+                    ls.setdefault("quarantine", {})[row] = dict(version=F.slicer_version(), ladder=self._ladder_sig(),
+                                                                at=now, why="reslice budget exhausted")
             self.save_ls(ls)
             self.event("reslice", status="void", backlog_id=row, cause=cause, reason=why)
             return 0
@@ -2871,7 +2956,9 @@ class Loop:
         for key in ("to_slice", "slice_wait", "parents"):
             ls.get(key, {}).pop(row, None)
         for hold in portion.get("holds") or []:
-            ls["holds"][hold.get("backlog_id", row)] = self._scrub(str(hold.get("question", "")))
+            bid = hold.get("backlog_id", row)
+            ls["holds"][bid] = self._scrub(str(hold.get("question", "")))
+            ls.setdefault("hold_ver", {})[bid] = F.slicer_version()
         for rec in portion.get("not_code") or []:
             self._not_code_set(ls, rec.get("backlog_id", row), rec.get("reason", ""), self._row_hashes("text").get(row, ""))
         self.save_ls(ls)
@@ -2881,6 +2968,12 @@ class Loop:
     def _reslice_tick(self, tasks, state, ls, now) -> int:
         if self.slice_fn is None:
             return 0
+        try:
+            self._quarantine_rows(tasks, state, ls, now)
+        except Exception as exc:                  # a failure of the quarantine pass is an event, not a brake
+            self.event("reslice", status="error", reason="quarantine pass: " + F.redact(str(exc)))
+        tasks, state = self.load()
+        ls = self.ls()
         count = 0
         if self.cfg.architect_rungs:
             changed = False
@@ -2905,6 +2998,7 @@ class Loop:
                     j.ctx["cause"] != "first" for j in self._slicers.values()) >= SLICE_PARALLEL // 3:
                 continue
             try:
+                tasks, state = self.load()        # the previous row moved the plan: evidence is read fresh
                 ls = self.ls()
                 rec = ls.get("reslices", {}).get(bid, {})
                 used = rec.get("used", 0)
@@ -2960,6 +3054,7 @@ class Loop:
         fn = self.triage_fn
         if fn is None:
             from tools.agent_factory_import import triage_portion as fn
+        self._expire_slicer_decisions(ls)
         known = {r.get("backlog_id") for r in state["tasks"].values() if r.get("backlog_id")}
         known |= {t.backlog_id for t in tasks.values() if t.backlog_id}
         mtime = cfg.backlog.stat().st_mtime
@@ -2978,8 +3073,6 @@ class Loop:
                       known_backlog_ids=known, limit=cfg.triage_limit)
         if _accepts(fn, "profile_attempts"):
             kwargs["profile_attempts"] = dict(ls.get("profile_attempts") or {})
-        if _accepts(fn, "known_parts"):
-            kwargs["known_parts"] = self._known_parts()
         scopes = {b: s for b, s in (ls.get("head_scope") or {}).items() if b not in known and isinstance(s, dict)}
         if scopes and _accepts(fn, "scopes"):
             kwargs["scopes"] = scopes
@@ -3041,7 +3134,6 @@ class Loop:
             if bid and bid not in ls["holds"]:
                 ls["holds"][bid] = self._scrub(F.redact(str(h.get("question", ""))))[:500]
                 new_holds.append(bid)
-        self._take_parents(res.get("parents"), ls)
         queued = list(res.get("to_slice") or [])
         for entry in queued:
             bid = entry["backlog_id"]
@@ -3073,6 +3165,7 @@ class Loop:
         if isinstance(res.get("profile_attempts"), dict):
             ls.setdefault("profile_attempts", {}).update(res["profile_attempts"])
         for bid in new_holds:
+            ls.setdefault("hold_ver", {})[bid] = F.slicer_version()
             ls.get("profile_attempts", {}).pop(bid, None)
         deferred = list(res.get("deferred") or [])  # postponed by the portion deadline: not seen
         events = [self.rs(str(x)) for x in (res.get("events") or [])[:10]]
@@ -3132,49 +3225,6 @@ class Loop:
         return len(weak)
 
     PARENTS_MAX = 100
-
-    def _known_parts(self) -> dict:
-        """{child backlog id: [files of that part]} of the parts that are already tasks (fields parent/part of the
-        plan rows; ids are never parsed): lets the triage see a changed file layout of a known part."""
-        try:
-            rows = json.loads(self.plan_path.read_text(encoding="utf-8")).get("tasks") or []
-        except (OSError, ValueError, AttributeError) as e:
-            self.err("known_parts: plan unreadable", e)
-            return {}
-        out = {}
-        for r in rows:
-            if (isinstance(r, dict) and r.get("parent") and r.get("part") and r.get("backlog_id")
-                    and r.get("kind", "code") != "unit_test" and isinstance(r.get("touch_files"), list)):
-                out[str(r["backlog_id"])] = [str(x) for x in r["touch_files"]][:20]
-        return out
-
-    def _take_parents(self, records, ls: dict) -> None:
-        """Remember the cut rows (E's ``parents`` records) until every code part is DONE/PROMOTED."""
-        if not isinstance(records, list):
-            return
-        if not isinstance(ls.get("parents"), dict):
-            ls["parents"] = {}
-        book = ls["parents"]
-        for rec in records:
-            try:
-                bid = str(rec["backlog_id"])
-                code = [str(x) for x in rec["code_tasks"]]
-                kids = [str(x) for x in rec["children"]]
-                tests = [str(x) for x in rec.get("test_tasks") or []]
-            except (KeyError, TypeError):
-                continue
-            if bid in ls["closed"]:
-                continue
-            if (not bid or not code or len(bid) > 64 or len(code) > 20 or len(kids) > 20
-                    or (bid not in book and len(book) >= self.PARENTS_MAX)):
-                self.event("triage", status="parent_dropped", reason="cut row %s is not remembered (%s)" % (
-                    self.rs(bid, 64), "table full" if len(book) >= self.PARENTS_MAX else "bad record"))
-                continue
-            book[bid] = {"backlog_id": bid, "parts": len(code), "children": kids,
-                         "code_tasks": code, "test_tasks": tests[:20]}      # idempotent merge by backlog id
-            files = rec.get("files")
-            if isinstance(files, (list, dict)) and len(files) <= 20:
-                book[bid]["files"] = files
 
     def _close_parents(self, tasks, state, ls: dict) -> dict:
         """A cut row is closed (the durable close path) once ALL its code tasks are DONE or PROMOTED."""
@@ -3575,6 +3625,7 @@ class Loop:
                 "--small-model", small, "--large-model", large,
                 "--review-model", review, "--channels", str(cfg.channels),
                 "--task", tid, "--lease", token, "--max-attempts", str(cfg.max_attempts),
+                "--reslice-after", str(F.RESLICE_AFTER),
                 "--max-model-calls", str(budget), "--base-sha", base,
                 "--port-repo", str(cfg.repo),    # the runner's --root is a plain copy: a port task's old commit lives here
                 "--execute", "--ack-host-access-risk"]
@@ -4501,6 +4552,16 @@ class Loop:
                 "last_iteration": self.ts(), "run_id": self.run_id,
                 "iterations": self.iterations,
                 "max_workers": self._max_k, "mean_k": round(self._k_sum / self._k_n, 2) if self._k_n else None}
+            stats["blockers"] = F.hold_census(state, tasks)
+            stats["queues"] = {"to_slice": len(ls.get("to_slice", {})),
+                "slicing": len(ls.get("slicing", {})),
+                "slice_wait": sum(until > self.clock() for until in ls.get("slice_wait", {}).values()),
+                "ready": sum(r["status"] == "READY" for r in rows),
+                "running": sum(r["status"] == "RUNNING" for r in rows),
+                "review": sum(r["status"] == "REVIEW" for r in rows),
+                "quarantine": len(set(ls.get("quarantine", {})) | {
+                    F.row_of(r.get("backlog_id") or tid) for tid, r in state["tasks"].items()
+                    if r.get("reason") == "quarantine"})}
             F.save_atomic(self.stats_path, stats)
             if blocked or stats["quarantine"] or ls["holds"] or any(
                     t.only_opus or not t.privacy_safe for t in tasks.values()):
@@ -4601,6 +4662,7 @@ class Loop:
                 self.event("infra", status="skipped_channel", reason=note)
             self.event("loop", action="START", status="ok", reason="start", pid=os.getpid(),
                        branch=cfg.branch, until=str(cfg.until) if cfg.until else None)
+            self._reenter_on_new_slicer()
             self._decide_experiments()
             self._discover_keys()
             while True:

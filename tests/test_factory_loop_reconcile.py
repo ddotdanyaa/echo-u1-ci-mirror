@@ -66,14 +66,7 @@ def test_failed_tasks_are_taken_back_by_the_slicer_while_idle_not_only_at_start(
     assert seen and seen[0] == ("B1", "first"), "the idle loop never gave a FAILED row back to the slicer"
 
 
-def test_pick_retries_a_task_past_its_term_on_the_same_version():
-    row = {"status": "FAILED", "reason": "quarantine", "backlog_id": "B1",
-           "feedback": [{"source": "gate", "text": "AssertionError: rc=1"}]}
-    state = {"tasks": {"T1": row}}
-    ledger = {"T1": ["v1"]}                     # tried once on this very version, long ago
-    assert factory_requeue.pick(state, "v1", ledger) == []         # today: waits for a new version forever
-    got = factory_requeue.pick(state, "v1", ledger, now=10 ** 10, term_s=3600)
-    assert got == [("T1", "gate-red")]
+# Replaced by queue/generation coverage in test_factory_reslice.py and test_factory_decompose.py.
 
 
 def test_the_loop_writes_a_reconciliation_of_every_backlog_row(tmp_path, monkeypatch):
@@ -115,11 +108,4 @@ def test_a_live_seen_row_reported_as_known_keeps_its_term(tmp_path, monkeypatch)
     assert _ls(env)["seen"].get("B5", {}).get("until") == until
 
 
-def test_pick_on_a_term_waits_after_a_recent_hold_return():
-    row = {"status": "BLOCKED", "reason": "quarantine", "backlog_id": "B1",
-           "feedback": [{"source": "gate", "text": "AssertionError: rc=1"}]}
-    state = {"tasks": {"T1": row}}
-    ledger = {"T1": ["hold:2026-11-20T10:00:00+03:00"]}       # lifted by _auto_unblock, not on this version
-    t = factory_requeue._stamp(ledger["T1"][0])
-    assert factory_requeue.pick(state, "v1", ledger, now=t + 60, term_s=3600) == []
-    assert factory_requeue.pick(state, "v1", ledger, now=t + 7200, term_s=3600) == [("T1", "gate-red")]
+# Replaced by queue/generation coverage in test_factory_reslice.py and test_factory_decompose.py.

@@ -1,29 +1,29 @@
 # Factory status (generated, structured data only)
 
-Generated: 2026-11-22T23:13:37Z
-Source commit: sha0476186223a7
+Generated: 2026-11-22T23:24:34Z
+Source commit: shab3c7f2d80d7d
 
 ## Commits (sha, time)
+- shab3c7f2d8 2026-11-23T02:23:57+03:00
 - sha04761862 2026-11-23T01:14:37+03:00
 - sha97958749 2026-11-23T01:13:23+03:00
 - sha6c0c5ecc 2026-11-23T01:11:25+03:00
 - shab324ce21 2026-11-23T01:03:31+03:00
 - shaa087e15d 2026-11-23T00:57:44+03:00
+- sha9bf0ebe0 2026-11-23T00:57:17+03:00
 - sha9a3ab9bc 2026-11-23T00:54:44+03:00
 - sha1deeb16d 2026-11-23T00:52:18+03:00
+- shae407d0fd 2026-11-23T00:37:20+03:00
 - sha24628bc7 2026-11-23T00:35:50+03:00
 - shafce44179 2026-11-23T00:35:28+03:00
 - shae58997cb 2026-11-23T00:23:36+03:00
+- sha4fc041b2 2026-11-23T00:08:08+03:00
 - sha1c7726dd 2026-11-23T00:03:07+03:00
 - sha6cd8239c 2026-11-22T23:50:27+03:00
 - sha5294a04b 2026-11-22T23:50:08+03:00
 - sha9e525a31 2026-11-22T23:46:35+03:00
-- sha0b879e53 2026-11-22T23:28:25+03:00
-- sha90dd4489 2026-11-22T23:28:24+03:00
-- sha0a1cd664 2026-11-22T23:27:51+03:00
-- sha863bae00 2026-11-22T23:24:45+03:00
-- sha1fa4b239 2026-11-22T23:21:29+03:00
-- shaa24b4121 2026-11-22T23:20:12+03:00
+- sha98df1b39 2026-11-22T23:31:01+03:00
+- sha03f15a8e 2026-11-22T23:30:45+03:00
 
 ## Funnel
 | step | count |
@@ -43,17 +43,17 @@ Side counters: blocked=1, parked=0, requeued=2
 Tasks now: BLOCKED=1, DONE=68, FAILED=94, PROMOTED=5, READY=9
 Accepted: 5
 Promoted: 29
-Free RAM, GB: 5.29
-Telemetry rows: 21849 recognised, 0 unrecognised
+Free RAM, GB: 3.87
+Telemetry rows: 21871 recognised, 0 unrecognised
 
 ## Spend per model
 | model | calls | tokens_in | tokens_out | usage_unknown | http_429 | errors |
 |---|---|---|---|---|---|---|
 | google/gemini-3-flash-preview | 2 | 0 | 0 | 2 | 2 | 2 |
 | google/gemini-3.1-flash-lite | 1310 | 8127750 | 517319 | 48 | 0 | 48 |
-| google/gemini-3.1-flash-lite-preview | 2 | 11809 | 1148 | 0 | 0 | 0 |
+| google/gemini-3.1-flash-lite-preview | 3 | 20209 | 1402 | 0 | 0 | 0 |
 | google/gemini-3.5-flash | 1 | 8402 | 347 | 0 | 0 | 0 |
-| google/gemini-3.5-flash-lite | 1517 | 10018010 | 454156 | 28 | 0 | 28 |
+| google/gemini-3.5-flash-lite | 1518 | 10027125 | 454164 | 28 | 0 | 28 |
 | google/gemini-3.6-flash | 99 | 383453 | 17290 | 39 | 1 | 39 |
 | google/gemini-3.7-flash | 1 | 9121 | 14 | 0 | 0 | 0 |
 | google/gemini-3.8-flash | 7 | 21237 | 15 | 4 | 2 | 4 |
@@ -67,14 +67,14 @@ Telemetry rows: 21849 recognised, 0 unrecognised
 | span | rows | calls |
 |---|---|---|
 | answer | 535 | 0 |
-| gate | 3266 | 0 |
-| infra | 760 | 0 |
-| loop | 4267 | 0 |
-| other | 2776 | 0 |
+| gate | 3267 | 0 |
+| infra | 761 | 0 |
+| loop | 4277 | 0 |
+| other | 2780 | 0 |
 | promote | 40 | 0 |
 | review | 1544 | 843 |
-| run | 8379 | 2621 |
-| triage | 282 | 0 |
+| run | 8384 | 2623 |
+| triage | 283 | 0 |
 
 ## Channels (model ids)
 - 1db4ab-gemini-3-8-flash
@@ -120,8 +120,8 @@ Telemetry rows: 21849 recognised, 0 unrecognised
 
 ## Published files
 Modules: 29
-Tests in the cloud: 124
-Tests not in the cloud: 45
+Tests in the cloud: 122
+Tests not in the cloud: 47
 - tests/test_agent_factory.py (backlog-id, call-word, env-path, long-run, pid-port)
 - tests/test_factory_architect.py (env-path, path)
 - tests/test_factory_asked_memory.py (backlog-id)
@@ -132,6 +132,7 @@ Tests not in the cloud: 45
 - tests/test_factory_cloud_path.py (email)
 - tests/test_factory_cloud_product.py (long-run)
 - tests/test_factory_context_pinned.py (path)
+- tests/test_factory_decompose.py (call-word, email)
 - <redacted-name> (backlog-id, long-run)
 - tests/test_factory_intake.py (call-word, pid-port)
 - tests/test_factory_intake_merge.py (dependency)
@@ -161,11 +162,12 @@ Tests not in the cloud: 45
 - tests/test_factory_slicer.py (backlog-id, call-word, email, key, long-run)
 - tests/test_factory_slicer_pool.py (env-path, long-run)
 - tests/test_factory_status.py (dependency)
+- tests/test_factory_supply.py (dependency)
 - tests/test_factory_survive.py (path, pid-port, user-path)
 - tests/test_factory_sync.py (backlog-id, email)
 - tests/test_factory_test_order.py (dependency)
 - tests/test_factory_tree.py (dependency)
-- tests/test_factory_triage.py (backlog-id, call-word, email, env-path, key, phone, tunnel-host)
+- tests/test_factory_triage.py (backlog-id, call-word, email, env-path, key, phone)
 - tests/test_factory_triage_example.py (dependency)
 
 ## Cloud test matrix

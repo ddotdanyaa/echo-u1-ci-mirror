@@ -118,123 +118,20 @@ def _repo(tmp_path, files, backlog_row):
 ROW = "| E70000 | Контроллер молчит на реплике соседа | x | P0 | новая | — |\n"
 
 
-def test_triage_red_target_gets_the_spectrum_leader_as_scope(tmp_path):
-    root, b = _repo(tmp_path, E08000ISH, ROW)
-    r = imp.triage_portion(b, root, set(), 5)
-    t = {x["id"]: x for x in r["tasks"]}["bl_E70000"]
-    assert t["touch_files"] == ["echo_sync/engine.py"]
-    assert t["tests"] == ["tests/test_v_E70000.py"]
-    assert t["read_files"] == ["echo_sync/util.py"]
-    assert t["context_targets"] == {"echo_sync/util.py": "normalize"}      # read_files only
-
-
-def test_triage_green_target_is_a_question_not_a_task(tmp_path):
-    files = dict(E08000ISH, **{"tests/test_v_E70000.py": "from echo_sync.util import normalize\n\ndef test_g():\n    assert normalize(' A ') == 'a'\n"})
-    root, b = _repo(tmp_path, files, ROW)
-    r = imp.triage_portion(b, root, set(), 5)
-    assert not r["tasks"]
-    q = {h["backlog_id"]: h["question"] for h in r["holds"]}["E70000"]
-    assert "зелёный на HEAD" in q and "test_v_E70000.py" in q and "закрыть строку E70000" in q
-
-
-def _unknown_fake(*a, **k):
-    return G.ProfileResult("unknown", {}, {}, False, "timeout after 30s (process tree killed)")
-
-
-def test_unknown_profile_defers_the_row_and_counts_the_attempt(tmp_path, monkeypatch):
-    root, b = _repo(tmp_path, E08000ISH, ROW)
-    monkeypatch.setattr(G, "profile_tests", _unknown_fake)
-    r = imp.triage_portion(b, root, set(), 5)
-    assert not r["tasks"] and not r["holds"]                   # NOT a task by imports
-    assert [d["backlog_id"] for d in r["deferred"]] == ["E70000"] and "timeout after 30s" in r["deferred"][0]["reason"]
-    assert not any(x["backlog_id"] == "E70000" for x in r["skipped"])
-    assert r["profile_attempts"] == {"E70000": 1}
-    assert any(e["backlog_id"] == "E70000" and e["event"] == "profile_unknown" for e in r["events"])
-
-
-def test_third_failed_profile_is_a_hold_with_import_hints_not_a_scope(tmp_path, monkeypatch):
-    root, b = _repo(tmp_path, E08000ISH, ROW)
-    monkeypatch.setattr(G, "profile_tests", _unknown_fake)
-    r = imp.triage_portion(b, root, set(), 5, profile_attempts={"E70000": 2})
-    assert not r["tasks"] and not r["deferred"]
-    q = {h["backlog_id"]: h["question"] for h in r["holds"]}["E70000"]
-    assert q.startswith("профиль не удался (") and "timeout after 30s" in q and "дать область?" in q
-    assert "echo_sync/util.py" in q and "не область" in q
-    assert r["profile_attempts"] == {"E70000": 3}
-
-
-def test_target_and_neighbours_are_profiled_in_two_runs_and_merged(tmp_path, monkeypatch):
-    root, b = _repo(tmp_path, E08000ISH, ROW)
-    seen = []
-    tgt = "tests/test_v_E70000.py::test_remark_is_silent"
-    other = "tests/test_other.py::test_util"
-    def fake(r_, tests, timeout, *a, **k):
-        seen.append((list(tests), timeout))
-        if tests == ["tests/test_v_E70000.py"]:
-            return G.ProfileResult("ok", {tgt: "failed"}, {tgt: {("echo_sync/engine.py", "_remark_branch", 1),
-                                                                ("echo_sync/util.py", "normalize", 1)}}, False, "", {})
-        return G.ProfileResult("ok", {other: "passed"}, {other: {("echo_sync/util.py", "normalize", 1)}}, False, "", {})
-    monkeypatch.setattr(G, "profile_tests", fake)
-    t = {x["id"]: x for x in imp.triage_portion(b, root, set(), 5)["tasks"]}["bl_E70000"]
-    assert len(seen) == 2 and seen[0][0] == ["tests/test_v_E70000.py"] and "tests/test_other.py" in seen[1][0]
-    assert all(timeout <= 30 for _, timeout in seen)
-    assert t["touch_files"] == ["echo_sync/engine.py"]          # util is shared with a passing neighbour: lower score
-
-
-def test_neighbours_run_failing_falls_back_to_the_target_alone_with_a_note(tmp_path, monkeypatch):
-    root, b = _repo(tmp_path, E08000ISH, ROW)
-    tgt = "tests/test_v_E70000.py::test_remark_is_silent"
-    def fake(r_, tests, timeout, *a, **k):
-        if tests == ["tests/test_v_E70000.py"]:
-            return G.ProfileResult("ok", {tgt: "failed"}, {tgt: {("echo_sync/engine.py", "_remark_branch", 1)}}, False, "", {})
-        return G.ProfileResult("unknown", {}, {}, False, "timeout after 30s", {})
-    monkeypatch.setattr(G, "profile_tests", fake)
-    r = imp.triage_portion(b, root, set(), 5)
-    assert {x["id"]: x for x in r["tasks"]}["bl_E70000"]["touch_files"] == ["echo_sync/engine.py"]
-    assert any(e["event"] == "profile_neighbours_unknown" for e in r["events"])
-
-
-def test_triage_explicit_file_in_the_row_skips_profiling(tmp_path, monkeypatch):
-    root, b = _repo(tmp_path, E08000ISH, "| E70000 | Правка `echo_sync/util.py` | x | P0 | новая | — |\n")
+# The triage no longer profiles tests, scopes rows, asks green/unknown/tied-module questions or defers rows by a
+# deadline: the architect owns file discovery and the slicer queue owns every row (<id>). The tests of that triage-side
+# profiling (red target as scope, green target as a question, unknown/third failed profile, two-run neighbours,
+# explicit file skips profiling, honest verdict, environment failure, suspects in the goal, fallback event, limit,
+# tied modules, deadline) are replaced by the one below; the profiler itself (G.profile_tests, ranking) keeps its
+# own tests in this file.
+def test_triage_never_profiles_and_hands_the_row_to_the_slicer(tmp_path, monkeypatch):
     def boom(*a, **k):
-        raise AssertionError("profile must not run for a row that names a file")
+        raise AssertionError("the triage must not profile tests any more")
     monkeypatch.setattr(G, "profile_tests", boom)
-    t = {x["id"]: x for x in imp.triage_portion(b, root, set(), 5)["tasks"]}["bl_E70000"]
-    assert t["touch_files"] == ["echo_sync/util.py"]
-
-
-# ---- round 2: honest verdict, target-only failures, suspects in the goal, deadline, neighbours ----
-T = "tests/test_v_E70000.py::test_remark_is_silent"
-
-
-def _fake(outcomes, calls=None, reasons=None, fallback=False, verdict="ok"):
-    return lambda *a, **k: G.ProfileResult(verdict, outcomes, calls or {}, fallback, "", reasons or {})
-
-
-def _triage_with(tmp_path, monkeypatch, fake, row=ROW, limit=5):
-    d = tmp_path / ("c%d" % len(list(tmp_path.glob("c*"))))
-    d.mkdir()
-    root, b = _repo(d, E08000ISH, row)
-    monkeypatch.setattr(G, "profile_tests", fake)
-    return imp.triage_portion(b, root, set(), limit)
-
-
-def test_green_needs_a_passed_target_and_no_skipped(tmp_path, monkeypatch):
-    r = _triage_with(tmp_path, monkeypatch, _fake({T: "passed"}))
-    assert any("зелёный на HEAD" in h["question"] for h in r["holds"])
-    r = _triage_with(tmp_path, monkeypatch, _fake({T: "skipped"}))
-    assert not any("зелёный" in h["question"] for h in r["holds"])
-    assert any(e["event"] == "profile_unknown" for e in r["events"])
-    r = _triage_with(tmp_path, monkeypatch, _fake({T: "passed", T + "2": "skipped"}))
-    assert not any("зелёный" in h["question"] for h in r["holds"])
-
-
-def test_target_failing_for_the_environment_is_unknown(tmp_path, monkeypatch):
-    f = _fake({T: "failed"}, {T: {("echo_sync/engine.py", "_remark_branch", 1)}},
-              {T: "ModuleNotFoundError: No module named 'zzz_missing'"})
-    r = _triage_with(tmp_path, monkeypatch, f)
-    assert any(e["event"] == "profile_unknown" and "environment" in e["reason"] for e in r["events"])
-    assert not any(h["backlog_id"] == "E70000" for h in r["holds"])
+    root, b = _repo(tmp_path, E08000ISH, ROW)
+    r = imp.triage_portion(b, root, set(), 5)
+    assert [x["backlog_id"] for x in r["to_slice"]] == ["E70000"]
+    assert r["tasks"] == [] and r["holds"] == [] and r["deferred"] == [] and r["profile_attempts"] == {}
 
 
 def test_a_red_neighbour_does_not_shift_the_ranking():
@@ -244,22 +141,6 @@ def test_a_red_neighbour_does_not_shift_the_ranking():
     mods, _ = G.rank_modules(outcomes, calls, targets={"t.py"})
     assert [m for m, _, _ in mods] == ["a.py"]                 # b.py only fails in the neighbour: not a suspect
     assert [m for m, _, _ in G.rank_modules(outcomes, calls)[0]][0] == "a.py"
-
-
-def test_suspect_functions_are_in_the_goal_and_context_targets_only_for_read_files(tmp_path):
-    root, b = _repo(tmp_path, E08000ISH, ROW)
-    t = {x["id"]: x for x in imp.triage_portion(b, root, set(), 5)["tasks"]}["bl_E70000"]
-    assert "Подозреваемые функции (замер вызовов падающего теста): echo_sync/engine.py: _remark_branch" in t["goal"]
-    assert t["context_targets"] == {"echo_sync/util.py": "normalize"}
-    assert len(t["goal"]) <= 1500
-
-
-def test_fallback_is_an_event(tmp_path, monkeypatch):
-    f = _fake({T: "failed", "tests/test_other.py::test_util": "passed"},
-              {T: {("echo_sync/engine.py", "_remark_branch", 1)}}, fallback=True)
-    r = _triage_with(tmp_path, monkeypatch, f)
-    assert any(e["event"] == "profile_fallback" for e in r["events"])
-    assert {x["id"] for x in r["tasks"]} >= {"bl_E70000"}
 
 
 def test_real_setprofile_fallback_gives_the_same_calls(tmp_path):
@@ -287,34 +168,6 @@ def test_timeout_leaves_no_copy_and_no_process(tmp_path, tmp_path_factory, monke
     _write(tmp_path, dict(SMALL, **{"tests/test_slow.py": "import time\n\ndef test_s():\n    time.sleep(30)\n"}))
     assert G.profile_tests(tmp_path, ["tests/test_slow.py"], 3, ("echo_sync/",)).verdict == "unknown"
     assert {p.name for p in pattern.glob("factory-profile-*")} - before == set()
-
-
-def test_at_most_limit_rows_are_profiled(tmp_path, monkeypatch):
-    rows = "".join("| E%d | Строка %d без путей | x | P0 | новая | — |\n" % (70 + i, i) for i in range(4))
-    files = dict(E08000ISH)
-    for i in range(1, 4):
-        files["tests/test_v_E%d.py" % (70 + i)] = "def test_x():\n    assert True\n"
-    root, b = _repo(tmp_path, files, rows)
-    calls = []
-    monkeypatch.setattr(G, "profile_tests", lambda *a, **k: (calls.append(1), G.ProfileResult("unknown", {}, {}, False, "x"))[1])
-    imp.triage_portion(b, root, set(), 2)
-    assert len(calls) <= 2
-
-
-def test_more_than_five_tied_modules_is_a_hold(tmp_path, monkeypatch):
-    calls = {T: {("echo_sync/m%d.py" % i, "f", 1) for i in range(imp.MAX_TOUCH + 1)}}      # 21.11: MAX_TOUCH 3 -> 5
-    r = _triage_with(tmp_path, monkeypatch, _fake({T: "failed"}, calls))
-    q = {h["backlog_id"]: h["question"] for h in r["holds"]}["E70000"]
-    assert q.startswith("локализация неоднозначна") and not r["tasks"]
-
-
-def test_deadline_defers_the_remaining_rows(tmp_path, monkeypatch):
-    monkeypatch.setattr(imp, "PORTION_DEADLINE_S", -1)
-    def boom(*a, **k):
-        raise AssertionError("no profiling after the deadline")
-    r = _triage_with(tmp_path, monkeypatch, boom)
-    assert [x["backlog_id"] for x in r["deferred"]] == ["E70000"] and r["deferred"][0]["reason"].startswith("отложено")
-    assert not any(x["backlog_id"] == "E70000" for x in r["skipped"])      # the loop marks skipped rows as seen
 
 
 def test_neighbours_are_chosen_by_shared_imports_not_by_name(tmp_path):

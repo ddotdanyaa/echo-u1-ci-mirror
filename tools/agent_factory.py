@@ -916,6 +916,31 @@ def note_infra(state: dict, ok: bool) -> int:
     return state["infra_streak"]
 
 
+def hold_census(state, tasks, *, google=True) -> dict[str, int]:
+    counts = {}
+    for tid, row in state["tasks"].items():
+        status, reason = row["status"], row.get("reason")
+        task = tasks.get(tid)
+        if reason == "quarantine":
+            key = "quarantine"
+        elif is_terminal(reason):
+            continue
+        elif status == "BLOCKED":
+            key = "owner_rule" if row.get("blocked_reason") in OWNER_RULES else "blocked_term"
+        elif status == "READY" and google and task and task.only_opus:
+            key = "only_opus"
+        elif status == "READY" and google and task and not task.privacy_safe:
+            key = "private"
+        elif status == "READY" and task and any(state["tasks"].get(d, {}).get("status") == "FAILED" for d in task.depends_on):
+            key = "ready_dead_dep"
+        elif status == "FAILED":
+            key = "failed_other"
+        else:
+            continue
+        counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
 def next_action(state: dict, now: float, channel_wait_s: float,
                 backlog_has_more: bool, tasks: dict[str, Task], *,
                 google: bool = True, free: int = 0, skip=(),
@@ -983,11 +1008,13 @@ def next_action(state: dict, now: float, channel_wait_s: float,
         elif st == "READY":
             held = True  # not runnable now: dead dependency, conflict
     if terms:        # the HOLD ends at the earliest term: then that block is lifted (UNBLOCK)
-        return {"action": "HOLD", "reason": "blocked_until", "wait_s": max(5.0, min(terms) - now)}
+        return {"action": "HOLD", "reason": "blocked_until", "wait_s": max(5.0, min(terms) - now),
+                "blockers": hold_census(state, tasks, google=google)}
     if held:
-        return {"action": "HOLD", "reason": "only_opus_or_blocked"}
+        return {"action": "HOLD", "reason": "only_opus_or_blocked", "blockers": hold_census(state, tasks, google=google)}
     if owner:
-        return {"action": "HOLD", "reason": "owner_rule:" + ",".join(sorted(owner))}
+        return {"action": "HOLD", "reason": "owner_rule:" + ",".join(sorted(owner)),
+                "blockers": hold_census(state, tasks, google=google)}
     return {"action": "DONE", "reason": "nothing_left"}
 
 

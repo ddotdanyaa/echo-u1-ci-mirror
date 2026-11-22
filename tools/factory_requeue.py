@@ -1,9 +1,7 @@
-"""<id>, the loop never stands while there are tasks: a FAILED or BLOCKED task whose last
-failure has a class of the failure register goes back to the queue once per new factory
-code version, through the answer box Opus uses; at most max_times per task; a ledger keeps the versions.
+"""Answer-box writer, retry timestamps and the post-pass test audit.
 
-Written by the factory (fac_requeue, gemini-3.5-flash-lite, 19.11 23:5x); after 4 passes that left out the class
-meaning in note(), the coordinator completed note() and the answer writer to the spec (rule: at most 4 rounds)."""
+The slicer queue owns failed rows; this module does not schedule retries.
+"""
 
 import json
 import re
@@ -12,14 +10,6 @@ from datetime import datetime
 from pathlib import Path
 
 from tools import agent_factory as F
-from tools import factory_classes as C
-
-# <id> (a "cannot be fixed" ban without an owner rule is a defect): only the owner's rules ban a
-# requeue; scope_violation / already_green / spec_not_testable / runner_no_result blocks have a term instead and the
-# loop lifts them itself (factory_loop._auto_unblock).
-SKIP = re.compile('|'.join(sorted(F.OWNER_RULES)), re.I)
-LAST_ITEMS = 2      # the newest non-Opus feedback items read for the failure class
-
 
 def _last(row) -> str:
     """The newest failure: the last LAST_ITEMS feedback items that are not Opus notes (live 20.11 00:11: after a
@@ -180,16 +170,6 @@ def _write_answer(box, payload, label) -> Path:
         except FileExistsError:
             n += 1
             target = box / ('%s-%d.json' % (name, n))
-
-
-# A suspected test (20.11 02:55: of five promoted factory tests whose fixes kept failing, three could never be made
-# green by a correct fix; each cost its code task three strikes per version). After AUDIT_AFTER requeues of a code
-# task that still fails its gate, the factory-written test of its row goes back to its test task instead.
-AUDIT_AFTER = 2
-AUDIT_NOTE = ('Retry on factory version %s. The code task of this row failed its gate on this test after %d returns. '
-              'Check that the test calls the real function with the kind of arguments its signature takes, does not '
-              'replace the function the behaviour happens in, and pins a behaviour the row really asks for; else '
-              'rewrite it, or answer not testable when the row is no code defect.')
 
 
 AUDIT_MODELS = 2      # this many different models red on one factory test in ONE pass of its code task: audit at once

@@ -3,7 +3,6 @@ add_feedback evicted the failure it repeats; the requeue then read markers only,
 the task. The window keeps the newest real failure; it evicts older failures, then older markers, then the oldest
 Opus note."""
 from tools import agent_factory as F
-from tools import factory_requeue as R
 
 FAIL = '[attempt 3] rc=1 (0 required) failure tests.verify.test_v::t: AssertionError'
 
@@ -18,8 +17,6 @@ def test_a_repeat_marker_never_pushes_out_the_failure_it_repeats():
     F.add_feedback(state, 'T', 'gate', F.REPEAT_MARK + ' gate:#aQX18d34f08f')
     texts = [x['text'] for x in state['tasks']['T']['feedback']]
     assert texts == ['note two', FAIL, F.REPEAT_MARK + ' gate:#aQX18d34f08f']
-    assert R.pick(state, 'v1', {}) == [('T', 'gate-red')]
-
 
 def test_older_markers_go_before_notes_and_a_new_failure_replaces_the_old_one():
     state = _row(('opus', 'note'), ('gate', FAIL), ('gate', F.REPEAT_MARK + ' a'))

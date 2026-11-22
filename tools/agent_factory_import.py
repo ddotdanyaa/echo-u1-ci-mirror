@@ -716,11 +716,8 @@ def parse_open_rows(backlog_path, repo_root, include_closed: bool = False) -> li
 _CYR = dict(zip("АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ", "A B V G D E E ZH Z I Y K L M N O P R S T U F KH TS CH SH SCH _ Y _ E YU YA".split()))
 _CYR.update({k.lower(): v.lower() for k, v in list(_CYR.items())})
 MAX_TOUCH = 5           # 3 -> 5 (21.11): the prompt (factory_channels.PROMPT_LIMIT_CHARS) is the real bound, not the file count
-SLICE_FILES = 3         # <id> (owner): a row of more than this many files is cut into a chain of one-file parts
 MAX_TEXT = 6000          # 1500 -> 6000 (21.11)
 MAX_TESTS = 5           # 3 -> 5 (21.11)
-MAX_PARTS = 10         # a row is cut into at most this many parts (each part = a test task + a code task)
-PART_TEXT = 900        # the row text kept in each part (the part tail names its files and number)
 
 
 def _translit(text: str) -> str:
@@ -875,23 +872,6 @@ def _localize(root: Path, bid: str, named: list[str], idx: dict, all_tests: list
     return ("red", (mods, leaders), fb, notes) if mods else ("empty", None, fb, notes)
 
 
-def _chunk_files(root: Path, files: list[str], graph, size: int = MAX_TOUCH) -> list[list[str]]:
-    """Cut the files of a row into groups of at most ``size``: files that import each other stay together, the order
-    is deterministic (sorted paths, first group with room and most import edges), so re-triage gives the same parts."""
-    chunks: list[list[str]] = []
-    for f in sorted(files):
-        best, best_score = None, -1
-        for i, c in enumerate(chunks):
-            if len(c) >= size:
-                continue
-            score = sum(1 for m in c if m in graph.edges.get(f, ()) or f in graph.edges.get(m, ()))
-            if score > best_score:
-                best, best_score = i, score
-        if best is None:
-            chunks.append([f])
-        else:
-            chunks[best].append(f)
-    return chunks
 
 
 def _cut_text(text: str, n: int) -> str:
@@ -903,27 +883,6 @@ def _cut_text(text: str, n: int) -> str:
     return (cut[:end] if end > n // 2 else cut).rstrip(" .,;") + " …"
 
 
-def _split_text(text: str, n: int) -> list[str]:
-    """The row text for n parts: a short text goes whole to every part; a long one is divided between the parts by
-    sentences in order (each part <= PART_TEXT), so no part loses the end of the row; a sentence longer than a part is cut."""
-    if len(text) <= PART_TEXT or n <= 1:
-        return [_cut_text(text, PART_TEXT)] * max(n, 1)
-    sentences = [x for x in re.split(r"(?<=[.!?;])\s+", text) if x]
-    share = -(-len(text) // n)
-    buckets, cur = [], ""
-    for sent in sentences:
-        sent = sent if len(sent) <= PART_TEXT else _cut_text(sent, PART_TEXT)
-        if cur and (len(cur) + 1 + len(sent) > PART_TEXT or (len(cur) >= share and len(buckets) < n - 1)):
-            buckets.append(cur)
-            cur = ""
-        cur = (cur + " " + sent).strip()
-    if cur:
-        buckets.append(cur)
-    while len(buckets) < n:                       # fewer sentences than parts: the rest of the parts get the head of the row
-        buckets.append(_cut_text(text, PART_TEXT))
-    if len(buckets) > n:                          # more text than n parts can carry: the tail is cut, visibly
-        buckets = buckets[:n - 1] + [_cut_text(" ".join(buckets[n - 1:]), PART_TEXT)]
-    return buckets
 
 
 def _test_reads(files, extra=()) -> list[str]:
@@ -980,62 +939,6 @@ def _narrow(trace, files) -> list[str]:
     return sorted({str(q) for rel, q, *_ in (trace or ()) if rel in own})[:12]
 
 
-def _children(F, root: Path, bid: str, tid: str, priority, text: str, chunks: list[list[str]], known, named: list[str], known_parts=None, trace=None):
-    """Parts of a too big row: for every group of files a pair "unit_test -> code".
-
-    Part k (1-based) has the backlog_id ``<ID>#<k>``, task ids ``<tid>_c<k>`` (code) and ``<tid>_c<k>_test``
-    (unit_test, tests/test_factory_<slug>_c<k>.py), fields parent / part / parts; the code part depends_on its test.
-    All ids derive from the row ID and the part number only: the same row gives the same ids on every re-triage.
-    Returns (pairs, record, error): pairs = [[test task, code task], ...] of the parts not yet known; record =
-    {backlog_id, parts, children, code_tasks, test_tasks} for the loop to close the parent when its code tasks are
-    done; error = a reason when the row cannot be cut honestly."""
-    n = len(chunks)
-    pieces = _split_text(text, n)
-    slug = tid[3:].lower()
-    pairs, record = [], {"backlog_id": bid, "parts": n, "children": [], "code_tasks": [], "test_tasks": [], "files": []}
-    for k, files in enumerate(chunks, 1):
-        cb, ctid = "%s#%d" % (bid, k), "%s_c%d" % (tid, k)
-        record["children"].append(cb)
-        record["code_tasks"].append(ctid)
-        record["test_tasks"].append(ctid + "_test")
-        record["files"].append(list(files))
-        if cb in known:
-            old = (known_parts or {}).get(cb)
-            if old is not None and sorted(old) != sorted(files):
-                return [], None, "раскладка части %s изменилась (было: %s; стало: %s): старые файлы не подменяю, ответить: answer --backlog-id %s --touch <файлы> --tests <тест>" % (
-                    cb, ", ".join(sorted(old)), ", ".join(sorted(files)), bid)
-            continue
-        tpath = "tests/test_factory_%s_c%d.py" % (slug, k)
-        base = {"backlog_id": cb, "priority": priority or "P4", "privacy_safe": True, "only_opus": False, "read_files": [],
-                "task_type": "patch", "parent": bid, "part": k, "parts": n}
-        tail = " Часть %d из %d строки %s: файлы %s. Остальные части делают другие подзадачи." % (k, n, bid, ", ".join(files))
-        if named:
-            tail += " Общий тест строки (%s) позеленеет только после всех частей: не требуй его от этой." % ", ".join(named)
-        piece = pieces[k - 1]
-        goal = (piece + tail)[:MAX_TEXT]
-        test = None
-        if (root / tpath).is_file():
-            try:
-                own = bool(id_query.pattern(cb).search((root / tpath).read_text(encoding="utf-8", errors="replace")))
-            except OSError:
-                own = False
-            if not own:
-                return [], record, "файл теста занят чужой строкой: " + tpath
-        else:
-            test = dict(base, id=ctid + "_test", title=("Тест части %d/%d для %s" % (k, n, bid))[:120], depends_on=[],
-                        goal=("Написать тест: он должен падать на текущем коде из-за дефекта части %d из %d строки и проходить после "
-                              "исправления. Первой строкой файла напиши комментарий «# factory-backlog-id: %s».%s Строка: %s"
-                              % (k, n, cb, _import_hint(files), goal))[:MAX_TEXT],
-                        touch_files=[tpath], tests=[tpath], kind="unit_test", read_files=_test_reads(files))
-        funcs = _narrow(trace, files)
-        if funcs:                                  # <id>: this part's own guard = the parent's failing test ids as they reach THIS file
-            goal = (goal + " Падающий страж строки доходит в этих файлах до функций: %s; чини их." % ", ".join(funcs))[:MAX_TEXT]
-        code = dict(base, id=ctid, title=("%s часть %d/%d: %s" % (bid, k, n, piece))[:120], goal=goal,
-                    depends_on=[ctid + "_test"] if test else [], touch_files=list(files), tests=[tpath], kind="code")
-        if funcs:
-            code["guard_functions"] = funcs
-        pairs.append([t for t in (test, code) if t])
-    return pairs, record, None
 
 
 def _screen(F, bid: str, raw_text: str):
@@ -1428,449 +1331,59 @@ def _doc_only_row(r, cands) -> str:
     return "строка описывает документ или процесс: нет файла, теста, имени из кода и коммита с ID (метка «док.» ×%d)" % r["doc_marks"]
 
 
-def triage_portion(backlog_path, head_root, known_backlog_ids, limit, profile_attempts=None, known_parts=None, env_streak=0,
-                   scopes=None, ask=None, sweep=None, trace=None, force_slice=None, owner_words=None, refeed=None) -> dict:
-    """K-E.3: next portion of the live backlog as plan tasks (nothing is written).
+def triage_portion(backlog_path, head_root, known_backlog_ids, limit, profile_attempts=None, env_streak=0,
+                   scopes=None, ask=None, sweep=None, trace=None, owner_words=None) -> dict:
+    """Screen backlog rows and hand them to the architect without manufacturing tasks.
 
-    Returns {"tasks", "holds": [{backlog_id, question}], "stale": [backlog_id],
-    "skipped": [{backlog_id, reason}], "skipped_unknown": [{backlog_id, state}], "events": [...],
-    "parents": [{backlog_id, parts, children, code_tasks, test_tasks, files}] (every cut row, also when all its parts are
-    already known; ``known_parts`` {child backlog_id: [files]} lets a changed layout skip the row),
-    "profile_attempts": {backlog_id: n} (failed profile runs so far; the caller passes the old ones back as
-    ``profile_attempts`` and stores the new ones), "env_streak": consecutive portions that could not profile for the
-    environment (the caller passes the old value back as ``env_streak``; at 5 an event "env_starved" appears, no hold: tests run in the cloud), "deferred": [{backlog_id, reason}] (rows left for the next portion by the profiling deadline: NOT skipped,
-    so a caller that marks skipped rows as seen does not lose them)} in <id> -> <id> order.
-    - <id>/<id>: a row that names no file is a hold factory_holds.candidate_question (paths and tags only) instead of a
-      skip ONLY with a strong signal (strong_candidates: its ID in the code, a commit subject with the ID, a name the
-      source defines), public row or owner words; words alone -> skip "кандидаты слабые"; ``scopes`` {backlog_id:
-      {touch_files, note}} are the head model's picks: a row without touch takes their existing, writable source
-      files and goes the normal way (unit_test sub-task, privacy screen, gate rules), the note joins the goal;
-    - AUTO-FEED (owner): ``sweep`` = {guard test path: red} (or a path; default the newest
-      ``guard_sweep_*.json`` of the factory folder, tools.factory_autofeed) is the cloud's verdict on the product's
-      guard files tests/verify/**/test_v_<ID>.py.  An open row whose guard is red is a code task by itself:
-      tests = the red guard file(s), goal = the row text, and NO local profile run (the cloud has measured it).  When
-      the row names no file and no scope is found, the touch is provisional (the row's best candidate files, then the
-      guard's own imports) and the task carries ``needs_trace: True`` for the localizer; a row with no candidate at
-      all is a skip ``needs_trace`` plus an ``out["needs_trace"]`` record, never a hold for Opus.  A row whose guard
-      is green is not queued: skip ``already_green`` plus an ``out["already_green"]`` record.  Rows without a
-      sweep verdict take the old path.
-    - RE-FEED (owner rule 3, a red guard is a new method): ``refeed`` = {backlog_id} (the caller proved, with
-      tools.factory_autofeed.refeed_rows, that the row's old tasks all failed without the guard; it also took the row out of
-      known_backlog_ids): the row's task id gets the suffix ``_g`` (the old task history stays) and the row is never cut into parts.
-    - rows closed at HEAD (``<ID>:`` commit, or listed in the sidecar closed_by_commit.json, which this call keeps
-      up to date from the git log: the one thing besides the plan the triage writes) -> stale; IDs in known_backlog_ids -> skipped; two IDs
-      that give the same task id (<id> / <id>) -> both skipped "коллизия id";
-    - private rows (<private-marker>/<private-marker>, call records, keys, .env, personal data) are checked FIRST: hold, plus an
-      only_opus, privacy_safe=False task when a scope exists.  The hold is written only when the group
-      passed read_plan and fits the limit.  privacy_safe is decided here only;
-    - touch_files: existing echo_sync/** or tools/** files named in the row (never a package
-      __init__); bare module names (``latency_layers.py``; a backticked name only when the text also
-      says "модуль"/"файл") by stem, exactly one match or the row is skipped as ambiguous; with only
-      tests named, the 1-2 modules the test imports (more -> hold); never a test file for kind=code;
-      files the gate protects (tools.factory_gate rules) -> hold "область защищена воротами";
-    - tests: ONLY tests that can be the task's red test: tests named in the row that exist, and tests
-      named by the ID (tests/**/test_v_<ID>*.py, test_<id>*.py).  affected_tests neighbours are NOT
-      put in (they are green on the base and the gate would call the task already_green; the runner
-      adds regression neighbours itself).  Order: test_v_<ID>, then named, then alphabetical.  No
-      such test -> sub-task kind=unit_test ``<id>_test`` on tests/test_factory_<slug>.py (an existing
-      file is reused as the task's test, not rewritten) and the main task depends_on it;
-    - > SLICE_FILES (3) touch files, a row in ``force_slice`` (a task of it failed twice after an escalation) with >= 2
-      files, or text > MAX_TEXT chars -> split into ONE-FILE parts (<= MAX_PARTS; more files: import-affine groups of
-      <= MAX_TOUCH), else hold "split into sub-tasks".  ``trace`` {backlog_id: [(rel, qualname, line)]} (the cloud
-      trace of the failing guard) narrows each part's guard to the functions of its file (field guard_functions);
-    - task id = ``bl_`` + transliterated backlog_id (agent_factory.TASK_ID); backlog_id is a field;
-    - every task group passes agent_factory.read_plan before it is returned; at most ``limit`` tasks
-      (sub-tasks count).
-    Graph (tools.affected_tests) writes its pickle cache into %TEMP% and is built only when a test must
-    be looked at for its imports."""
-    from tools import agent_factory as F
+    Hints are optional: the architect owns file discovery, contracts and decomposition.
+    This pass performs no local test profiling and never guesses test/code pairs.
+    """
     root = Path(head_root)
-    refeed = set(refeed or ())
-    events0: list = []
-    try:
-        synced = AF.sync_closed(root)             # before the rows are read: a fresh '<ID>:' commit closes its row at once
-        if synced["added"]:
-            events0.append({"backlog_id": ",".join(synced["added"][:10]), "event": "closed_by_commit",
-                            "reason": "%d IDs added to the sidecar" % len(synced["added"])})
-    except Exception as e:                        # the sidecar is a convenience: git still answers
-        events0.append({"backlog_id": "", "event": "closed_sidecar_failed", "reason": ("%s: %s" % (type(e).__name__, e))[:200]})
-    rows = parse_open_rows(backlog_path, root, include_closed=True)
-    tabled = FC.table_ids(backlog_path) if FC is not None else {}
-    attempts = {k: v for k, v in (profile_attempts.items() if isinstance(profile_attempts, dict) else ())
-                if type(v) is int and v >= 0}      # a damaged value from an old state counts as 0
-    out = {"tasks": [], "holds": [], "stale": [], "skipped": [], "skipped_unknown": list(rows.skipped_unknown), "events": events0, "deferred": [], "profile_attempts": {}, "parents": [], "env_streak": 0,
+    out = {"tasks": [], "holds": [], "stale": [], "skipped": [], "to_slice": [],
+           "skipped_unknown": [], "events": [], "deferred": [], "profile_attempts": {},
            "already_green": [], "needs_trace": [], "not_code": []}
     try:
+        AF.sync_closed(root)
+    except Exception as exc:
+        out["events"].append({"event": "closed_sidecar_failed", "reason": str(exc)[:200]})
+    rows = parse_open_rows(backlog_path, root, include_closed=True)
+    out["skipped_unknown"] = list(rows.skipped_unknown)
+    tabled = FC.table_ids(backlog_path) if FC is not None else {}
+    try:
         guards = AF.guard_map(AF.load_sweep(root, sweep), [r["backlog_id"] for r in rows])
-    except Exception as e:                        # an unreadable feed is no feed: the old path decides
+    except Exception as exc:
         guards = {}
-        out["events"].append({"backlog_id": "", "event": "sweep_failed", "reason": ("%s: %s" % (type(e).__name__, e))[:200]})
-    try:        # A-feed: rows with a red guard are the first supply (fast guards first), raw rows after them in their own order
-        secs = AF.sweep_seconds(root, sweep)
-        rows = sorted(rows, key=lambda r: ((0, min((secs.get(p, 1e9) for p in AF.red_paths(guards.get(r["backlog_id"]))), default=1e9))
-                                            if AF.verdict(guards.get(r["backlog_id"])) == "red" else (1, 0)))
-    except Exception as e:
-        out["events"].append({"backlog_id": "", "event": "feed_order_failed", "reason": ("%s: %s" % (type(e).__name__, e))[:200]})
+        out["events"].append({"event": "sweep_failed", "reason": str(exc)[:200]})
     idx = _module_index(root)
-    all_tests = sorted(p for paths in idx.values() for p in paths if p.startswith("tests/"))
-    graph = None
-    profiled = 0
-    started = _mono()
-    env_first = ""
-    env_blocked = ""        # first no-slot/no-RAM result of this portion: the rest of the portion is not profiled
-
-    def skip(bid, reason):
-        out["skipped"].append({"backlog_id": bid, "reason": reason})
-
-    # task-id collisions inside the portion or with known IDs (<id> and <id> are both <id>)
-    owners: dict[str, list[str]] = {}
-    for r in rows:      # a red guard reopens a row a commit closed: the commit did not finish it, or it broke again
-        if r["closed_at_head"] and AF.verdict(guards.get(r["backlog_id"])) == "red":
-            r["closed_at_head"] = False
-        if not r["closed_at_head"]:
-            owners.setdefault(_task_id(r["backlog_id"]), []).append(r["backlog_id"])
-    for k in known_backlog_ids:
-        owners.setdefault(_task_id(k), [])
-        if k not in owners[_task_id(k)]:
-            owners[_task_id(k)].append(k)
-    collide = {b: o for o in owners.values() if len(o) > 1 for b in o}
-
-    for r in rows:
-        bid = r["backlog_id"]
-        if len(out["tasks"]) >= limit:
-            break
-        if r["closed_at_head"]:
-            if bid not in tabled:          # a row the closures table already holds is booked: it is not stale any more
+    accepted = 0
+    for row in rows:
+        bid = row["backlog_id"]
+        if row["closed_at_head"]:
+            if bid not in tabled:
                 out["stale"].append(bid)
             continue
         if bid in known_backlog_ids:
-            skip(bid, "уже известна")
+            out["skipped"].append({"backlog_id": bid, "reason": "already known"})
             continue
-        if bid in collide:
-            skip(bid, "коллизия id: " + " и ".join(collide[bid]))
+        if accepted >= max(0, limit):
+            out["deferred"].append({"backlog_id": bid, "reason": "portion limit"})
             continue
-        if r.get("port_from") and bid not in refeed:
-            made = _port_task(r, root, all_tests)
-            if "hold" in made:
-                out["holds"].append({"backlog_id": bid, "question": made["hold"]})
-            else:
-                out["tasks"].append(made["task"])
+        accepted += 1
+        if row["private"]:
+            out["holds"].append({"backlog_id": bid, "question": "private (only_opus)"})
             continue
-        private = r["private"]
-        pfx = "приватная строка (only_opus): " if private else ""
-        private_hold = {"backlog_id": bid, "question": "приватная строка (only_opus): звонки, ключи, личное; решить, кто делает"}
-        # --- scope: named files, then bare module names
-        touch = [f for f in r["mentioned_files"] if _is_src(f)]
-        tests = list(r["mentioned_tests"])
-        ambiguous = None
-        for name, ticked, near in r["bare_names"]:
-            if ticked and not near:
-                continue
-            hits = idx.get(name, [])
-            src = [h for h in hits if _is_src(h)]
-            tst = [h for h in hits if h.startswith("tests/")]
-            found, bucket = (tst, tests) if name.startswith("test_") else (src, touch)
-            if len(found) > 1:
-                ambiguous = name
-                break
-            if found and found[0] not in bucket:
-                bucket.append(found[0])
-        if private and (ambiguous or not (touch or tests)):
-            out["holds"].append(private_hold)
-            continue
-        if ambiguous:
-            skip(bid, "неоднозначное имя: " + ambiguous)
-            continue
-        read_files: list[str] = []
-        ctx: dict[str, str] = {}
-        named_here = _tests_named_by_id(bid, all_tests)
-        swept = AF.verdict(guards.get(bid))             # the cloud's verdict on the row's guard file(s): "red" | "green" | None
-        if swept == "green":
-            out["already_green"].append({"backlog_id": bid, "tests": [p for p, _ in guards[bid]]})
-            skip(bid, "already_green: страж %s зелёный в облачном прогоне, задача не ставится" % PurePosixPath(guards[bid][0][0]).name)
-            continue
-        guard_red = AF.red_paths(guards.get(bid)) if swept == "red" else []
-        if guard_red:
-            named_here = guard_red + [t for t in named_here if t not in guard_red]
-        if not private and not named_here and not guard_red:
-            try:
-                why = _doc_only_row(r, candidate_files(root, bid, r["text"])) if (r.get("doc_marks") and not r["mentioned_files"]
-                                                                                  and not r["mentioned_tests"] and not r["bare_names"]) else ""
-            except Exception:
-                why = ""
+        red = AF.red_paths(guards.get(bid)) if AF.verdict(guards.get(bid)) == "red" else []
+        if row.get("doc_marks") and not red:
+            why = _doc_only_row(row, candidate_files(root, bid, row["text"]))
             if why:
                 out["not_code"].append({"backlog_id": bid, "reason": why})
-                skip(bid, "не код: " + why)
                 continue
-        suspects = ""
-        if not touch and named_here and not private and _screen(F, bid, r["text"])[1]:
-            # it will be held anyway: do not spend 30 s of profile and an attempt on it
-            out["holds"].append({"backlog_id": bid, "question": _screen(F, bid, r["text"])[1]})
-            continue
-        if not touch and named_here and profiled < limit and not guard_red:        # a red sweep verdict is the measurement: no local run
-            left = PORTION_DEADLINE_S - (_mono() - started)
-            if left <= 0:
-                out["deferred"].append({"backlog_id": bid, "reason": "отложено: дедлайн профилирования порции, строка ждёт следующей порции"})
-                continue
-            if env_blocked:
-                out["deferred"].append({"backlog_id": bid, "reason": "среда: pytest не запущен (%s); строка ждёт следующей порции, попытка не засчитана" % env_blocked[:150]})
-                continue
-            profiled += 1
-            from tools import factory_gate as _G
-            kind, payload, fb, pnotes = _localize(root, bid, named_here, idx, all_tests, min(PROFILE_TIMEOUT_S, left),
-                                                  wait_deadline=_mono() + max(0.0, min(_G.SLOT_WAIT_S, left)))
-            for ev, why in pnotes:
-                out["events"].append({"backlog_id": bid, "event": ev, "reason": why[:200]})
-                if ev == "profile_neighbours_env" and not env_blocked:    # the second run found no slot/RAM either: stop profiling the portion
-                    env_blocked, env_first = why, bid
-            if kind == "env":
-                env_blocked, env_first = payload or "no pytest slot", env_first or bid
-                out["events"].append({"backlog_id": bid, "event": "profile_env", "reason": (payload or "")[:200]})
-                out["deferred"].append({"backlog_id": bid, "reason": "среда: pytest не запущен (%s); попытка не засчитана" % (payload or "")[:150]})
-                continue
-            if fb:
-                out["events"].append({"backlog_id": bid, "event": "profile_fallback",
-                                      "reason": "sys.monitoring unavailable, sys.setprofile used"})
-            if kind == "green":
-                out["holds"].append({"backlog_id": bid, "question": pfx + "тест по ID %s зелёный на HEAD — закрыть строку %s или дать новый тест/область?" % (PurePosixPath(named_here[0]).name, bid)})
-                continue
-            if kind == "red":
-                mods, leaders = payload
-                top = mods[0][1]
-                tied = [m for m in mods if m[1] >= top - 1e-9]
-                if len(tied) > MAX_TOUCH:
-                    out["holds"].append({"backlog_id": bid, "question": pfx + "локализация неоднозначна: " + "; ".join(
-                        "%s (%.2f: %s)" % (m, sc, ", ".join(q for q, _, _ in leaders[m][:3])) for m, sc, _ in tied[:6])})
-                    continue
-                touch = [m for m, sc, _ in mods if sc >= SECOND_MODULE_RATIO * top][:MAX_TOUCH]
-                rest = [m for m, _, _ in mods if m not in touch and not _protected(m)]
-                read_files = rest[:1]
-                for m in read_files:                 # context_targets act on read_files only (the runner skips touch files)
-                    ctx[m] = leaders[m][0][0].split(".")[0]
-                names, parts = 0, []
-                for m in touch:                      # leaders go into the goal text: the runner picks identifiers from it
-                    take = [q for q, _, _ in leaders[m][:max(0, 6 - names)]]
-                    names += len(take)
-                    if take:
-                        parts.append("%s: %s" % (m, ", ".join(take)))
-                suspects = " Подозреваемые функции (замер вызовов падающего теста): " + "; ".join(parts)
-            else:
-                # The profile gave no verdict.  A row is NOT turned into a task by the test's imports (they
-                # point at helpers, not at the defect): retry on the next portion, after 3 failures ask Opus.
-                why = (payload or kind)[:200]
-                out["events"].append({"backlog_id": bid, "event": "profile_unknown" if kind == "unknown" else "profile_empty",
-                                      "reason": why})
-                if kind == "unknown":
-                    n = attempts.get(bid, 0) + 1
-                    out["profile_attempts"][bid] = n
-                if kind == "unknown" and n < PROFILE_MAX_ATTEMPTS:
-                    out["deferred"].append({"backlog_id": bid, "reason": "профиль не удался (%d/%d): %s" % (n, PROFILE_MAX_ATTEMPTS, why)})
-                else:
-                    # "empty" = the run finished and no source function was called: a deterministic result,
-                    # retrying cannot change it, so ask at once.
-                    if graph is None:
-                        from tools.affected_tests import Graph
-                        graph = Graph(root)
-                    hints = sorted({d for t in named_here for d in graph.edges.get(t, ()) if _is_src(d)})
-                    head = ("профиль не удался (%s)" % why) if kind == "unknown" else "профиль прошёл, но функций исходников в вызовах цели нет"
-                    out["holds"].append({"backlog_id": bid, "question": pfx + head + ": дать область? Кандидаты по импортам теста (подсказка, не область): %s" % (", ".join(hints[:6]) or "нет")})
-                continue
-        if not touch and named_here and profiled >= limit and not guard_red:
-            out["deferred"].append({"backlog_id": bid, "reason": "отложено: лимит профилей порции (%d)" % limit})
-            continue
-        if not touch and tests:
-            if graph is None:
-                from tools.affected_tests import Graph
-                graph = Graph(root)
-            mods = sorted({d for t in tests for d in graph.edges.get(t, ()) if _is_src(d)})
-            if len(mods) > 2 and not guard_red:
-                out["holds"].append({"backlog_id": bid, "question": pfx + "уточнить область: тест(ы) %s импортируют %d модулей (%s); какие менять?" % (", ".join(tests), len(mods), ", ".join(mods[:6]))})
-                continue
-            touch = mods if len(mods) <= 2 else []        # a red guard: too many modules are no scope, the trace below decides
-        scope_note = ""
-        picked = (scopes or {}).get(bid) if isinstance(scopes, dict) else None
-        if not touch and not private and isinstance(picked, dict):
-            touch = [f for f in picked.get("touch_files") or [] if isinstance(f, str) and _is_src(f)
-                     and _exists(root, f) and not _protected(f)][:MAX_TOUCH]
-            scope_note = " ".join(str(picked.get("note") or "").split())[:300] if touch else ""
-        if not touch and not private and ask is not None:
-            touch, scope_note = _localized_scope(root, bid, r["text"], ask, out["events"])
-        needs_trace = False
-        if not touch and guard_red and not private:
-            # the row is red in the cloud and names no file: a provisional scope for the localizer, never a hold for Opus
-            touch = _trace_touch(root, bid, r["text"], guard_red, graph)
-            if not touch:
-                out["needs_trace"].append({"backlog_id": bid, "tests": guard_red})
-                skip(bid, "needs_trace: страж красный, но кандидатов файла нет (ни по строке, ни по импортам стража)")
-                continue
-            needs_trace = True
-            scope_note = scope_note or "Файл строкой не назван: файлы выше предположительны, сначала найди по падению стража, какой модуль виноват."
-        if not touch:
-            if private:
-                out["holds"].append(private_hold)
-                continue
-            try:
-                cands = candidate_files(root, bid, r["text"])
-            except Exception as e:     # an index failure must not stop the triage: the row stays a skip
-                cands = []
-                out["events"].append({"backlog_id": bid, "event": "candidates_failed", "reason": ("%s: %s" % (type(e).__name__, e))[:200]})
-            if strong_candidates(cands):
-                from tools import factory_holds
-                out["holds"].append({"backlog_id": bid, "question": factory_holds.candidate_question(r["priority"], cands)})
-            else:
-                skip(bid, "нет упомянутых файлов или модулей области; " + _weak_reason(cands))
-            continue
-        prot = [f for f in touch if _protected(f)]
-        if prot:
-            out["holds"].append({"backlog_id": bid, "question": pfx + "область защищена воротами: " + ", ".join(prot) + "; решает Opus"})
-            continue
-        forced = bid in (force_slice or ()) and len(touch) >= 2
-        if bid in refeed and (len(touch) > SLICE_FILES or r["text_len"] > MAX_TEXT):
-            skip(bid, "refeed_wide: %d файлов, текст %d: части дали бы чужие id задач" % (len(touch), r["text_len"]))
-            continue
-        if len(touch) > SLICE_FILES or forced or r["text_len"] > MAX_TEXT:
-            # Automatic decomposition (<id>): one file per part (a chain of one-file sub-tasks); more files than MAX_PARTS ->
-            # import-affine groups of <= MAX_TOUCH.  Not possible honestly -> the Opus question as before.
-            chunks = None
-            if not private and len(touch) >= 2:
-                chunks = [[f] for f in sorted(touch)]
-                if len(chunks) > MAX_PARTS and len(touch) > MAX_TOUCH:
-                    if graph is None:
-                        from tools.affected_tests import Graph
-                        graph = Graph(root)
-                    chunks = _chunk_files(root, touch, graph)
-            if chunks and len(chunks) <= MAX_PARTS:
-                ptext, question = _screen(F, bid, r["text"])
-                if question:
-                    out["holds"].append({"backlog_id": bid, "question": question})
-                    continue
-                pairs, record, error = _children(F, root, bid, _task_id(bid), r["priority"], ptext, chunks, known_backlog_ids, named_here, known_parts, _trace_of(trace, bid))
-                if error:
-                    skip(bid, error)
-                    continue
-                if not pairs:
-                    out["parents"].append(record)      # the consumer merges by backlog_id: idempotent
-                    skip(bid, "уже известна (все части)")
-                    continue
-                take = []
-                for pair in pairs:
-                    if len(out["tasks"]) + sum(len(x) for x in take) + len(pair) > limit:
-                        break
-                    take.append(pair)
-                if not take:
-                    if not out["tasks"]:
-                        out["holds"].append({"backlog_id": bid, "question": "limit меньше первой части (%d задач при limit %d): поднять limit или ответить: answer --backlog-id %s --touch <файл> --tests <тест> --note \"<указание кодеру>\"" % (len(pairs[0]), limit, bid)})
-                        continue
-                    out["deferred"].append({"backlog_id": bid, "reason": "отложено: не помещается в limit"})
-                    break
-                flat = [t for pair in take for t in pair]
-                try:
-                    F.read_plan(flat)
-                except F.InvalidPlan as e:
-                    skip(bid, "план не принял части: %s" % e)
-                    continue
-                out["tasks"].extend(flat)
-                out["parents"].append(record)
-                if len(take) < len(pairs):
-                    out["deferred"].append({"backlog_id": bid, "reason": "отложено: остальные части не поместились в limit"})
-                continue
-            why = ("затронуто %d файлов: %s" % (len(touch), ", ".join(touch)) if len(touch) > SLICE_FILES
-                   else "текст %d символов, предел %d" % (r["text_len"], MAX_TEXT))
-            if chunks and len(chunks) > MAX_PARTS:
-                why += "; частей получилось больше %d" % MAX_PARTS
-            out["holds"].append({"backlog_id": bid, "question": pfx + "разбить на подзадачи: " + why})
-            continue
-        tid = _task_id(bid) + ("_g" if bid in refeed else "")
-        named = _tests_named_by_id(bid, all_tests)
-        if guard_red:
-            named = guard_red + [t for t in named if t not in guard_red]
-        vnamed = sorted(t for t in named if PurePosixPath(t).name.lower().startswith("test_v_"))
-        mentioned = sorted(tests)
-        slug = tid[3:].lower()
-        tpath = "tests/test_factory_%s.py" % slug
-        if not named and (root / tpath).is_file():
-            # An existing factory test file counts only when it carries this very ID (a whole token);
-            # otherwise it belongs to another row (<id> / <id> slug clash): never reuse, never overwrite.
-            try:
-                own = bool(id_query.pattern(bid).search((root / tpath).read_text(encoding="utf-8", errors="replace")))
-            except OSError:
-                own = False
-            if not own:
-                skip(bid, "файл теста занят чужой строкой: " + tpath)
-                continue
-            named = [tpath]
-        text = F.redact(r["text"]).strip("`* ") or bid
-        if not private:
-            text, question = _screen(F, bid, r["text"])
-            if question:
-                out["holds"].append({"backlog_id": bid, "question": question})
-                continue
-            if scope_note:          # the head's note (checked by the loop like an Opus note) joins the goal
-                text = "%s Указание по области: %s" % (text, scope_note)
-            brief = _row_brief(F, r, owner_words)       # <id>: the row's acceptance and the owner's words, once, for every task of the row
-            if brief:
-                text = text[:max(500, MAX_TEXT - len(brief) - 800)] + brief
-        group = []
-        base = {"backlog_id": bid, "priority": r["priority"] or "P4", "privacy_safe": not private,
-                "only_opus": private, "read_files": [], "task_type": "patch"}
-        deps = []
-        # The red target of a task is ONLY a test named by the row's ID (or the new test).  Every
-        # other test the row mentions is green or red for foreign reasons on the base: it stays out of
-        # `tests` (the gate needs ALL of them green, and a green one hides already_green) and is only
-        # named in the goal; the runner compares the neighbours with the base by failure names.
-        extra = [m for m in mentioned if m not in named]
-        ordered: list[str] = []
-        for t in vnamed + sorted(named):
-            if t not in ordered:
-                ordered.append(t)
-        if guard_red:
-            ordered = list(guard_red)      # the task's red target is the guard(s) the cloud found red, nothing else
-        if not named:
-            if graph is None:        # the example's second source: tests importing the touch files directly
-                from tools.affected_tests import Graph
-                graph = Graph(root)
-            ex = _example_test(root, touch, mentioned, graph)
-            ex_hint = ""
-            ex_reads = []
-            if ex:
-                ex_hint = " Образец настройки (фича, фикстуры, фейки): %s." % ex
-                ex_reads = [ex]
-            goal = ("Написать тест: он должен падать на текущем коде из-за дефекта строки и проходить после "
-                    "исправления. Первой строкой файла напиши комментарий «# factory-backlog-id: %s».%s%s "
-                    "Упомянутые тесты (не дублировать): %s. Строка: %s" % (bid, _import_hint(touch), ex_hint, ", ".join(extra) or "нет", text))
-            group.append(dict(base, id=tid + "_test", title=("Тест для %s" % bid)[:120],
-                              goal=goal[:MAX_TEXT], depends_on=[],
-                              touch_files=[tpath], tests=[tpath], kind="unit_test",
-                              read_files=_test_reads(touch, read_files + ex_reads)))
-            ordered = [tpath]
-            deps = [tid + "_test"]
-        tail = suspects + ("" if not extra else " Проверь, что не ломаешь: " + ", ".join(extra))
-        main_goal = text[:max(0, MAX_TEXT - len(tail))] + tail
-        group.append(dict(base, id=tid, title=(bid + ": " + text)[:120], goal=main_goal[:MAX_TEXT], depends_on=deps,
-                          touch_files=touch, tests=ordered[:MAX_TESTS], kind="code"))
-        if read_files:
-            group[-1]["read_files"] = read_files
-            group[-1]["context_targets"] = ctx
-        if needs_trace:
-            group[-1]["needs_trace"] = True
-        if len(out["tasks"]) + len(group) > limit:
-            if not out["tasks"]:      # it would never fit: a question, not an endless deferral
-                out["holds"].append({"backlog_id": bid, "question": "limit меньше группы (%d задач при limit %d): поднять limit или ответить: answer --backlog-id %s --touch <файл> --tests <тест> --note \"<указание кодеру>\"" % (len(group), limit, bid)})
-                continue
-            out["deferred"].append({"backlog_id": bid, "reason": "отложено: не помещается в limit"})
-            break
-        try:
-            F.read_plan(group)
-        except F.InvalidPlan as e:
-            skip(bid, "план не принял: %s" % e)
-            continue
-        out["tasks"].extend(group)
-        if private:
-            out["holds"].append(private_hold)
-    # consecutive portions that could not profile for the environment: a silent endless wait becomes visible (no strike)
-    out["env_streak"] = (int(env_streak or 0) + 1) if env_blocked else 0
-    if out["env_streak"] >= ENV_STREAK_MAX:
-        out["events"].append({"backlog_id": env_first, "event": "env_starved", "reason": "%d порций подряд: %s" % (out["env_streak"], env_blocked[:150])})
+        hints = list(row["mentioned_files"]) + list(row["mentioned_tests"])
+        for name, ticked, near in row["bare_names"]:
+            if not ticked or near:
+                hints.extend(idx.get(name, []))
+        hints = sorted({path for path in hints if not _protected(path)})
+        out["to_slice"].append({"backlog_id": bid, "hints": hints, "guard": red[0] if red else ""})
     return out
 
 

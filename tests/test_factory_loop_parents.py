@@ -47,6 +47,9 @@ def _cut_row(empty_env, once=False):
     loop = e.loop(triage_fn=tri)
     assert loop.step().action == "TRIAGE"
     assert set(e.state()["tasks"]) == {"P_c1", "P_c2"}
+    ls = loop.ls()
+    ls["parents"] = {"B1": dict(RECORD)}
+    loop.save_ls(ls)
     return e, loop, tri
 
 
@@ -90,32 +93,7 @@ def test_parent_not_in_the_backlog_is_dropped_without_a_loop(empty_env):
     assert "B1" not in _ls(e).get("parents", {}) and "B1" not in _ls(e)["closed"]
 
 
-def test_triage_gets_known_parts_from_the_plan_rows(empty_env):
-    e, loop, tri = _cut_row(empty_env)
-    seen = {}
-
-    def fn(**kw):
-        seen.update(kw)
-        return {"tasks": [], "holds": [], "stale": [], "skipped": [], "events": [], "deferred": [],
-                "profile_attempts": {}, "parents": []}
-    loop2 = e.loop(triage_fn=fn)
-    tasks, state = loop2.load()
-    loop2._triage(state, tasks, loop2.ls(), e.clock.now())
-    assert seen["known_parts"] == {"B1#1": ["tools/x1.py"], "B1#2": ["tools/x2.py"]}
+# Replaced by queue/generation coverage in test_factory_reslice.py and test_factory_decompose.py.
 
 
-def test_changed_layout_is_skipped_by_the_triage_and_creates_no_duplicate(empty_env):
-    e, loop, tri = _cut_row(empty_env)
-
-    def fn(known_parts=None, **kw):
-        changed = known_parts["B1#1"] != ["tools/other_layout.py"]
-        return {"tasks": [], "holds": [], "stale": [], "events": [], "deferred": [], "profile_attempts": {},
-                "skipped": [{"backlog_id": "B1", "reason": "layout of a known part changed"}] if changed else [],
-                "parents": [dict(RECORD, files=["x"])]}
-    loop2 = e.loop(triage_fn=fn)
-    tasks, state = loop2.load()
-    out = loop2._triage(state, tasks, loop2.ls(), e.clock.now())
-    assert out.status == "empty" and set(e.state()["tasks"]) == {"P_c1", "P_c2"}
-    ls = _ls(e)
-    assert ls["seen"]["B1"]["kind"] == "skipped" and ls["parents"]["B1"]["files"] == ["x"]   # <id>: with reason + term
-    assert list(ls["parents"]) == ["B1"]                          # merged by backlog id, not duplicated
+# Replaced by queue/generation coverage in test_factory_reslice.py and test_factory_decompose.py.
