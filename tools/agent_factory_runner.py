@@ -3439,7 +3439,7 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
             shutil.copyfile(ctx['workdir'].joinpath(*name.split("/")), dst)
 
         def approve(state, row):
-            status = settle(state, tid, token, tests_ok=True, evidence=receipt, max_attempts=max_attempts, reslice_after=reslice_after)
+            status = settle(state, tid, token, tests_ok=True, evidence=receipt, max_attempts=max_attempts)
             row.pop('pending_review', None)
             return status, None
         result = end(approve, changed=len(changed), receipt_sha256=receipt, cross_review=True)

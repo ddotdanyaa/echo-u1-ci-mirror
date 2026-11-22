@@ -360,9 +360,8 @@ def record_contract(bid, files, contract_json, *, base=None):
     data = _load(base)
     records = data.setdefault('contracts', [])
     record = {'bid': str(bid), 'files': _contract_files(files), 'contract': contract_json}
-    if record not in records:
-        records.append(record)
-        _save(base, data)
+    records.append(record)
+    _save(base, data)
 
 
 def _contract_files(files):
