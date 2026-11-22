@@ -2651,7 +2651,7 @@ class Loop:
         except (ValueError, TypeError):
             return {}
 
-    def _asks(self) -> dict:
+    def _asks(self, root=None) -> dict:
         from tools import factory_architect as A, factory_paid_critic as PK
         asks = {}
         for engine in self.cfg.architect_rungs:
@@ -2669,7 +2669,7 @@ class Loop:
                 if not PK.credit_dead():
                     asks[engine] = A.ask_paid
             elif engine == "agent" and callable(getattr(A, "ask_agent", None)) and shutil.which("claude"):
-                asks[engine] = A.ask_agent
+                asks[engine] = lambda system, user, _root=root: A.ask_agent(system, user, cwd=_root)
         return asks
 
     def _ladder_sig(self):
@@ -2742,7 +2742,7 @@ class Loop:
             task_copy, state_copy, ls_copy = copy.deepcopy((tasks, state, ls))
             def work():
                 packet = self._row_packet(row, cause, evidence, tasks=task_copy, state=state_copy, ls=ls_copy, root=root)
-                result = self.architect_fn(packet, rung=rung, root=root, asks=self._asks())
+                result = self.architect_fn(packet, rung=rung, root=root, asks=self._asks(root))
                 return packet, result
             job = self._slicers[row] = Prefetch("slice", work, ctx)
             job.thread.start()
@@ -3005,9 +3005,10 @@ class Loop:
                 rung = 0 if cause == "first" else used + (cause == "stuck")
                 if self.cfg.architect_rungs and self.slice_fn == self._slice:
                     guarded = ls.get("to_slice", {}).get(bid, {}).get("guard") or self._guard_traces(state).get(bid)
-                    rung = (0 if guarded else self.cfg.hard_first_rung) if cause == "first" else rec.get("rung", used) + (cause == "stuck")
+                    hard_rung = self.cfg.hard_first_rung if "paid" in self.cfg.architect_rungs else 0
+                    rung = (0 if guarded else hard_rung) if cause == "first" else rec.get("rung", used) + (cause == "stuck")
                     if ls.get("to_slice", {}).get(bid, {}).get("done"):
-                        rung = 0 if guarded else self.cfg.hard_first_rung
+                        rung = 0 if guarded else hard_rung
                 evidence = "\n".join(tid + ": " + str(state["tasks"][tid].get("reason") or "")
                     for tid in F.stuck_rows(state, tasks).get(bid, []))
                 portion = self.slice_fn(bid, cause, rung, evidence, gen=rec.get("n", 0) + 1,

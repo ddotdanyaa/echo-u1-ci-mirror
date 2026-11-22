@@ -1,6 +1,6 @@
 {
  "accepted": 5,
- "free_ram_gb": 3.96,
+ "free_ram_gb": 5.04,
  "funnel": {
   "accepted": 5,
   "claimed": 141,
@@ -145,7 +145,7 @@
   }
  },
  "promoted": 29,
- "rows_recognized": 21895,
+ "rows_recognized": 21905,
  "schema": 3,
  "side": {
   "blocked": 0,
@@ -153,7 +153,7 @@
   "requeued": 2
  },
  "skipped_files": 0,
- "source_sha": "sha449e1e765666",
+ "source_sha": "shaac9bd99e7f1f",
  "span": {
   "answer": {
    "calls": 0,
@@ -185,14 +185,14 @@
    "calls_usage_unknown": 0,
    "errors": {},
    "http_429": 0,
-   "rows": 763,
+   "rows": 764,
    "status": {
     "brake": 8,
     "brake_cleared": 1,
     "cleared": 56,
     "deferred": 518,
     "error": 11,
-    "other": 129,
+    "other": 130,
     "parked": 18,
     "released": 9,
     "run_failed": 13
@@ -205,7 +205,7 @@
    "calls_usage_unknown": 0,
    "errors": {},
    "http_429": 0,
-   "rows": 4287,
+   "rows": 4292,
    "status": {
     "BLOCKED": 258,
     "FAILED": 282,
@@ -215,9 +215,9 @@
     "added": 16,
     "brake": 15,
     "deferred": 512,
-    "empty": 85,
+    "empty": 86,
     "infra": 17,
-    "ok": 1636,
+    "ok": 1640,
     "other": 43,
     "refused": 1,
     "requeued": 2,
@@ -231,12 +231,12 @@
    "calls_usage_unknown": 0,
    "errors": {},
    "http_429": 0,
-   "rows": 2784,
+   "rows": 2787,
    "status": {
     "added": 1,
-    "failed": 16,
+    "failed": 17,
     "ok": 59,
-    "other": 2685,
+    "other": 2687,
     "rejected": 23
    },
    "tokens_in": 0,
@@ -303,10 +303,10 @@
    "calls_usage_unknown": 0,
    "errors": {},
    "http_429": 0,
-   "rows": 285,
+   "rows": 286,
    "status": {
     "added": 43,
-    "empty": 234,
+    "empty": 235,
     "hold_dropped": 3,
     "other": 5
    },
@@ -327,13 +327,13 @@
   "brake_cleared": 1,
   "cleared": 56,
   "deferred": 1030,
-  "empty": 319,
+  "empty": 321,
   "error": 366,
-  "failed": 16,
+  "failed": 17,
   "hold_dropped": 3,
   "infra": 17,
-  "ok": 11987,
-  "other": 2938,
+  "ok": 11991,
+  "other": 2941,
   "parked": 18,
   "refused": 2,
   "rejected": 40,
