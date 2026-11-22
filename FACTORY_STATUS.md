@@ -1,6 +1,6 @@
 # Factory status (generated, structured data only)
 
-Generated: 2026-11-22T23:17:16Z
+Generated: 2026-11-22T23:23:35Z
 Source commit: shab324ce212b76
 
 ## Commits (sha, time)
@@ -43,17 +43,17 @@ Side counters: blocked=1, parked=0, requeued=2
 Tasks now: BLOCKED=1, DONE=68, FAILED=94, PROMOTED=5, READY=9
 Accepted: 5
 Promoted: 29
-Free RAM, GB: 5.55
-Telemetry rows: 21854 recognised, 0 unrecognised
+Free RAM, GB: 3.53
+Telemetry rows: 21870 recognised, 0 unrecognised
 
 ## Spend per model
 | model | calls | tokens_in | tokens_out | usage_unknown | http_429 | errors |
 |---|---|---|---|---|---|---|
 | google/gemini-3-flash-preview | 2 | 0 | 0 | 2 | 2 | 2 |
 | google/gemini-3.1-flash-lite | 1310 | 8127750 | 517319 | 48 | 0 | 48 |
-| google/gemini-3.1-flash-lite-preview | 2 | 11809 | 1148 | 0 | 0 | 0 |
+| google/gemini-3.1-flash-lite-preview | 3 | 20209 | 1402 | 0 | 0 | 0 |
 | google/gemini-3.5-flash | 1 | 8402 | 347 | 0 | 0 | 0 |
-| google/gemini-3.5-flash-lite | 1517 | 10018010 | 454156 | 28 | 0 | 28 |
+| google/gemini-3.5-flash-lite | 1518 | 10027125 | 454164 | 28 | 0 | 28 |
 | google/gemini-3.6-flash | 99 | 383453 | 17290 | 39 | 1 | 39 |
 | google/gemini-3.7-flash | 1 | 9121 | 14 | 0 | 0 | 0 |
 | google/gemini-3.8-flash | 7 | 21237 | 15 | 4 | 2 | 4 |
@@ -67,14 +67,14 @@ Telemetry rows: 21854 recognised, 0 unrecognised
 | span | rows | calls |
 |---|---|---|
 | answer | 535 | 0 |
-| gate | 3266 | 0 |
-| infra | 760 | 0 |
-| loop | 4270 | 0 |
-| other | 2778 | 0 |
+| gate | 3267 | 0 |
+| infra | 761 | 0 |
+| loop | 4276 | 0 |
+| other | 2780 | 0 |
 | promote | 40 | 0 |
 | review | 1544 | 843 |
-| run | 8379 | 2621 |
-| triage | 282 | 0 |
+| run | 8384 | 2623 |
+| triage | 283 | 0 |
 
 ## Channels (model ids)
 - 1db4ab-gemini-3-8-flash
