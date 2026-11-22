@@ -134,7 +134,9 @@ def test_hold_and_done_do_not_reset_the_series(empty_env):
     assert e.state()["infra_streak"] == 3
 
 
-def test_second_instance_with_clear_brake_does_not_touch_state(env):
+def test_second_instance_with_clear_brake_does_not_touch_state(env, monkeypatch):
+    # A live loop must pass the <id> process identity check; pytest is not a loop.
+    monkeypatch.setattr(L, "proc_info", lambda pid: ("python -m tools.factory_loop", env.clock.t))
     (env.state_dir / "BRAKE").write_text("brake", encoding="utf-8")
     (env.state_dir / "loop.pid").write_text(str(os.getpid()), encoding="utf-8")
     assert env.loop(clear_brake=True).run() == 4

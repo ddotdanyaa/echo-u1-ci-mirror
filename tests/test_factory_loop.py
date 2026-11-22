@@ -325,7 +325,9 @@ def test_once_runs_one_iteration(env):
 
 # ---- single instance --------------------------------------------------------------------
 
-def test_second_instance_refuses(env):
+def test_second_instance_refuses(env, monkeypatch):
+    # A live loop must pass the <id> process identity check; pytest is not a loop.
+    monkeypatch.setattr(L, "proc_info", lambda pid: ("python -m tools.factory_loop", env.clock.t))
     (env.state_dir / "loop.pid").write_text(str(os.getpid()), encoding="utf-8")
     assert env.loop(once=True).run() == 4
     assert env.runs() == 0
