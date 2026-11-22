@@ -4083,14 +4083,14 @@ class Loop:
         return row.get("backlog_id") or (tasks[tid].backlog_id if tid in tasks else None) or None
 
     # -- PROMOTE
-    def _after_merge(self, tid: str, sha: str, *, recovered: bool = False) -> None:
+    def _after_merge(self, tid: str, sha: str, *, recovered: bool = False, **extra) -> None:
         """Complete the durable post-merge effects on both normal and recovery paths."""
         tasks, state = self.load()
         if self._closes_row(tasks.get(tid), self.ls().get("parents")):
             self._write_closure(tid, self._bid(state, tasks, tid), {"commit": sha}, "promoted")
         self.event("promote", task_id=tid, backlog_id=self._bid(state, tasks, tid),
                    status="promoted", reason="already_merged" if recovered else "promoted",
-                   commit=sha, recovered=recovered)
+                   commit=sha, recovered=recovered, **extra)
 
     def _promote(self, tid, tasks, state, ls) -> Outcome:
         cfg, wt = self.cfg, Path(self.cfg.worktree)
@@ -4144,7 +4144,8 @@ class Loop:
                 break
         if done_sha:
             self._tx(lambda st: F.mark_promoted(st, tid, done_sha))
-            self._after_merge(tid, done_sha, recovered=True)
+            self._after_merge(tid, done_sha, recovered=True, base_sha=fields["base_sha"], head=cur,
+                              dur_s=round(self.clock() - t0, 3))
             package_done()
             return Outcome(action="PROMOTE", reason="already_merged", status="promoted")
         try:
@@ -4247,7 +4248,7 @@ class Loop:
             return finish("no_diff", "no_diff", "no_diff")
         sha = git_run(wt, "rev-parse", "HEAD").strip()
         self._tx(lambda st: F.mark_promoted(st, tid, sha))
-        self._after_merge(tid, sha)
+        self._after_merge(tid, sha, base_sha=fields["base_sha"], head=cur, dur_s=round(self.clock() - t0, 3))
         self._clear_requeues(ls, tid)
         ls.get("promote_fail", {}).pop(tid, None)
         package_done()
