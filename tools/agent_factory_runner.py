@@ -2096,7 +2096,7 @@ def light_attempt(task: Task, workdir: Path, model: str, timeout: int = LIGHT_TI
     prompt = prompt_override if prompt_override is not None else _default_prompt(task, workdir, light=True)
     if (len(prompt) > paid_coder.PROMPT_LIMIT_CHARS) if paid_kind else channels.prompt_too_big(prompt):
         return 125, b'', b'context-too-large'
-    key = 'paid' if paid_kind else os.environ.get(key_env or ('OPENROUTER_API_KEY' if provider == 'openrouter' else 'GOOGLE_GENERATIVE_AI_API_KEY'), '')
+    key = 'paid' if paid_kind else os.environ.get(key_env or {'openrouter': 'OPENROUTER_API_KEY', 'google': 'GOOGLE_GENERATIVE_AI_API_KEY'}.get(provider, ''), '')
     if not key:
         return 1, _light_error(401, b'{"error": {"message": "no API key in the environment"}}'), b''
     review = not task.touch_files

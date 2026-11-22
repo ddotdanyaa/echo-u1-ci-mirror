@@ -38,6 +38,20 @@ def test_free_provider_routes_edits_to_its_endpoint(tmp_path, monkeypatch, provi
     assert (tmp_path / 'calc.py').read_text() == 'x = 2\n'
 
 
+@pytest.mark.parametrize('provider,key_env,model,base', PROVIDERS)
+def test_free_provider_without_key_env_never_gets_the_google_key(tmp_path, monkeypatch, provider, key_env, model, base):
+    monkeypatch.setenv('GOOGLE_GENERATIVE_AI_API_KEY', 'google-synthetic')
+    monkeypatch.delenv(key_env, raising=False)
+    task = F.read_plan([dict(id='T1', title='Fix sum', touch_files=['calc.py'], read_files=[],
+                             tests=['tests/test_calc.py'], privacy_safe=True, estimated_tokens=100)])['T1']
+    (tmp_path / 'calc.py').write_text('x = 1\n')
+    calls = []
+    rc, _, _ = R.light_attempt(task, tmp_path, provider + '/' + model, prompt_override='p',
+                               post=lambda url, key, body, timeout: calls.append((url, key)) or (200, b'{}'))
+    assert rc == 1 and calls == []       # no key of its own: no request, and the Google key is not sent
+    assert (tmp_path / 'calc.py').read_text() == 'x = 1\n'
+
+
 def _channel(provider, model='code-model'):
     return dict(id=provider, model=provider + '/' + model, group=provider, key_env='TEST_KEY',
                 rpm=5, tpm=1000, rpd=10, verified=True)
