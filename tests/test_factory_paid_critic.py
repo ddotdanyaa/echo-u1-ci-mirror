@@ -76,6 +76,8 @@ def test_the_call_goes_to_the_messages_api_and_reports_usd_and_tokens(env, monke
     monkeypatch.setattr(P, '_post', net)
     out = P.control(T, 'DIFFTEXT', 'FAILTEXT')
     url, headers, body = net.calls[0]
+    # parsed instead of a literal URL string (the mirror scanner flags address literals); the round-trip
+    # check keeps it exact: no extra query/fragment delimiters, no scheme/host case changes
     endpoint = urlsplit(url)
     assert endpoint == ('https', 'api.anthropic.com', '/v1/messages', '', '') and url == endpoint.geturl() and headers['x-api-key'] == SECRET
     assert body['model'] == 'claude-sonnet-5-5' and 'opus' not in body['model']

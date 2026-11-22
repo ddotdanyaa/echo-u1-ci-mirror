@@ -1,9 +1,12 @@
 # Factory status (generated, structured data only)
 
-Generated: 2026-11-22T20:18:54Z
-Source commit: sha8bdb234d3145
+Generated: 2026-11-22T20:26:15Z
+Source commit: sha24f6f34c2523
 
 ## Commits (sha, time)
+- sha24f6f34c 2026-11-22T23:25:12+03:00
+- shaa4358c1d 2026-11-22T23:24:50+03:00
+- sha863bae00 2026-11-22T23:24:45+03:00
 - sha8bdb234d 2026-11-22T23:17:52+03:00
 - sha9e3a67f7 2026-11-22T23:17:37+03:00
 - sha6abbe300 2026-11-22T22:23:46+03:00
@@ -21,9 +24,6 @@ Source commit: sha8bdb234d3145
 - shab497322f 2026-11-22T02:26:18+03:00
 - shadab39040 2026-11-22T02:22:58+03:00
 - shafc334477 2026-11-22T01:53:03+03:00
-- sha5a45b2ba 2026-11-22T01:13:14+03:00
-- sha3965ff52 2026-11-22T00:39:51+03:00
-- shadc5292c4 2026-11-22T00:35:48+03:00
 
 ## Funnel
 | step | count |
@@ -43,8 +43,8 @@ Side counters: blocked=0, parked=0, requeued=2
 Tasks now: DONE=68, FAILED=89, PROMOTED=5, READY=14
 Accepted: 5
 Promoted: 29
-Free RAM, GB: 3.68
-Telemetry rows: 21556 recognised, 0 unrecognised
+Free RAM, GB: 3.85
+Telemetry rows: 21564 recognised, 0 unrecognised
 
 ## Spend per model
 | model | calls | tokens_in | tokens_out | usage_unknown | http_429 | errors |
@@ -64,8 +64,8 @@ Telemetry rows: 21556 recognised, 0 unrecognised
 |---|---|---|
 | answer | 534 | 0 |
 | gate | 3255 | 0 |
-| infra | 744 | 0 |
-| loop | 4119 | 0 |
+| infra | 745 | 0 |
+| loop | 4126 | 0 |
 | other | 2741 | 0 |
 | promote | 40 | 0 |
 | review | 1544 | 843 |
@@ -110,8 +110,8 @@ Telemetry rows: 21556 recognised, 0 unrecognised
 
 ## Published files
 Modules: 26
-Tests in the cloud: 123
-Tests not in the cloud: 45
+Tests in the cloud: 124
+Tests not in the cloud: 44
 - tests/test_agent_factory.py (backlog-id, call-word, env-path, long-run, pid-port)
 - tests/test_factory_asked_memory.py (backlog-id)
 - tests/test_factory_autofeed.py (backlog-id)
@@ -149,7 +149,6 @@ Tests not in the cloud: 45
 - tests/test_factory_reject_note.py (dependency)
 - tests/test_factory_round7.py (backlog-id, call-word, owner-name, path, phone, user-path)
 - tests/test_factory_slicer.py (backlog-id, call-word, email, key, long-run)
-- tests/test_factory_slim_worker.py (backlog-id)
 - tests/test_factory_status.py (dependency)
 - tests/test_factory_survive.py (path, pid-port, user-path)
 - tests/test_factory_sync.py (backlog-id, email)
