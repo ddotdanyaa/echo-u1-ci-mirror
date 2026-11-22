@@ -3,7 +3,6 @@ add_feedback evicted the failure it repeats; the requeue then read markers only,
 the task. The window keeps the newest real failure; it evicts older failures, then older markers, then the oldest
 Opus note."""
 from tools import agent_factory as F
-from tools import factory_requeue as R
 
 FAIL = '[attempt 3] rc=1 (0 required) failure tests.verify.test_v::t: AssertionError'
 
@@ -11,9 +10,6 @@ FAIL = '[attempt 3] rc=1 (0 required) failure tests.verify.test_v::t: AssertionE
 def _row(*items):
     return {'tasks': {'T': {'status': 'FAILED', 'kind': 'code',
                             'feedback': [{'source': s, 'text': t} for s, t in items]}}}
-
-
-# Replaced by queue/generation coverage in test_factory_reslice.py and test_factory_decompose.py.
 
 
 def test_a_repeat_marker_never_pushes_out_the_failure_it_repeats():

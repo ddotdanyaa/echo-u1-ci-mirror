@@ -240,3 +240,59 @@ def test_the_hold_event_and_stats_carry_the_blockers(tmp_path, monkeypatch):
     outs = [loop.step() for _ in range(3)]
     assert outs[-1].action == "HOLD" and e.loop_events()[-1]["blockers"] == {"only_opus": 1}
     assert json.loads((e.state_dir / "stats.json").read_text(encoding="utf-8"))["blockers"] == {"only_opus": 1}
+
+
+# ---- review findings: re-entry, void stale, error isolation, reds ---------------------------------------------------
+
+def test_reentry_queues_only_a_row_that_has_no_task(tmp_path, monkeypatch):
+    e = Env(tmp_path, monkeypatch, tasks=[task_row(1)])
+    e.set_row("T1", status="FAILED", reason="quarantine", q_ver="s0")
+    loop = _loop(e, lambda *a, **k: None)
+    ls = loop.ls(); ls["quarantine"] = {"B9": {"version": "s0", "at": 0.0, "why": "void"}}; loop.save_ls(ls)
+    assert loop._reenter_on_new_slicer() == 2
+    assert e.state()["tasks"]["T1"]["reason"] == "reenter"
+    assert "B9" in loop.ls()["to_slice"] and "B1" not in loop.ls()["to_slice"]      # <id> is stuck: the slicer takes it as stuck
+
+def test_a_void_stale_slicing_counts_as_an_attempt(tmp_path, monkeypatch):
+    e = Env(tmp_path, monkeypatch, tasks=[task_row(1)])
+    e.set_row("T1", status="FAILED", reason="reslice:stale")
+    seen = []
+    loop = _loop(e, lambda row, cause, rung, evidence, **kw: seen.append((cause, rung)) or dict(EMPTY))
+    ls = loop.ls(); ls["reslices"] = {"B1": {"n": 1, "used": 0, "stale": False, "version": F.slicer_version()}}; loop.save_ls(ls)
+    loop.step()
+    assert seen == [("stale", 0)] and loop.ls()["reslices"]["B1"]["used"] == 1
+
+def test_a_failing_quarantine_pass_is_an_event_and_slicing_goes_on(tmp_path, monkeypatch):
+    e = Env(tmp_path, monkeypatch, tasks=[task_row(1)])
+    e.set_row("T1", status="FAILED", reason="reslice")
+    seen = []
+    loop = _loop(e, lambda row, cause, rung, evidence, **kw: seen.append(row) or dict(EMPTY))
+    def boom(*a, **k): raise RuntimeError("disk gone")
+    monkeypatch.setattr(loop, "_quarantine_rows", boom)
+    out = loop.step()
+    assert seen == ["B1"] and out.action != "CRASH"
+    assert any(x["span"] == "reslice" and x.get("status") == "error" for x in e.events())
+
+def test_one_row_that_fails_does_not_stop_the_next_one(tmp_path, monkeypatch):
+    e = Env(tmp_path, monkeypatch, tasks=[task_row(1), task_row(3, backlog_id="B2")])
+    e.set_row("T1", status="FAILED", reason="reslice"); e.set_row("T3", status="FAILED", reason="reslice")
+    seen = []
+    def slicer(row, cause, rung, evidence, **kw):
+        seen.append((row, evidence))
+        if row == "B1": raise RuntimeError("broken row")
+        return dict(EMPTY, tasks=[task_row(5, id="T3_r1", backlog_id="B2")])
+    loop = _loop(e, slicer)
+    out = loop.step()
+    assert [r for r, _ in seen] == ["B1", "B2"] and out.action != "CRASH"
+    assert "T3_r1" in e.state()["tasks"] and loop.ls()["slice_wait"]["B1"] > 0
+    assert "T3" in seen[1][1] and "T1" not in seen[1][1]                              # the evidence is the row's own
+    assert any(x["span"] == "reslice" and x.get("status") == "error" for x in e.events())
+
+def test_a_rejected_task_starts_again_with_no_red_attempts(tmp_path, monkeypatch):
+    e = Env(tmp_path, monkeypatch, tasks=[task_row(1)])
+    e.set_row("T1", status="PROMOTED", commit="a" * 10, reds=2, attempts=3)
+    loop = e.loop(triage_fn=lambda **kw: EMPTY)
+    tasks, state = loop.load()
+    loop._reject_answer("T1", "B1", state, "bad")
+    row = e.state()["tasks"]["T1"]
+    assert (row["status"], row["reds"], row["attempts"]) == ("READY", 0, 0)

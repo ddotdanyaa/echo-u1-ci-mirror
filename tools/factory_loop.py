@@ -2652,10 +2652,15 @@ class Loop:
         if not bids:
             return 0
         self._reenter_rows(bids)
+        tasks, state = self.load()
+        owned = {F.row_of(r.get("backlog_id") or t) for t, r in state["tasks"].items()
+                 if r["status"] in ("READY", "BLOCKED", "FAILED", "RUNNING", "REVIEW") and not F.is_terminal(r.get("reason"))}
         for bid in bids:
             ls.get("quarantine", {}).pop(bid, None)
-            # A row record can exist without any task. Keep its place in the queue too.
-            ls.setdefault("to_slice", {}).setdefault(bid, {"at": now, "hints": [], "guard": ""})
+            # A row record can exist without any task: only such a row goes back to the queue.
+            # A row with a re-entered task is stuck, and the slicer takes it from there.
+            if bid not in owned:
+                ls.setdefault("to_slice", {}).setdefault(bid, {"at": now, "hints": [], "guard": ""})
         ls["reentry"] = {"version": version, "at": now, "rows": sorted(bids)}
         self.save_ls(ls)
         return len(bids)
@@ -2730,10 +2735,10 @@ class Loop:
             out[bid] = cause
         return out
 
-    def _slice_record(self, ls, row, gen, cause, now):
+    def _slice_record(self, ls, row, gen, cause, now, void=False):
         old = ls.setdefault("reslices", {}).get(row, {})
         ls["reslices"][row] = {"n": max(gen, old.get("n", 0)),
-            "used": 0 if cause == "first" else old.get("used", 0) + (cause == "stuck"),
+            "used": 0 if cause == "first" else old.get("used", 0) + (cause == "stuck" or void),
             "stale": cause == "stale", "at": now, "version": F.slicer_version()}
 
     def _apply_portion(self, row, gen, portion, cause) -> int:
@@ -2755,7 +2760,7 @@ class Loop:
                 valid, why = False, str(exc)
         ls = self.ls()
         if not valid:
-            self._slice_record(ls, row, ls.get("reslices", {}).get(row, {}).get("n", 0), cause, now)
+            self._slice_record(ls, row, ls.get("reslices", {}).get(row, {}).get("n", 0), cause, now, void=True)
             self.save_ls(ls)
             self.event("reslice", status="void", backlog_id=row, cause=cause, reason=why)
             return 0
@@ -2780,12 +2785,16 @@ class Loop:
     def _reslice_tick(self, tasks, state, ls, now) -> int:
         if self.slice_fn is None:
             return 0
-        self._quarantine_rows(tasks, state, ls, now)
+        try:
+            self._quarantine_rows(tasks, state, ls, now)
+        except Exception as exc:                  # a failure of the quarantine pass is an event, not a brake
+            self.event("reslice", status="error", reason="quarantine pass: " + F.redact(str(exc)))
         tasks, state = self.load()
         ls = self.ls()
         count = 0
         for bid, cause in list(self._resliceable(tasks, state, ls, now).items())[:RESLICE_PER_STEP]:
             try:
+                tasks, state = self.load()        # the previous row moved the plan: evidence is read fresh
                 ls = self.ls()
                 rec = ls.get("reslices", {}).get(bid, {})
                 used = rec.get("used", 0)
