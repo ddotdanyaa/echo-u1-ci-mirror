@@ -1,10 +1,12 @@
 # Factory status (generated, structured data only)
 
-Generated: 2026-11-22T20:47:15Z
-Source commit: sha9e525a31db0f
+Generated: 2026-11-22T21:03:24Z
+Source commit: sha1c7726dd82e0
 
 ## Commits (sha, time)
+- sha1c7726dd 2026-11-23T00:03:07+03:00
 - sha9e525a31 2026-11-22T23:46:35+03:00
+- sha0b879e53 2026-11-22T23:28:25+03:00
 - sha0a1cd664 2026-11-22T23:27:51+03:00
 - sha863bae00 2026-11-22T23:24:45+03:00
 - shaa24b4121 2026-11-22T23:20:12+03:00
@@ -22,8 +24,6 @@ Source commit: sha9e525a31db0f
 - sha7267beb4 2026-11-22T22:12:43+03:00
 - shab515ae15 2026-11-22T22:12:03+03:00
 - shacc51013f 2026-11-22T22:11:52+03:00
-- shab5f9b741 2026-11-22T03:51:11+03:00
-- sha67a8781b 2026-11-22T03:28:08+03:00
 
 ## Funnel
 | step | count |
@@ -43,8 +43,8 @@ Side counters: blocked=0, parked=0, requeued=2
 Tasks now: DONE=68, FAILED=89, PROMOTED=5, READY=14
 Accepted: 5
 Promoted: 29
-Free RAM, GB: 4.49
-Telemetry rows: 21590 recognised, 0 unrecognised
+Free RAM, GB: 6.2
+Telemetry rows: 21612 recognised, 0 unrecognised
 
 ## Spend per model
 | model | calls | tokens_in | tokens_out | usage_unknown | http_429 | errors |
@@ -64,13 +64,13 @@ Telemetry rows: 21590 recognised, 0 unrecognised
 |---|---|---|
 | answer | 534 | 0 |
 | gate | 3255 | 0 |
-| infra | 747 | 0 |
-| loop | 4143 | 0 |
-| other | 2743 | 0 |
+| infra | 749 | 0 |
+| loop | 4160 | 0 |
+| other | 2745 | 0 |
 | promote | 40 | 0 |
 | review | 1544 | 843 |
 | run | 8325 | 2599 |
-| triage | 259 | 0 |
+| triage | 260 | 0 |
 
 ## Channels (model ids)
 - 1db4ab-gemini-3-8-flash
@@ -109,9 +109,9 @@ Telemetry rows: 21590 recognised, 0 unrecognised
 - or-north-mini-code
 
 ## Published files
-Modules: 26
-Tests in the cloud: 123
-Tests not in the cloud: 46
+Modules: 27
+Tests in the cloud: 124
+Tests not in the cloud: 45
 - tests/test_agent_factory.py (backlog-id, call-word, env-path, long-run, pid-port)
 - tests/test_factory_architect.py (env-path, long-run, path)
 - tests/test_factory_asked_memory.py (backlog-id)
@@ -148,7 +148,6 @@ Tests not in the cloud: 46
 - tests/test_factory_reject_apply.py (dependency)
 - tests/test_factory_reject_note.py (dependency)
 - tests/test_factory_round7.py (backlog-id, call-word, owner-name, path, phone, user-path)
-- tests/test_factory_seams.py (dependency)
 - tests/test_factory_slicer.py (backlog-id, call-word, email, key, long-run)
 - tests/test_factory_slicer_pool.py (env-path, long-run)
 - tests/test_factory_status.py (dependency)

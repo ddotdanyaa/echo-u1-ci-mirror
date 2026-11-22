@@ -68,13 +68,13 @@ jobs:
           - shard: 27
             files: 'tests/test_factory_router.py tests/test_factory_router_wiring.py tests/test_factory_row_text.py tests/test_factory_runtime.py'
           - shard: 28
-            files: 'tests/test_factory_selffix.py tests/test_factory_selffix_second_repo.py tests/test_factory_source_guard.py tests/test_factory_spec.py'
+            files: 'tests/test_factory_seams.py tests/test_factory_selffix.py tests/test_factory_selffix_second_repo.py tests/test_factory_source_guard.py'
           - shard: 29
-            files: 'tests/test_factory_supply.py tests/test_factory_test_audit.py tests/test_factory_tournament.py tests/test_factory_tournament_gate.py'
+            files: 'tests/test_factory_spec.py tests/test_factory_supply.py tests/test_factory_test_audit.py tests/test_factory_tournament.py'
           - shard: 30
-            files: 'tests/test_factory_triage_candidates.py tests/test_factory_triage_state.py tests/test_factory_unit_rules_async.py tests/test_factory_unit_test_rules.py'
+            files: 'tests/test_factory_tournament_gate.py tests/test_factory_triage_candidates.py tests/test_factory_triage_state.py tests/test_factory_unit_rules_async.py'
           - shard: 31
-            files: 'tests/test_factory_view_fill.py tests/test_factory_wiring.py'
+            files: 'tests/test_factory_unit_test_rules.py tests/test_factory_view_fill.py tests/test_factory_wiring.py'
     name: shard ${{ matrix.shard }}
     runs-on: windows-latest
     timeout-minutes: 25
