@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import concurrent.futures
 import contextlib
 import difflib
 from hashlib import sha256
@@ -2765,6 +2766,7 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
         return release_or_block('provider_error', INFRA_DEFER_S)
 
     base_holder = None
+    bg = bg_pool = None            # the red base measured in the background while the model answers (task 3.2)
     gate_tmp = staging / 'tmp'     # pytest's own temp (--basetemp) stays inside staging, never under the profile
     slot = {'armed': False, 'left': float(SLOT_BUDGET_S), 'waited': 0.0}   # armed at the FIRST gate run
 
@@ -2916,40 +2918,72 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
             verdict, base = 'red', held
             events.append('base_reused')
         else:
-            verdict, base = timed('red_before_s', lambda: gate.red_before(
-                base_root() if task.kind != 'unit_test' else root, task.tests, GATE_TIMEOUT_S, task.kind,
-                wait_s=(min(RED_BEFORE_WAIT_S, max(0.0, slot['left'])) if slot['armed'] else RED_BEFORE_WAIT_S),
-                workdir=gate_tmp, touched=(), **({'trace': path_trace(task)} if path_trace(task) else {})))
-            keep_red = (key and verdict == 'red' and not base.env_reason and task.kind != 'unit_test')
+            red_args = (base_root() if task.kind != 'unit_test' else root, task.tests, GATE_TIMEOUT_S, task.kind)
+            red_kwargs = dict(wait_s=(min(RED_BEFORE_WAIT_S, max(0.0, slot['left'])) if slot['armed'] else RED_BEFORE_WAIT_S),
+                              workdir=gate_tmp, touched=(), **({'trace': path_trace(task)} if path_trace(task) else {}))
 
-            def note_base(state, row):
-                row.pop('base_red', None)
-                if keep_red:
-                    row['base_red'] = {'key': key, 'at': _now(), 'result': dataclasses.asdict(base)}
-            ck.commit(note_base)
-        ctx['counts'] = base
-        if verdict == 'green':
-            return block('already_green', 'the task tests already pass on the base')
-        if verdict == 'unknown' and base.env_reason:
-            return env_release(base.env_reason, candidate=False)    # the machine, not the task: never a block
-        if verdict == 'unknown':
-            report['reason_detail'] = scrub(redact(base.diag))[:300]
-            return release_or_block('gate_unknown', INFRA_DEFER_S)
+            def measure_base():
+                return timed('red_before_s', lambda: gate.red_before(*red_args, **red_kwargs))
+            if pending:
+                verdict, base = measure_base()      # a candidate is already there: no model call to overlap with
+            else:
+                # 3.2: the red base is a cloud run too; it goes in the background while the coder answers, and the
+                # gates wait for both (settle_base below, right after the first coder call)
+                bg_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix='red-base')
+                bg = bg_pool.submit(measure_base)
+        base_fresh = held is None
+        base_settled = False
+        on_mods, off_mods, off_short, path_focus = {}, {}, [], frozenset()
 
-        # the path of the failing tests: on it in the task's files (shown first) / outside them (named, checked)
-        on_mods, off_mods = gate.path_split(getattr(base, 'path', ()), task.touch_files) if task.kind == 'code' \
-            else ({}, {})
-        try:
-            off_short = gate.off_path_short(off_mods, root, task.tests, OFF_PATH_SHORT, base.failed_ids) \
-                if off_mods else []
-            ranked_on = gate.rank_path(on_mods, root, task.tests, base.failed_ids) if on_mods else []
-        except Exception:  # noqa: BLE001 - an order of names only: without it the lists stay unsorted
-            off_short = ['%s.%s' % (m.rsplit('/', 1)[-1].rsplit('.', 1)[0], q)
-                         for m, qs in off_mods.items() for q in qs][:OFF_PATH_SHORT]
-            ranked_on = [(m, q) for m, qs in on_mods.items() for q in qs]
-        leaves = [q.rpartition('.')[2] for _, q in ranked_on]
-        path_focus = frozenset([n for n in dict.fromkeys(leaves)
-                                if identifier_tokens(n) == {n} and not n.startswith('__')][:PATH_FOCUS_MAX])
+        def settle_base():
+            """Waits for the red base (a fault of the background run surfaces here, as it did when the call was
+            synchronous), records it and reads its path. A dict ends the pass (green / environment / unknown base);
+            None goes on. Called once before the first coder call when the base is known already, else right after it."""
+            nonlocal verdict, base, bg, base_fresh, base_settled, on_mods, off_mods, off_short, path_focus
+            if base_settled:
+                return None
+            if bg is not None:
+                future, bg = bg, None
+                verdict, base = future.result()
+            if base_fresh:
+                base_fresh = False
+                keep_red = (key and verdict == 'red' and not base.env_reason and task.kind != 'unit_test')
+
+                def note_base(state, row):
+                    row.pop('base_red', None)
+                    if keep_red:
+                        row['base_red'] = {'key': key, 'at': _now(), 'result': dataclasses.asdict(base)}
+                ck.commit(note_base)
+            ctx['counts'] = base
+            base_settled = True
+            if verdict == 'green':
+                return block('already_green', 'the task tests already pass on the base')
+            if verdict == 'unknown' and base.env_reason:
+                return env_release(base.env_reason, candidate=False)    # the machine, not the task: never a block
+            if verdict == 'unknown':
+                report['reason_detail'] = scrub(redact(base.diag))[:300]
+                return release_or_block('gate_unknown', INFRA_DEFER_S)
+
+            # the path of the failing tests: on it in the task's files (shown first) / outside them (named, checked)
+            on_mods, off_mods = gate.path_split(getattr(base, 'path', ()), task.touch_files) if task.kind == 'code' \
+                else ({}, {})
+            try:
+                off_short = gate.off_path_short(off_mods, root, task.tests, OFF_PATH_SHORT, base.failed_ids) \
+                    if off_mods else []
+                ranked_on = gate.rank_path(on_mods, root, task.tests, base.failed_ids) if on_mods else []
+            except Exception:  # noqa: BLE001 - an order of names only: without it the lists stay unsorted
+                off_short = ['%s.%s' % (m.rsplit('/', 1)[-1].rsplit('.', 1)[0], q)
+                             for m, qs in off_mods.items() for q in qs][:OFF_PATH_SHORT]
+                ranked_on = [(m, q) for m, qs in on_mods.items() for q in qs]
+            leaves = [q.rpartition('.')[2] for _, q in ranked_on]
+            path_focus = frozenset([n for n in dict.fromkeys(leaves)
+                                    if identifier_tokens(n) == {n} and not n.startswith('__')][:PATH_FOCUS_MAX])
+            return None
+
+        if bg is None:                              # known now (held / pending): settled before the coder, as before
+            early = settle_base()
+            if early is not None:
+                return early
         held_ne = row.get('no_effect')
         prior_ne = (held_ne['n'] if key and isinstance(held_ne, dict) and held_ne.get('key') == key
                     and type(held_ne.get('n')) is int else 0)
@@ -3202,14 +3236,15 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
             small_total = sum(len(v) for n, v in visible.items() if n not in large_names(task, visible))
             if small_total + REVIEW_DIFF_LIMIT + REVIEW_OVERHEAD > channels.PROMPT_LIMIT_CHARS:
                 raise PromptTooLarge('coder+review prompts cannot both fit')
-            failing = (', '.join(base.failed_ids) + '\n' + base.diag).strip() if task.kind == 'code' else ''
+            def failing_text() -> str:       # the red base may still be running when the first prompt is built
+                return (', '.join(base.failed_ids) + '\n' + base.diag).strip() if task.kind == 'code' and base_settled else ''
             # ``root`` is the loop's plain copy of the sources (no .git): an old commit is read from the repository itself
             reference = port_reference(port_repo or root, task)
             if reference:
                 events.append('port_reference:%d' % len(reference))
             elif task.port_from and task.kind != 'unit_test':
                 events.append('port_reference_missing')      # a lost example shows in the telemetry, never silently
-            focus = (port_focus(port_repo or root, task) if reference else frozenset()) | path_focus
+            ported = port_focus(port_repo or root, task) if reference else frozenset()
             remembered = frozenset(state['tasks'][tid].get('asked') or ()) & defined_names(task, ctx['workdir'])
 
             def make_prompt(asked=frozenset(), paid=False):
@@ -3217,9 +3252,9 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                 if paid and task.kind == 'code':
                     whole = set(visible) - paid_large_names(task, visible)
                     trace = scrub(paid_trace_bodies(getattr(base, 'path', ()), root, whole, task.tests, base.failed_ids))
-                return build_coder_prompt(task, visible, feedback, prev_diff, failing=scrub(failing),
+                return build_coder_prompt(task, visible, feedback, prev_diff, failing=scrub(failing_text()),
                                           light=paid or engine_for(role, task) == 'light',   # the same rule call() applies
-                                          asked=frozenset(asked) | remembered, reference=reference, focus=focus, off_path=tuple(off_short),
+                                          asked=frozenset(asked) | remembered, reference=reference, focus=ported | path_focus, off_path=tuple(off_short),
                                           paid=paid, trace=trace)
             prompt = make_prompt()
             ctx['paid_prompt'] = lambda: make_prompt(paid=True)
@@ -3295,7 +3330,7 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                 if k:
                     held = (ctx['workdir'], ctx['baseline'])
                     tried.append(ctx['coder_model'])
-                    view = make_prompt(asked) if asked else prompt
+                    view = make_prompt(asked)         # the first prompt may predate the base; later ones carry it
                     k_prompt = view + next_note
                     if channels.prompt_too_big(k_prompt):
                         k_prompt = view
@@ -3331,6 +3366,9 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                     ctx['workdir'], ctx['baseline'] = held      # no further model now: the last candidate stands
                     events.append('tournament_short')
                     break
+                early = settle_base()                # the red base measured meanwhile: both are in, the gates judge
+                if early is not None:
+                    return early
                 decision = None          # the earlier candidate's failure is history now; this one is judged afresh
                 ctx['coder_model'] = calls[-1]['model']
                 if event_summary(out)['finish_reason'] in ('length', 'max_tokens'):
@@ -3536,6 +3574,8 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
         report['error_type'] = type(error_obj).__name__
         return block(reason, text)
     finally:
+        if bg_pool is not None:
+            bg_pool.shutdown(wait=True)      # the background red base reads base_holder: it ends before the copy goes
         if base_holder:
             shutil.rmtree(base_holder, ignore_errors=True)
         if baseline_dir is not None and baseline_dir.name.endswith('-baseline') and ctx['workdir'] != baseline_dir:

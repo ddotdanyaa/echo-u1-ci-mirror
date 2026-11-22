@@ -1,9 +1,10 @@
 # Factory status (generated, structured data only)
 
-Generated: 2026-11-22T23:08:48Z
-Source commit: shae7f921e2ae8f
+Generated: 2026-11-22T23:27:55Z
+Source commit: sha8214b7739269
 
 ## Commits (sha, time)
+- sha8214b773 2026-11-23T02:26:58+03:00
 - shae7f921e2 2026-11-23T01:11:02+03:00
 - shab324ce21 2026-11-23T01:03:31+03:00
 - sha9487a412 2026-11-23T00:39:35+03:00
@@ -23,7 +24,6 @@ Source commit: shae7f921e2ae8f
 - shadba3e872 2026-11-22T22:13:55+03:00
 - sha15951366 2026-11-22T22:13:50+03:00
 - sha7267beb4 2026-11-22T22:12:43+03:00
-- shab515ae15 2026-11-22T22:12:03+03:00
 
 ## Funnel
 | step | count |
@@ -43,17 +43,17 @@ Side counters: blocked=0, parked=0, requeued=2
 Tasks now: DONE=68, FAILED=94, PROMOTED=5, READY=9, RUNNING=1
 Accepted: 5
 Promoted: 29
-Free RAM, GB: 5.0
-Telemetry rows: 21837 recognised, 0 unrecognised
+Free RAM, GB: 5.04
+Telemetry rows: 21875 recognised, 0 unrecognised
 
 ## Spend per model
 | model | calls | tokens_in | tokens_out | usage_unknown | http_429 | errors |
 |---|---|---|---|---|---|---|
 | google/gemini-3-flash-preview | 2 | 0 | 0 | 2 | 2 | 2 |
-| google/gemini-3.1-flash-lite | 1309 | 8119350 | 517065 | 48 | 0 | 48 |
-| google/gemini-3.1-flash-lite-preview | 1 | 3333 | 540 | 0 | 0 | 0 |
+| google/gemini-3.1-flash-lite | 1310 | 8127750 | 517319 | 48 | 0 | 48 |
+| google/gemini-3.1-flash-lite-preview | 3 | 20209 | 1402 | 0 | 0 | 0 |
 | google/gemini-3.5-flash | 1 | 8402 | 347 | 0 | 0 | 0 |
-| google/gemini-3.5-flash-lite | 1515 | 10008895 | 454149 | 27 | 0 | 27 |
+| google/gemini-3.5-flash-lite | 1518 | 10027125 | 454164 | 28 | 0 | 28 |
 | google/gemini-3.6-flash | 99 | 383453 | 17290 | 39 | 1 | 39 |
 | google/gemini-3.7-flash | 1 | 9121 | 14 | 0 | 0 | 0 |
 | google/gemini-3.8-flash | 7 | 21237 | 15 | 4 | 2 | 4 |
@@ -67,14 +67,14 @@ Telemetry rows: 21837 recognised, 0 unrecognised
 | span | rows | calls |
 |---|---|---|
 | answer | 535 | 0 |
-| gate | 3265 | 0 |
-| infra | 760 | 0 |
-| loop | 4265 | 0 |
-| other | 2775 | 0 |
+| gate | 3267 | 0 |
+| infra | 761 | 0 |
+| loop | 4279 | 0 |
+| other | 2781 | 0 |
 | promote | 40 | 0 |
 | review | 1544 | 843 |
-| run | 8372 | 2617 |
-| triage | 281 | 0 |
+| run | 8384 | 2623 |
+| triage | 284 | 0 |
 
 ## Channels (model ids)
 - 1db4ab-gemini-3-8-flash

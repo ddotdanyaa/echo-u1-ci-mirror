@@ -594,7 +594,8 @@ def test_already_green_blocks_without_a_call_or_a_strike(rig):
     result = rig.once()
     assert result['status'] == 'BLOCKED' and result['reason'] == 'already_green'
     assert result['blocked_reason'] == 'already_green' and result['infra'] is False
-    assert rig.models == [] and not rig.state().get('strikes')
+    # the red base runs beside the first coder call (3.2): that call may have been made, its answer is dropped, no review
+    assert not [m for m in rig.models if not m[0]] and not rig.state().get('strikes')
     assert rig.state()['tasks']['T1']['status'] == 'BLOCKED'
 
 
@@ -604,7 +605,7 @@ def test_unknown_base_is_infrastructure_postponed_five_minutes_no_strike(rig):
     result = rig.once()
     state = rig.state()
     assert result['status'] == 'READY' and result['reason'] == 'gate_unknown'
-    assert rig.models == [] and not state.get('strikes')
+    assert not [m for m in rig.models if not m[0]] and not state.get('strikes')     # the coder ran beside the base: no review
     assert 290 <= state['tasks']['T1']['not_before'] - before <= 320
 
 
@@ -2796,7 +2797,7 @@ def test_a_missing_module_on_the_base_too_stays_the_environment(rig):
                                                           diag="E ModuleNotFoundError: No module named 'numpy'")
     result = rig.once()
     assert result['status'] == 'READY' and result['reason'] != 'gate: import error'
-    assert rig.state()['tasks']['T1']['attempts'] == 0 and not rig.models     # never reached the coder, no strike
+    assert rig.state()['tasks']['T1']['attempts'] == 0 and not [m for m in rig.models if not m[0]]     # the coder ran beside the base, nothing judged, no strike
 
 
 def test_an_overloaded_coder_model_is_retried_on_another_channel_in_the_same_pass(rig):
