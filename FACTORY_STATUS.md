@@ -1,29 +1,29 @@
 # Factory status (generated, structured data only)
 
-Generated: 2026-11-22T21:52:50Z
-Source commit: sha1deeb16dc977
+Generated: 2026-11-22T22:14:57Z
+Source commit: sha0476186223a7
 
 ## Commits (sha, time)
+- sha04761862 2026-11-23T01:14:37+03:00
+- sha97958749 2026-11-23T01:13:23+03:00
+- sha6c0c5ecc 2026-11-23T01:11:25+03:00
+- shab324ce21 2026-11-23T01:03:31+03:00
+- shaa087e15d 2026-11-23T00:57:44+03:00
+- sha9a3ab9bc 2026-11-23T00:54:44+03:00
 - sha1deeb16d 2026-11-23T00:52:18+03:00
+- sha24628bc7 2026-11-23T00:35:50+03:00
 - shafce44179 2026-11-23T00:35:28+03:00
+- shae58997cb 2026-11-23T00:23:36+03:00
 - sha1c7726dd 2026-11-23T00:03:07+03:00
+- sha6cd8239c 2026-11-22T23:50:27+03:00
+- sha5294a04b 2026-11-22T23:50:08+03:00
 - sha9e525a31 2026-11-22T23:46:35+03:00
 - sha0b879e53 2026-11-22T23:28:25+03:00
+- sha90dd4489 2026-11-22T23:28:24+03:00
 - sha0a1cd664 2026-11-22T23:27:51+03:00
 - sha863bae00 2026-11-22T23:24:45+03:00
+- sha1fa4b239 2026-11-22T23:21:29+03:00
 - shaa24b4121 2026-11-22T23:20:12+03:00
-- shac59a00fb 2026-11-22T23:19:56+03:00
-- sha0f1b6d32 2026-11-22T22:23:52+03:00
-- sha6abbe300 2026-11-22T22:23:46+03:00
-- shadef16629 2026-11-22T22:23:21+03:00
-- sha1bff2ab5 2026-11-22T22:22:49+03:00
-- sha6f10c722 2026-11-22T22:21:52+03:00
-- sha6d850eed 2026-11-22T22:18:47+03:00
-- sha2bd97568 2026-11-22T22:15:35+03:00
-- sha2afa53ca 2026-11-22T22:15:21+03:00
-- shadba3e872 2026-11-22T22:13:55+03:00
-- sha15951366 2026-11-22T22:13:50+03:00
-- sha7267beb4 2026-11-22T22:12:43+03:00
 
 ## Funnel
 | step | count |
@@ -43,8 +43,8 @@ Side counters: blocked=0, parked=0, requeued=2
 Tasks now: DONE=68, FAILED=89, PROMOTED=5, READY=14
 Accepted: 5
 Promoted: 29
-Free RAM, GB: 4.65
-Telemetry rows: 21673 recognised, 0 unrecognised
+Free RAM, GB: 5.4
+Telemetry rows: 21707 recognised, 0 unrecognised
 
 ## Spend per model
 | model | calls | tokens_in | tokens_out | usage_unknown | http_429 | errors |
@@ -64,16 +64,22 @@ Telemetry rows: 21673 recognised, 0 unrecognised
 |---|---|---|
 | answer | 534 | 0 |
 | gate | 3255 | 0 |
-| infra | 752 | 0 |
-| loop | 4205 | 0 |
-| other | 2749 | 0 |
+| infra | 754 | 0 |
+| loop | 4227 | 0 |
+| other | 2756 | 0 |
 | promote | 40 | 0 |
 | review | 1544 | 843 |
 | run | 8325 | 2599 |
-| triage | 269 | 0 |
+| triage | 272 | 0 |
 
 ## Channels (model ids)
 - 1db4ab-gemini-3-8-flash
+- co-command-a
+- co-command-a-plus
+- co-north-mini-code
+- cohere/command-a-03-2025
+- cohere/command-a-plus-05-2026
+- cohere/north-mini-code-1.0
 - g-3-1-flash-lite
 - g-3-5-flash-lite
 - g-3-6-flash
@@ -109,11 +115,11 @@ Telemetry rows: 21673 recognised, 0 unrecognised
 - or-north-mini-code
 
 ## Published files
-Modules: 28
+Modules: 29
 Tests in the cloud: 124
 Tests not in the cloud: 45
 - tests/test_agent_factory.py (backlog-id, call-word, env-path, long-run, pid-port)
-- tests/test_factory_architect.py (env-path, long-run, path)
+- tests/test_factory_architect.py (env-path, path)
 - tests/test_factory_asked_memory.py (backlog-id)
 - tests/test_factory_autofeed.py (backlog-id)
 - tests/test_factory_cannot_scope.py (env-path)

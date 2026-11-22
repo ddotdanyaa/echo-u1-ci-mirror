@@ -213,17 +213,18 @@ def reserve(usd, architect=False, critic=False) -> bool:
         waiting = _external('FACTORY_BUILDERS_WAITING', ('usd',))
         if float(row.get('credit_dead_until', 0)) > time.time() or available < usd + waiting:
             return False
+        _add(row, 0.0)
         row['reserved_usd'] = round(float(row.get('reserved_usd', 0)) + usd, 9)
         _write_spend(row)
         return True
 
 
-def settle(reserved, actual, architect=False, agent=False, critic=False):
+def settle(reserved, actual, architect=False, agent=False, critic=False, coder=False):
     reserved, actual = _amount(reserved), _amount(actual)
     with _spend_lock():
         row = _spend_row()
         row['reserved_usd'] = round(max(0, float(row.get('reserved_usd', 0)) - reserved), 9)
-        _add(row, actual, architect=architect, agent=agent, critic=critic)
+        _add(row, actual, coder=coder, architect=architect, agent=agent, critic=critic)
         _write_spend(row)
 
 
@@ -300,21 +301,75 @@ def _slug(text: str) -> str:
     return re.sub(r'[^a-z0-9]+', '-', str(text).lower()).strip('-')[:60] or 'unnamed'
 
 
-def control(task, diff: str, failure: str = '', exclude_model: str = '') -> dict | None:
+def _review_source(task, baseline, workdir):
+    """Verbatim tests and named function regions, bounded across both snapshots."""
+    from tools import agent_factory as F, factory_cards as K
+    if baseline is None or workdir is None:
+        return ''
+    try:
+        contract = json.loads(getattr(task, 'contract', '') or '{}')
+        parts = {p['file']: p for p in contract.get('parts', [])}
+    except (ValueError, TypeError, KeyError):
+        parts = {}
+    chunks, remaining = [], 60000
+    files = list(getattr(task, 'tests', ())) + list(getattr(task, 'touch_files', ()))
+    for file in dict.fromkeys(files):
+        try:
+            F.safe_path(file)
+        except ValueError:
+            continue
+        for label, root in (('BEFORE', baseline), ('AFTER', Path(workdir))):
+            try:
+                if isinstance(root, dict):     # the runner's snapshot: {name: bytes}
+                    if file not in root or len(root[file]) > 2_000_000:
+                        continue
+                    text = root[file].decode('utf-8-sig', 'replace')
+                else:
+                    root = Path(root)
+                    path = root / file
+                    if not path.resolve().is_relative_to(root.resolve()):
+                        continue
+                    if path.stat().st_size > 2_000_000:
+                        continue
+                    text = path.read_text(encoding='utf-8-sig')
+                part = parts.get(file)
+                if part:
+                    _, text = K.part_region(text, part.get('symbols', []), part.get('anchor', ''), cap=60000)
+            except (OSError, UnicodeError, ValueError, SyntaxError):
+                continue
+            chunk = label + ' ' + file + '\n' + F.redact(text)
+            chunks.append(chunk[:remaining])
+            remaining -= min(remaining, len(chunk))
+            if remaining <= 0:
+                return '\n'.join(chunks)
+    return '\n'.join(chunks)
+
+
+def control(task, diff: str, failure: str = '', exclude_model: str = '', *, baseline=None, workdir=None) -> dict | None:
     """One paid judgement of a candidate, or None (no key, no budget, a refused model, any fault). The free verdict
     stands when None. The dict never holds the key. ``exclude_model``: the coder's model never judges its own
     candidate (a paid coder's Sonnet is judged by Haiku or not at all)."""
     if os.environ.get('PYTEST_CURRENT_TEST') and not os.environ.get('FACTORY_PAID_ENV'):
         return None                                     # a test never spends the real key
-    env = load_env(env_path())
-    key = env.get('ANTHROPIC_API_KEY', '')
-    if not key:
-        return None
-    if credit_dead():
-        return None
+    try:
+        key = load_env(env_path()).get('ANTHROPIC_API_KEY', '')
+        if not key or credit_dead():
+            return None
+        return _control(task, diff, failure, exclude_model, baseline, workdir, key)
+    except (ValueError, TypeError, OSError, TimeoutError):
+        return None                                     # a broken state file or a busy lock: no paid voice, never a fault
+
+
+def _control(task, diff, failure, exclude_model, baseline, workdir, key):
     prompt = (ASK + 'Task: %s\nTask text:\n%s\nGuard test failure text (what the tests failed on before the fix):\n%s\n'
               'Candidate diff:\n%s\n') % (getattr(task, 'title', ''), str(getattr(task, 'goal', '') or '')[:GOAL_LIMIT],
                                           failure[-FAIL_LIMIT:], diff[:DIFF_LIMIT])
+    prompt += '\nTests and source regions:\n' + _review_source(task, baseline, workdir)
+    try:
+        multifile = len(json.loads(getattr(task, 'contract', '') or '{}').get('parts', [])) > 1
+    except (ValueError, TypeError, AttributeError):
+        multifile = False
+    approvals, total_usd, total_in, total_out = [], 0.0, 0, 0
     for model in MODELS:
         try:
             refuse_opus(model)
@@ -347,9 +402,16 @@ def control(task, diff: str, failure: str = '', exclude_model: str = '') -> dict
             continue
         finally:
             settle(estimate, usd, critic=True)
+        total_usd += usd
+        total_in += tin
+        total_out += tout
+        if multifile and answer['verdict'] == 'approve':
+            approvals.append(model)
+            if len(approvals) < 2:
+                continue
         return dict(verdict=answer['verdict'], reason=str(answer.get('reason') or '')[:600],
                     **{'class': _slug(answer.get('class') or '')}, symptom=str(answer.get('symptom') or '')[:300],
-                    model=model, usd=round(usd, 6), tokens_in=tin, tokens_out=tout)
+                    model='+'.join(approvals) if len(approvals) > 1 else model, usd=round(total_usd, 6), tokens_in=total_in, tokens_out=total_out)
     return None
 
 

@@ -51,8 +51,10 @@ class Owned:
     def wait(self, timeout=None):
         return self.proc.wait(timeout=timeout)
 
-    def communicate(self, timeout=None):
-        return self.proc.communicate(timeout=timeout)
+    def communicate(self, timeout=None, input=None):
+        if input is None:
+            return self.proc.communicate(timeout=timeout)
+        return self.proc.communicate(input=input, timeout=timeout)
 
     def peak_bytes(self) -> int | None:
         """The job's peak memory (Windows JobObjectExtendedLimitInformation.job_peak), None when unknown."""
@@ -111,11 +113,11 @@ def _extended_type():
     return Extended
 
 
-def start_owned(args, *, cwd, env, stdout=subprocess.PIPE, stderr=subprocess.PIPE) -> Owned:
+def start_owned(args, *, cwd, env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, input=None) -> Owned:
     """Start ``args`` owned (see Owned). stdout/stderr: PIPE (default) or open files (a worker the caller does not read
     while it runs)."""
     if os.name != 'nt':
-        proc = subprocess.Popen(args, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=stdout,
+        proc = subprocess.Popen(args, cwd=cwd, env=env, stdin=subprocess.PIPE if input is not None else subprocess.DEVNULL, stdout=stdout,
                                 stderr=stderr, start_new_session=True)
         return Owned(proc, args=args)
     import ctypes
@@ -142,7 +144,7 @@ def start_owned(args, *, cwd, env, stdout=subprocess.PIPE, stderr=subprocess.PIP
         limits.process_limit = JOB_PROCESS_MEMORY_BYTES
         if not kernel.SetInformationJobObject(job, 9, ctypes.byref(limits), ctypes.sizeof(limits)):
             raise ctypes.WinError(ctypes.get_last_error())
-        proc = subprocess.Popen(args, cwd=cwd, env=env, shell=False, stdin=subprocess.DEVNULL,
+        proc = subprocess.Popen(args, cwd=cwd, env=env, shell=False, stdin=subprocess.PIPE if input is not None else subprocess.DEVNULL,
                                 stdout=stdout, stderr=stderr,
                                 creationflags=0x4 | 0x08000000)  # suspended, hidden
         if not kernel.AssignProcessToJobObject(job, W.HANDLE(int(proc._handle))):
@@ -159,13 +161,35 @@ def start_owned(args, *, cwd, env, stdout=subprocess.PIPE, stderr=subprocess.PIP
     return Owned(proc, job, kernel, args)
 
 
-def run_owned(args, *, cwd, env, timeout):
-    owned = start_owned(args, cwd=cwd, env=env)
+def run_owned(args, *, cwd, env, timeout, input=None):
+    owned = start_owned(args, cwd=cwd, env=env, **({'input': input} if input is not None else {}))
     try:
-        stdout, stderr = owned.communicate(timeout=timeout)
+        stdout, stderr = owned.communicate(timeout=timeout, **({'input': input} if input is not None else {}))
         return subprocess.CompletedProcess(args, owned.proc.returncode, stdout, stderr)
     finally:
         owned.close()
         if owned.proc.poll() is None:
             owned.proc.kill()
         owned.proc.communicate()
+
+
+def claude_argv(*, entry: str | None = None, node: str | None = None) -> list[str]:
+    """Resolve a native CLI or npm shim without executing a command shell."""
+    binary = entry or os.environ.get('FACTORY_CLAUDE_BIN') or shutil.which('claude')
+    if not binary:
+        binary = str(Path.home() / '.local' / 'bin' / 'claude.exe')
+    path = Path(binary).resolve(strict=True)
+    if path.suffix.lower() in ('.cmd', '.bat'):
+        import json
+        package = path.parent / 'node_modules/@anthropic-ai/claude-code/package.json'
+        manifest = json.loads(package.read_text(encoding='utf-8'))
+        relative = manifest['bin']
+        relative = relative['claude'] if isinstance(relative, dict) else relative
+        target = (package.parent / relative).resolve(strict=True)
+        if not target.is_relative_to(package.parent.resolve()):
+            raise ValueError('entrypoint escapes installed package')
+        binary = node or shutil.which('node')
+        if not binary:
+            raise FileNotFoundError('node unavailable')
+        return [binary, str(target)]
+    return [str(path)]

@@ -128,15 +128,9 @@ def _escalate_and_fail(e, loop, n=4):
         _reject(e, loop)
 
 
-def test_a_single_file_task_failing_twice_after_the_escalation_is_quarantined(env):
-    loop = env.loop()
-    _escalate_and_fail(env, loop)
-    row = env.state()["tasks"]["T1"]
-    assert row["status"] == "FAILED" and row["reason"] == "quarantine"
-    rec = json.loads((env.state_dir / "stalled_tasks.json").read_text(encoding="utf-8"))["quarantine"]["T1"]
-    assert rec["backlog_id"] == "B1" and rec["tier"] == "escalation" and "gate:red" in rec["reason"]
-    assert any(x["span"] == "route" and x.get("status") == "quarantined" for x in env.events())
-
+# <id> replaced the old stall book (stalled_tasks.json: a quarantine / slice record per task) with the slicer's own
+# ladder: a failed row goes back to the slicer one rung up (tests/test_factory_reslice.py, test_factory_slicer_pool.py),
+# and a row the ladder gave up on sits in loop_state["quarantine"] until the slicer version changes.
 
 def test_three_failures_are_not_yet_a_quarantine(env):
     loop = env.loop()
@@ -144,23 +138,19 @@ def test_three_failures_are_not_yet_a_quarantine(env):
     assert env.state()["tasks"]["T1"]["status"] != "FAILED"
 
 
-def test_a_quarantined_task_is_not_requeued(env):
+def test_a_failed_row_is_offered_to_the_slicer_not_booked_as_a_stalled_task(env):
     loop = env.loop()
-    _escalate_and_fail(env, loop)
-    assert "T1" in loop._quarantined()
+    env.set_row("T1", status="FAILED", reason="reslice")
+    tasks, state = loop.load()
+    assert loop._resliceable(tasks, state, loop.ls(), loop.clock()) == {"B1": "first"}
+    assert not (env.state_dir / "stalled_tasks.json").exists()
 
 
-def test_a_multi_file_task_is_sliced_instead_of_quarantined(tmp_path, monkeypatch):
-    e = Env(tmp_path, monkeypatch, tasks=[task_row(1, touch_files=["tools/x1.py", "tools/x9.py"])])
-    loop = e.loop()
-    _escalate_and_fail(e, loop)
-    row = e.state()["tasks"]["T1"]
-    assert row["status"] == "FAILED" and str(row["reason"]).startswith("sliced")
-    book = json.loads((e.state_dir / "stalled_tasks.json").read_text(encoding="utf-8"))
-    assert "B1" in book["slice"] and "T1" not in book["quarantine"]
-    seen = []
-    loop2 = e.loop(triage_fn=_tri(seen))
-    tasks, state = loop2.load()
-    ctx = loop2._triage_prepare(state, tasks, loop2.ls(), loop2.clock())
-    assert "B1" not in ctx["kwargs"]["known_backlog_ids"]
-    assert "B1" in ctx["kwargs"]["force_slice"]
+def test_a_row_the_ladder_quarantined_is_not_resliced_again(env):
+    loop = env.loop()
+    env.set_row("T1", status="FAILED", reason="reslice")
+    ls = loop.ls()
+    ls["quarantine"] = {"B1": {"version": F.slicer_version()}}
+    loop.save_ls(ls)
+    tasks, state = loop.load()
+    assert loop._resliceable(tasks, state, loop.ls(), loop.clock()) == {}

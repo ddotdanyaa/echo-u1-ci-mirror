@@ -38,6 +38,9 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setenv('FACTORY_PAID_ENV', str(key))
     monkeypatch.setenv('FACTORY_PAID_DIR', str(tmp_path / 'echo'))
     (tmp_path / 'echo').mkdir()
+    monkeypatch.setattr(P, '_today', lambda: '2026-11-22')
+    monkeypatch.setenv('FACTORY_BUILDERS_SPEND', str(tmp_path / 'absent.json'))
+    monkeypatch.setenv('FACTORY_BUILDERS_WAITING', str(tmp_path / 'absent_wait'))
     return tmp_path
 
 
@@ -51,6 +54,21 @@ def test_no_key_means_skipped_without_a_call(env, monkeypatch):
     net = Net()
     monkeypatch.setattr(P, '_post', net)
     assert P.control(T, 'diff', 'failure') is None and net.calls == []
+
+
+def test_a_bad_credit_skips_the_critic_and_leaves_no_reservation(env, monkeypatch):
+    monkeypatch.setattr(P, '_post', lambda *a: (402, json.dumps(dict(error=dict(type='billing_error'))).encode()))
+    assert P.control(T, 'diff') is None and P.credit_dead()
+    assert json.loads(P._spend_file().read_text())['reserved_usd'] == 0
+
+
+def test_a_broken_spend_file_means_no_paid_voice_not_a_fault(env, monkeypatch):
+    (env / 'echo' / 'paid_spend.json').write_text('[1, 2]')
+    net = Net()
+    monkeypatch.setattr(P, '_post', net)
+    assert P.control(T, 'diff') is None and net.calls == []
+    (env / 'echo' / 'paid_spend.json').write_text('{broken')
+    assert P.control(T, 'diff') is None and net.calls == []
 
 
 def test_missing_env_file_means_skipped(env, monkeypatch):
@@ -96,20 +114,22 @@ def test_fallback_to_haiku_when_sonnet_is_unavailable(env, monkeypatch):
     assert out['verdict'] == 'approve' and out['model'] == 'claude-haiku-5-5'
 
 
-def test_spend_is_stored_per_day_and_the_cap_stops_calls(env, monkeypatch):
+def test_cumulative_allowance_stops_calls(env, monkeypatch):
     net = Net(answer(), answer())
     monkeypatch.setattr(P, '_post', net)
     P.control(T, 'd', 'f')
     saved = json.loads((env / 'echo' / 'paid_spend.json').read_text())
     assert saved['usd'] > 0 and 'date' in saved and SECRET not in json.dumps(saved)
-    (env / 'anthropic.cfg').write_text('ANTHROPIC_API_KEY=%s\nANTHROPIC_DAILY_BUDGET_USD=%s\n' % (SECRET, saved['usd']))
+    P.add_spend(P.allowance(P._today()) - P.spent_total())
     assert P.control(T, 'd', 'f') is None and len(net.calls) == 1
 
 
-def test_a_new_day_starts_from_zero(env, monkeypatch):
+def test_midnight_preserves_the_total_allowance(env, monkeypatch):
     (env / 'echo' / 'paid_spend.json').write_text(json.dumps(dict(date='2000-01-01', usd=999)))
-    monkeypatch.setattr(P, '_post', Net(answer()))
-    assert P.control(T, 'd', 'f')['verdict'] == 'reject'
+    net = Net(answer())
+    monkeypatch.setattr(P, '_post', net)
+    assert P.control(T, 'd', 'f') is None and net.calls == []
+    assert P.spent_total() == 999 + P.UNKNOWN_RESERVE_USD
 
 
 def test_an_unreadable_answer_is_skipped_not_a_verdict(env, monkeypatch):

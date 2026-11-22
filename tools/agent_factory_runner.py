@@ -3367,7 +3367,7 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                         paid_second = paid_critic.control(   # model is left (live 17:20-17:50: 19 chains cut short)
                             task, unified_diff(ctx['baseline'], ctx['workdir'], task.touch_files, paid_critic.DIFF_LIMIT)
                             if ctx['baseline'] is not None else '', (exec_text + '\n' + told)[-paid_critic.FAIL_LIMIT:],
-                            exclude_model=ctx.get('coder_model') or '')
+                            exclude_model=ctx.get('coder_model') or '', baseline=ctx['baseline'], workdir=ctx['workdir'])
                         if paid_second is not None:          # no key, no budget, a fault: the free wait below, as before
                             ctx['paid_done'] = paid_second
                             events.append('paid_second_critic')
@@ -3420,7 +3420,7 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
         paid = ctx.get('paid_done') or paid_critic.control(task, unified_diff(ctx['baseline'], ctx['workdir'], task.touch_files,
                                                       paid_critic.DIFF_LIMIT) if ctx['baseline'] is not None else '',
                                    (exec_text + '\n' + told)[-paid_critic.FAIL_LIMIT:],
-                                   exclude_model=ctx.get('coder_model') or '')    # the coder's model never judges its own work
+                                   exclude_model=ctx.get('coder_model') or '', baseline=ctx['baseline'], workdir=ctx['workdir'])    # the coder's model never judges its own work
         if paid is not None:
             report['paid_critic'] = paid
             if paid['verdict'] == 'reject':

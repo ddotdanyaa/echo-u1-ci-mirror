@@ -48,22 +48,22 @@ def test_a_seen_row_past_its_term_is_triaged_again_without_a_backlog_edit(tmp_pa
     assert "B5" not in known[-1], "a seen row past its term is still passed as known"
 
 
-def test_failed_tasks_are_retried_on_a_term_while_idle_not_only_at_start(tmp_path, monkeypatch):
-    env = Env(tmp_path, monkeypatch, tasks=[task_row(1), task_row(2, only_opus=True)])
+def test_failed_tasks_are_taken_back_by_the_slicer_while_idle_not_only_at_start(tmp_path, monkeypatch):
+    """<id> replaced the idle requeue of FAILED tasks (factory_requeue.run at a term) by the slicer: while nothing is
+    runnable a failed row goes to the architect ladder, one rung up each time (tests/test_factory_reslice.py)."""
+    env = Env(tmp_path, monkeypatch, tasks=[task_row(1)])
     env.set_row("T1", status="FAILED", reason="escalated:off_path")
-    env.set_row("T%d" % 2, status="FAILED", reason="escalated:off_path")
-    calls = []
+    seen = []
 
-    def fake(state_dir, code, *, skip=(), check=None, max_times=3, **kw):
-        calls.append(set(skip))
-        return []
-    monkeypatch.setattr(factory_requeue, "run", fake)
-    loop = env.loop(triage_fn=lambda **kw: {"tasks": [], "holds": [], "stale": [], "skipped": []})
+    def slicer(row, cause, rung, evidence, **kw):
+        seen.append((row, cause))
+        return {"tasks": [], "holds": [], "stale": [], "skipped": []}
+    loop = env.loop(triage_fn=lambda **kw: {"tasks": [], "holds": [], "stale": [], "skipped": []},
+                    extra={"slice_fn": slicer})
     for _ in range(4):
         loop.step()
         env.clock.t += 3600
-    assert calls, "the idle loop never retried a FAILED task (only run() at START does)"
-    assert all("T%d" % 2 in s for s in calls), "an only_opus task must never be sent to an external model"
+    assert seen and seen[0] == ("B1", "first"), "the idle loop never gave a FAILED row back to the slicer"
 
 
 def test_pick_retries_a_task_past_its_term_on_the_same_version():

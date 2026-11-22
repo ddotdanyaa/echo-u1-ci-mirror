@@ -42,14 +42,18 @@ def coder_budget() -> float:
 
 
 def total_budget() -> float:
-    return _number(paid.load_env(paid.env_path()), 'ANTHROPIC_DAILY_BUDGET_USD', paid.DEFAULT_BUDGET_USD)
+    return paid.allowance(paid._today())
 
 
 def available() -> bool:
     """A key, the coding cap not reached and the day's total budget not reached."""
     if _under_test() or not _key():
         return False
-    return paid.coder_spent_today() < coder_budget() and paid.spent_today() < total_budget()
+    try:
+        return (paid.coder_spent_today() < coder_budget() and not paid.credit_dead()
+                and paid.left(paid._today()) > 0)
+    except (ValueError, TypeError, OSError):
+        return False
 
 
 def wanted(attempt: int, tier_floor=None) -> bool:
@@ -61,6 +65,15 @@ def wanted(attempt: int, tier_floor=None) -> bool:
 def files_limit(attempt: int, tier_floor=None) -> int:
     """How many files a task may carry for its NEXT pass: 8 when the paid tier will take it, else 5."""
     return MAX_FILES if wanted(max(int(attempt or 0) + 1, ESCALATE_FROM_ATTEMPT), tier_floor) else FREE_FILES
+
+
+def _settle_answer(model: str, raw: bytes, estimate: float) -> float:
+    """What a 200 answer cost: its usage, or the whole estimate when the usage cannot be read (never zero)."""
+    try:
+        usage = json.loads(raw.decode('utf-8', 'replace')).get('usage') or {}
+        return paid.usd_for(model, int(usage.get('input_tokens') or 0), int(usage.get('output_tokens') or 0))
+    except (ValueError, TypeError, AttributeError):
+        return estimate
 
 
 def post_chat(url, key, body: dict, timeout: float) -> tuple[int | None, bytes]:
@@ -75,7 +88,24 @@ def post_chat(url, key, body: dict, timeout: float) -> tuple[int | None, bytes]:
         paid.refuse_opus(model)
         request = dict(model=model, max_tokens=int(body.get('max_tokens') or 8000), system=system, messages=chat)
         headers = {'content-type': 'application/json', 'anthropic-version': paid.API_VERSION, 'x-api-key': secret}
-        status, raw = paid._post(paid.URL, headers, request, timeout)
+        estimate = (len(json.dumps(request).encode('utf-8')) + int(request['max_tokens']) * 5) / 1e6 * 3 * 1.3
+        try:
+            booked = paid.reserve(estimate)                  # the coder spends only what the allowance still holds
+        except (ValueError, TimeoutError, OSError):
+            booked = False
+        if not booked:
+            return None, b'NoBudget'
+        try:
+            status, raw = paid._post(paid.URL, headers, request, timeout)
+        except BaseException:
+            paid.settle(estimate, 0.0, coder=True)
+            raise
+        if status != 200:
+            paid.settle(estimate, 0.0, coder=True)
+        else:
+            actual = _settle_answer(model, raw, estimate)
+            paid.settle(estimate, actual, coder=True)
+            break
         if status not in _RETRY_ON:
             break
         if status == 200:
@@ -90,7 +120,6 @@ def post_chat(url, key, body: dict, timeout: float) -> tuple[int | None, bytes]:
         used = data.get('model') or model
     except (ValueError, KeyError, TypeError, AttributeError):
         return 200, b'{}'
-    paid.add_spend(paid.usd_for(model, tin, tout))
     finish = 'length' if data.get('stop_reason') == 'max_tokens' else 'stop'
     return 200, json.dumps(dict(model=used, choices=[dict(message=dict(content=text), finish_reason=finish)],
                                 usage=dict(prompt_tokens=tin, completion_tokens=tout))).encode('utf-8')
