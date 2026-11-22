@@ -10,6 +10,14 @@ from datetime import datetime
 from pathlib import Path
 
 from tools import agent_factory as F
+from tools import factory_classes as C
+
+# <id> (a "cannot be fixed" ban without an owner rule is a defect): only the owner's rules ban a
+# requeue; scope_violation / already_green / spec_not_testable / runner_no_result blocks have a term instead and the
+# slicer queue lifts them itself.
+SKIP = re.compile('|'.join(sorted(F.OWNER_RULES)), re.I)
+LAST_ITEMS = 2      # the newest non-Opus feedback items read for the failure class
+
 
 def _last(row) -> str:
     """The newest failure: the last LAST_ITEMS feedback items that are not Opus notes (live 20.11 00:11: after a
