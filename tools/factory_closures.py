@@ -1,0 +1,124 @@
+"""<id>: one writer of the backlog's closures table («## Закрыто коммитами координатора ...», rows ``| ID | sha | note |``).
+
+Atomic (temp file + replace), idempotent (an ID already in the table is never written twice), line endings kept.
+Never raises: the result is a word - added / present / no_section / unreadable / error.
+"""
+import os
+import re
+from pathlib import Path
+
+HEADING = "## Закрыто коммитами координатора"
+SHA_LEN = 8
+
+
+def _eol(raw):
+    return chr(13) + chr(10) if chr(13) + chr(10) in raw else chr(10)
+
+
+def _cell(text) -> str:
+    return re.sub(r"\s+", " ", str(text).replace("|", "/")).strip()
+
+
+def _section(lines):
+    start = next((i for i, x in enumerate(lines) if x.startswith(HEADING)), None)
+    if start is None:
+        return None, None
+    end = next((i for i in range(start + 1, len(lines)) if lines[i].startswith("#")), len(lines))
+    return start, end
+
+
+def _read(path):
+    try:
+        return Path(path).read_bytes().decode("utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def table_ids(backlog) -> dict:
+    """{ID: sha} of the closures table; an unreadable file or a missing table is empty."""
+    raw = _read(backlog)
+    if raw is None:
+        return {}
+    lines = raw.split(_eol(raw))
+    start, end = _section(lines)
+    out = {}
+    for i in range(start + 1, end) if start is not None else ():
+        if lines[i].lstrip().startswith("|"):
+            cells = [c.strip() for c in lines[i].strip().strip("|").split("|")]
+            if len(cells) >= 2 and cells[0] and cells[0] not in ("ID", "N") and not set(cells[0]) <= set("-: "):
+                out.setdefault(cells[0], cells[1])
+    return out
+
+
+def record_closures(backlog, items) -> dict:
+    """items: [(ID, sha, note)] -> {ID: added|present|no_section|unreadable|error}; ONE read and ONE atomic replace."""
+    path = Path(backlog)
+    raw = _read(path)
+    items = [(str(b).strip(), s, n) for b, s, n in items]
+    if raw is None:
+        return {b: "unreadable" for b, _, _ in items}
+    eol = _eol(raw)
+    lines = raw.split(eol)
+    start, end = _section(lines)
+    last = None
+    have = set()
+    for i in range(start + 1, end) if start is not None else ():
+        if lines[i].lstrip().startswith("|"):
+            last = i
+            cells = [c.strip() for c in lines[i].strip().strip("|").split("|")]
+            if cells:
+                have.add(cells[0])
+    if last is None:
+        return {b: "no_section" for b, _, _ in items}
+    res, rows = {}, []
+    for bid, sha, note in items:
+        if bid in have:
+            res.setdefault(bid, "present")
+            continue
+        have.add(bid)
+        res[bid] = "added"
+        rows.append("| %s | %s | %s |" % (_cell(bid), _cell(sha)[:SHA_LEN], _cell(note)))
+    if not rows:
+        return res
+    lines[last + 1:last + 1] = rows
+    tmp = path.with_name(path.name + ".closure.tmp")
+    try:
+        tmp.write_bytes(eol.join(lines).encode("utf-8"))
+        os.replace(tmp, path)
+    except OSError:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        return {b: ("error" if r == "added" else r) for b, r in res.items()}
+    return res
+
+
+def record_closure(backlog, bid, sha, note="") -> str:
+    return record_closures(backlog, [(bid, sha, note)])[str(bid).strip()]
+
+
+def _wanted(ids, sha_of):
+    """[(ID, sha)] of the ECHO rows that a commit closed; no sha (closed by the coordinator, a duplicate) or fac-*: left out."""
+    out, skipped = [], []
+    for bid in dict.fromkeys(str(i).strip() for i in ids):
+        if bid.lower().startswith("fac-"):
+            continue
+        sha = str((sha_of or {}).get(bid) or "").strip()
+        (out if sha else skipped).append((bid, sha) if sha else bid)
+    return out, skipped
+
+
+def plan_stale(backlog, ids, sha_of) -> list:
+    """Dry run of sync_stale: [(ID, sha)] that would be written now (nothing is written)."""
+    have = table_ids(backlog)
+    return [(b, s) for b, s in _wanted(ids, sha_of)[0] if b not in have]
+
+
+def sync_stale(backlog, ids, sha_of, note="") -> dict:
+    """Write the rows the triage proved closed by a commit (``sha_of``: {ID: sha}).  A row without a commit sha is
+    reported in ``no_sha`` and never written.  -> {"added": [...], "present": [...], "no_sha": [...]}."""
+    wanted, no_sha = _wanted(ids, sha_of)
+    res = record_closures(backlog, [(b, s, note) for b, s in wanted]) if wanted else {}
+    return {"added": [b for b, r in res.items() if r == "added"], "present": [b for b, r in res.items() if r == "present"],
+            "no_sha": no_sha}
