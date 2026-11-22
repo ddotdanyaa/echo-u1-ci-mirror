@@ -1785,11 +1785,20 @@ def rank_modules(outcomes: dict, calls: dict, targets=None):
 
 def path_split(path, touch_files) -> tuple[dict, dict]:
     """``(on, off)``: {module: sorted qualnames} of the functions in ``path`` inside / outside ``touch_files``."""
-    own = set(touch_files)
+    def norm(p):
+        p = str(p).replace(chr(92), '/')
+        while p.startswith('./'):
+            p = p[2:]
+        return p
+    own = {norm(t) for t in touch_files}
+
+    def inside(rel):    # FILE level: any function of a touched file is inside the task, however the path is spelled
+        rel = norm(rel)
+        return rel in own or any(t.endswith('/' + rel) or rel.endswith('/' + t) for t in own)
     on: dict = {}
     off: dict = {}
     for rel, qual, _line in path or ():
-        (on if rel in own else off).setdefault(rel, set()).add(qual)
+        (on if inside(rel) else off).setdefault(rel, set()).add(qual)
     return ({k: sorted(v) for k, v in sorted(on.items())}, {k: sorted(v) for k, v in sorted(off.items())})
 
 

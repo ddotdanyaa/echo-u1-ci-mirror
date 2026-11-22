@@ -361,6 +361,56 @@ def rejected_for(state: dict, tid: str) -> str:
     return redact('\n'.join(lines))[-REVIEW_NOTE_LIMIT:]
 
 
+def paid_large_names(task: Task, files: dict[str, bytes], cap: int | None = None) -> set[str]:
+    """The paid tier's counterpart of large_names: the files of the task smallest first stay whole while they fit
+    ``cap`` (PAID_WHOLE_CHARS) together; the rest is shown as outline + parts."""
+    cap = PAID_WHOLE_CHARS if cap is None else cap
+    scope = set(task.touch_files) | set(task.read_files) | set(task.tests)
+    big, used = set(), 0
+    for size, name in sorted((len(v), n) for n, v in files.items() if n in scope):
+        if used + size > cap:
+            big.add(name)
+        else:
+            used += size
+    return big
+
+
+def paid_trace_bodies(path, root, shown=(), tests=(), failed=(), cap: int | None = None) -> str:
+    """Read-only context for the paid tier: the bodies of the functions the failing test ran (``path``: (file, qualname,
+    line)) in echo_sync files that are not shown whole already, the ones that share the most words with the failing
+    test first, dunders left out. At most ``cap`` characters (PAID_TRACE_CHARS); '' when nothing can be read."""
+    cap = PAID_TRACE_CHARS if cap is None else cap
+    skip = {str(n).replace(chr(92), '/') for n in shown}
+    funcs: dict = {}
+    for rel, qual, _line in path or ():
+        rel = str(rel).replace(chr(92), '/')
+        if rel.startswith('echo_sync/') and rel not in skip and not qual.rpartition('.')[2].startswith('__'):
+            funcs.setdefault(rel, set()).add(qual)
+    if not funcs or cap <= 0:
+        return ''
+    try:
+        ranked = gate.rank_path({k: sorted(v) for k, v in funcs.items()}, root, tests, failed)
+    except Exception:  # noqa: BLE001 - an order only: the unsorted list still serves
+        ranked = [(rel, q) for rel, qs in funcs.items() for q in sorted(qs)]
+    sources: dict = {}
+    parts, used = [], 0
+    for rel, qual in ranked:
+        if rel not in sources:
+            try:
+                sources[rel] = gate._def_sources(Path(root).joinpath(*rel.split('/')).read_text(encoding='utf-8', errors='replace'))
+            except OSError:
+                sources[rel] = {}
+        body = sources[rel].get(qual)
+        if not body:
+            continue
+        part = 'FUNCTION %s :: %s\n%s' % (rel, qual, body)
+        if used + len(part) + 2 > cap:
+            continue
+        parts.append(part)
+        used += len(part) + 2
+    return redact('\n\n'.join(parts))[:cap]
+
+
 def large_names(task: Task, files: dict[str, bytes]) -> set[str]:
     """The files of the task shown as outline + parts, not whole: each over LARGE_FILE_CHARS, tests too, then the
     largest of the rest until the whole ones and VIEW_ROOM per view fit FIT_ROOM. The ONE rule of the coder prompt,
@@ -779,6 +829,14 @@ OFF_PATH_NOTE = ('\nThe failing test also runs, outside the files you may change
                  'decided there, answer CANNOT: <that name>.')
 PATH_FOCUS_MAX = 12
 OFF_PATH_SHORT = 8
+# 22.11 (live 02:55-03:20: 17 paid-coder calls, 0 accepted): the paid tier (Sonnet, 200k context) sees every touched
+# file WHOLE up to PAID_WHOLE_CHARS together (then windows for the rest), the bodies of the trace functions of other
+# echo_sync files (read-only) up to PAID_TRACE_CHARS, and the failing assertion up to PAID_FAILING_CHARS. The free tier
+# keeps its windows (large_names).
+PAID_WHOLE_CHARS = 240000
+PAID_TRACE_CHARS = 40000
+PAID_FAILING_CHARS = 6000
+PAID_PROMPT_CHARS = 290000      # below factory_paid_coder.PROMPT_LIMIT_CHARS
 OFF_PATH_WAIT_S = 30
 NO_EFFECT_BLOCK_AFTER = 4   # 21.11 (was 2)
 _ADDRESS = re.compile(r'0x[0-9A-Fa-f]{4,}')
@@ -1032,12 +1090,13 @@ def port_focus(repo: Path, task: Task) -> frozenset:
 def build_coder_prompt(task: Task, visible: dict[str, bytes], feedback: str | None = None,
                        prev_diff: str = '', *, goal: str | None = None, failing: str = '',
                        light: bool = False, asked: frozenset = frozenset(), reference: str = '',
-                       focus: frozenset = frozenset(), off_path=()) -> str:
+                       focus: frozenset = frozenset(), off_path=(), paid: bool = False, trace: str = '') -> str:
     """The ONE builder of the coder prompt (used by the pass and by model_attempt's default). ``light``: the
     prompt of the light engine, which has no tools: no read/grep instructions (live 19.11 17:48-17:50:
     with them the model answered "CANNOT: requires access outside the provided files"). ``asked``: definitions
     a model of this pass asked to see; with the ones the feedback names (asked_names) they are shown first.
-    ``off_path``: functions the failing test runs outside the task's files (OFF_PATH_NOTE)."""
+    ``off_path``: functions the failing test runs outside the task's files (OFF_PATH_NOTE). ``paid``: the paid tier's
+    view (touched files whole up to PAID_WHOLE_CHARS, the failing assertion longer, ``trace`` bodies appended)."""
     asked = frozenset(asked) | asked_names(feedback or '')
     targets = visible_targets(task)
     if task.kind == 'unit_test':
@@ -1052,7 +1111,10 @@ def build_coder_prompt(task: Task, visible: dict[str, bytes], feedback: str | No
                 ". Read-only tests: " + ", ".join(task.tests) +
                 ". Do not modify tests, execute deployment, read parent folders, "
                 "or use network tools other than the configured model.")
-    if light:
+    if paid:
+        core += ("\nThe task files are below, whole (a file too large for the room is an outline and the parts "
+                 "that matter). Edit only the files you may change; everything else is read-only context.")
+    elif light:
         core += ("\nThe task files are below: small files whole, a large file as its outline and the parts "
                  "that matter for the task.")
     else:
@@ -1065,7 +1127,8 @@ def build_coder_prompt(task: Task, visible: dict[str, bytes], feedback: str | No
     if goal:
         core += "\nTask text:\n" + redact(scrub_paths(goal))[:1500]
     if failing and task.kind != 'unit_test':
-        core += "\nFailing on the base now (must pass after your change):\n" + redact(failing)[:1500]
+        core += ("\nFailing on the base now (must pass after your change):\n"
+                 + redact(failing)[:PAID_FAILING_CHARS if paid else 1500])
     if off_path and task.kind != 'unit_test':
         core += OFF_PATH_NOTE % ', '.join(off_path)
     if reference and task.kind != 'unit_test':
@@ -1089,12 +1152,23 @@ def build_coder_prompt(task: Task, visible: dict[str, bytes], feedback: str | No
                          | identifier_tokens(goal or '') | asked | failing_names(failing, tests_shown)
                          | frozenset(focus))
     words = priority | keywords_from(tests_text, prev_diff, feedback)
-    budget = channels.PROMPT_LIMIT_CHARS - REVIEW_OVERHEAD - len(core) - (2500 if prev_diff else 0) - 60
-    core += '\n' + render(visible, targets, large=large_names(task, visible), keywords=words,
-                          budget_chars=budget, small_tokens=max(task.context_budget, budget), priority=priority,
-                          asked=asked, pinned=pinned_targets(task),
-                          **({'hint': LIGHT_HINT, 'tools': False} if light else {}))
-    room = channels.PROMPT_LIMIT_CHARS - len(core) - 200
+    if paid:
+        budget = PAID_WHOLE_CHARS - len(core) - 60
+        core += '\n' + render(visible, {}, large=paid_large_names(task, visible), keywords=words,
+                              budget_chars=budget, small_tokens=PAID_PROMPT_CHARS, priority=priority,
+                              asked=asked, pinned=pinned_targets(task), hint=LIGHT_HINT, tools=False)
+        if trace:
+            core += ('\n\nREAD-ONLY CONTEXT: functions the failing test runs in other files (do not edit them; if '
+                     'the fix belongs there, answer CANNOT and name the function):\n\n' + trace[:PAID_TRACE_CHARS])
+        limit = PAID_PROMPT_CHARS
+    else:
+        budget = channels.PROMPT_LIMIT_CHARS - REVIEW_OVERHEAD - len(core) - (2500 if prev_diff else 0) - 60
+        core += '\n' + render(visible, targets, large=large_names(task, visible), keywords=words,
+                              budget_chars=budget, small_tokens=max(task.context_budget, budget), priority=priority,
+                              asked=asked, pinned=pinned_targets(task),
+                              **({'hint': LIGHT_HINT, 'tools': False} if light else {}))
+        limit = channels.PROMPT_LIMIT_CHARS
+    room = limit - len(core) - 200
     if prev_diff and room > 300:
         core += "\nDiff of the rejected candidate (do not repeat its mistake):\n" + prev_diff[:room]
     return core
@@ -2016,7 +2090,7 @@ def light_attempt(task: Task, workdir: Path, model: str, timeout: int = LIGHT_TI
     if not MODEL_ID.fullmatch(model):      # 0 rubles: an OpenRouter model without ':free' never leaves the machine
         return 125, b'', b'light: model id refused (a paid or malformed model)'
     prompt = prompt_override if prompt_override is not None else _default_prompt(task, workdir, light=True)
-    if channels.prompt_too_big(prompt):
+    if (len(prompt) > paid_coder.PROMPT_LIMIT_CHARS) if paid_kind else channels.prompt_too_big(prompt):
         return 125, b'', b'context-too-large'
     key = 'paid' if paid_kind else os.environ.get(key_env or ('OPENROUTER_API_KEY' if provider == 'openrouter' else 'GOOGLE_GENERATIVE_AI_API_KEY'), '')
     if not key:
@@ -2384,6 +2458,11 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
         paid_try = (role in ('code', 'repair') and paid_coder is not None   # a later attempt is a 'repair' call (live 02:50) and not later and not ctx.get('paid_tried')
                     and len(call_task.touch_files) <= paid_coder.MAX_FILES and paid_coder.available()
                     and paid_coder.wanted(attempt, ((ck.read().get('tasks') or {}).get(tid) or {}).get('tier_floor')))
+        if paid_try and ctx.get('paid_prompt'):
+            try:      # 22.11: the paid tier sees the touched files whole and the trace bodies; the free prompt stays for the free tier
+                prompt = ctx['paid_prompt']()
+            except Exception:  # noqa: BLE001 - an extra view: without it the paid call gets the free prompt
+                pass
         light = ctx['light'] = paid_try or engine_for(role, call_task) == 'light'    # one request, the files travel in the prompt
         base_tokens = channels.estimate_tokens(len(prompt), 0 if light else ctx['read_chars'],
                                                overhead=LIGHT_OVERHEAD_TOKENS if light else None,
@@ -2833,8 +2912,28 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
             with the functions the failing test runs outside the task (more passes would only repeat it)."""
             if not off_short or no_effects() < NO_EFFECT_BLOCK_AFTER:
                 return None
+            wider = paid_widen()
+            if wider is not None:
+                return wider
             return block('off_path', 'the change had no effect %d times on the same base; the failing test runs '
                          'outside the task files: %s' % (no_effects(), ', '.join(off_short)))
+
+        def paid_widen():
+            """The paid tier (its file limit is above the task's size) takes the best-ranked traced module that may be
+            added instead of a block for Opus; None for the free tier, no room or nothing allowed."""
+            if paid_coder is None or not off_mods or task.kind != 'code':
+                return None
+            limit = paid_coder.files_limit(attempt, ((ck.read().get('tasks') or {}).get(tid) or {}).get('tier_floor'))
+            if limit <= LIGHT_MAX_FILES or len(task.touch_files) + 1 > limit:
+                return None       # the free tier (5 files) keeps the block; the paid tier (8) widens
+            try:
+                ranked = gate.rank_path(off_mods, root, task.tests, base.failed_ids)
+            except Exception:  # noqa: BLE001 - an order only
+                ranked = [(m, q) for m, qs in off_mods.items() for q in qs]
+            for module, qual in ranked:
+                if not qual.rpartition('.')[2].startswith('__') and not gate.is_forbidden(module, task.kind):
+                    return widen(module, qual)
+            return None
 
         def scope_signal():
             """(module, name) when the last coder answer named a function of the failing test's path outside the task:
@@ -3056,11 +3155,17 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
             focus = (port_focus(port_repo or root, task) if reference else frozenset()) | path_focus
             remembered = frozenset(state['tasks'][tid].get('asked') or ()) & defined_names(task, ctx['workdir'])
 
-            def make_prompt(asked=frozenset()):
+            def make_prompt(asked=frozenset(), paid=False):
+                trace = ''
+                if paid and task.kind == 'code':
+                    whole = set(visible) - paid_large_names(task, visible)
+                    trace = scrub(paid_trace_bodies(getattr(base, 'path', ()), root, whole, task.tests, base.failed_ids))
                 return build_coder_prompt(task, visible, feedback, prev_diff, failing=scrub(failing),
-                                          light=engine_for(role, task) == 'light',   # the same rule call() applies
-                                          asked=frozenset(asked) | remembered, reference=reference, focus=focus, off_path=tuple(off_short))
+                                          light=paid or engine_for(role, task) == 'light',   # the same rule call() applies
+                                          asked=frozenset(asked) | remembered, reference=reference, focus=focus, off_path=tuple(off_short),
+                                          paid=paid, trace=trace)
             prompt = make_prompt()
+            ctx['paid_prompt'] = lambda: make_prompt(paid=True)
             chosen = route(task, small_model=small_model, large_model=large_model, fallback=attempt > 1)
 
             def dir_for(retry: int) -> Path:

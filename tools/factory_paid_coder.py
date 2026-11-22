@@ -15,6 +15,7 @@ MODELS = paid.MODELS                                      # sonnet first, haiku 
 MODEL = PROVIDER + '/' + MODELS[0]
 DEFAULT_CODER_BUDGET_USD = 25.0
 FREE_FILES = 5                                            # the free tier keeps its limit (runner.LIGHT_MAX_FILES)
+PROMPT_LIMIT_CHARS = 300000                               # Sonnet's 200k context; the free engine's own limit stays 28000
 MAX_FILES = 8                                             # only the paid tier may take a task of up to 8 files
 ESCALATE_FROM_ATTEMPT = 2                                 # the free engine had attempt 1 at least
 _RETRY_ON = (None, 404, 429, 500, 502, 503, 529)          # a reason to ask the fallback model

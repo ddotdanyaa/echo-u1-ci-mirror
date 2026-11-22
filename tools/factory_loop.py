@@ -141,6 +141,10 @@ TIER_ORDER = ("small", "main", "escalation")
 ERROR_MEMORY_MAX = 200
 BEFORE_MODEL = frozenset(("already_green", "context_too_large", "scope_violation", "no_diff"))
 SCOPE_MAX_FILES = LIGHT_MAX_FILES   # a task widened beyond it would leave the light engine
+try:    # 22.11: the paid escalation tier takes up to factory_paid_coder.MAX_FILES files; optional like in the runner
+    from tools import factory_paid_coder as _paid_coder
+except ImportError:  # pragma: no cover
+    _paid_coder = None
 CLEANUP_EVENTS = ("stale_baseline_kept", "pending_copy_kept")
 TELEMETRY_MAX_BYTES = 20 * 1024 * 1024
 REJECT_PREFIXES = ("gate:", "weakening:", "review:")  # a real rejection, not a deferral
@@ -3483,7 +3487,7 @@ class Loop:
                    queue_s=round(w.t_start - w.t_claim, 3) if w.t_start else None,
                    slot_wait_s=(res.get("stages") or {}).get("slot_wait_s"))
         if tid and res.get("scope_add"):
-            self._scope_add(tid, tasks, res["scope_add"])
+            self._scope_add(tid, tasks, res["scope_add"], state)
         for c in calls:  # one event per model call: run (code/repair) or review
             self.event("review" if c.get("role") == "review" else "run",
                        task_id=tid or None, backlog_id=bid, role=self.rs(c.get("role")),
@@ -3816,7 +3820,18 @@ class Loop:
         vals = [v for v in vals if v is not None]
         return sum(vals) if vals else None
 
-    def _scope_add(self, tid: str, tasks: dict, add) -> None:
+    @staticmethod
+    def _scope_limit(state, tid: str) -> int:
+        """SCOPE_MAX_FILES, or the paid tier's limit for a task whose tier_floor is 'escalation'."""
+        row = ((state or {}).get("tasks") or {}).get(tid) or {}
+        if _paid_coder is None or row.get("tier_floor") != "escalation":
+            return SCOPE_MAX_FILES
+        try:
+            return max(SCOPE_MAX_FILES, int(_paid_coder.files_limit(int(row.get("attempts") or 0), "escalation")))
+        except Exception:  # noqa: BLE001 - an extra: without it the free limit stands
+            return SCOPE_MAX_FILES
+
+    def _scope_add(self, tid: str, tasks: dict, add, state=None) -> None:
         """The runner's path check found a module the failing test runs outside the task, and the model named it
         (report scope_add): the plan row gains it, so the next pass measures the base and its path again (the staged
         files change the base key). Refused (event scope_add_refused): an unknown task, a forbidden path, more than
@@ -3829,8 +3844,9 @@ class Loop:
         why = "" if t else "unknown task"
         if not why and len(new) == len(old):
             return
-        if not why and len(new) > SCOPE_MAX_FILES:
-            why = "more than %d files" % SCOPE_MAX_FILES
+        limit = self._scope_limit(state, tid)
+        if not why and len(new) > limit:
+            why = "more than %d files" % limit
         for path in ([] if why else new[len(old):]):
             why = why or (factory_gate.is_forbidden(path, t.kind) or "")
         if not why:
