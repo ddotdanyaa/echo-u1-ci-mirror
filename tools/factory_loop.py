@@ -3270,7 +3270,7 @@ class Loop:
         """First model calls that could be booked now on the code route (0 when the quota is unknown)."""
         path = Path(self.cfg.channels)
         configured = json.loads(path.read_text(encoding="utf-8"))["channels"]
-        CH.validate(configured)
+        configured = CH.validate(configured)
         tokens = int(getattr(task, "estimated_tokens", 0) or 0)
         order = CH.route_order(configured, "code", 1, tokens) or CH.route_order(configured, "code", 1, 0)
         env = {**os.environ, **self.extra_env}

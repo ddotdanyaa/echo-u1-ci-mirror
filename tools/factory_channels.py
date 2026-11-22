@@ -145,8 +145,9 @@ def supports_reasoning(model) -> bool:
     return str(model or '').startswith(REASONING_MODELS)
 
 
-def validate(channels):
-    """Validate the pool in place, dropping unsupported providers with a warning."""
+def validate(channels, warn=True):
+    """Validate the pool and return it without the rows of unsupported providers (a warning per row when
+    ``warn``). The list passed in is not changed: the registry file keeps every row."""
     # Imported at call time: the runner itself imports this module.
     from .agent_factory_runner import LIGHT_ENDPOINTS
 
@@ -155,7 +156,8 @@ def validate(channels):
     for channel in channels:
         provider = channel['model'].split('/')[0]
         if MODEL_ID.fullmatch(channel['model']) and provider not in LIGHT_ENDPOINTS:
-            logging.getLogger(__name__).warning('Skipping unsupported channel provider: %s', provider)
+            if warn:
+                logging.getLogger(__name__).warning('Skipping unsupported channel provider: %s', provider)
             continue
         if channel['id'] in seen or not MODEL_ID.fullmatch(channel['model']):
             raise InvalidPlan('duplicate channel or invalid model')
@@ -175,7 +177,7 @@ def validate(channels):
         if c['group'] in groups and groups[c['group']] != limits:
             raise InvalidPlan('shared quota group has inconsistent limits')
         groups[c['group']] = limits
-    channels[:] = accepted
+    return accepted
 
 
 def tier_of(channel) -> str:
@@ -417,7 +419,7 @@ def choose(channels, state, tokens, env, *, now=None, requests=1, affinity=None)
     channel is tried first within its tier while it has room; reserve() with the same names remembers the pick.
     None keeps the plain order."""
     now = time.time() if now is None else now
-    validate(channels)
+    channels = validate(channels, warn=False)   # the warning is given once, where the pool is loaded
     reasons = []  # (reason, wait_s)
     ordered = _balanced(channels, state, now)
     if affinity:

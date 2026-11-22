@@ -12,7 +12,7 @@ from tools import factory_discover as D
 PROVIDERS = [
     ('groq', 'GROQ_API_KEY', 'llama-code', 'https://api.groq.com/openai/v1'),
     ('cerebras', 'CEREBRAS_API_KEY', 'llama-code', 'https://api.cerebras.ai/v1'),
-    ('cohere', 'COHERE_API_KEY', 'command-code', 'https://api.cohere.ai/compatibility/v1'),
+    ('cohere', 'COHERE_API_KEY', 'command-code', 'https://api.cohere.com/compatibility/v1'),
     ('huggingface', 'HF_TOKEN', 'org/code-model', 'https://router.huggingface.co/v1'),
 ]
 
@@ -47,10 +47,14 @@ def test_free_provider_pool_skips_unknown_registry_row(tmp_path, caplog):
     path = tmp_path / 'channels.json'
     path.write_text(json.dumps({'channels': [_channel('unknown'), _channel('groq')]}))
     configured = json.loads(path.read_text())['channels']
-    C.validate(configured)
-    assert [c['id'] for c in configured] == ['groq']
+    pool = C.validate(configured)
+    assert [c['id'] for c in pool] == ['groq']
     assert 'unknown' in caplog.text and 'provider' in caplog.text
+    assert [c['id'] for c in configured] == ['unknown', 'groq']     # the caller's rows (the registry) are kept
+    caplog.clear()
     assert C.choose(configured, {}, 100, {'TEST_KEY': 'synthetic'})['id'] == 'groq'
+    assert [c['id'] for c in configured] == ['unknown', 'groq']
+    assert 'unknown' not in caplog.text                              # choosing does not warn again
 
 
 @pytest.mark.parametrize('provider,key_env,model,base', PROVIDERS)
@@ -58,7 +62,10 @@ def test_free_provider_listing_request_and_models(provider, key_env, model, base
     assert D.provider_of(key_env) == provider
     assert D.provider_of(key_env + '_2') == provider
     url, headers = D.listing_request(provider, 'synthetic')
-    expected = 'https://api.cohere.ai/v1/models' if provider == 'cohere' else base + '/models'
+    expected = {'groq': 'https://api.groq.com/openai/v1/models',
+                'cerebras': 'https://api.cerebras.ai/v1/models',
+                'cohere': 'https://api.cohere.com/v1/models',
+                'huggingface': 'https://router.huggingface.co/v1/models'}[provider]
     assert url == expected and 'synthetic' not in url
     assert list(headers) == ['Authorization']
     assert headers['Authorization'].endswith(' synthetic')
@@ -69,7 +76,7 @@ def test_free_provider_listing_request_and_models(provider, key_env, model, base
                {'data': [{'id': model}, {'id': 'inactive', 'active': False}, {'id': ''}]})
     assert D.models_of(provider, listing) == [model]
     configured = [_channel(provider, model)]
-    C.validate(configured)
+    assert C.validate(configured) == configured
     assert C.choose(configured, {}, 100, {'TEST_KEY': 'synthetic'})['model'] == provider + '/' + model
     # Listing a model is not evidence of a free quota: do not invent channel limits.
     assert D.rows(provider, key_env, [model]) == []

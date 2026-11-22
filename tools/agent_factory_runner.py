@@ -1262,7 +1262,7 @@ LIGHT_ENDPOINTS = {'google': 'https://generativelanguage.googleapis.com/v1beta/o
                    'openrouter': 'https://openrouter.ai/api/v1/chat/completions',
                    'groq': 'https://api.groq.com/openai/v1/chat/completions',
                    'cerebras': 'https://api.cerebras.ai/v1/chat/completions',
-                   'cohere': 'https://api.cohere.ai/compatibility/v1/chat/completions',
+                   'cohere': 'https://api.cohere.com/compatibility/v1/chat/completions',
                    'huggingface': 'https://router.huggingface.co/v1/chat/completions'}
 # The bound of an explicit day budget of model calls: above the capacity of every free key (~60 000 a day, 20.11);
 # the loop passes the registry's capacity (factory_loop.Loop._call_budget), each channel's rpd stays its limit.
@@ -2249,7 +2249,7 @@ def _once(*, root: Path, plan: Path, checkpoint: Path, staging: Path,
     configured = []
     if channel_config is not None:
         configured = json.loads(channel_config.read_text(encoding='utf-8'))['channels']
-        channels.validate(configured)
+        configured = channels.validate(configured)
         if not configured or any(c.get('verified') is not True for c in configured):
             raise InvalidPlan('channels require actual verified model/tool availability')
     if not configured and not os.environ.get("GOOGLE_GENERATIVE_AI_API_KEY"):

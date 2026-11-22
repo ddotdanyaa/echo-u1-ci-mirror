@@ -97,7 +97,7 @@ PROVIDER_LISTS = {
     'openrouter': OPENROUTER_LIST,
     'groq': 'https://api.groq.com/openai/v1/models',
     'cerebras': 'https://api.cerebras.ai/v1/models',
-    'cohere': 'https://api.cohere.ai/v1/models',
+    'cohere': 'https://api.cohere.com/v1/models',
     'huggingface': 'https://router.huggingface.co/v1/models',
 }
 
