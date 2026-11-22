@@ -1,9 +1,10 @@
 # Factory status (generated, structured data only)
 
-Generated: 2026-11-22T21:45:05Z
-Source commit: sha0b879e53f730
+Generated: 2026-11-22T22:04:06Z
+Source commit: shab324ce212b76
 
 ## Commits (sha, time)
+- shab324ce21 2026-11-23T01:03:31+03:00
 - sha0b879e53 2026-11-22T23:28:25+03:00
 - sha863bae00 2026-11-22T23:24:45+03:00
 - sha6abbe300 2026-11-22T22:23:46+03:00
@@ -23,7 +24,6 @@ Source commit: sha0b879e53f730
 - shafc334477 2026-11-22T01:53:03+03:00
 - sha5a45b2ba 2026-11-22T01:13:14+03:00
 - sha3965ff52 2026-11-22T00:39:51+03:00
-- shadc5292c4 2026-11-22T00:35:48+03:00
 
 ## Funnel
 | step | count |
@@ -43,8 +43,8 @@ Side counters: blocked=0, parked=0, requeued=2
 Tasks now: DONE=68, FAILED=89, PROMOTED=5, READY=14
 Accepted: 5
 Promoted: 29
-Free RAM, GB: 5.94
-Telemetry rows: 21663 recognised, 0 unrecognised
+Free RAM, GB: 3.88
+Telemetry rows: 21690 recognised, 0 unrecognised
 
 ## Spend per model
 | model | calls | tokens_in | tokens_out | usage_unknown | http_429 | errors |
@@ -64,13 +64,13 @@ Telemetry rows: 21663 recognised, 0 unrecognised
 |---|---|---|
 | answer | 534 | 0 |
 | gate | 3255 | 0 |
-| infra | 751 | 0 |
-| loop | 4199 | 0 |
-| other | 2748 | 0 |
+| infra | 753 | 0 |
+| loop | 4218 | 0 |
+| other | 2751 | 0 |
 | promote | 40 | 0 |
 | review | 1544 | 843 |
 | run | 8325 | 2599 |
-| triage | 267 | 0 |
+| triage | 270 | 0 |
 
 ## Channels (model ids)
 - 1db4ab-gemini-3-8-flash
