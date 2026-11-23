@@ -1185,7 +1185,8 @@ def port_focus(repo: Path, task: Task) -> frozenset:
 def build_coder_prompt(task: Task, visible: dict[str, bytes], feedback: str | None = None,
                        prev_diff: str = '', *, goal: str | None = None, failing: str = '',
                        light: bool = False, asked: frozenset = frozenset(), reference: str = '',
-                       focus: frozenset = frozenset(), off_path=(), off_bodies: str = '') -> str:
+                       focus: frozenset = frozenset(), off_path=(), off_bodies: str = '',
+                       failing_chars: int = 1500) -> str:
     """The ONE builder of the coder prompt (used by the pass and by model_attempt's default). ``light``: the
     prompt of the light engine, which has no tools: no read/grep instructions (live 19.11 17:48-17:50:
     with them the model answered "CANNOT: requires access outside the provided files"). ``asked``: definitions
@@ -1219,7 +1220,7 @@ def build_coder_prompt(task: Task, visible: dict[str, bytes], feedback: str | No
         core += "\nTask text:\n" + redact(scrub_paths(goal))[:1500]
     if failing and task.kind != 'unit_test':
         core += ("\nFailing on the base now (must pass after your change):\n"
-                 + redact(failing)[:FAILING_CHARS])
+                 + redact(failing)[:failing_chars])
     if off_path and task.kind != 'unit_test':
         core += OFF_PATH_NOTE % ', '.join(off_path)
     if reference and task.kind != 'unit_test':
@@ -3704,7 +3705,7 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                 return build_coder_prompt(task, visible, feedback, prev_diff, failing=scrub(failing_text()),
                                           light=engine_for(role, task) == 'light',   # the same rule call() applies
                                           asked=frozenset(asked) | remembered, reference=reference, focus=ported | path_focus, off_path=tuple(off_short),
-                                          off_bodies=off_bodies_text())
+                                          off_bodies=off_bodies_text(), failing_chars=FAILING_CHARS)
             prompt = make_prompt()
             chosen = route(task, small_model=small_model, large_model=large_model, fallback=attempt > 1)
 
