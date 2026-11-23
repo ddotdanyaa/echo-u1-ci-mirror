@@ -5,7 +5,19 @@ Never raises: the result is a word - added / present / no_section / unreadable /
 """
 import os
 import re
+import threading
+from functools import wraps
 from pathlib import Path
+
+_LOCK = threading.RLock()     # read -> change -> replace of the backlog is one step: the loop's thread and the links job share it
+
+
+def _locked(fn):
+    @wraps(fn)
+    def run(*a, **k):
+        with _LOCK:
+            return fn(*a, **k)
+    return run
 
 HEADING = "## Закрыто коммитами координатора"
 SHA_LEN = 8
@@ -66,6 +78,7 @@ def table_evidence(backlog) -> dict:
     return out
 
 
+@_locked
 def record_closures(backlog, items) -> dict:
     """items: [(ID, sha, note)] -> {ID: added|present|no_section|unreadable|error}; ONE read and ONE atomic replace."""
     path = Path(backlog)
@@ -143,6 +156,7 @@ def sync_stale(backlog, ids, sha_of, note="") -> dict:
 AUDIT_MARK = " · audit: "
 
 
+@_locked
 def _edit_row(backlog, bid, change) -> str:
     """The closure row of ``bid``: ``change(cells)`` returns the new cells, or None to drop the row.  Atomic, line endings kept.
     -> done / absent / no_section / unreadable / error (never raises)."""
@@ -200,6 +214,7 @@ def reopen(backlog, bid) -> str:
 PENDING = "merged by the loop (not yet taken)"
 
 
+@_locked
 def update_note(backlog, bid, sha, note) -> str:
     """The closure row of ``bid`` (its commit starts with the first 8 characters of ``sha``) says «merged by the loop (not yet
     taken)»: that phrase becomes ``note``.  Atomic, line endings kept, every other line untouched.

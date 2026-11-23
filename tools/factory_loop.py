@@ -2405,7 +2405,7 @@ class Loop:
 
             def work():
                 data = I.run_links(words, rows, out, ask=ask, scrub=I.scrub)
-                done = int(data.get("upto_line") or 0) >= I._entries(words)[1]; self._lk_size = size if done else self._lk_size; data = {**data, "partial": not done}
+                done = all(e["line"] <= int(data.get("upto_line") or 0) for e in I._entries(words)[0]); self._lk_size = size if done else self._lk_size; data = {**data, "partial": not done}
                 I.audit_closed_rows(self.cfg.backlog, out, lambda p, n: self._light_ask(p, attempt=n, section="loop-links", quotas=self._lk_quotas, max_tokens=300, role="review")[:3], I.scrub)
                 return data
             self._lk = Prefetch("links", work, {})
