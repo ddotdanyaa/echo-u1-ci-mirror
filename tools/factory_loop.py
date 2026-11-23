@@ -3393,6 +3393,8 @@ class Loop:
             def work():
                 packet = self._row_packet(row, cause, evidence, tasks=task_copy, state=state_copy, ls=ls_copy, root=root,
                                          rung=rung)
+                if self.cfg.self_repo:      # the second instance: a new test imports only the modules the mirror publishes
+                    packet["publishable"] = ", ".join(A.publishable_modules())
                 extra = {"named_ok": True} if self.cfg.self_repo else {}      # 8.1: the factory's own files are the contract's subject
                 try:
                     result = self.architect_fn(packet, rung=rung, root=root, asks=asks, **extra)

@@ -66,7 +66,8 @@ TRANSIENT_HOPS = 4   # an overloaded (503) model: up to this many other models a
 ENV_HOLD_AFTER = 10          # consecutive environment shortages before the long hold (the candidate is kept)
 ENV_HOLD_S = 1800
 ENV_OTHER_CEILING = 3         # a persistent non-slot environment failure (a missing package...) is parked after this many
-SCAN_REASK_CEILING = 3       # a card whose test the scanner keeps out of the cloud run is asked again this many times (no strike), then it is a red attempt
+SCAN_SAME_CAUSE_STRIKE = 2   # the second scan_excluded refusal with the same cause text is a red attempt with the cause as evidence
+SCAN_REASK_CEILING = 3      # a card whose test the scanner keeps out of the cloud run is asked again this many times (no strike), then it is a red attempt
 RED_BEFORE_WAIT_S = 120     # the base run before the coder call waits for a slot at most this long (its own ceiling)
 SLOT_BUDGET_S = 300         # ONE wait for a pytest slot / free RAM per runner pass, shared by every gate run
 IDLE_SUSPECTS_ALLOWED = 4   # 21.11 (was 2) idle timeouts treated as a rate limit; the next one is a worker fault (infra)
@@ -132,14 +133,24 @@ REVIEW_HINT = ("The file is large: read the places you need with the read tool b
 LIGHT_REVIEW_HINT = "The file is large: only its outline and the parts below are shown. You only judge the diff."
 # The test author's most frequent defects, from the reviewers' rejections of the live series 19.11 17:53-18:38
 # (a MagicMock as the code under test, assert False, a name-exists tautology, counts of the repository)
+MARKER_SENTENCE = ("the marker line # factory-backlog-id: <ID> goes only into the REPLACE part (its first "
+                   "line), never into SEARCH.")
 UNIT_TEST_RULES = ("The test must import the real functions or classes from the code files shown and call them, "
                    "then assert on what they return or do. Never test a MagicMock in place of that code, never "
                    "write assert False, a test that only checks that a name exists, or a hard-coded count of "
                    "files or markers in the repository. The project has no pytest-asyncio plugin: never write "
                    "async def test functions or @pytest.mark.asyncio; drive async code with asyncio.run(...) inside "
                    "a plain def test function. A test file that does not exist yet is created with an EMPTY SEARCH "
-                   "part; the marker line # factory-backlog-id: <ID> goes only into the REPLACE part (its first "
-                   "line), never into SEARCH." "\n" + gate.UNIT_TEST_RULES)   # one source: the gate's own rules
+                   "part; " + MARKER_SENTENCE + "\n" + gate.UNIT_TEST_RULES)   # one source: the gate's own rules
+
+
+def unit_rules() -> str:
+    """UNIT_TEST_RULES; the second instance's rules do not mention the marker line (it asks for none)."""
+    if not gate.SELF_REPO:
+        return UNIT_TEST_RULES
+    return UNIT_TEST_RULES.replace('part; ' + MARKER_SENTENCE, 'part.')
+
+
 MARKER_PROBE = gate.GateResult(1, 1, 0, 1, 0, 0, True, '')   # a red result: only the marker can fail it
 REVIEW_NOTE_LIMIT = 400     # <id>: what the task's earlier candidates were rejected for, shown to its critics
 REVIEW_OVERHEAD = 1500 + REVIEW_NOTE_LIMIT      # reviewer instructions + verdict format on top of the files
@@ -964,12 +975,24 @@ EXEC_REPORT_LIMIT = 1500
 EXEC_PATH_NAMES = 12
 
 
-def execution_report(base, hollow=(), extra_names=()) -> str:
+def red_evidence(diag) -> str:
+    """The proof that a NEW test is red on the unchanged base: its failing assert line (``>`` line of the pytest trace) and the
+    error line (``E`` lines) from the gate's run of the candidate on the base; '' when the text shows none of them."""
+    lines = [ln.rstrip() for ln in str(diag or '').splitlines()]
+    picked = [ln for ln in lines if ln.lstrip().startswith(('>', 'E ')) or 'AssertionError' in ln]
+    return '\n'.join(picked[:6])[:500] if picked else ''
+
+
+def execution_report(base, hollow=(), extra_names=(), red='') -> str:
     """The mechanical facts a critic gets beside the diff (measured by the gate, not an opinion): the output of the
-    red-before run, the functions the failing tests ran, hollow findings, names the candidate adds beyond the task."""
+    red-before run, the functions the failing tests ran, hollow findings, names the candidate adds beyond the task.
+    ``red``: for a new test (there are no base tests to run) the failing assert of the test on the base, from the gate."""
     parts = []
     diag = redact(str(getattr(base, 'diag', '') or '')).strip()
-    if diag:
+    if red:
+        parts.append('Red-before evidence (the NEW test fails on the unchanged base, so it is red before the fix):\n'
+                     + redact(red)[-600:])
+    elif diag:
         parts.append('Red-before output (the tests on the unchanged base):\n' + diag[-600:])
     path = tuple(getattr(base, 'path', ()) or ())
     if path:
@@ -1199,7 +1222,7 @@ def build_coder_prompt(task: Task, visible: dict[str, bytes], feedback: str | No
         core = ("Write ONLY the test of task " + task.id + ": " + redact(task.title) +
                 ". Create or change only the test file: " + ", ".join(task.touch_files) +
                 ". The code it tests is read-only. Do not execute deployment, read parent folders, "
-                "or use network tools other than the configured model.\n" + UNIT_TEST_RULES)
+                "or use network tools other than the configured model.\n" + unit_rules())
     else:
         core = ("Implement ONLY task " + task.id + ": " + redact(task.title) +
                 ". Change only: " + ", ".join(task.touch_files) +
@@ -1234,7 +1257,7 @@ def build_coder_prompt(task: Task, visible: dict[str, bytes], feedback: str | No
     if task.kind == 'unit_test':
         core += (" Write the test so that it FAILS on the current code because of the described "
                  "defect and would pass once the defect is fixed.")
-        if task.backlog_id:
+        if task.backlog_id and not gate.SELF_REPO:     # the second instance: the row is known from the task, no marker is asked
             core += (" The FIRST line of the test file must be exactly: # factory-backlog-id: " + task.backlog_id +
                      " (in a new file: an EMPTY SEARCH part and the marker as the first line of REPLACE only)")
     if feedback:
@@ -1978,7 +2001,7 @@ def ensure_test_marker(task, workdir: Path, changed) -> list[str]:
     """The model forgot the first line of a new test: the runner writes ``# factory-backlog-id: <ID>`` itself (after
     a shebang, in the file's own line ending). Another row's marker is never replaced (the gate refuses it). Only
     the first changed test file of the task is touched; returns the names written."""
-    if getattr(task, 'kind', '') != 'unit_test' or not getattr(task, 'backlog_id', ''):
+    if getattr(task, 'kind', '') != 'unit_test' or not getattr(task, 'backlog_id', '') or gate.SELF_REPO:
         return []
     name = next((n for n in changed if n in task.tests), '')
     if not name:
@@ -3163,10 +3186,15 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
 
             def ask_again(state, row):
                 table = factory_env(state)['scan_excluded']
-                seen = (table.get(tid) if type(table.get(tid)) is int else 0) + 1
+                was = table.get(tid) if type(table.get(tid)) is int else 0
+                same = table.get(tid + '#cause') == cause       # the text of the last refusal sits beside the count
+                seen = (was if same else 0) + 1
                 table[tid] = seen
-                if seen > SCAN_REASK_CEILING:
+                table[tid + '#cause'] = cause
+                # the same cause the second time in a row: the card does not fix it by asking again, a red attempt with the cause
+                if seen >= SCAN_SAME_CAUSE_STRIKE or seen > SCAN_REASK_CEILING:
                     table.pop(tid, None)
+                    table.pop(tid + '#cause', None)
                     return 'strike'
                 add_feedback(state, tid, 'gate', '[attempt %d, no strike] %s' % (attempt, note))
                 return 'again'
@@ -3519,7 +3547,9 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                     text = 'the edit is outside the contract: ' + ', '.join(off)
                     return _GateRetry(('gate', 'gate: off_contract', text, changed), text, changed)
             if task.kind == 'unit_test':
-                if task.backlog_id:
+                if gate.SELF_REPO:
+                    events.append('unit_test_marker_not_required')   # the second instance: the row is known from the task
+                elif task.backlog_id:
                     first = next((n for n in changed if n in task.tests), task.tests[0])   # the first CHANGED test file
                     marker_ok, marker_why = gate.accept_unit_test(MARKER_PROBE, cand_files.get(first, ''), task.backlog_id)
                     if not marker_ok:   # cheaper than running pytest first
@@ -3568,6 +3598,8 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                             old_text = before.read_text(encoding='utf-8', errors='replace') if before.is_file() else ''
                             added += gate.added_tests(old_text, cand_files.get(name, ''))
                     ok, why = gate.accept_unit_test(cand, added=added)
+                    if ok:       # the critics get the failing assert of the new test on the base as its red-before evidence
+                        ctx['red_evidence'] = red_evidence(cand.diag)
                 else:
                     ok, why = gate.accept(base, cand, verdict == 'red')
                 if not ok and why.startswith('env:'):
@@ -3727,11 +3759,13 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                 except Exception:       # noqa: BLE001 - a missing example never stops the card
                     example = ''
                 extra = ''
-                if task.backlog_id:
+                if task.backlog_id and not gate.SELF_REPO:
                     extra += ("The test file does not exist yet: use an EMPTY SEARCH part. The FIRST line of the REPLACE "
                               "part must be exactly: # factory-backlog-id: " + task.backlog_id +
                               " . Never put the marker into SEARCH.\n")
-                extra += UNIT_TEST_RULES + "\n"
+                elif gate.SELF_REPO:
+                    extra += "The test file does not exist yet: use an EMPTY SEARCH part. No marker line is needed.\n"
+                extra += unit_rules() + "\n"
                 if architect_code and (feedback or attempt > 1 or note):
                     extra += ("The architect wrote this test text; it was applied and rejected (the exact reason is below). "
                               "Correct THIS code, do not write another test from nothing:\n" + redact(architect_code) + "\n")
@@ -4094,7 +4128,8 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                                  lens=REVIEW_LENSES[min(len(kept), len(REVIEW_LENSES) - 1)],
                                  prior=tuple(said_line(n + 1, v['ok'], v.get('why')) for n, v in enumerate(kept)),
                                  rejected=rejected_for(ck.read(), tid), rubric=True,
-                                 execution=execution_report(base, tuple(ctx.get('hollow') or ()), tuple(ctx.get('extra_names') or ())))
+                                 execution=execution_report(base, tuple(ctx.get('hollow') or ()), tuple(ctx.get('extra_names') or ()),
+                                                            ctx.get('red_evidence') or ''))
                 return 0.0, '', [], kept             # the builder asked no model: nothing to wait for
             except _PromptSeen as seen_prompt:
                 call_task, prompt = seen_prompt.args
@@ -4166,7 +4201,7 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                         kwargs['prompt_override'], exclude_model=authors() + critics)
         try:
             hollow, extra = tuple(ctx.get('hollow') or ()), tuple(ctx.get('extra_names') or ())
-            exec_text = execution_report(base, hollow, extra)
+            exec_text = execution_report(base, hollow, extra, ctx.get('red_evidence') or '')
             mech_ok = mechanically_ok(base, hollow, extra)
             votes, said, rejections = [], [], []
             approved = None

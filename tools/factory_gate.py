@@ -1718,6 +1718,8 @@ def accept_unit_test(cand_on_base: GateResult, test_text=None, backlog_id=None, 
 
     With ``test_text`` and ``backlog_id`` the first line of the new test must be the marker
     ``# factory-backlog-id: <ID>`` (it is what lets the triage reuse the file only for its own row)."""
+    if SELF_REPO:       # the second instance: the row of the test is known from the task; a marker is neither required nor checked
+        test_text = None
     if test_text is not None and not backlog_id:
         return False, 'backlog_id не передан: маркер «# factory-backlog-id: <ID>» нечем проверить'
     if test_text is not None:
