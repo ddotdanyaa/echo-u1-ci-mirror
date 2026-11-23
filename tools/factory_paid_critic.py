@@ -322,8 +322,8 @@ def settle(reserved, actual, architect=False, agent=False, critic=False, coder=F
         row = _spend_row()
         bookings = _bookings(row)
         mine = [b for b in bookings if b.get('pid') == os.getpid() and abs(float(b['usd']) - reserved) < 1e-9]
-        same = mine or [b for b in bookings if abs(float(b['usd']) - reserved) < 1e-9]
-        if same:                                        # a booking already lifted (dead/stale) is not taken from others
+        same = mine or [b for b in bookings if b.get('pid') is None and abs(float(b['usd']) - reserved) < 1e-9]
+        if same:                                        # only an ownerless (migrated) booking is a fallback; never another process's
             bookings.remove(min(same, key=lambda b: float(b.get('created', 0))))
         _set_bookings(row, bookings)
         _add(row, actual, coder=coder, architect=architect, agent=agent, critic=critic)

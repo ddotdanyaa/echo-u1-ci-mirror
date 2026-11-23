@@ -1,9 +1,10 @@
 # Factory status (generated, structured data only)
 
-Generated: 2026-11-23T13:27:47Z
-Source commit: shaab3f47f75f62
+Generated: 2026-11-23T13:32:31Z
+Source commit: sha2acee2fb8726
 
 ## Commits (sha, time)
+- sha2acee2fb 2026-11-23T16:31:50+03:00
 - shaab3f47f7 2026-11-23T16:26:51+03:00
 - shab914a9cb 2026-11-23T16:24:10+03:00
 - sha2b9ba79a 2026-11-23T16:23:21+03:00
@@ -23,28 +24,27 @@ Source commit: shaab3f47f75f62
 - shad47ba2b4 2026-11-23T14:36:17+03:00
 - sha5a63e6a4 2026-11-23T14:34:42+03:00
 - sha60e74ac2 2026-11-23T14:34:16+03:00
-- sha53eee43c 2026-11-23T14:32:54+03:00
 
 ## Funnel
 | step | count |
 |---|---|
 | accepted | 17 |
-| claimed | 398 |
+| claimed | 404 |
 | coded | 183 |
 | found_in_backlog | unknown |
 | gate_pass | 67 |
-| known_to_loop | 469 |
+| known_to_loop | 471 |
 | promoted | 63 |
-| ready | 98 |
+| ready | 104 |
 | reviewed | 164 |
-| triaged | 303 |
+| triaged | 305 |
 
 Side counters: blocked=0, parked=0, requeued=7
-Tasks now: DONE=68, FAILED=474, PROMOTED=39, READY=98, RUNNING=11
+Tasks now: DONE=68, FAILED=475, PROMOTED=39, READY=104, RUNNING=6
 Accepted: 17
 Promoted: 63
-Free RAM, GB: 4.29
-Telemetry rows: 34321 recognised, 0 unrecognised
+Free RAM, GB: 4.9
+Telemetry rows: 34438 recognised, 0 unrecognised
 
 ## Spend per model
 | model | calls | tokens_in | tokens_out | usage_unknown | http_429 | errors |
@@ -53,11 +53,11 @@ Telemetry rows: 34321 recognised, 0 unrecognised
 | cohere/command-a-plus-05-2026 | 12 | 5678 | 452 | 8 | 0 | 8 |
 | cohere/north-mini-code-1.0 | 6 | 4159 | 237 | 3 | 0 | 3 |
 | google/gemini-3-flash-preview | 31 | 37167 | 6757 | 14 | 13 | 14 |
-| google/gemini-3.1-flash-lite | 1609 | 8690122 | 609916 | 75 | 4 | 75 |
-| google/gemini-3.1-flash-lite-preview | 313 | 620931 | 116757 | 36 | 8 | 36 |
+| google/gemini-3.1-flash-lite | 1610 | 8691485 | 609968 | 75 | 4 | 75 |
+| google/gemini-3.1-flash-lite-preview | 324 | 629815 | 119122 | 40 | 8 | 40 |
 | google/gemini-3.5-flash | 34 | 30545 | 1824 | 24 | 22 | 24 |
 | google/gemini-3.5-flash-lite | 1920 | 10852491 | 630615 | 43 | 10 | 43 |
-| google/gemini-3.6-flash | 134 | 414079 | 20196 | 56 | 11 | 56 |
+| google/gemini-3.6-flash | 135 | 414079 | 20196 | 57 | 12 | 57 |
 | google/gemini-3.7-flash | 22 | 9121 | 14 | 21 | 10 | 21 |
 | google/gemini-3.8-flash | 24 | 21237 | 15 | 21 | 9 | 21 |
 | google/gemma-4-26b-a4b-it | 283 | 438783 | 37373 | 181 | 0 | 181 |
@@ -69,13 +69,13 @@ Telemetry rows: 34321 recognised, 0 unrecognised
 | span | rows | calls |
 |---|---|---|
 | answer | 536 | 0 |
-| gate | 5408 | 0 |
+| gate | 5430 | 0 |
 | infra | 884 | 0 |
-| loop | 5827 | 0 |
-| other | 7809 | 0 |
+| loop | 5838 | 0 |
+| other | 7865 | 0 |
 | promote | 79 | 0 |
 | review | 2139 | 1164 |
-| run | 11263 | 3715 |
+| run | 11291 | 3728 |
 | triage | 376 | 0 |
 
 ## Channels (model ids)
