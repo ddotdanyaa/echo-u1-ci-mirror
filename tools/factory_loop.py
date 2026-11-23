@@ -5758,6 +5758,12 @@ class Loop:
                 "iterations": self.iterations,
                 "max_workers": self._max_k, "mean_k": round(self._k_sum / self._k_n, 2) if self._k_n else None}
             stats["blockers"] = F.hold_census(state, tasks)
+            try:
+                from tools import factory_architect as A
+                stats["agent"] = A.agent_stats()
+                stats["agent"]["usd_per_merged_by_engine"] = A.price_per_merged(ls.get("contracts_by_engine", {}))
+            except Exception as e:      # statistics never stop the loop
+                self.err("agent stats", e)
             stats["queues"] = {"to_slice": len(ls.get("to_slice", {})),
                 "slicing": len(ls.get("slicing", {})),
                 "slice_wait": sum(until > self.clock() for until in ls.get("slice_wait", {}).values()),

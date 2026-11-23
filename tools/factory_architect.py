@@ -22,6 +22,7 @@ KEYWORDS_MAX = 12
 AGENT_IDLE_S = 300
 AGENT_BUDGET_USD = 3.0
 AGENT_MODEL = 'claude-sonnet-5-5'
+AGENT_BUSY = 'agent busy'
 EST_AGENT_BYTES = 600 * 2**20
 _agent_lock = threading.Lock()
 _agent_count = 0
@@ -744,6 +745,8 @@ def contract_for(packet, *, rung, root, asks, named_ok=False, red_given=None):
             if refused and 'not available' not in message:
                 message += ' (not available: ' + ', '.join(dict.fromkeys(refused)) + ')'
             faults.append(dict(engine=engine, fault=F.redact(message)))
+            if red and engine == 'agent' and message == AGENT_BUSY:
+                raise Exhausted(0, faults)      # AGENT_BUSY is raised only while live reservations hold money: the red row waits its turn, no weaker step guesses
     # One free voice for "do not fix" while the tier that could give the second voice was simply not answering
     # (no channel / 429 / 503) is no counted void slicing: nobody has judged yet, the row waits without a penalty.
     if red and 'agent' not in answered:
@@ -886,6 +889,77 @@ def _agent_settings(cwd):
     return filename
 
 
+AGENT_MIN_BOOK_USD = 0.3
+AGENT_COLD_BOOK_USD = 1.0       # fewer than AGENT_MIN_FACTS measures: book this
+AGENT_MIN_FACTS = 5
+AGENT_FACTS_WINDOW = 20
+AGENT_FACTS_KEEP = 300
+
+
+def _facts_file() -> Path:
+    return PK.state_dir() / 'agent_facts.json'
+
+
+def _read_facts() -> list:
+    try:
+        rows = json.loads(_facts_file().read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return []
+    return [r for r in rows if isinstance(r, list) and len(r) == 2] if isinstance(rows, list) else []
+
+
+def record_agent_fact(usd, now=None) -> None:
+    """The reported cost of one agent call, kept beside paid_spend.json under the same lock (a short list [time, usd])."""
+    with PK._spend_lock():
+        rows = _read_facts()
+        rows.append([time.time() if now is None else now, round(float(usd), 6)])
+        path = _facts_file()
+        tmp = path.with_name(path.name + '.tmp')
+        tmp.write_text(json.dumps(rows[-AGENT_FACTS_KEEP:]), encoding='utf-8')
+        PK._retry_perm(lambda: os.replace(tmp, path))
+
+
+def agent_median(rows=None):
+    rows = _read_facts() if rows is None else rows
+    last = sorted(float(r[1]) for r in rows[-AGENT_FACTS_WINDOW:])
+    if not last:
+        return None
+    mid = len(last) // 2
+    return last[mid] if len(last) % 2 else (last[mid - 1] + last[mid]) / 2
+
+
+def agent_booking() -> float:
+    """What one agent call books: median of the last 20 facts x 1.5 (under 5 measures: $1), within [$0.3, the call limit]."""
+    rows = _read_facts()
+    if len(rows) < AGENT_MIN_FACTS:
+        want = AGENT_COLD_BOOK_USD
+    else:
+        want = agent_median(rows) * 1.5
+    return round(min(AGENT_BUDGET_USD, max(AGENT_MIN_BOOK_USD, want)), 6)
+
+
+def agent_stats(now=None) -> dict:
+    now = time.time() if now is None else now
+    rows = _read_facts()
+    median = agent_median(rows)
+    return dict(calls_24h=sum(1 for r in rows if now - float(r[0]) < 86400),
+                median_usd=None if median is None else round(median, 4))
+
+
+def price_per_merged(by_engine) -> dict:
+    """Average price of a merged contract per paid stage, ALL-TIME on both sides: the cumulative *_total_usd of
+    paid_spend.json (never reset by the day) over the cumulative merged count of contracts_by_engine."""
+    row = PK._spend_row()
+    agent_usd = float(row.get('agent_total_usd', 0))
+    paid_usd = max(0.0, float(row.get('architect_total_usd', 0)) - agent_usd)
+    out = {}
+    for engine, usd in (('agent', agent_usd), ('paid', paid_usd)):
+        merged = int((by_engine.get(engine) or {}).get('merged', 0))
+        if merged:
+            out[engine] = round(usd / merged, 4)
+    return out
+
+
 def ask_agent(system, user, *, cwd: Path, run=stream_run, argv_fn=PR.claude_argv, idle_s=AGENT_IDLE_S):
     from tools import factory_gate as G
     global _agent_count
@@ -901,19 +975,24 @@ def ask_agent(system, user, *, cwd: Path, run=stream_run, argv_fn=PR.claude_argv
         _agent_count += 1
     reserved, actual, settings = False, 0.0, None
     try:
-        if not PK.reserve(AGENT_BUDGET_USD, architect=True):
-            raise ContractFault('agent budget')
+        booking = agent_booking()
+        if not PK.reserve(booking, architect=True):
+            # busy only when live reservations hold money and some is left; a remainder below the booking with
+            # no live reservation will never grow today: that is the budget, not a turn to wait for
+            live = float(PK._spend_row().get('reserved_usd', 0)) + PK._external('FACTORY_BUILDERS_SPEND', ('reserved_usd',))
+            raise ContractFault(AGENT_BUSY if live > 0 and PK.left(PK._today()) > 0 else 'agent budget')
         reserved = True
+        limit = round(max(booking, min(AGENT_BUDGET_USD, PK.left(PK._today()) + booking)), 6)
         settings = _agent_settings(cwd)
         argv = argv_fn() + ['-p', 'The task is in standard input; return one JSON contract.', '--bare',
                            '--settings', str(settings), '--model', AGENT_MODEL,
-                           '--max-budget-usd', str(AGENT_BUDGET_USD), '--output-format', 'stream-json', '--verbose',
+                           '--max-budget-usd', str(limit), '--output-format', 'stream-json', '--verbose',
                            '--allowedTools', 'Read,Grep,Glob', '--disallowedTools',
                            'Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch']
         allowed = {'PATH', 'SYSTEMROOT', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'TEMP', 'TMP'}
         env = {k: v for k, v in os.environ.items() if k.upper() in allowed}
         # Once the CLI starts, an unreported cost must not refund the full reservation.
-        actual = AGENT_BUDGET_USD
+        actual = booking
         result = run(argv, cwd=cwd, env=env, input=(system + '\n\n' + user).encode('utf-8'), idle_s=idle_s)
         raw = result.stdout.decode('utf-8') if isinstance(result.stdout, bytes) else result.stdout
         err = result.stderr.decode('utf-8', 'replace') if isinstance(result.stderr, bytes) else str(result.stderr or '')
@@ -932,8 +1011,12 @@ def ask_agent(system, user, *, cwd: Path, run=stream_run, argv_fn=PR.claude_argv
         if envelope is None:
             raise ContractFault('non-json')
         cost = envelope.get('total_cost_usd')
-        if isinstance(cost, (int, float)) and 0 <= cost <= AGENT_BUDGET_USD:
+        if isinstance(cost, (int, float)) and 0 <= cost <= limit:
             actual = cost
+            try:
+                record_agent_fact(cost)
+            except (OSError, ValueError, TimeoutError):
+                pass
         subtype = str(envelope.get('subtype', 'subtype'))
         if result.returncode or envelope.get('is_error') or subtype != 'success':
             raise ContractFault(subtype)
@@ -951,7 +1034,7 @@ def ask_agent(system, user, *, cwd: Path, run=stream_run, argv_fn=PR.claude_argv
             if settings is not None:
                 Path(settings).unlink(missing_ok=True)
             if reserved:
-                PK.settle(AGENT_BUDGET_USD, actual, architect=True, agent=True)
+                PK.settle(booking, actual, architect=True, agent=True)
         finally:
             with _agent_lock:
                 _agent_count -= 1
