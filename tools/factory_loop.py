@@ -2471,6 +2471,26 @@ class Loop:
         files = [str(f).replace("\\", "/") for f in getattr(task, "touch_files", None) or ()]
         return getattr(task, "kind", "") == "unit_test" or bool(files and all(f.startswith("tests/") for f in files))
 
+    @staticmethod
+    def _task_finished(row) -> bool:
+        """The one meaning of 'this task is finished': merged (PROMOTED/DONE) or dropped for good (F.is_terminal reason:
+        superseded:reslice<n>, quarantine, closed, sliced, not_code).  A finished task holds neither a row nor a test open."""
+        row = row or {}
+        return row.get("status") in ("PROMOTED", "DONE") or F.is_terminal(row.get("reason"))
+
+    def _only_tests_changed(self, ls, sha) -> bool:
+        """True when the tree changed since the last verdict in test files only (a sure 'no' on any doubt)."""
+        last = ls.get("release")
+        old = str(last.get("sha") or "") if isinstance(last, dict) else ""
+        if not old or not sha or old == sha:
+            return False
+        try:
+            out = git_run(self.cfg.repo, "diff", "--name-only", old, str(sha))
+        except Exception:
+            return False
+        files = [f.strip().replace("\\", "/") for f in out.splitlines() if f.strip()]
+        return bool(files) and all(f.startswith("tests/") for f in files)
+
     def _tree_of(self, sha) -> str:
         try:
             return git_run(self.cfg.repo, "rev-parse", str(sha) + "^{tree}").strip()
@@ -2479,7 +2499,7 @@ class Loop:
 
     def _release_start(self, ls, now, REL) -> None:
         tasks, state = self.load()
-        unfinished = {tid for tid, r in state["tasks"].items() if r.get("status") not in ("PROMOTED", "DONE")}
+        unfinished = {tid for tid, r in state["tasks"].items() if not self._task_finished(r)}
         open_bids = {self._bid(state, tasks, tid) for tid in unfinished}
         open_tests = {f for tid in unfinished if tid in tasks for f in tasks[tid].tests}
         to_slice = ls.get("to_slice") or {}
@@ -2509,7 +2529,8 @@ class Loop:
         else:
             sha = self.base_sha
             tree = self._tree_of(sha)
-            if not REL.worth_a_run(ls, sha, tree, len(tids)):       # nothing to accept, this tree was judged already
+            if (not REL.worth_a_run(ls, sha, tree, len(tids))       # nothing to accept, this tree was judged already
+                    or (not tids and self._only_tests_changed(ls, sha))):     # or only tests changed since the verdict
                 if ls.get("release_skip") != sha:
                     ls["release_skip"] = sha
                     ls["release_skip_total"] = int(ls.get("promoted_total") or 0)     # REL.due counts it; the verdict record stays true
