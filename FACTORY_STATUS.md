@@ -1,9 +1,10 @@
 # Factory status (generated, structured data only)
 
-Generated: 2026-11-23T16:33:24Z
-Source commit: shab67b476317fe
+Generated: 2026-11-23T16:42:38Z
+Source commit: sha9229583bc48e
 
 ## Commits (sha, time)
+- sha9229583b 2026-11-23T19:41:57+03:00
 - shab67b4763 2026-11-23T19:32:38+03:00
 - shaf470fec8 2026-11-23T19:22:11+03:00
 - sha7084e94b 2026-11-23T18:54:37+03:00
@@ -23,7 +24,6 @@ Source commit: shab67b476317fe
 - shaec660e7b 2026-11-23T16:46:32+03:00
 - sha14d0b58d 2026-11-23T16:37:48+03:00
 - shaef054dad 2026-11-23T16:36:14+03:00
-- sha3150ea9e 2026-11-23T16:34:36+03:00
 
 ## Funnel
 | step | count |
@@ -35,16 +35,16 @@ Source commit: shab67b476317fe
 | gate_pass | 67 |
 | known_to_loop | 484 |
 | promoted | 63 |
-| ready | 119 |
+| ready | 122 |
 | reviewed | 166 |
 | triaged | 325 |
 
-Side counters: blocked=1, parked=0, requeued=7
-Tasks now: BLOCKED=1, DONE=68, FAILED=483, PROMOTED=39, READY=119, RUNNING=2
+Side counters: blocked=0, parked=0, requeued=7
+Tasks now: DONE=68, FAILED=483, PROMOTED=39, READY=122
 Accepted: 17
 Promoted: 63
-Free RAM, GB: 4.63
-Telemetry rows: 36840 recognised, 0 unrecognised
+Free RAM, GB: 3.83
+Telemetry rows: 36983 recognised, 0 unrecognised
 
 ## Spend per model
 | model | calls | tokens_in | tokens_out | usage_unknown | http_429 | errors |
@@ -60,8 +60,8 @@ Telemetry rows: 36840 recognised, 0 unrecognised
 | google/gemini-3.6-flash | 135 | 414079 | 20196 | 57 | 12 | 57 |
 | google/gemini-3.7-flash | 26 | 9121 | 14 | 25 | 14 | 25 |
 | google/gemini-3.8-flash | 28 | 21237 | 15 | 25 | 13 | 25 |
-| google/gemma-4-26b-a4b-it | 304 | 443603 | 37841 | 200 | 0 | 200 |
-| google/gemma-4-31b-it | 303 | 248067 | 9566 | 233 | 0 | 233 |
+| google/gemma-4-26b-a4b-it | 313 | 444664 | 38604 | 208 | 0 | 208 |
+| google/gemma-4-31b-it | 309 | 248067 | 9566 | 239 | 0 | 239 |
 | openrouter/nvidia/nemotron-3-ultra-550b-a55b:free | 115 | 663252 | 151232 | 2 | 2 | 2 |
 | other | 65 | 1154192 | 66710 | 6 | 0 | 7 |
 
@@ -69,13 +69,13 @@ Telemetry rows: 36840 recognised, 0 unrecognised
 | span | rows | calls |
 |---|---|---|
 | answer | 536 | 0 |
-| gate | 5608 | 0 |
-| infra | 931 | 0 |
-| loop | 6177 | 0 |
-| other | 9254 | 0 |
+| gate | 5621 | 0 |
+| infra | 937 | 0 |
+| loop | 6207 | 0 |
+| other | 9308 | 0 |
 | promote | 79 | 0 |
-| review | 2185 | 1177 |
-| run | 11693 | 3822 |
+| review | 2188 | 1178 |
+| run | 11730 | 3836 |
 | triage | 377 | 0 |
 
 ## Channels (model ids)

@@ -1786,7 +1786,7 @@ class Loop:
                 now_ask = self.clock()
                 order = C.route_order(channels, role, attempt, tokens)
                 order, closed = self._day_split(order, seen, env, folder, now_ask)
-                if C.main_dry(channels, seen, env, now=now_ask):
+                if section.startswith("loop-architect@") and C.main_dry(channels, seen, env, now=now_ask):
                     # W-gemma2 3: every main channel is closed by the day's mark: the free steps (architect / code) go to Gemma
                     # only and send no request to a channel the day's mark closed (but the one probe of the gate below)
                     shut = {c["id"] for c in closed}
@@ -1798,20 +1798,17 @@ class Loop:
                     return (not thrifty or C.tier_of(c) == "small"
                             or C.day_left_share(seen, c, now=self.clock()) >= KW_DAY_LEFT_MIN)
                 order, closed = [c for c in order if thrifty_ok(c)], [c for c in closed if thrifty_ok(c)]
-                try:
+                channel = None
+                for probe in closed:     # one probe per channel per 20 minutes, the claim shared by both instances; due whether
+                    try:                 # or not the open channels answer (a healthy channel must not stay shut all day)
+                        C.choose([probe], seen, tokens, env, now=now_ask)
+                    except C.ChannelUnavailable:
+                        continue
+                    if Q.gate_claim(folder, probe["id"], now=now_ask):
+                        channel = probe
+                        break
+                if channel is None:
                     channel = C.choose(order, seen, tokens, env, now=now_ask)
-                except C.ChannelUnavailable:
-                    channel = None
-                    for probe in closed:     # one probe per channel per 20 minutes, the claim shared by both instances
-                        try:
-                            C.choose([probe], seen, tokens, env, now=now_ask)
-                        except C.ChannelUnavailable:
-                            continue
-                        if Q.gate_claim(folder, probe["id"], now=now_ask):
-                            channel = probe
-                            break
-                    if channel is None:
-                        raise
             except C.ChannelUnavailable:
                 return "no_channel", None, "", tokens
             model = channel["model"]

@@ -129,7 +129,17 @@ def _gate_lock(folder):
         except FileExistsError:
             try:
                 if time.time() - path.stat().st_mtime > GATE_LOCK_STALE_S:
-                    path.unlink()
+                    # break it by a unique name: of two waiters only one rename succeeds; the stolen file is looked at again
+                    # (a fresh one a third party made in between is put back unless the path is taken again): a narrow window
+                    mine = path.with_name(path.name + '.stale%d' % os.getpid())
+                    os.replace(str(path), str(mine))
+                    try:
+                        if time.time() - mine.stat().st_mtime <= GATE_LOCK_STALE_S and not path.exists():
+                            os.replace(str(mine), str(path))      # it was a live holder's new lock: give it back
+                        else:
+                            mine.unlink()
+                    except OSError:
+                        pass
                     continue
             except OSError:
                 continue

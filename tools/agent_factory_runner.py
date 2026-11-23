@@ -3023,8 +3023,11 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                 try:
                     selected, at, tokens = ck.commit(book)
                 except channels.ChannelUnavailable:
-                    if big['skip']:               # W-gemma2 2: the channels not yet asked cannot take the call: the ones that
-                        big['skip'].clear()       # answered 503 (nothing cooled them) are asked again, no pause spent
+                    # W-gemma2 2 (live 19:11:36, three sends, no cool_reason, 'transient'): checked and excluded: the call budget
+                    # (refunded on every big 503), a deadline (none in call()), the same-channel ban (hopped is filled by the
+                    # non-big path only), group cooling (a big 503 marks nothing). The cause: big['skip'] held the refusing channels
+                    if big['skip']:               # while the others were not free: the ones that answered 503 are asked again,
+                        big['skip'].clear()       # no pause spent
                         continue
                     if overload_pause():          # nothing booked, nothing charged: the 503's channel is asked again
                         continue
