@@ -3312,7 +3312,11 @@ class Loop:
         items = list(portion.get("tasks") or [])
         ids = {t["id"] for t in items}
         why = "empty portion"
-        valid = bool(items or portion.get("holds") or portion.get("not_code"))
+        # a decision counts only if it names the row (or a part of it): a hold/not_code record under a foreign id would
+        # supersede the row's tasks below and leave the row with no task and no decision (the lost row)
+        decided = any(F.row_of(str(x.get("backlog_id", row))) == row
+                      for x in list(portion.get("holds") or []) + list(portion.get("not_code") or []))
+        valid = bool(items or decided)
         added = []
         if valid:
             self._tx(lambda st: st.setdefault("strikes", {}).pop("bl:" + row, None))
@@ -3475,10 +3479,9 @@ class Loop:
         known |= {b for b, rec in (ls.get("parents") or {}).items()
                   if rec.get("children") and all(c in known for c in rec["children"])}   # all parts exist: no re-import
         known |= set(ls.get("to_slice", {})) | set(ls.get("quarantine", {}))
-        known |= set(self._slicers)          # a head_scope row stays unknown: the triage takes it through ``scopes`` below
         # invariant "no lost row": a row whose tasks are all terminal (_task_rows leaves it out) is known only through a
-        # live decision above (parents, to_slice, quarantine); an expired not_code/hold or a lost record makes it unknown,
-        # the triage hands it to the slicer. Lost paths: a portion that made no tasks, a dropped not_code record.
+        # live decision above (parents, to_slice, quarantine); an expired not_code/hold makes it unknown and the triage
+        # hands it to the slicer. The source of the loss is closed in _apply_portion (a decision for another id).
         t0 = self.clock()
         kwargs = dict(backlog_path=cfg.backlog, head_root=cfg.worktree,
                       known_backlog_ids=known, limit=cfg.triage_limit)
@@ -3825,6 +3828,13 @@ class Loop:
         body = {"backlog_rows": len(backlog), "counts": dict(sorted(counts.items())), "rows": dict(sorted(rows.items()))}
         if unknown_words:
             body["unknown_words"] = dict(sorted(unknown_words.items()))
+        try:                                           # the table of skip reasons over the live backlog (no model)
+            from tools import agent_factory_import as imp
+            body["skip_reasons"] = imp.skip_reason_table(
+                {b: d for b, d in disp.items() if b in rows and rows[b]["state"] == d[0]},
+                [b for b, r in rows.items() if r["state"] == "untriaged"])
+        except Exception as e:
+            self.err("reconcile: skip reasons", e)
         if self._lk_unlinked is not None:
             body["unlinked_requirements"] = self._lk_unlinked
         path = self.cfg.state_dir / "reconcile.json"

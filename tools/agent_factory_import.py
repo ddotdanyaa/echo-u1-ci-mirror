@@ -722,25 +722,40 @@ def row_dispositions(backlog_path, repo_root, self_repo=False) -> dict:
     limits) is NOT a reason to skip: such a row goes to the slicer, it is absent here. No model is asked."""
     out = {}
     rows = parse_open_rows(backlog_path, repo_root, include_closed=True)
+    try:
+        guards = AF.guard_map(AF.load_sweep(Path(repo_root), None), [r["backlog_id"] for r in rows])
+    except Exception:
+        guards = {}
     for row in rows:
         bid = row["backlog_id"]
-        owner = _row_owner(bid)
-        if row["closed_at_head"]:
-            out[bid] = ("closed_at_head", "закрыта коммитом «%s: …» или таблицей закрытий" % bid)
-        elif owner == "cl":
+        owner = _row_owner(bid)                 # the same order as triage_portion: owner, closed, then the content
+        if owner == "cl":
             out[bid] = ("coordinator_row", "строка координатора, не задача фабрики")
         elif (owner == "fac") != bool(self_repo):
             out[bid] = ("other_owner_row", "строка другой очереди (%s)" % owner)
-        elif row["private"]:
-            out[bid] = ("private", "приватная строка: только Opus")
-        elif row.get("doc_marks") and not (row["mentioned_files"] or row["mentioned_tests"] or row["bare_names"]):
-            try:
-                why = _doc_only_row(row, candidate_files(repo_root, bid, row["text"]))
-            except Exception:
-                why = ""
-            if why:
-                out[bid] = ("doc_only", why)
+        elif row["closed_at_head"]:
+            out[bid] = ("closed_at_head", "закрыта коммитом «%s: …» или таблицей закрытий" % bid)
+        else:
+            red = AF.red_paths(guards.get(bid)) if AF.verdict(guards.get(bid)) == "red" else []
+            skip = _content_skip(row, Path(repo_root), red)
+            if skip:
+                out[bid] = skip
     return out
+
+
+def _content_skip(row, root, red):
+    """The one decision for a row of an own, open queue that needs no slicing: ('private', why), ('doc_only', why) or
+    None. Used by triage_portion and row_dispositions, so the reconciliation never names a row the triage slices."""
+    if row["private"]:
+        return ("private", "приватная строка: только Opus")
+    if row.get("doc_marks") and not red:
+        try:
+            why = _doc_only_row(row, candidate_files(root, row["backlog_id"], row["text"]))
+        except Exception:
+            why = ""
+        if why:
+            return ("doc_only", why)
+    return None
 
 
 def skip_reason_table(dispositions: dict, untriaged=()) -> dict:
@@ -1419,15 +1434,14 @@ def triage_portion(backlog_path, head_root, known_backlog_ids, limit, profile_at
             out["deferred"].append({"backlog_id": bid, "reason": "portion limit"})
             continue
         accepted += 1
-        if row["private"]:
+        red = AF.red_paths(guards.get(bid)) if AF.verdict(guards.get(bid)) == "red" else []
+        skip = _content_skip(row, root, red)
+        if skip and skip[0] == "private":
             out["holds"].append({"backlog_id": bid, "question": "private (only_opus)"})
             continue
-        red = AF.red_paths(guards.get(bid)) if AF.verdict(guards.get(bid)) == "red" else []
-        if row.get("doc_marks") and not red:
-            why = _doc_only_row(row, candidate_files(root, bid, row["text"]))
-            if why:
-                out["not_code"].append({"backlog_id": bid, "reason": why})
-                continue
+        if skip:
+            out["not_code"].append({"backlog_id": bid, "reason": skip[1]})
+            continue
         hints = list(row["mentioned_files"]) + list(row["mentioned_tests"])
         for name, ticked, near in row["bare_names"]:
             if not ticked or near:
@@ -1446,7 +1460,7 @@ def active_backlog_review(markdown: str) -> dict:
     plan tasks their own id (agent_factory.TASK_ID forbids Cyrillic and dots) and keep backlog_id."""
     allrows = parse_section4(markdown)
     unknown = [r for r in allrows if r["unknown"]]
-    rows = [r for r in allrows if r["open"]]
+    rows = [r for r in allrows if r["open"] and not r["unknown"]]     # unknown wording is listed once, in skipped_unknown
     rows.sort(key=_sort_key)
     tasks = [{
         "id": r["backlog_id"], "title": _safe_title(r),
