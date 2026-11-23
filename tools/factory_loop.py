@@ -4114,6 +4114,9 @@ class Loop:
         for bid in list(ls.get("arch_decision") or {}):        # the answer lives as long as the hold / not_code record it explains
             if bid not in ls["holds"] and bid not in (ls.get("not_code") or {}):
                 ls["arch_decision"].pop(bid, None)
+        for bid in list(ls.get("split") or {}):                # a split parent closed in the backlog leaves reconcile.json
+            if bid in (ls.get("closed") or {}):
+                ls["split"].pop(bid, None)
 
     def _resliceable(self, tasks, state, ls, now) -> dict:
         stuck = F.stuck_rows(state, tasks)
@@ -4385,7 +4388,7 @@ class Loop:
         known |= self._not_code_known(ls, now)              # <id>: survives edits until the row's own text changes
         known |= {b for b, rec in (ls.get("parents") or {}).items()
                   if rec.get("children") and all(c in known for c in rec["children"])}   # all parts exist: no re-import
-        known |= set(ls.get("to_slice", {})) | set(ls.get("quarantine", {}))
+        known |= set(ls.get("to_slice", {})) | set(ls.get("quarantine", {})) | set(ls.get("split") or {})
         # invariant "no lost row": a row whose tasks are all terminal (_task_rows leaves it out) is known only through a
         # live decision above (parents, to_slice, quarantine); an expired not_code/hold makes it unknown and the triage
         # hands it to the slicer. The source of the loss is closed in _apply_portion (a decision for another id).
