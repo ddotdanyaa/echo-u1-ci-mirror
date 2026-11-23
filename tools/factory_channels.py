@@ -532,11 +532,13 @@ def read_marks(state, channel, now=None) -> dict:
     now = time.time() if now is None else now
     marks = {'model': _model_cool(state, channel, now), 'channel': _channel_cool(state, channel),
              'group': _group_cool(state, channel)}
+    sources = state.get('channel_cool_src')
+    own = sources.get(channel['id']) if isinstance(sources, dict) else None
+    if own == 'big_probe' and not breaker_on(state, channel, now):
+        marks['channel'] = 0.0      # W-flow 2: the first 200 (any process) ended the probe mode: the flow is back at once
     if no_streak(channel) and not day_marked(state, channel, now):
-        sources = state.get('channel_cool_src')
-        own = sources.get(channel['id']) if isinstance(sources, dict) else None
         for kind, value in marks.items():
-            if kind == 'channel' and own in ('rate', 'big_close'):
+            if kind == 'channel' and own in ('rate', 'big_close', 'big_probe'):
                 continue          # the provider's own retry-after (a real 429) and our own short close are never cut
             if now + BIG_MARK_CAP_S < value <= now + STREAK_COOL_MAX_S:
                 marks[kind] = 0.0       # ignored (not cut to "now + 20", which would slide for ever); a mark of the last 20 s holds
@@ -1204,7 +1206,7 @@ def classify(stdout: bytes, stderr: bytes, rc: int, idle: bool = False) -> dict:
     return _info('unknown', message=text)
 
 
-def apply_failure(state, channel, info, *, env=None, now=None) -> dict:
+def apply_failure(state, channel, info, *, env=None, now=None, others=()) -> dict:
     """Record a channel/provider failure in the checkpoint quota state. Returns what was done."""
     now = time.time() if now is None else now
     env = env or {}
@@ -1256,7 +1258,9 @@ def apply_failure(state, channel, info, *, env=None, now=None) -> dict:
     if kind == 'transient' and info.get('scope') == 'task':
         return {'action': 'none', 'cool_s': 0}       # D #22: this task was too big for the model, the model is fine
     if kind == 'transient' and info.get('status') in OVERLOAD_STATUSES and _big_daily(channel):
-        return {'action': 'none', 'cool_s': 0, 'reason': 'big_overload'}   # W-gemma 1: the call hops (runner), nothing cools
+        # W-gemma 1: the call hops (runner), nothing cools; W-flow 2: BREAKER_FAILS in a row put the channel in probe mode
+        return {'action': 'none', 'cool_s': 0, 'reason': 'big_overload',
+                'probe_mode': breaker_503(state, channel, now=now, others=others)}
     if kind == 'transient' and (info.get('status') in OVERLOAD_STATUSES):
         # "This model is currently experiencing high demand" (503): the MODEL is overloaded, not the account. Cooled,
         # the retry and the next pass take another channel (live 19.11 18:18-18:20: two passes were deferred on a
@@ -1441,6 +1445,86 @@ def close_big(state, channel, *, now=None) -> dict:
     return out
 
 
+BREAKER_FAILS = 2          # W-flow 2: 503s in a row that put a big channel in probe mode
+BREAKER_PROBE_S = 45       # ... one send per channel per this many seconds from ALL cards (the mark is cool_channel's)
+BREAKER_FORGET_S = 600     # a run of 503s older than this says nothing (nobody probed: the mode ends)
+
+
+def _breaker_row(state, channel, create=False):
+    table = state.get('big_breaker')
+    if not isinstance(table, dict):
+        if not create:
+            return None
+        table = state['big_breaker'] = {}
+    row = table.get(channel['id'])
+    if not isinstance(row, dict):
+        if not create:
+            return None
+        row = table[channel['id']] = {'fails': 0, 'last': 0, 'ok': 0, 'claim': 0}
+    return row
+
+
+def breaker_on(state, channel, now=None) -> bool:
+    """The channel is in probe mode: BREAKER_FAILS 503s in a row (no 200 since, in any process: the rows of the shared
+    ledger are merged by the quota view) and the last one not older than BREAKER_FORGET_S."""
+    now = time.time() if now is None else now
+    row = _breaker_row(state, channel)
+    if not row or not is_big(channel):
+        return False
+    last, ok = row.get('last') or 0, row.get('ok') or 0
+    return (type(row.get('fails')) is int and row['fails'] >= BREAKER_FAILS and last > ok
+            and 0 <= now - last < BREAKER_FORGET_S)
+
+
+def breaker_open(state, channel_list, now=None) -> bool:
+    """Some big channel of the list is in probe mode."""
+    return any(breaker_on(state, c, now) for c in channel_list if is_big(c))
+
+
+def breaker_503(state, channel, *, now=None, others=()) -> bool:
+    """A 503 of a big channel: the run grows; at BREAKER_FAILS the channel goes into probe mode (a cool_channel mark of
+    BREAKER_PROBE_S, kept by the next probe's claim). Returns whether the mode is on."""
+    now = time.time() if now is None else now
+    table = state.setdefault('big_breaker', {})
+    for other in others or ():
+        if isinstance(other, dict):
+            _merge_breaker(table, other.get('big_breaker'))
+    row = _breaker_row(state, channel, create=True)
+    live = row['last'] > row['ok'] and 0 <= now - row['last'] < BREAKER_FORGET_S
+    row['fails'] = (int(row['fails']) if live else 0) + 1
+    row['last'] = now
+    if row['fails'] >= BREAKER_FAILS:
+        row['claim'] = now
+        cool_channel(state, channel, now=now, seconds=BREAKER_PROBE_S, src='big_probe')
+        return True
+    return False
+
+
+def breaker_ok(state, channel, *, now=None) -> None:
+    """A 200 of a big channel: the mode ends at once (the mark of the probe is dropped when read, in every process)."""
+    now = time.time() if now is None else now
+    row = _breaker_row(state, channel)
+    if row is None:
+        return
+    row['ok'], row['fails'] = now, 0
+    table = state.get('channel_cool')
+    if isinstance(table, dict) and (state.get('channel_cool_src') or {}).get(channel['id']) == 'big_probe':
+        table.pop(channel['id'], None)
+
+
+def breaker_claim(state, channel, *, now=None) -> None:
+    """A send to a channel in probe mode is booked: nobody else sends there for BREAKER_PROBE_S."""
+    now = time.time() if now is None else now
+    if breaker_on(state, channel, now):
+        _breaker_row(state, channel)['claim'] = now
+        cool_channel(state, channel, now=now, seconds=BREAKER_PROBE_S, src='big_probe')
+
+
+def _merge_breaker(into, other) -> None:
+    from . import factory_quota
+    factory_quota.merge_breaker(into, other)
+
+
 def _overload_seconds(state, model, now, big=False) -> int:
     """OVERLOAD_COOL_S, doubled for every further overload of the same model within OVERLOAD_FORGET_S of the
     previous one, at most OVERLOAD_COOL_MAX_S -- for a ``big`` (rpd >= HIGH_RPD) channel at most HIGH_RPD_COOL_MAX_S,
@@ -1470,6 +1554,7 @@ def note_outcome(state, channel, ok, *, now=None, channels=(), overload=False) -
     if ok:
         row['missing'] = 0
         table.pop(channel['id'], None)
+        breaker_ok(state, channel, now=now)          # W-flow 2: the first 200 ends the probe mode
         if isinstance(state.get('overload_run'), dict):
             state['overload_run'].pop(channel['model'], None)    # a success ends the model's series of 503s
         if not isinstance(state.get('model_ok'), dict):

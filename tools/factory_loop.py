@@ -15,6 +15,7 @@ read, values are never printed).
 from __future__ import annotations
 
 import argparse
+import ast
 import datetime as dt
 import contextlib
 import ctypes
@@ -250,12 +251,96 @@ def git_running() -> bool:
 LOCK_NOTES: list[str] = []  # drained into telemetry by the loop
 
 
-def three_way_merge(base: str, ours: str, theirs: str) -> tuple[str, bool]:
-    """git merge-file on three texts: (merged text, conflict). ``ours`` is the branch now, ``theirs`` the candidate."""
+def _units(text: str):
+    """W-flow 3: the top-level statements of a Python text as [(key, first_line, end_line, source)] (0-based, end
+    exclusive; decorators and the lines up to the statement belong to it). None when it does not parse or a key repeats."""
+    try:
+        tree = ast.parse(text)
+    except (SyntaxError, ValueError):
+        return None
+    lines = text.splitlines()
+    out, seen = [], set()
+    for i, node in enumerate(tree.body):
+        start = min([node.lineno] + [d.lineno for d in getattr(node, "decorator_list", [])]) - 1
+        end = node.end_lineno
+        src = "\n".join(lines[start:end])
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            key = "def:" + node.name
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            key = "import:" + src.strip()
+        elif isinstance(node, ast.Assign) and all(isinstance(t, ast.Name) for t in node.targets):
+            key = "assign:" + ",".join(t.id for t in node.targets)
+        elif i == 0 and isinstance(node, ast.Expr) and isinstance(getattr(node, "value", None), ast.Constant):
+            key = "doc"
+        else:
+            key = "other:" + src
+        if key in seen:
+            return None
+        seen.add(key)
+        out.append((key, start, end, src))
+    return out
+
+
+def merge_units(base: str, ours: str, theirs: str) -> str | None:
+    """W-flow 3: when git's line merge conflicts, merge Python files by top-level statement: what the candidate added,
+    changed or removed (a function, a class, an import, a constant) lands on ``ours`` when ``ours`` did not touch the same
+    statement. None when the changes meet (the same statement changed on both sides, an odd statement) or a text does
+    not parse. The newline of ``ours`` is kept."""
+    nl = "\r\n" if "\r\n" in ours else "\n"
+    b, o, t = (_units(x.replace("\r\n", "\n")) for x in (base, ours, theirs))
+    if b is None or o is None or t is None:
+        return None
+    bs, os_, ts = ({u[0]: u[3] for u in x} for x in (b, o, t))
+    changed_t = {k for k in set(bs) | set(ts) if bs.get(k) != ts.get(k)}
+    changed_o = {k for k in set(bs) | set(os_) if bs.get(k) != os_.get(k)}
+    for k in changed_t & changed_o:
+        if os_.get(k) != ts.get(k):
+            return None                      # both changed the same statement, differently
+    if any(k.startswith("other:") for k in changed_t):
+        return None                          # a loose statement moved: not a unit we can place
+    lines = ours.replace("\r\n", "\n").split("\n")
+    edits = []                               # (start, end, replacement lines) applied from the bottom
+    pos = {u[0]: u for u in o}
+    adds, imports = [], []
+    for k in sorted(changed_t - (changed_t & changed_o) | {k for k in changed_t & changed_o if k not in os_}):
+        if k in pos and k in ts:
+            edits.append((pos[k][1], pos[k][2], ts[k].split("\n")))
+        elif k in pos:
+            edits.append((pos[k][1], pos[k][2], None))      # removed by the candidate
+        elif k in ts:
+            (imports if k.startswith("import:") else adds).append(ts[k])
+    top = max([u[2] for u in o if u[0].startswith("import:")] + [u[2] for u in o if u[0] == "doc"] + [0])
+    if imports:
+        edits.append((top, top, imports))
+    for start, end, new in sorted(edits, key=lambda e: (e[0], e[1]), reverse=True):
+        lines[start:end] = [] if new is None else new
+    text = "\n".join(lines).rstrip("\n")
+    for block in adds:
+        text += "\n\n\n" + block
+    text += "\n"
+    try:
+        ast.parse(text)
+    except (SyntaxError, ValueError):
+        return None
+    return text.replace("\n", nl)
+
+
+def three_way_merge(base: str, ours: str, theirs: str, name: str = "") -> tuple[str, bool]:
+    """git merge-file on three texts: (merged text, conflict). ``ours`` is the branch now, ``theirs`` the candidate.
+    ``name``: the file's path; for a Python file a conflict of lines is retried statement by statement (merge_units)."""
     if ours == base or ours == theirs:
         return theirs, False
     if theirs == base:
         return ours, False
+    merged, bad = _git_merge(base, ours, theirs)
+    if bad and name.endswith(".py"):
+        by_unit = merge_units(base, ours, theirs)
+        if by_unit is not None:
+            return by_unit, False
+    return merged, bad
+
+
+def _git_merge(base: str, ours: str, theirs: str) -> tuple[str, bool]:
     with tempfile.TemporaryDirectory() as d:
         paths = []
         for name, text in (("ours", ours), ("base", base), ("theirs", theirs)):
@@ -5762,19 +5847,28 @@ class Loop:
 
     @staticmethod
     def _blob(repo, rev, name) -> str:
-        try:
-            return git_run(repo, "show", rev + ":" + name)
-        except subprocess.CalledProcessError:
-            return ""
+        # W-flow 3: bytes, not text mode: a CRLF file keeps its CRLF (text mode turns every CRLF into LF)
+        proc = subprocess.run(["git", "-c", "core.quotepath=off", "-C", str(repo), "show", rev + ":" + name],
+                              capture_output=True)
+        return proc.stdout.decode("utf-8", errors="replace") if proc.returncode == 0 else ""
+
+    @staticmethod
+    def _read_exact(path: Path) -> str:
+        return path.read_bytes().decode("utf-8", errors="replace")      # newline='' semantics: nothing translated
 
     def _merge_file(self, repo, base, name, dst: Path, cand: Path) -> tuple[str, bool]:
         """Candidate file onto the branch file as a 3-way merge from the candidate's base (never a blind copy)."""
-        ours = dst.read_text(encoding="utf-8", errors="replace")
-        theirs = cand.read_text(encoding="utf-8", errors="replace")
+        ours = self._read_exact(dst)
+        theirs = self._read_exact(cand)
         b = self._blob(repo, base, name)
         if not b and ours != theirs:
-            return ours, True     # both sides added the file
-        return three_way_merge(b, ours, theirs)
+            # both sides added the file: an empty side gives way, otherwise Python additions that do not meet are joined
+            if not ours.strip():
+                return theirs, False
+            if not theirs.strip():
+                return ours, False
+            return three_way_merge(b, ours, theirs, name)
+        return three_way_merge(b, ours, theirs, name)
 
     def _merge_verdict(self, repo, base, cur, hit, src, rel) -> str:
         """Why the candidate goes back: would a 3-way merge onto the new HEAD be clean (re-gate) or conflict."""
@@ -5784,8 +5878,8 @@ class Loop:
                 continue
             try:
                 ours = self._blob(repo, cur, name)
-                theirs = src.joinpath(*name.split("/")).read_text(encoding="utf-8", errors="replace")
-                if three_way_merge(self._blob(repo, base, name), ours, theirs)[1]:
+                theirs = self._read_exact(src.joinpath(*name.split("/")))
+                if three_way_merge(self._blob(repo, base, name), ours, theirs, name)[1]:
                     bad.append(name)
             except Exception:
                 bad.append(name)

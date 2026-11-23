@@ -796,7 +796,8 @@ def event_summary(stdout: bytes, workdir: Path | None = None) -> dict:
     return result
 
 
-def unified_diff(baseline: dict[str, bytes], workdir: Path, names, limit: int, per_file: bool = False) -> str:
+def unified_diff(baseline: dict[str, bytes], workdir: Path, names, limit: int, per_file: bool = False,
+                 cut_note: str = '') -> str:
     """Redacted, truncated unified diff of the candidate against the baseline. ``per_file``: ``limit`` is the cut of
     EACH file's diff (a change by parts is shown part by part), not of the whole text."""
     chunks = []
@@ -809,18 +810,94 @@ def unified_diff(baseline: dict[str, bytes], workdir: Path, names, limit: int, p
         piece = list(difflib.unified_diff(old, new, 'a/' + name, 'b/' + name, n=2))
         if per_file:
             text = redact(''.join(piece))
-            chunks.append(text if len(text) <= limit else text[:limit] + DIFF_CUT % limit)
+            chunks.append(text if len(text) <= limit else text[:limit] + (cut_note or DIFF_CUT) % limit)
         else:
             chunks.extend(piece)
     if per_file:
         return ''.join(chunks)
     text = redact(''.join(chunks))
-    return text if len(text) <= limit else text[:limit] + DIFF_CUT % limit
+    return text if len(text) <= limit else text[:limit] + (cut_note or DIFF_CUT) % limit
 
 
 # the cut of a diff named as a cut, not as the end of the change: live 20.11 07:48 a critic rejected a self-fix whose
 # code had passed the gate as "truncated ... incomplete and syntactically invalid"
 DIFF_CUT = '\n[the diff is cut here at %d characters; the rest of the change is not shown]\n'
+REVIEW_FOCUS_LIMIT = 12000     # W-flow 1: the whole review prompt when the changed functions fit
+REVIEW_DIFF_CUT = '\n[diff truncated at %d chars]\n'
+_FUNC = (ast.FunctionDef, ast.AsyncFunctionDef)
+
+
+def _defs_of(text: str) -> dict:
+    """qualified name -> (node, source) of the functions of a Python text (methods as Class.name)."""
+    try:
+        tree = ast.parse(text)
+    except (SyntaxError, ValueError):
+        return {}
+    lines = text.splitlines()
+    found = {}
+    for node in ast.walk(tree):
+        scope = [(node.name + '.', n) for n in node.body if isinstance(n, _FUNC)] if isinstance(node, ast.ClassDef) else []
+        if node is tree:
+            scope = [('', n) for n in node.body if isinstance(n, _FUNC)]
+        for prefix, fn in scope:
+            start = min([fn.lineno] + [d.lineno for d in fn.decorator_list]) - 1
+            found[prefix + fn.name] = (fn, '\n'.join(lines[start:fn.end_lineno]))
+    return found
+
+
+def _signature(fn) -> str:
+    return '%sdef %s(%s)%s: ...' % ('async ' if isinstance(fn, ast.AsyncFunctionDef) else '', fn.name,
+                                    ast.unparse(fn.args), ' -> ' + ast.unparse(fn.returns) if fn.returns else '')
+
+
+def review_focus(baseline: dict, workdir: Path, names, files: dict, test_names=frozenset()) -> str:
+    """W-flow 1: what a critic needs instead of whole files: the bodies of the functions the candidate changed (as
+    they are after the edit), signatures of the functions they call, the bodies of the red tests. '' when no Python
+    function changed (the caller then falls back to the file view)."""
+    changed, called, all_defs = {}, set(), {}
+    for name in sorted(names):
+        path = workdir.joinpath(*name.split('/'))
+        if not name.endswith('.py') or not path.is_file():
+            continue
+        new = _defs_of(path.read_bytes().decode('utf-8', 'replace'))
+        old = _defs_of(baseline.get(name, b'').decode('utf-8', 'replace'))
+        all_defs.update({(name, q): v for q, v in new.items()})
+        for q, (fn, src) in new.items():
+            if q not in old or old[q][1] != src:
+                changed[(name, q)] = (fn, src)
+    if not changed:
+        return ''
+    for fn, _ in changed.values():
+        for node in ast.walk(fn):
+            if isinstance(node, ast.Call):
+                f = node.func
+                called.add(f.id if isinstance(f, ast.Name) else f.attr if isinstance(f, ast.Attribute) else '')
+    for name, data in files.items():          # the other files shown: signatures of what is called from there
+        if name not in names and name.endswith('.py'):
+            all_defs.update({(name, q): v for q, v in _defs_of(
+                data.decode('utf-8', 'replace') if isinstance(data, bytes) else str(data)).items()})
+    out = ['Changed functions after the edit:\n']
+    for (name, q), (_, src) in changed.items():
+        out.append('# %s :: %s\n%s\n\n' % (name, q, src))
+    sigs = ['# %s\n%s\n' % (n, _signature(fn)) for (n, q), (fn, _) in sorted(all_defs.items())
+            if (n, q) not in changed and q.split('.')[-1] in called][:60]
+    if sigs:
+        out.append('Signatures of what they call:\n' + ''.join(sigs) + '\n')
+    tests = []
+    for name, data in sorted(files.items()):
+        low = name.replace('\\', '/').lower()
+        if name in names or not (low.rsplit('/', 1)[-1].startswith('test_') or '/tests/' in '/' + low):
+            continue
+        for q, (fn, src) in _defs_of(data.decode('utf-8', 'replace') if isinstance(data, bytes) else str(data)).items():
+            if fn.name in test_names or (not test_names and fn.name.startswith('test') and
+                                         any(re.search(r'\b%s\b' % re.escape(c[1].split('.')[-1]), src)
+                                             for c in changed)):
+                tests.append('# %s :: %s\n%s\n\n' % (name, q, src))
+    if tests:
+        out.append('Red test:\n' + ''.join(tests))
+    return redact(''.join(out))
+
+
 GATE_PASSED = (' The candidate already compiles and passes the task tests (the gate ran them before you): never reject '
                'it for syntax, imports or the cut of the diff; judge what the change does.')
 
@@ -1099,8 +1176,22 @@ def review_candidate(task: Task, workdir: Path, model: str, invoke, *,
                 (RUBRIC_ASK if rubric else 'Return exactly JSON {"approved":true|false,"reasons":["each concrete defect"]}.\n'))
         files = {n: v for n, v in snapshot.items() if n != POLICY_FILE}
         by_parts = bool(K.contract_of(task).get('parts'))     # a change by parts is judged part by part
+        focused = None       # W-flow 1: the whole diff + the changed functions, when they fit REVIEW_FOCUS_LIMIT
+        if baseline is not None and not by_parts:
+            whole = unified_diff(baseline, workdir, task.touch_files, REVIEW_FOCUS_LIMIT, cut_note=REVIEW_DIFF_CUT)
+            test_names = (set(re.findall(r'::([A-Za-z_]\w*)', ' '.join(task.tests) + ' ' + (execution or ''))) |
+                          set(asked_names(execution or '')))
+            focus = review_focus(baseline, workdir, task.touch_files, files, frozenset(test_names))
+            # no named red test and a large test file: "every test that calls the changed function" is hundreds of
+            # bodies; the outline view of the file (failing test first) is the right picture then
+            unnamed_big_test = not test_names and any(
+                n.replace('\\', '/').rsplit('/', 1)[-1].startswith('test_') for n in large_names(task, files))
+            if focus and whole and not unnamed_big_test:
+                piece = head + 'Candidate diff:\n' + whole + '\n' + focus
+                if len(piece) <= REVIEW_FOCUS_LIMIT and 'diff truncated' not in whole:
+                    focused = piece
         full_diff = (unified_diff(baseline, workdir, task.touch_files, REVIEW_DIFF_LIMIT, per_file=by_parts)
-                     if baseline is not None else '')
+                     if baseline is not None and focused is None else '')
         priority = frozenset(keywords_from(task.title, strict=False)
                              | identifier_tokens(getattr(task, 'goal', '') or ''))
         words = priority | keywords_from(full_diff)
@@ -1118,6 +1209,8 @@ def review_candidate(task: Task, workdir: Path, model: str, invoke, *,
                                  min(REVIEW_DIFF_LIMIT, room // max(1, len(task.touch_files))), per_file=True)
                     if by_parts else unified_diff(baseline, workdir, task.touch_files, min(REVIEW_DIFF_LIMIT, room)))
         prompt = head + ('Candidate diff:\n' + diff + '\n' if diff else '') + body
+        if focused is not None:
+            prompt, diff = focused, whole
         rc, stdout, _ = invoke(reviewer, review_root, model, prompt_override=prompt)
         if rc != 0 or inspect_changes(reviewer, review_root, snapshot):
             raise ReviewFault('reviewer call failed rc=%s' % rc)
@@ -3107,6 +3200,7 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                     charge_call(state, tid)   # BEFORE booking: an exhausted budget must leave no reservation behind
                     when = channels.reserve(quota, pick, tokens, requests=booked,
                                            affinity=affinity)   # exactly what choose() checked
+                    channels.breaker_claim(quota, pick)   # W-flow 2: a probe of a channel in probe mode: nobody else for 45 s
                     if ledger is not None:
                         quota_ledger.publish(ledger, str(checkpoint), quota)
                     booked_one(row)
@@ -3117,6 +3211,8 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                     # W-gemma2 2 (live 19:11:36, three sends, no cool_reason, 'transient'): checked and excluded: the call budget
                     # (refunded on every big 503), a deadline (none in call()), the same-channel ban (hopped is filled by the
                     # non-big path only), group cooling (a big 503 marks nothing). The cause: big['skip'] held the refusing channels
+                    if last_info is not None and channels.breaker_open(live_state, order):
+                        raise ChannelFault(last_info)     # W-flow 2: probe mode: no pauses, no pounding; the pass is deferred (no strike)
                     if big['skip']:               # while the others were not free: the ones that answered 503 are asked again,
                         big['skip'].clear()       # no pause spent
                         continue
@@ -3267,7 +3363,9 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                     if ledger is not None:      # a success of another process ends our series of 503s too
                         channels.absorb_foreign_ok(state.setdefault('channel_quotas', {}),
                                                    quota_ledger.others(ledger, str(checkpoint)))
-                    outcome = channels.apply_failure(state['channel_quotas'], selected, info, env=os.environ)
+                    outcome = channels.apply_failure(state['channel_quotas'], selected, info, env=os.environ,
+                                                     others=quota_ledger.others(ledger, str(checkpoint))
+                                                     if ledger is not None else ())
                     if ledger is not None:
                         quota_ledger.publish(ledger, str(checkpoint), state['channel_quotas'])
                     return outcome
@@ -3288,7 +3386,8 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                     big['skip'].add(selected['id'])
                     big['free'] += 1
                     ck.commit(lambda state, row: refund(state))
-                    time.sleep(pause)
+                    if not done.get('probe_mode'):      # W-flow 2: a channel in probe mode: no pause, the next one is asked
+                        time.sleep(pause)
                     continue
 
                 def close_it(state, row):

@@ -191,6 +191,25 @@ def gate_clear(folder, channel_id) -> None:
             _gate_write(folder, table)
 
 
+def merge_breaker(into, other) -> None:
+    """W-flow 2: the breaker table of a big channel (channel id -> {'fails', 'last', 'ok', 'claim'}) of another section
+    folded into ``into``: the latest of every time; the run of failures is the one of the section with the latest 503."""
+    if not isinstance(into, dict) or not isinstance(other, dict):
+        return
+    num = lambda x: x if isinstance(x, (int, float)) and not isinstance(x, bool) else 0
+    for cid, row in other.items():
+        if not isinstance(row, dict):
+            continue
+        mine = into.get(cid)
+        if not isinstance(mine, dict):
+            into[cid] = {k: num(row.get(k)) for k in ('fails', 'last', 'ok', 'claim')}
+            continue
+        if num(row.get('last')) > num(mine.get('last')):
+            mine['fails'] = num(row.get('fails'))
+        for k in ('last', 'ok', 'claim'):
+            mine[k] = max(num(mine.get(k)), num(row.get(k)))
+
+
 def view(own, others_list, *, now=None) -> dict:
     now = time.time() if now is None else now
     seen = copy.deepcopy(own)
@@ -215,6 +234,8 @@ def view(own, others_list, *, now=None) -> dict:
                         table[key] = copy.deepcopy(row)
                     elif isinstance(row, dict) and isinstance(row.get('flight'), (int, float)):
                         mine['flight'] = max(mine.get('flight') or 0, row['flight'])
+            elif k == 'big_breaker':
+                merge_breaker(seen.setdefault('big_breaker', {}), v)
             elif k == 'channel_cool':
                 if 'channel_cool' not in seen:
                     seen['channel_cool'] = {}

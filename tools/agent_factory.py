@@ -1242,6 +1242,27 @@ def _dir_lock(path: Path, timeout_s: float):
             _log.warning("lock %s not released: %s", lock, e)
 
 
+PLAN_READS = [0]            # W-flow 4: how many times a plan file was really read and parsed (a test counts it)
+_PLAN_CACHE: dict = {}      # path -> (mtime_ns, size, tasks)
+PLAN_FRESH_S = 0.05         # a plan written this recently is never served from the cache (same-tick rewrites)
+
+
+def read_plan_file(plan: Path) -> dict[str, Task]:
+    """The tasks of a plan file. The 1.8 MB plan was read, parsed and validated on every claim and every snapshot (twice per
+    admitted card); it is read again only when the file changed (size, mtime) -- and never from the cache for a file written
+    within PLAN_FRESH_S. A private copy of the dict (the tasks are frozen)."""
+    plan = Path(plan)
+    stat = plan.stat()
+    key = str(plan)
+    hit = _PLAN_CACHE.get(key)
+    if hit and hit[0] == stat.st_mtime_ns and hit[1] == stat.st_size and time.time() - stat.st_mtime > PLAN_FRESH_S:
+        return dict(hit[2])
+    PLAN_READS[0] += 1
+    tasks = read_plan(json.loads(plan.read_text(encoding="utf-8")))
+    _PLAN_CACHE[key] = (stat.st_mtime_ns, stat.st_size, tasks)
+    return dict(tasks)
+
+
 @contextlib.contextmanager
 def txn(checkpoint: Path, plan: Path, timeout_s: float = LOCK_STALE_S + 10):
     """One short transaction on the checkpoint: lock it, read the plan and the state FRESH (the plan grows while a pass
@@ -1249,7 +1270,7 @@ def txn(checkpoint: Path, plan: Path, timeout_s: float = LOCK_STALE_S + 10):
     change the state only through this: the lease protects the task, the lock only the commit."""
     checkpoint, plan = Path(checkpoint), Path(plan)
     with _dir_lock(checkpoint, timeout_s):
-        tasks = read_plan(json.loads(plan.read_text(encoding="utf-8")))
+        tasks = read_plan_file(plan)
         state = load_state(checkpoint, tasks)
         yield tasks, state
         validate_state(tasks, state)
@@ -1272,7 +1293,7 @@ def snapshot(checkpoint: Path, plan: Path, timeout_s: float = LOCK_STALE_S + 10)
     the lock too: on Windows a lock-free read makes the writer's os.replace fail."""
     checkpoint, plan = Path(checkpoint), Path(plan)
     with _dir_lock(checkpoint, timeout_s):
-        tasks = read_plan(json.loads(plan.read_text(encoding="utf-8")))
+        tasks = read_plan_file(plan)
         return tasks, load_state(checkpoint, tasks)
 
 
@@ -1580,6 +1601,10 @@ def _move_traces(state_dir: Path, data: dict) -> None:
 
 
 def load_state(path: Path, tasks: dict[str, Task]) -> dict:
+    # W-flow 4: deliberately NOT cached (unlike the plan). The caller mutates the dict and writes it back, every claim
+    # changes the file, and runners of other processes write it between our reads, so a stat-keyed cache would miss on
+    # nearly every call; a copy of the cached dict (deepcopy of 1.2 MB) costs more than json.loads, and a shared dict
+    # would let one transaction's half-done change leak into the next.
     data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else initial_state(tasks)
     _move_traces(path.parent, data)
     sync_state(tasks, data)
