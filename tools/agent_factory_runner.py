@@ -2599,14 +2599,14 @@ class VgsPlan:
 
     def __init__(self, k: int, ask, channel_names=None):
         self.k, self.ask, self.channels = int(k), ask, list(channel_names or [])
-        self.stats = dict(k=0, asked=0, answered=0, valid=0, unique=0, votes_top=0)
+        self.stats = dict(k=0, asked=0, answered=0, valid=0, unique=0, votes_top=0, retries_503=0)
         self.alts: list = []          # (file, bytes, model) of the next unions, best first
         self.winners: set = set()     # the models that wrote the standing candidate's parts
         self.lock = threading.Lock()
 
     def record(self, stats: dict) -> None:
         with self.lock:
-            for name in ('asked', 'answered', 'valid', 'unique'):
+            for name in ('asked', 'answered', 'valid', 'unique', 'retries_503'):
                 self.stats[name] += int(stats.get(name) or 0)
             self.stats['k'] = max(self.stats['k'], int(stats.get('k') or 0))
             self.stats['votes_top'] = max(self.stats['votes_top'], int(stats.get('votes_top') or 0))
@@ -3330,8 +3330,10 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
     def call(role: str, call_task: Task, directory_for, preferred: str, prompt: str,
              *, exclude_model: str | None = None, skip_tiers: tuple = (), later: bool = False,
              candidate: int | None = None, models_out: set | None = None, on_booked=None,
-             temperature: float | None = None) -> tuple[int, bytes, bytes]:
-        """One real model call with reservation, charging, classification, one transient retry. ``skip_tiers``:
+             temperature: float | None = None, fast_retry: bool = False) -> tuple[int, bytes, bytes]:
+        """W-vgs2 1-2: ``fast_retry`` (an ensemble branch): a 503 is handed back at once as ChannelFault (the ensemble
+        retries the branch itself), the probe-mode fuse does not stop the call, and a channel's failure cooling is
+        applied once per pass. One real model call with reservation, charging, classification, one transient retry. ``skip_tiers``:
         channel tiers this call may not use (factory_channels.route_order). ``candidate``: the number of the candidate
         the call belongs to (parts of one card run in threads, so it is not read from ``ctx``); ``models_out``: the set
         the model of the call is added to as soon as it is booked; ``on_booked(model)``: called at the same moment."""
@@ -3395,7 +3397,8 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                     charge_call(state, tid)   # BEFORE booking: an exhausted budget must leave no reservation behind
                     when = channels.reserve(quota, pick, tokens, requests=booked,
                                            affinity=affinity)   # exactly what choose() checked
-                    channels.breaker_claim(quota, pick)   # W-flow 2: a probe of a channel in probe mode: nobody else for 45 s
+                    if not fast_retry:
+                        channels.breaker_claim(quota, pick)   # W-flow 2: a probe of a channel in probe mode: nobody else for 45 s
                     if ledger is not None:
                         quota_ledger.publish(ledger, str(checkpoint), quota)
                     booked_one(row)
@@ -3406,7 +3409,7 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                     # W-gemma2 2 (live 19:11:36, three sends, no cool_reason, 'transient'): checked and excluded: the call budget
                     # (refunded on every big 503), a deadline (none in call()), the same-channel ban (hopped is filled by the
                     # non-big path only), group cooling (a big 503 marks nothing). The cause: big['skip'] held the refusing channels
-                    if last_info is not None and channels.breaker_open(live_state, order):
+                    if last_info is not None and not fast_retry and channels.breaker_open(live_state, order):
                         raise ChannelFault(last_info)     # W-flow 2: probe mode: no pauses, no pounding; the pass is deferred (no strike)
                     if big['skip']:               # while the others were not free: the ones that answered 503 are asked again,
                         big['skip'].clear()       # no pause spent
@@ -3553,6 +3556,22 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                 info['timed_out'] = True       # W-gemma 3: apply_failure rests the Gemma channel BIG_TIMEOUT_CLOSE_S
             if kind in ('timeout', 'launcher'):
                 raise ChannelFault(info)
+            overload_503 = (kind == 'transient' and selected is not None
+                            and info.get('status') in channels.OVERLOAD_STATUSES)
+            if fast_retry and overload_503:
+                with ctx['lock']:
+                    first_time = selected['id'] not in ctx.setdefault('penalised', set())
+                    ctx['penalised'].add(selected['id'])
+
+                def refused_503(state, row):     # no quota spent, no model call of the card; the cooling once per pass
+                    state['model_calls'] = max(0, int(state.get('model_calls') or 0) - 1)
+                    if first_time:
+                        channels.apply_failure(state['channel_quotas'], selected, info, env=os.environ)
+                    if ledger is not None:
+                        quota_ledger.publish(ledger, str(checkpoint), state['channel_quotas'])
+                ck.commit(refused_503)
+                last_info = info
+                raise ChannelFault(info)
             if selected is not None:
                 def failure(state, row):
                     if ledger is not None:      # a success of another process ends our series of 503s too
@@ -3654,6 +3673,11 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
 
     base_holder = None
     bg = bg_pool = None            # the red base measured in the background while the model answers (task 3.2)
+    bank_hook: list = []           # W-vgs2 3: bank_base once the pass has one
+
+    def bank_base_safe():
+        for keep in bank_hook:
+            keep()
     gate_tmp = staging / 'tmp'     # pytest's own temp (--basetemp) stays inside staging, never under the profile
     slot = {'armed': False, 'left': float(SLOT_BUDGET_S), 'waited': 0.0}   # armed at the FIRST gate run
 
@@ -3899,6 +3923,43 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
         base_settled = False
         on_mods, off_mods, off_short, path_focus = {}, {}, [], frozenset()
 
+        def record_base():
+            """Keeps a measured red base (the process cache and the row) once."""
+            nonlocal base_fresh
+            if not base_fresh:
+                return
+            base_fresh = False
+            keep_red = (key and verdict == 'red' and not base.env_reason and task.kind != 'unit_test')
+            if keep_red and shared is None:
+                _shared_base_put(core, base_sha, task, base)
+
+            def note_base(state, row):
+                row.pop('base_red', None)
+                if keep_red:
+                    kept = dataclasses.asdict(base)
+                    if 'path' in kept:      # <id>: the trace goes to traces/<tid>.json, the state keeps only its name
+                        try:
+                            kept['path_file'] = put_trace(checkpoint.parent, task.id, kept.pop('path'))
+                        except (OSError, ValueError, TypeError, IndexError):
+                            kept.pop('path_file', None)
+                            return          # no place for the trace: no record, the base is measured again next pass
+                    row['base_red'] = {'key': key, 'at': _now(), 'result': kept}
+            ck.commit(note_base)
+
+        def bank_base():
+            """W-vgs2 3: a pass that ends before settle_base (the coder's 503 / wait) still keeps the red base it paid
+            for: the next pass reuses it (base_reused) instead of measuring 17-150 s again (live 24.11 00:53)."""
+            nonlocal verdict, base, bg
+            if base_settled or bg is None:
+                return
+            future, bg = bg, None
+            try:
+                verdict, base = future.result()
+                record_base()
+            except Exception:       # noqa: BLE001 - a base that cannot be kept is measured again
+                pass
+        bank_hook.append(bank_base)
+
         def settle_base():
             """Waits for the red base (a fault of the background run surfaces here, as it did when the call was
             synchronous), records it and reads its path. A dict ends the pass (green / environment / unknown base);
@@ -3909,24 +3970,7 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
             if bg is not None:
                 future, bg = bg, None
                 verdict, base = future.result()
-            if base_fresh:
-                base_fresh = False
-                keep_red = (key and verdict == 'red' and not base.env_reason and task.kind != 'unit_test')
-                if keep_red and shared is None:
-                    _shared_base_put(core, base_sha, task, base)
-
-                def note_base(state, row):
-                    row.pop('base_red', None)
-                    if keep_red:
-                        kept = dataclasses.asdict(base)
-                        if 'path' in kept:      # <id>: the trace goes to traces/<tid>.json, the state keeps only its name
-                            try:
-                                kept['path_file'] = put_trace(checkpoint.parent, task.id, kept.pop('path'))
-                            except (OSError, ValueError, TypeError, IndexError):
-                                kept.pop('path_file', None)
-                                return          # no place for the trace: no record, the base is measured again next pass
-                        row['base_red'] = {'key': key, 'at': _now(), 'result': kept}
-                ck.commit(note_base)
+            record_base()
             ctx['counts'] = base
             base_settled = True
             if verdict == 'green':
@@ -4500,8 +4544,21 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                     try:
                         rc, out, err = call('edit', part_task, lambda _retry: directory, chosen, text,
                                             exclude_model=others or None, skip_tiers=('main', 'escalation'),
-                                            candidate=0, on_booked=got.append, temperature=temperature)
-                    except (channels.ChannelUnavailable, ChannelFault, NoIndependentReviewer, PromptTooLarge) as error:
+                                            candidate=0, on_booked=got.append, temperature=temperature,
+                                            fast_retry=True)
+                    except ChannelFault as error:
+                        info = error.info or {}
+                        if info.get('kind') == 'transient' and info.get('status') in channels.OVERLOAD_STATUSES:
+                            raise ENS.ChannelRefused(str(error), kind='overload') from error
+                        if info.get('kind') == 'rate_day':
+                            raise ENS.ChannelRefused(str(error), kind='day') from error
+                        if info.get('kind') == 'rate_minute':
+                            raise ENS.ChannelRefused(str(error), kind='minute',
+                                                     wait_s=error.wait_s or info.get('retry_after_s') or 0) from error
+                        raise ENS.ChannelRefused(str(error)) from error
+                    except channels.ChannelUnavailable as error:
+                        raise ENS.ChannelRefused(str(error), kind='minute', wait_s=getattr(error, 'wait_s', 0) or 0) from error
+                    except (NoIndependentReviewer, PromptTooLarge) as error:
                         raise ENS.ChannelRefused(str(error)) from error
                     return rc, out, err, (got[-1] if got else None)
 
@@ -4981,11 +5038,14 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
     except (StaleLease, LockBusy):
         raise                       # the lease is gone / the lock is busy: write nothing (the caller reports it)
     except ChannelFault as error:
+        bank_base_safe()
         return fault(error)
     except BudgetExhausted:
+        bank_base_safe()
         report['pending_review'] = has_pending()
         return release('budget_exhausted', seconds_to_local_midnight())
     except channels.ChannelUnavailable as error:
+        bank_base_safe()
         report['pending_review'] = has_pending()
         return _wait(release, report, 'channel_wait', error.wait_s, status='WAITING_CHANNEL',
                      channel_reason=error.reason)
