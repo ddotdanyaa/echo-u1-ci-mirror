@@ -582,11 +582,13 @@ def contract_for(packet, *, rung, root, asks, named_ok=False):
                     shrunk = True
                     user += '\nShrink instructions or move excess work into more. Return the full contract again.'
                     continue
-                if errors and all(e.startswith(CODE_FAULT) for e in errors):
-                    if not code_asked and not fixed:
-                        code_asked = True       # one re-ask of the same step for the flaw of the test text
-                        user += ('\nThe test code of test.new.code is unusable:\n' + '\n'.join(errors) +
-                                 '\nReturn the full contract again with the code corrected.')
+                if any(e.startswith(CODE_FAULT) for e in errors):
+                    if not code_asked:
+                        code_asked = True       # one re-ask of the same step for the flaw of the test text (with the other faults, if any)
+                        if not all(e.startswith(CODE_FAULT) for e in errors):
+                            fixed = True        # the same message carries the other faults: the general re-ask is spent too
+                        user += ('\nThe test code of test.new.code is unusable or the contract has defects:\n' + '\n'.join(errors) +
+                                 '\nReturn the full contract again with them corrected.')
                         continue
                     contract['test']['new'].pop('code', None)       # then the contract stands without the code, as before
                     errors = validate(contract, root, bid=packet.get('bid', ''), title=packet.get('title', ''),
