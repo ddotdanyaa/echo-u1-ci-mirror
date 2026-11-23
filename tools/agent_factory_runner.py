@@ -2918,9 +2918,10 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
         (which passes its own ``sink`` for the events, so it writes none of them)."""
         route = 'code' if role == 'repair' else role
         excl = sorted(channels.excluded_models(exclude_model) | set(hopped)) or None
-        if 'small' in skip_tiers and channels.main_dry(configured, live_state, os.environ):
-            # W-gemma2 1: 'no small tier for a repeat / a second candidate' is a preference for a day when a main channel is
-            # open; with every main channel closed by the day's mark Gemma is the only executor and takes the repeat too
+        if 'small' in skip_tiers and not channels.main_open(configured, live_state, os.environ):
+            # W-gemma2 1 / W-gemma4 fix1: 'no small tier for a repeat / a second candidate' is a preference for a day when a
+            # main channel is open; with none open (closed by any mark, or none usable) Gemma is the only executor and takes
+            # the repeat too. The same condition (main_open) as skip_for, so the two paths cannot disagree
             skip_tiers = tuple(t for t in skip_tiers if t != 'small')
         order = channels.route_order(configured, route, attempt, base_tokens, preferred=preferred,
                                      exclude_model=excl, skip_tiers=skip_tiers, state=live_state, later=later,
@@ -4019,7 +4020,8 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                     if channels.usable(channels.route_order(
                             configured, 'code', attempt, channels.estimate_tokens(len(prompt), 0),
                             exclude_model=now_out + older, state=live_now,
-                            skip_tiers=() if small_follow_up or not now_out else ('small',)),
+                            skip_tiers=() if small_follow_up or not now_out
+                            or not channels.main_open(configured, live_now, os.environ) else ('small',)),
                             live_now, os.environ):   # a dead channel (checked with the call's own env) is no other model
                         tag = 'other_model_than_%d' % len(older)
                         if tag not in events:
