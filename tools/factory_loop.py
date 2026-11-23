@@ -1616,11 +1616,12 @@ class Loop:
         pass: a task that cannot start now costs no model call). (outcome | None, act, tasks, state, ls)."""
         self._refused = ""
         admitted, refused, live0 = 0, "", len(self.pool.workers)
+        declined = set()                                    # W-gemma6: ids _admit answered 0 in this pass are not chosen again
         for _ in range(64):                                 # bounded: every round starts a worker or ends the loop
             if act["action"] != "RUN":
                 break
             tid = next((t for t in (act.get("task_ids") or [act.get("task_id")])
-                        if t and t not in self.pool.tids()), "")
+                        if t and t not in self.pool.tids() and t not in declined), "")
             if not tid:
                 break
             refused = self._capacity(tasks.get(tid))
@@ -1631,6 +1632,8 @@ class Loop:
                 self._pool_event(admitted, refused, live0)
                 return got, act, tasks, state, ls
             admitted += got
+            if not got:
+                declined.add(tid)
             tasks, state = self.load()          # the claim changed the state, the loop state: nothing stale is kept
             ls = self.ls()
             act = self._act(state, tasks, ls, now)

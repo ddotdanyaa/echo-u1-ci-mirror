@@ -470,34 +470,56 @@ def ready(tasks: dict[str, Task], state: dict, *, google: bool = True,
     file, and one never writes what the other reads."""
     validate_state(tasks, state)
     now = time.time() if now is None else float(now)
-    read_in_use = set()
-    write_in_use = {(p.casefold(), None) for p in occupied}
-    for tid, row in state["tasks"].items():
-        if row["status"] in ("RUNNING", "REVIEW"):
-            write_in_use.update(write_claims(tasks[tid]))
-            read_in_use.update(p.casefold() for p in tasks[tid].read_files)
+    write_in_use, read_in_use = _busy_claims(tasks, state, occupied)
     found = []
     def spent(t) -> int:      # W-gemma5 2: 0 = a fresh card (no attempt, not deferred by the last pass), 1 = a repeat
         row = state["tasks"][t]
         return 1 if (fresh_first and (row.get("attempts", 0) or row.get("defer_reason"))) else 0
     for tid in sorted(tasks, key=lambda t: (spent(t), tasks[t].priority, t)):
         task = tasks[tid]
-        if state["tasks"][tid]["status"] != "READY":
-            continue
-        if state['tasks'][tid].get('not_before', 0) > now:
-            continue
-        if google and (not task.privacy_safe or task.only_opus):
-            continue
-        reads = {p.casefold() for p in task.read_files}
-        writes = write_claims(task)
-        if _claims_clash(writes, write_in_use) or {f for f, _ in writes} & read_in_use \
-                or reads & {f for f, _ in write_in_use}:
-            continue
-        if all(state["tasks"][dep]["status"] in SATISFIED for dep in task.depends_on):
+        if _startable(tasks, state, tid, write_in_use, read_in_use, google, now):
             found.append(tid)
-            write_in_use.update(writes)
-            read_in_use.update(reads)
+            write_in_use.update(write_claims(task))
+            read_in_use.update(p.casefold() for p in task.read_files)
     return found
+
+
+def _busy_claims(tasks, state, occupied=()):
+    """Files held by the busy rows (RUNNING and REVIEW) and by ``occupied``: (writes, reads)."""
+    read_in_use = set()
+    write_in_use = {(p.casefold(), None) for p in occupied}
+    for tid, row in state["tasks"].items():
+        if row["status"] in ("RUNNING", "REVIEW"):
+            write_in_use.update(write_claims(tasks[tid]))
+            read_in_use.update(p.casefold() for p in tasks[tid].read_files)
+    return write_in_use, read_in_use
+
+
+def _startable(tasks, state, tid, write_in_use, read_in_use, google, now) -> bool:
+    task = tasks[tid]
+    row = state["tasks"][tid]
+    if row["status"] != "READY" or row.get("not_before", 0) > now:
+        return False
+    if google and (not task.privacy_safe or task.only_opus):
+        return False
+    reads = {p.casefold() for p in task.read_files}
+    writes = write_claims(task)
+    if _claims_clash(writes, write_in_use) or {f for f, _ in writes} & read_in_use \
+            or reads & {f for f, _ in write_in_use}:
+        return False
+    return all(state["tasks"][dep]["status"] in SATISFIED for dep in task.depends_on)
+
+
+def startable(tasks: dict[str, Task], state: dict, tid: str, *, google: bool = True,
+              occupied: tuple[str, ...] = (), now: float | None = None) -> bool:
+    """Can THIS task start now: READY, its term passed, dependencies done, files free of the busy rows. Other READY
+    tasks do not matter (ready() is greedy: its set depends on the order it walks)."""
+    validate_state(tasks, state)
+    now = time.time() if now is None else float(now)
+    if tid not in tasks:
+        return False
+    write_in_use, read_in_use = _busy_claims(tasks, state, occupied)
+    return _startable(tasks, state, tid, write_in_use, read_in_use, google, now)
 
 
 def write_claims(task: Task) -> set[tuple[str, str | None]]:
@@ -553,7 +575,7 @@ def acquire(tasks: dict[str, Task], state: dict, tid: str, *,
     """
     now = time.time() if now is None else float(now)
     _roll_budget(state, now)
-    if tid not in ready(tasks, state, now=now):
+    if not startable(tasks, state, tid, now=now):
         raise InvalidPlan("not runnable")
     if state["model_calls"] >= state["max_model_calls"]:
         raise BudgetExhausted("budget exhausted")
@@ -1216,7 +1238,8 @@ def claim(checkpoint: Path, plan: Path, tid: str | None = None):
     """One transaction: the task ``tid`` (else the first ready one) goes RUNNING under a fresh lease; no model call is
     charged (the call is charged when it is made). (task id, token), or None when nothing is ready."""
     with txn(checkpoint, plan) as (tasks, state):
-        choices = [t for t in ready(tasks, state) if tid is None or t == tid]
+        choices = [t for t in ready(tasks, state)] if tid is None else (
+            [tid] if startable(tasks, state, tid) else [])
         if not choices:
             return None
         return choices[0], acquire(tasks, state, choices[0], charge=False)

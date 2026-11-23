@@ -1,6 +1,6 @@
 {
  "accepted": 17,
- "free_ram_gb": 4.21,
+ "free_ram_gb": 2.63,
  "funnel": {
   "accepted": 17,
   "claimed": 417,
@@ -9,7 +9,7 @@
   "gate_pass": 67,
   "known_to_loop": 486,
   "promoted": 63,
-  "ready": 131,
+  "ready": 124,
   "reviewed": 167,
   "triaged": 327
  },
@@ -183,7 +183,7 @@
   }
  },
  "promoted": 63,
- "rows_recognized": 38845,
+ "rows_recognized": 38935,
  "schema": 3,
  "side": {
   "blocked": 0,
@@ -191,7 +191,7 @@
   "requeued": 7
  },
  "skipped_files": 0,
- "source_sha": "sha54758cad173e",
+ "source_sha": "shab889175d5c7a",
  "span": {
   "answer": {
    "calls": 0,
@@ -224,14 +224,14 @@
    "calls_usage_unknown": 0,
    "errors": {},
    "http_429": 0,
-   "rows": 966,
+   "rows": 970,
    "status": {
     "brake": 8,
     "brake_cleared": 1,
     "cleared": 58,
     "deferred": 597,
-    "error": 86,
-    "other": 175,
+    "error": 88,
+    "other": 177,
     "parked": 18,
     "released": 9,
     "run_failed": 14
@@ -244,7 +244,7 @@
    "calls_usage_unknown": 0,
    "errors": {},
    "http_429": 0,
-   "rows": 6485,
+   "rows": 6499,
    "status": {
     "BLOCKED": 364,
     "FAILED": 439,
@@ -256,11 +256,11 @@
     "deferred": 576,
     "empty": 92,
     "infra": 17,
-    "ok": 2270,
-    "other": 265,
+    "ok": 2281,
+    "other": 267,
     "refused": 1,
     "requeued": 7,
-    "stop": 99
+    "stop": 100
    },
    "tokens_in": 0,
    "tokens_out": 0
@@ -270,14 +270,14 @@
    "calls_usage_unknown": 0,
    "errors": {},
    "http_429": 0,
-   "rows": 10202,
+   "rows": 10274,
    "status": {
     "added": 12,
     "applied": 974,
     "error": 1,
     "failed": 36,
-    "ok": 161,
-    "other": 8995,
+    "ok": 162,
+    "other": 9066,
     "rejected": 23
    },
    "tokens_in": 0,
@@ -373,26 +373,27 @@
   "cleared": 58,
   "deferred": 1173,
   "empty": 381,
-  "error": 1182,
+  "error": 1184,
   "failed": 36,
   "hold_dropped": 3,
   "infra": 17,
-  "ok": 16758,
-  "other": 10318,
+  "ok": 16770,
+  "other": 10393,
   "parked": 18,
   "refused": 2,
   "rejected": 40,
   "released": 9,
   "requeued": 14,
   "run_failed": 14,
-  "stop": 99
+  "stop": 100
  },
  "summary": "ok",
  "tasks_now": {
   "DONE": 68,
   "FAILED": 483,
   "PROMOTED": 39,
-  "READY": 131
+  "READY": 124,
+  "RUNNING": 7
  },
  "unrecognized_rows": 0
 }

@@ -454,6 +454,31 @@ def test_no_admission_once_stop_is_written_mid_step(tmp_path, monkeypatch):
     assert len([e for e in plog(env) if e["ev"] == "start"]) == 1
 
 
+def test_fill_does_not_choose_again_an_id_admit_refused_in_the_pass(tmp_path, monkeypatch):
+    env = pool_env(tmp_path, monkeypatch, [task_row(1), task_row(2), task_row(3)])
+    monkeypatch.setenv("POOL_SLEEP", "1.0")
+    monkeypatch.setenv("POOL_STATUS", "DONE")
+    loop = env.make_loop()
+    calls, started = [], set()
+    monkeypatch.setattr(loop.pool, "tids", lambda: set(started))
+
+    def admit(tid, tasks, ls):
+        calls.append(tid)
+        if tid == TID2:
+            started.add(tid)                              # the second id starts
+            return 1
+        return 0                                          # the first and the third are refused
+    loop._admit = admit
+    tasks, state = loop.load()
+    ls = loop.ls()
+    now = loop.clock()
+    act = loop._act(state, tasks, ls, now)
+    assert act["action"] == "RUN" and act["task_ids"][0] == "T1"
+    loop._fill(act, tasks, state, ls, now)
+    assert calls == ["T1", TID2, "T3"]                  # every id asked once, the refused first one not again
+    assert started == {TID2}
+
+
 def test_a_busy_state_lock_after_the_reap_does_not_lose_the_result(tmp_path, monkeypatch):
     env = pool_env(tmp_path, monkeypatch, [task_row(1)])
     monkeypatch.setenv("POOL_SLEEP_T1", "0.2")

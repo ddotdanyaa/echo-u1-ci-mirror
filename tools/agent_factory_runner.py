@@ -43,7 +43,7 @@ from .agent_factory import (BudgetExhausted, DEFER_REASONS, LEASE_LIFETIME_S, MA
                             InvalidPlan, Lease, LockBusy, StaleLease, Task, add_feedback, begin, charge_call, claim,
                             defer, defer_streak, fail_row, failed_models_of, is_unsafe_reject, seconds_to_local_midnight,
                             read_plan, ready, redact, REPEAT_MARK, route, quarantine, safe_path, safe_source, settle,
-                            snapshot, txn, unclaim)
+                            snapshot, startable, txn, unclaim)
 from .agent_factory import TRACE_DIR, load_trace as agent_factory_load_trace, put_trace
 from .factory_context import (LARGE_FILE_CHARS, asked_names, failing_names, identifier_tokens, keywords_from, packet,
                               render, scrub_paths)
@@ -2643,7 +2643,8 @@ def _once(*, root: Path, plan: Path, checkpoint: Path, staging: Path,
     if lease is not None:
         candidates = [task_id] if task_id in tasks else []
     else:
-        candidates = [t for t in ready(tasks, state) if task_id is None or t == task_id]
+        candidates = list(ready(tasks, state)) if task_id is None else (
+            [task_id] if startable(tasks, state, task_id) else [])
     if not candidates:
         return {"status": "IDLE", "next": None, "deploy_blocked": state["deploy_blocked"]}
     tid = candidates[0]
