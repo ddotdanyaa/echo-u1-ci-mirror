@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import ast
+import contextlib
 import hashlib
 import json
 import os
@@ -18,6 +19,12 @@ from tools import factory_process as PR
 MAX_PARTS = MAX_STEPS = 10
 INSTR_MIN, INSTR_MAX = 40, 3000
 FREE_PROMPT_MAX = 120_000
+FREE_RUNGS = ('free', 'free_main', 'free_small')     # the free steps of the ladder (W-gslice 1: free_small is the small tier's ensemble)
+SMALL_PROMPT_TOKENS = 9000      # the window of the small tier: estimated input tokens of one prompt
+SMALL_MAX_TOKENS = 4096         # the answer limit of a small-tier call
+SMALL_REASONING = 'minimal'     # reasoning_effort of the small-tier call (the default of the model body; 'none' is refused by the API)
+SMALL_K = 4                     # the voices of the ensemble: different temperatures / models
+SMALL_TEMPERATURES = (0.2, 0.5, 0.8, 0.35)
 KEYWORDS_MAX = 12
 AGENT_IDLE_S = 300
 AGENT_BUDGET_USD = 3.0
@@ -224,7 +231,7 @@ def build_prompt(packet, engine=''):
               + ((RED_RULE + '\n' + (RED_AGENT_RULE if engine == 'agent' else RED_OTHER_RULE) + '\n') if is_red(packet)
                  else NOT_CODE_RULE + '\n' + SPLIT_RULE + '\n') + (PUBLISHED_ONLY_RULE + '\n' if packet.get('publishable') else '') +
               (TEST_CODE_RULE + '\n' if engine in ('paid', 'agent') else '') +
-              (FREE_PROOF_RULE + '\n' if engine in ('free', 'free_main') else '') +
+              (FREE_PROOF_RULE + '\n' if engine in FREE_RUNGS else '') +
               (PART_CODE_RULE + '\n' if engine in ('paid', 'agent') and codes_ok(packet) else '') +
               (HOLD_RULE + '\n' if engine in ('paid', 'agent') and (packet.get('rung') or 0) >= 2 else '') +
               (DRY_RULE + '\n' if engine in ('paid', 'agent') and packet.get('edit_dry') else '') +
@@ -619,17 +626,17 @@ def validate(contract, root, *, bid='', title='', known_ids=None, named_ok=False
 def ladder(rung, *, rungs, red=False, dry=False, base_debt=False):
     """W-base0: a row of the old baseline debt (base_debt) is sliced by the free steps only, always: no paid, no agent."""
     if base_debt:
-        order = ('free', 'free_main')
+        order = ('free', 'free_main', 'free_small')
     elif dry and not red:      # W-dry 1: the edit channels are dry: agent, then paid give the finished code; the free steps last
-        order = ('agent', 'paid', 'free', 'free_main')
+        order = ('agent', 'paid', 'free', 'free_main', 'free_small')
     elif red:           # W-pay 2: a row with a ready red test: the agent reads the code itself and mends a flaw in one re-ask
-        order = ('agent', 'paid', 'free', 'free_main')
+        order = ('agent', 'paid', 'free', 'free_main', 'free_small')
     elif rung == 0:
-        order = ('free', 'free_main', 'paid', 'agent')
+        order = ('free', 'free_main', 'free_small', 'paid', 'agent')    # W-gslice 1: free_small follows free_main in every order
     elif rung == 1:
-        order = ('paid', 'agent', 'free', 'free_main')
+        order = ('paid', 'agent', 'free', 'free_main', 'free_small')
     else:               # W-hard 2: from the second rung Claude Code (it reads the code) goes first, then paid
-        order = ('agent', 'paid', 'free', 'free_main')
+        order = ('agent', 'paid', 'free', 'free_main', 'free_small')
     return [engine for engine in order if engine in rungs]
 
 
@@ -1070,6 +1077,120 @@ def fit_free(packet, rung, engine, initial, user, limit=None):
     return packet, system, base, text
 
 
+def small_limit_chars(text):
+    """W-gslice 1: the characters that make SMALL_PROMPT_TOKENS estimated tokens at the Cyrillic share of ``text``."""
+    from tools import factory_channels as CH
+    share = CH.cyrillic_share(text)
+    per_char = (1 - share) / CH.CHARS_PER_TOKEN + share / CH.CYRILLIC_CHARS_PER_TOKEN
+    return int(SMALL_PROMPT_TOKENS / per_char)
+
+
+def fit_small(packet, rung, engine, initial, user):
+    """W-gslice 1: the packet of a free step squeezed into the window of the small tier (SMALL_PROMPT_TOKENS estimated
+    tokens). The red test with its trace and the named functions stay; hints, examples and the owner's quotes are cut
+    first (fit_free's order); a last cut takes the tail of the red dossier. What was cut is NAMED in the user text.
+    Returns (packet, system, base, user) as fit_free does; ``ContractFault('prompt oversize')`` when it cannot fit."""
+    before = dict(packet)
+    limit = small_limit_chars(build_prompt(dict(packet, rung=rung), engine)[0] + user)
+    packet, system, base, text = fit_free(packet, rung, engine, initial, user, limit=limit)
+    if len(system) + len(text) > limit and isinstance(packet.get('red_dossier'), str):
+        appended = text[len(base):] if text.startswith(base) else ''
+        over = len(system) + len(text) - limit
+        dossier = packet['red_dossier']
+        packet['red_dossier'] = dossier[:max(0, len(dossier) - over - 40)] + '\n[...]'
+        system, base = build_prompt(dict(packet, rung=rung), engine)
+        text = base + appended
+    if len(system) + len(text) > limit:
+        raise ContractFault('prompt oversize')
+    cut = [key for key in ('examples', 'hints', 'evidence', 'quotes', 'red_dossier') if packet.get(key) != before.get(key)]
+    mark = '\n[cut to fit the small window: ' + ', '.join(cut) + ']' if cut else ''
+    if mark and mark not in text:
+        text += mark
+    return packet, system, base, text
+
+
+def contract_key(contract):
+    """W-gslice 2: the vote fingerprint of a contract: a fix is the set of its parts' (file, symbols); any other
+    decision is the decision itself."""
+    if contract.get('decision') != 'fix':
+        return 'decision:' + str(contract.get('decision'))
+    parts = sorted((str(p.get('file')), tuple(sorted(map(str, p.get('symbols') or [])))) for p in contract.get('parts') or []
+                   if isinstance(p, dict))
+    return 'fix:' + hashlib.sha1(json.dumps(parts, ensure_ascii=False).encode('utf-8')).hexdigest()
+
+
+def _small_vote(ask, system, user, *, packet, root, named_ok=False, k=SMALL_K):
+    """W-gslice 2: SMALL_K voices of the small tier (different temperatures and models) asked at once. A voice is valid when
+    parse + validate (+ the test reaches the symbol of a fix, + a red row's own rule) pass; the voices are counted by
+    contract_key. The winner has the most votes, a tie goes to fewer parts. ``ask(system, user, temperature=, channel=)``
+    raises factory_ensemble.ChannelRefused for a refused channel; its ``channels`` attribute lists the models.
+    Returns the raw JSON of the winner; no voice at all -> ContractFault('no_channel'); voices without a valid contract ->
+    ContractFault with the reasons (``answered_voices`` > 0: a counted void)."""
+    from tools import factory_ensemble as ENS
+    red = is_red(packet)
+
+    def branch(n, temperature, channel):
+        text = user
+        raw = ask(system, text, temperature=temperature, channel=channel)
+        try:
+            contract = parse(raw)
+        except Exception:                                   # the verifier names the flaw
+            return raw
+        if 'need' in contract:                              # ONE extra request inside the branch
+            answer = _need_source(contract['need'], root, named_ok, [])
+            text += '\nRequested source:\n' + answer + '\n' + LAST_NEED
+            raw = ask(system, text, temperature=temperature, channel=channel)
+        return raw
+
+    def verify(raw):
+        try:
+            contract = parse(raw)
+        except Exception as exc:
+            return False, 'no contract: ' + type(exc).__name__, ''
+        if 'need' in contract:
+            return False, 'a second source request', ''
+        decision = contract.get('decision')
+        if decision == 'hold':
+            return False, 'hold is the answer of paid/agent at rung >= 2 only', ''
+        _drop_part_codes(contract)
+        repair_contract(contract, root, packet)
+        errors = validate(contract, root, bid=packet.get('bid', ''), title=packet.get('title', ''),
+                          known_ids=packet.get('known_ids'), named_ok=named_ok)
+        if errors:
+            return False, '; '.join(errors)[:300], ''
+        if red and (bad := _red_fault(contract, 'free_small')):
+            return False, bad, ''
+        if decision == 'fix' and (bad := reach_fault(contract, packet, root)):
+            return False, bad, ''
+        if decision not in ('fix', 'split') and str(decision).split(':')[0] in NO_FIX_PROOF and not no_fix_proof(contract, root):
+            return False, 'no proof: %s needs the name of an existing test or function' % decision, ''
+        return True, '', contract_key(contract)
+
+    channels = list(getattr(ask, 'channels', None) or []) or None
+    ens = ENS.Ensemble(k, branch, verify, channels=channels, temperatures=SMALL_TEMPERATURES)
+    with (getattr(ask, 'gate', None) or contextlib.nullcontext()):      # W-gslice 3: at most 3 ensembles at a time, editors first
+        found = ens.run()
+    try:
+        ask.vgs = dict(ens.stats, rejected=len(ens.rejected))      # the telemetry of the slice event (W-gslice 4)
+    except AttributeError:
+        pass
+    if found:
+        def parts_of(candidate):
+            try:
+                return len(parse(candidate.payload).get('parts') or [])
+            except Exception:
+                return 0
+        best = sorted(found, key=lambda c: (-c.votes, parts_of(c), c.order))[0]
+        return best.payload
+    answered = ens.stats.get('answered', 0)
+    if not answered:
+        raise ContractFault('no_channel')
+    reasons = list(dict.fromkeys(str(r) for r in ens.rejected if r))
+    exc = ContractFault('no valid contract from %d voices: %s' % (answered, '; '.join(reasons)[:600]))
+    exc.answered_voices = answered
+    raise exc
+
+
 def contract_for(packet, *, rung, root, asks, named_ok=False, red_given=None, skip=None):
     """`skip` is the cache of the row's wait record ({engine: {'kind', 'fault', 'answer'}}): a step that already answered
     this row with a flaw on this version and sha is not asked again in the repeat (its answer counts as given when any
@@ -1099,12 +1220,17 @@ def contract_for(packet, *, rung, root, asks, named_ok=False, red_given=None, sk
         refused = []        # files of this engine's requests that could not be shown: the slice event keeps their names
         try:
             while True:
-                if engine in ('free', 'free_main') and len(system) + len(user) > FREE_PROMPT_MAX:   # a limit of the free rungs
+                if engine == 'free_small':
+                    # W-gslice 1-2: the packet squeezed into the small tier's window, then k voices of one ensemble
+                    free_packet, system, base_user, user = fit_small(free_packet, rung, engine, base_user, user)
+                    raw = _small_vote(asks[engine], system, user, packet=packet, root=root, named_ok=named_ok)
+                elif engine in FREE_RUNGS and len(system) + len(user) > FREE_PROMPT_MAX:   # a limit of the free rungs
                     # W-free 2: no refusal: the hints are cut in order of value, the red test and its trace stay
                     free_packet, system, base_user, user = fit_free(free_packet, rung, engine, base_user, user)
                     if len(system) + len(user) > FREE_PROMPT_MAX:
                         raise ContractFault('prompt oversize')
-                raw = asks[engine](system, user)
+                if engine != 'free_small':
+                    raw = asks[engine](system, user)
                 answered.add(engine)
                 replied = True
                 contract = parse(raw)
@@ -1180,7 +1306,7 @@ def contract_for(packet, *, rung, root, asks, named_ok=False, red_given=None, sk
                         continue
                 if contract['decision'] == 'fix':
                     _stamp_part_codes(contract, root)
-                if contract['decision'] not in ('fix', 'split') and engine in ('free', 'free_main'):
+                if contract['decision'] not in ('fix', 'split') and engine in FREE_RUNGS:
                     decision = contract['decision']
                     if decision.split(':')[0] in NO_FIX_PROOF and not no_fix_proof(contract, root):
                         # W-supply 2: a free step's "nothing to fix" counts only with a name the machine can find
@@ -1193,6 +1319,8 @@ def contract_for(packet, *, rung, root, asks, named_ok=False, red_given=None, sk
         except Exception as exc:
             # Do not include arbitrary provider exception text (it can contain credentials).
             message = str(exc) if isinstance(exc, ContractFault) else type(exc).__name__
+            if getattr(exc, 'answered_voices', 0):
+                answered.add(engine)        # W-gslice 2: the small tier's voices answered, none was a valid contract: a counted void
             if refused and 'not available' not in message:
                 message += ' (not available: ' + ', '.join(dict.fromkeys(refused)) + ')'
             faults.append(dict(engine=engine, fault=F.redact(message)))
@@ -1209,7 +1337,7 @@ def contract_for(packet, *, rung, root, asks, named_ok=False, red_given=None, sk
     # (no channel / 429 / 503) is no counted void slicing: nobody has judged yet, the row waits without a penalty.
     if red and 'agent' not in answered:
         raise Exhausted(0, faults, cache)   # the only step allowed to say "no fix" did not answer: the row waits, no void, no hold
-    silent = [f for f in faults if f['engine'] in ('free', 'free_main') and _NO_ANSWER.fullmatch(f['fault'])]
+    silent = [f for f in faults if f['engine'] in FREE_RUNGS and _NO_ANSWER.fullmatch(f['fault'])]
     if votes and silent and answered <= set(votes.values()):
         raise Exhausted(0, faults, cache)
     raise Exhausted(len(answered), faults, cache)

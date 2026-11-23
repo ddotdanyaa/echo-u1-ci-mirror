@@ -1513,6 +1513,8 @@ class Loop:
         """60, 120, 240 ... 1800 s (+-10 % jitter) for the key (a channel or a task); never the brake series."""
         now = self.clock()
         channel = reason in TEMPORARY_CHANNEL or reason == "429"
+        if tid and reason == "rate_minute":
+            self._small_wait_note(tid, now)       # W-gslice 3: an editor waits for a free channel: the slicing ensembles give way
         name = next((str(c.get("channel")) for c in calls if c.get("channel")), "") or str(
             res.get("channel") or "") or "*"
         key = ("ch:" + name[:40]) if channel else ("task:" + (tid or "?")[:60])
@@ -1867,7 +1869,7 @@ class Loop:
             mine["requests"] = max(int(mine.get("requests") or 0), int(group.get("requests") or 0))
 
     def _light_ask(self, text: str, *, attempt: int, section: str, quotas: dict, max_tokens: int, role: str = "code",
-                   thrifty: bool = False):
+                   thrifty: bool = False, temperature: float = 0, only_tier: str = "", only_model: str = ""):
         """One free model call outside the runner (the <id> self-fix head): a registry channel in
         route_order (attempt 1: main first; 2: escalation first), booked in the shared quota ledger under `section`
         and cooled there on 429/5xx. Returns (status, model, answer, tokens): status 'ok', 'no_channel' or
@@ -1906,6 +1908,11 @@ class Loop:
                     return (not thrifty or C.tier_of(c) == "small"
                             or C.day_left_share(seen, c, now=self.clock()) >= KW_DAY_LEFT_MIN)
                 order, closed = [c for c in order if thrifty_ok(c)], [c for c in closed if thrifty_ok(c)]
+                if only_tier or only_model:     # W-gslice 1: the small-tier ensemble asks Gemma only, on its own model when named
+                    def wanted(c):
+                        return ((not only_tier or C.tier_of(c) == only_tier) and (not only_model or c["model"] == only_model)
+                                and not C.is_reserve(c))
+                    order, closed = [c for c in order if wanted(c)], [c for c in closed if wanted(c)]
                 channel = None
                 for probe in closed:     # one probe per channel per 20 minutes, the claim shared by both instances; due whether
                     try:                 # or not the open channels answer (a healthy channel must not stay shut all day)
@@ -1923,7 +1930,7 @@ class Loop:
             C.reserve(quotas, channel, tokens, now=self.clock())
             publish()
         provider, _, model_id = model.partition("/")
-        body = {"model": model_id, "temperature": 0, "max_tokens": max_tokens,       # ERROR_PATTERNS inline-thought
+        body = {"model": model_id, "temperature": temperature, "max_tokens": max_tokens,       # ERROR_PATTERNS inline-thought
                 "messages": [{"role": "user", "content": R.NO_THOUGHT + "\n\n" + text}]}
         code_http, raw, _sent = C.post_with_extra(_light_post, R.LIGHT_ENDPOINTS[provider], env[channel["key_env"]],
                                                   body, 120, model)
@@ -3599,6 +3606,10 @@ class Loop:
                         raise A.ContractFault(status)
                     return answer
                 asks[engine] = ask
+            elif engine == "free_small":
+                small = self._small_ask()
+                if small is not None:
+                    asks[engine] = small
             elif engine == "paid":
                 if PK.key_available():              # read now, on every slicing: a revived key brings the stage back
                     asks[engine] = A.ask_paid
@@ -3606,6 +3617,71 @@ class Loop:
                 if PK.key_available() and not PK.agent_credit_dead():
                     asks[engine] = lambda system, user, _root=root: A.ask_agent(system, user, cwd=_root)
         return asks
+
+    SMALL_SLICE_MAX = 3        # W-gslice 3: slicing ensembles of the small tier at one time
+    SMALL_YIELD_S = 20         # a card that waits for the small tier longer than this goes before the slicing
+
+    def _small_wait_note(self, tid, now):
+        """W-gslice 3: a card was deferred by the minute limit of its channel: the editors wait for the small tier from ``now``."""
+        waits = self.__dict__.setdefault("_small_waits", {})
+        if tid and (tid not in waits or now - waits[tid] > 300):
+            waits[tid] = now
+
+    def _small_yield(self) -> bool:
+        """W-gslice 3: True when an editor card has waited for the small tier longer than SMALL_YIELD_S (within 5 minutes
+        of its deferral): the slicing gives way."""
+        now = self.clock()
+        waits = self.__dict__.setdefault("_small_waits", {})
+        for tid in [t for t, since in waits.items() if now - since > 300]:
+            waits.pop(tid, None)
+        return any(now - since > self.SMALL_YIELD_S for since in waits.values())
+
+    def _small_ask(self):
+        """W-gslice 1/3: the ask of the 'free_small' step: ``ask(system, user, temperature=, channel=)`` -> the answer of one
+        small-tier model (Gemma), max 4096 tokens, reasoning as the model body says (minimal); ``ask.channels`` are the
+        small-tier models (one voice each by the circle), ``ask.gate`` limits the ensembles to SMALL_SLICE_MAX at a time and
+        lets the editors go first. None when no small channel is registered."""
+        from tools import factory_architect as A, factory_ensemble as ENS
+        try:
+            configured = json.loads(Path(self.cfg.channels).read_text(encoding="utf-8"))["channels"]
+        except (OSError, ValueError, KeyError):
+            return None
+        models = sorted({c["model"] for c in configured if CH.tier_of(c) == "small" and not CH.is_reserve(c)})
+        if not models:
+            return None
+        sem = self.__dict__.setdefault("_small_sem", threading.BoundedSemaphore(self.SMALL_SLICE_MAX))
+        loop = self
+
+        def ask(system, user, temperature=None, channel=None):
+            if loop._small_yield():
+                raise ENS.ChannelRefused("editors wait for the small tier", kind="other")
+            if self._arch_quotas is None:
+                self._arch_quotas = {}
+            status, _, answer, _ = loop._light_ask(system + "\n\n" + user, attempt=1, section="loop-architect",
+                quotas=loop._arch_quotas, max_tokens=A.SMALL_MAX_TOKENS, role="review", only_tier="small",
+                only_model=channel or "", temperature=0.2 if temperature is None else temperature)
+            if status == "ok":
+                if not answer.strip():
+                    raise ENS.ChannelRefused("empty answer", kind="other")
+                return answer
+            if status == "http_503":
+                raise ENS.ChannelRefused(status, kind="overload")
+            if status == "http_429":
+                raise ENS.ChannelRefused(status, kind="minute", wait_s=20)
+            raise ENS.ChannelRefused(status)       # no_channel and the rest: no answer, the branch gives up after a few tries
+
+        class Gate:
+            def __enter__(self):
+                if loop._small_yield() or not sem.acquire(blocking=False):
+                    raise A.ContractFault("no_channel")     # no ensemble now: the row waits (SliceWait), no cost
+                return self
+
+            def __exit__(self, *exc):
+                sem.release()
+                return False
+        ask.channels = models if len(models) > 1 else None
+        ask.gate = Gate()
+        return ask
 
     def _ladder_sig(self):
         return ",".join(self._asks())
@@ -3910,7 +3986,7 @@ class Loop:
                 asks = left
             base_debt = F.is_base_debt(row)
             if base_debt:                      # W-base0: the old debt is sliced by the free steps only, whatever waits in the queue
-                left = {k: v for k, v in asks.items() if k in ("free", "free_main")}
+                left = {k: v for k, v in asks.items() if k in ("free", "free_main", "free_small")}
                 if not left:
                     self.event("slice", backlog_id=row, status="barred", engine="paid,agent", rung=rung, ladder="")
                     raise SliceWait()
@@ -3941,6 +4017,7 @@ class Loop:
                         pass
                     raise
                 return packet, result
+            ctx["small"] = asks.get("free_small")       # W-gslice 4: its ``vgs`` (the ensemble's stats) goes to the slice event
             job = self._slicers[row] = Prefetch("slice", work, ctx)
             job.thread.start()
             return None
@@ -4005,7 +4082,13 @@ class Loop:
                 portion["holds"] = [dict(backlog_id=row, question=contract.get("why", outcome), decision=str(outcome))]
             fresh = self.ls()
             (fresh.get("slice_cache") or {}).pop(row, None)
-            fresh.setdefault("contracts_by_engine", {}).setdefault(engine, {"made": 0, "merged": 0})["made"] += 1
+            made = fresh.setdefault("contracts_by_engine", {}).setdefault(engine, {"made": 0, "merged": 0})
+            made["made"] += 1
+            vgs = getattr(job.ctx.get("small"), "vgs", None)
+            if vgs and engine.endswith("free_small"):       # W-gslice 4: the ensemble's own counters of this engine
+                for name in ("asked", "answered", "valid"):
+                    made["vgs_" + name] = int(made.get("vgs_" + name) or 0) + int(vgs.get(name) or 0)
+                made["vgs_votes_top"] = max(int(made.get("vgs_votes_top") or 0), int(vgs.get("votes_top") or 0))
             if packet.get("bisect_key"):        # W-bisect 4: this row's cards were cut WITH the proof (its segment): no re-cut for it
                 fresh.setdefault("bisect_sliced", {})[row] = str(packet["bisect_key"])
             self.save_ls(fresh)
@@ -4016,6 +4099,10 @@ class Loop:
             self.err("slice", exc)
             raise SliceWait() from exc
         finally:
+            vgs = getattr(job.ctx.get("small"), "vgs", None)
+            if vgs and "free_small" in str(engine) + job.ctx.get("ladder", ""):
+                extra["vgs"] = {k: vgs[k] for k in ("k", "asked", "answered", "valid", "unique", "votes_top", "retries_503", "rejected")
+                                if k in vgs}
             self.event("slice", backlog_id=row, engine=engine, status=outcome, rung=job.ctx["rung"],
                        ladder=job.ctx.get("ladder", ""), **extra)
 
@@ -7247,7 +7334,7 @@ def main(argv=None) -> int:
                  review_model=a.review_model, env_file=a.env_file, clear_brake=a.clear_brake,
                  self_repo=a.self_repo, exit_when_idle=a.exit_when_idle)
     from tools import factory_paid_critic as PK, factory_architect as A
-    rungs = ["free", "free_main"]
+    rungs = ["free", "free_main", "free_small"]
     # The paid stages are candidates for the whole run; Loop._asks decides on every slicing which of them is live.
     rungs += ["paid", "agent"]
     cfg.architect_rungs = tuple(rungs)
