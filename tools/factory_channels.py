@@ -109,7 +109,9 @@ HIGH_RPD_COOL_MAX_S = 300
 # neither the model nor the key. The call hops to the next channel of the circle (BIG_HOP_PAUSE_S), up to BIG_SENDS_MAX
 # sends, then BIG_ROUNDS more rounds (one circle each) after BIG_ROUND_PAUSE_S; only then the last channel is closed
 # for BIG_CLOSE_S. The roles below only; the answer limit of a Gemma call is BIG_TIMEOUT_S when no main channel is free.
-BIG_ROLES = ('edit', 'review', 'repair', 'unit_test', 'code')   # unit_test cards call the model as 'code'
+# 'code' is intentional: repair and unit_test cards call the model under the role 'code', so it cannot be told apart from them;
+# it is wider than edit/repair/review/unit_test only while every main channel is closed (gemma_first needs main_dry).
+BIG_ROLES = ('edit', 'review', 'repair', 'unit_test', 'code')
 BIG_SENDS_MAX = 8
 BIG_HOP_PAUSE_S = 2
 BIG_ROUNDS = 3
@@ -1303,6 +1305,9 @@ def note_day_429(state, channel, *, now=None) -> dict | None:
     group = state.get(channel['group']) if isinstance(state.get(channel['group']), dict) else {}
     start, _ = quota_day(channel['model'], now)
     calls = sum(1 for t in _numbers(group.get('request_times')) if t >= start)
+    prior = table.get(channel['id'])
+    if isinstance(prior, dict) and prior.get('start') == start and type(prior.get('calls')) is int:
+        calls = prior['calls']      # a repeated 429 (probe) of the same day keeps the key's own first count, not the aligned one
     table[channel['id']] = {'model': channel['model'], 'group': channel['group'], 'at': now, 'calls': calls,
                             'rpd': channel['rpd'], 'start': start}
     for cid in [c for c, row in table.items() if not (isinstance(row, dict) and isinstance(row.get('at'), (int, float))
