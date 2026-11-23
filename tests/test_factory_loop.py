@@ -280,6 +280,18 @@ def test_run_calls_runner_and_records_tokens(env):
     assert stats["tokens_in"] == 10 and stats["tokens_out"] == 3
 
 
+def test_stats_json_carries_agent_stats_and_price_per_merged(env, monkeypatch):
+    from tools import factory_architect as A
+    seen = []
+    monkeypatch.setattr(A, "agent_stats", lambda: {"calls_24h": 7, "median_usd": 0.5})
+    monkeypatch.setattr(A, "price_per_merged", lambda by: seen.append(by) or {"agent": 2.0})
+    env.runner_says({"status": "READY", "task": "T1", "calls": []})
+    env.loop().step()
+    stats = json.loads((env.state_dir / "stats.json").read_text(encoding="utf-8"))
+    assert stats["agent"] == {"calls_24h": 7, "median_usd": 0.5, "usd_per_merged_by_engine": {"agent": 2.0}}
+    assert seen and isinstance(seen[-1], dict)
+
+
 def test_waiting_channel_leads_to_wait_not_infra(env):
     env.runner_says({"status": "WAITING_CHANNEL", "task": "T1"})
     loop = env.loop()

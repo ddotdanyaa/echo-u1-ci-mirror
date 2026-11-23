@@ -22,6 +22,7 @@ KEYWORDS_MAX = 12
 AGENT_IDLE_S = 300
 AGENT_BUDGET_USD = 3.0
 AGENT_MODEL = 'claude-sonnet-5-5'
+AGENT_BUSY = 'agent busy'
 EST_AGENT_BYTES = 600 * 2**20
 _agent_lock = threading.Lock()
 _agent_count = 0
@@ -744,6 +745,8 @@ def contract_for(packet, *, rung, root, asks, named_ok=False, red_given=None):
             if refused and 'not available' not in message:
                 message += ' (not available: ' + ', '.join(dict.fromkeys(refused)) + ')'
             faults.append(dict(engine=engine, fault=F.redact(message)))
+            if red and engine == 'agent' and message == AGENT_BUSY:
+                raise Exhausted(0, faults)      # money is only held by live reservations: the red row waits its turn, no weaker step guesses
     # One free voice for "do not fix" while the tier that could give the second voice was simply not answering
     # (no channel / 429 / 503) is no counted void slicing: nobody has judged yet, the row waits without a penalty.
     if red and 'agent' not in answered:
@@ -944,7 +947,8 @@ def agent_stats(now=None) -> dict:
 
 
 def price_per_merged(by_engine) -> dict:
-    """Average price of a merged contract per paid stage: the stage's total spend over its merged contracts."""
+    """Average price of a merged contract per paid stage, ALL-TIME on both sides: the cumulative *_total_usd of
+    paid_spend.json (never reset by the day) over the cumulative merged count of contracts_by_engine."""
     row = PK._spend_row()
     agent_usd = float(row.get('agent_total_usd', 0))
     paid_usd = max(0.0, float(row.get('architect_total_usd', 0)) - agent_usd)
@@ -974,7 +978,7 @@ def ask_agent(system, user, *, cwd: Path, run=stream_run, argv_fn=PR.claude_argv
         booking = agent_booking()
         if not PK.reserve(booking, architect=True):
             # money is left once the live reservations are taken off: the row waits its turn, it is not out of budget
-            raise ContractFault('agent busy' if PK.left(PK._today()) > 0 and not PK.credit_dead() else 'agent budget')
+            raise ContractFault(AGENT_BUSY if PK.left(PK._today()) > 0 else 'agent budget')
         reserved = True
         limit = round(max(booking, min(AGENT_BUDGET_USD, PK.left(PK._today()) + booking)), 6)
         settings = _agent_settings(cwd)
