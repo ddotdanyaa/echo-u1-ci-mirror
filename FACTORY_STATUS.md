@@ -1,6 +1,6 @@
 # Factory status (generated, structured data only)
 
-Generated: 2026-11-23T09:51:55Z
+Generated: 2026-11-23T09:56:42Z
 Source commit: shaaf9998d7f853
 
 ## Commits (sha, time)
@@ -43,8 +43,8 @@ Side counters: blocked=0, parked=0, requeued=6
 Tasks now: DONE=68, FAILED=404, PROMOTED=22, READY=8, RUNNING=2
 Accepted: 5
 Promoted: 46
-Free RAM, GB: 4.59
-Telemetry rows: 30786 recognised, 0 unrecognised
+Free RAM, GB: 5.21
+Telemetry rows: 30791 recognised, 0 unrecognised
 
 ## Spend per model
 | model | calls | tokens_in | tokens_out | usage_unknown | http_429 | errors |
@@ -71,7 +71,7 @@ Telemetry rows: 30786 recognised, 0 unrecognised
 | answer | 536 | 0 |
 | gate | 4800 | 0 |
 | infra | 819 | 0 |
-| loop | 5471 | 0 |
+| loop | 5476 | 0 |
 | other | 6327 | 0 |
 | promote | 61 | 0 |
 | review | 1960 | 1063 |

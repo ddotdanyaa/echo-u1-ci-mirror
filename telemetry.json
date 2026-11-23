@@ -1,6 +1,6 @@
 {
  "accepted": 5,
- "free_ram_gb": 4.59,
+ "free_ram_gb": 5.21,
  "funnel": {
   "accepted": 5,
   "claimed": 311,
@@ -181,7 +181,7 @@
   }
  },
  "promoted": 46,
- "rows_recognized": 30786,
+ "rows_recognized": 30791,
  "schema": 3,
  "side": {
   "blocked": 0,
@@ -242,7 +242,7 @@
    "calls_usage_unknown": 0,
    "errors": {},
    "http_429": 0,
-   "rows": 5471,
+   "rows": 5476,
    "status": {
     "BLOCKED": 354,
     "FAILED": 381,
@@ -255,7 +255,7 @@
     "empty": 92,
     "infra": 17,
     "ok": 2095,
-    "other": 105,
+    "other": 110,
     "refused": 1,
     "requeued": 6,
     "stop": 83
@@ -373,7 +373,7 @@
   "hold_dropped": 3,
   "infra": 17,
   "ok": 15163,
-  "other": 6542,
+  "other": 6547,
   "parked": 18,
   "refused": 2,
   "rejected": 40,
