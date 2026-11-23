@@ -1,6 +1,6 @@
 # Factory status (generated, structured data only)
 
-Generated: 2026-11-23T09:56:42Z
+Generated: 2026-11-23T10:00:52Z
 Source commit: shaaf9998d7f853
 
 ## Commits (sha, time)
@@ -35,16 +35,16 @@ Source commit: shaaf9998d7f853
 | gate_pass | 49 |
 | known_to_loop | 264 |
 | promoted | 46 |
-| ready | 8 |
+| ready | 9 |
 | reviewed | 133 |
 | triaged | 182 |
 
 Side counters: blocked=0, parked=0, requeued=6
-Tasks now: DONE=68, FAILED=404, PROMOTED=22, READY=8, RUNNING=2
+Tasks now: DONE=68, FAILED=404, PROMOTED=22, READY=9, RUNNING=1
 Accepted: 5
 Promoted: 46
-Free RAM, GB: 5.21
-Telemetry rows: 30791 recognised, 0 unrecognised
+Free RAM, GB: 5.65
+Telemetry rows: 30804 recognised, 0 unrecognised
 
 ## Spend per model
 | model | calls | tokens_in | tokens_out | usage_unknown | http_429 | errors |
@@ -60,8 +60,8 @@ Telemetry rows: 30791 recognised, 0 unrecognised
 | google/gemini-3.6-flash | 133 | 414079 | 20196 | 55 | 10 | 55 |
 | google/gemini-3.7-flash | 16 | 9121 | 14 | 15 | 5 | 15 |
 | google/gemini-3.8-flash | 19 | 21237 | 15 | 16 | 6 | 16 |
-| google/gemma-4-26b-a4b-it | 242 | 419925 | 35023 | 145 | 0 | 145 |
-| google/gemma-4-31b-it | 232 | 217340 | 8041 | 172 | 0 | 172 |
+| google/gemma-4-26b-a4b-it | 243 | 419925 | 35023 | 146 | 0 | 146 |
+| google/gemma-4-31b-it | 233 | 217340 | 8041 | 173 | 0 | 173 |
 | openrouter/nvidia/nemotron-3-ultra-550b-a55b:free | 115 | 663252 | 151232 | 2 | 2 | 2 |
 | other | 65 | 1154192 | 66710 | 6 | 0 | 7 |
 
@@ -69,13 +69,13 @@ Telemetry rows: 30791 recognised, 0 unrecognised
 | span | rows | calls |
 |---|---|---|
 | answer | 536 | 0 |
-| gate | 4800 | 0 |
+| gate | 4804 | 0 |
 | infra | 819 | 0 |
-| loop | 5476 | 0 |
+| loop | 5480 | 0 |
 | other | 6327 | 0 |
 | promote | 61 | 0 |
-| review | 1960 | 1063 |
-| run | 10467 | 3352 |
+| review | 1963 | 1065 |
+| run | 10469 | 3352 |
 | triage | 345 | 0 |
 
 ## Channels (model ids)
