@@ -164,6 +164,9 @@ def test_same_model_vote_is_not_counted_twice(tmp_path, monkeypatch):
     assert not [s for s in sent if s['review']]
     assert second['reason'] == 'review_chain_short' and second.get('cross_review') is not True
     assert len(rig.state()['tasks']['T1']['pending_review']['votes']) == 1
+    # W-review fix 2: the precheck excludes the critic who voted, finds nobody and does not pay the gates again
+    assert 'review_deferred_before_gates' in second['events'] and not second['stages'].get('gate_s')
+    assert second['review_verdict'] == 'unavailable' and second['review_votes'] == [dict(model='google/y', ok=True)]
 
 
 def test_vote_reset_when_baseline_moves(tmp_path, monkeypatch):
@@ -202,9 +205,9 @@ def test_a_standing_candidate_skips_the_gates_while_no_reviewer_is_free(tmp_path
     two = _two_models(tmp_path)
     rig.once(channel_config=two)
     rig.edit_state(lambda s: (s['tasks']['T1'].update(not_before=0),
-                              s.setdefault('channel_quotas', {}).update(channel_cool={'c2': time.time() + 900})))
+                              s.setdefault('channel_quotas', {}).update(channel_cool={'c3': time.time() + 900})))
     sent = _wire(rig, monkeypatch, lambda model: FIX_BLOCK, lambda model, n: approval_json())
-    second = rig.once(channel_config=two)
+    second = rig.once(channel_config=_three_models(tmp_path))     # y has voted; the only other reviewer, z, is cooling
     assert second['status'] == 'WAITING_CHANNEL' and second['reason'] == 'channel_wait'
     assert 'review_deferred_before_gates' in second['events'] and second['wait_s'] > 30
     assert not sent and not second['stages'].get('gate_s')

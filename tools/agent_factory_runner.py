@@ -2555,6 +2555,32 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
             return status, None
         return end(apply, reason=reason, reason_detail=redact(text)[:400])
 
+    def call_size(role, call_task, prompt_len, cyr) -> tuple:
+        """(light, tokens, steps, requests) of a call: shared by call() and the review precheck (W-review fix 1)."""
+        light = engine_for(role, call_task) == 'light'
+        base_tokens = channels.estimate_tokens(prompt_len, 0 if light else ctx['read_chars'],
+                                               overhead=LIGHT_OVERHEAD_TOKENS if light else None, cyrillic=cyr)
+        steps = 1 if light else (REVIEW_STEPS if role == 'review' else PROVIDER_STEPS)
+        return light, base_tokens, steps, (1 if light else requests_for(steps))
+
+    def call_order(role, preferred, base_tokens, exclude_model, hopped, skip_tiers, later, live_state, light, steps) -> list:
+        """The route a call walks (excluded models, tiers, the code fallback, Kilo rpm): shared with the precheck."""
+        route = 'code' if role == 'repair' else role
+        excl = sorted(channels.excluded_models(exclude_model) | set(hopped)) or None
+        order = channels.route_order(configured, route, attempt, base_tokens, preferred=preferred,
+                                     exclude_model=excl, skip_tiers=skip_tiers, state=live_state, later=later)
+        if not order and route in ('code', 'edit'):     # no escalation/main channel at all: any channel is better than none
+            order = channels.route_order(configured, 'code', 1, 0, preferred=preferred,
+                                         exclude_model=excl,   # never a model the tournament tried
+                                         skip_tiers=skip_tiers, state=live_state, later=later)
+        return _kilo_fits(order, steps, events) if order and not light else order
+
+    def call_pick(order, seen, base_tokens, requests, affinity) -> tuple:
+        """(channel, tokens): the choice on a quota view, nothing booked; raises ChannelUnavailable. Shared with the precheck."""
+        live = channels.usable(order, seen, os.environ) or order   # a dead or keyless channel sets no ceiling
+        tokens = min(base_tokens, max(c['tpm'] for c in live))     # a huge file may not make every channel "too small"
+        return channels.choose(order, seen, tokens, os.environ, requests=requests, affinity=affinity), tokens
+
     def call(role: str, call_task: Task, directory_for, preferred: str, prompt: str,
              *, exclude_model: str | None = None, skip_tiers: tuple = (), later: bool = False,
              candidate: int | None = None, models_out: set | None = None, on_booked=None) -> tuple[int, bytes, bytes]:
@@ -2566,14 +2592,10 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
             candidate = ctx.get('candidate') or 0
         if channels.prompt_too_big(prompt):
             raise PromptTooLarge(str(len(prompt)))
-        light = engine_for(role, call_task) == 'light'
+        light, base_tokens, steps, booked = call_size(role, call_task, len(prompt), channels.cyrillic_share(prompt))
         with ctx['lock']:
             ctx['role'], ctx['light'] = role, light
-        base_tokens = channels.estimate_tokens(len(prompt), 0 if light else ctx['read_chars'],
-                                               overhead=LIGHT_OVERHEAD_TOKENS if light else None,
-                                               cyrillic=channels.cyrillic_share(prompt))
-        steps = 1 if light else (REVIEW_STEPS if role == 'review' else PROVIDER_STEPS)
-        booked = 1 if light else requests_for(steps)   # the whole run: what choose() checks and reserve() books; reconcile() writes the fact
+        # booked: the whole run, what choose() checks and reserve() books; reconcile() writes the fact
         def booked_one(row) -> None:
             began = row.get('began')
             if isinstance(began, dict):
@@ -2590,20 +2612,12 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                 route = 'code' if role == 'repair' else role
                 whole = ck.read()
                 live_state = whole.get('channel_quotas') or {}    # a fresh private copy: ratings, parked 404s, cooling
-                excl = sorted(channels.excluded_models(exclude_model) | set(hopped)) or None
-                order = channels.route_order(configured, route, attempt, base_tokens, preferred=preferred,
-                                             exclude_model=excl, skip_tiers=skip_tiers, state=live_state,
-                                             later=later)
-                if not order and route in ('code', 'edit'):     # no escalation/main channel at all: any channel is better than none
-                    order = channels.route_order(configured, 'code', 1, 0, preferred=preferred,
-                                                 exclude_model=excl,   # never a model the tournament tried
-                                                 skip_tiers=skip_tiers, state=live_state, later=later)
+                order = call_order(role, preferred, base_tokens, exclude_model, hopped, skip_tiers, later, live_state,
+                                   light, steps)
                 if not order and hopped:              # every other model is overloaded too: the old transient path
                     raise ChannelFault(last_info or {'kind': 'transient'})
                 if not order:
                     raise NoIndependentReviewer()
-                if not light:
-                    order = _kilo_fits(order, steps, events)
 
                 def book(state, row):
                     """View + usable + choose + charge + reserve + publish: ONE commit on the fresh state, so two workers
@@ -2611,10 +2625,7 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                     quota = state.setdefault('channel_quotas', {})
                     seen = (quota_ledger.view(quota, quota_ledger.others(ledger, str(checkpoint)))
                             if ledger is not None else quota)    # <id>: the other states' bookings of the same keys
-                    live = channels.usable(order, seen, os.environ) or order   # a dead or keyless channel sets no ceiling
-                    tokens = min(base_tokens, max(c['tpm'] for c in live))  # a huge file may not make every channel "too small"
-                    pick = channels.choose(order, seen, tokens, os.environ,
-                                           requests=booked, affinity=affinity)   # a multi-step call needs room
+                    pick, tokens = call_pick(order, seen, base_tokens, booked, affinity)   # a multi-step call needs room
                     charge_call(state, tid)   # BEFORE booking: an exhausted budget must leave no reservation behind
                     when = channels.reserve(quota, pick, tokens, requests=booked,
                                            affinity=affinity)   # exactly what choose() checked
@@ -3580,27 +3591,67 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                                             models=tried + [ctx['coder_model']])
                 if gate_failed:
                     report['tournament']['gate_failed'] = list(gate_failed)
+        def authors() -> list:
+            """Every model that wrote a part of this candidate: none of them judges it (nor the paid critic)."""
+            return sorted(ctx['coder_models'] | {m for m in [ctx.get('coder_model')] if m})
+
+        def diff_of(changed) -> str:
+            return unified_diff(ctx['baseline'], ctx['workdir'], changed, 10 ** 7) if ctx['baseline'] is not None else ''
+
+        def kept_votes(diff_hash, banned=()) -> list:
+            """W-review 2: the valid voices already given on THIS diff (key: its hash); an author or a repeated model never votes."""
+            pend = ck.read()['tasks'][tid].get('pending_review') or {}
+            kept = pend.get('votes') if diff_hash and pend.get('votes_diff') == diff_hash else None
+            fresh, seen_models = [], set(banned)
+            for old_vote in (kept if isinstance(kept, list) else []):
+                if not (isinstance(old_vote, dict) and isinstance(old_vote.get('model'), str) and type(old_vote.get('ok')) is bool
+                        and old_vote['model'] not in seen_models and old_vote['model'] not in authors()):
+                    continue
+                seen_models.add(old_vote['model'])
+                fresh.append(old_vote)
+            return fresh
+
         def reviewers_wait() -> tuple:
-            """W-review 1: (wait_s, reason) of the review route right now, by the path the call itself takes (route_order,
-            then choose on the ledger view, nothing booked); (0.0, '') when a reviewer can take the call."""
+            """W-review 1: (wait_s, reason, short) of the review route right now, by the very helpers call() uses
+            (call_size, call_order with the same exclusions: the authors AND the critics who already voted on this diff,
+            call_pick on the ledger view, nothing booked). ``short``: a voice is kept and no other reviewer exists, so the
+            chain would end cut short whatever the gates say. The prompt is not built yet: its size is the diff plus 4000
+            for the rubric (the one difference from the call, named in the report)."""
             if not configured:
-                return 0.0, ''
-            used = sorted(ctx['coder_models'] | {m for m in [ctx.get('coder_model')] if m})
-            live_state = ck.read().get('channel_quotas') or {}
-            tokens = channels.estimate_tokens(6000, ctx['read_chars'])
-            order = channels.route_order(configured, 'review', attempt, tokens, exclude_model=used or None, state=live_state)
-            if not order:
-                return 0.0, ''                       # the call's own NoIndependentReviewer path decides
-            seen = quota_ledger.view(live_state, quota_ledger.others(ledger, str(checkpoint))) if ledger is not None else live_state
-            tokens = min(tokens, max(c['tpm'] for c in (channels.usable(order, seen, os.environ) or order)))
-            light = engine_for('review', task) == 'light'
+                return 0.0, '', []
             try:
-                channels.choose(order, seen, tokens, os.environ, requests=1 if light else requests_for(REVIEW_STEPS))
+                changed = inspect_changes(task, ctx['workdir'], ctx['baseline']) if ctx['baseline'] is not None else ()
+            except Exception:                        # the gates will name it
+                return 0.0, '', []
+            text = diff_of(changed)
+            diff_hash = sha256(text.encode('utf-8', 'replace')).hexdigest() if ctx['baseline'] is not None else ''
+            kept = kept_votes(diff_hash)
+            voted = [v['model'] for v in kept]
+            light, base_tokens, steps, booked = call_size('review', task, len(text) + 4000, channels.cyrillic_share(text))
+            live_state = ck.read().get('channel_quotas') or {}
+            order = call_order('review', review_model, base_tokens, authors() + voted, (), (), False, live_state, light, steps)
+            if not order:
+                return 0.0, '', kept                 # without a voice the call's own NoIndependentReviewer path decides
+            seen = quota_ledger.view(live_state, quota_ledger.others(ledger, str(checkpoint))) if ledger is not None else live_state
+            family = os.path.splitext(task.touch_files[0].replace('\\', '/'))[0] if task.touch_files else ''
+            affinity = ['task:' + tid + ':review'] + (['family:' + family + ':review'] if family else [])
+            try:
+                call_pick(order, seen, base_tokens, booked, affinity)
             except channels.ChannelUnavailable as error:
-                return float(error.wait_s or 0), str(error.reason or '')
-            return 0.0, ''
+                return float(error.wait_s or 0), str(error.reason or ''), []
+            return 0.0, '', []
         if decision is None and pending:             # a standing candidate: no cloud gates while no reviewer is free
-            hold, why_hold = reviewers_wait()
+            hold, why_hold, short_chain = reviewers_wait()
+            if short_chain:                          # a voice is kept, no other model exists: the gates would end in this
+                events.append('review_deferred_before_gates')
+                events.append('review_chain_short')
+                report['review_verdict'] = 'unavailable'
+                report['review_votes'] = [dict(model=v['model'], ok=v['ok']) for v in short_chain]
+                report['critics'] = [v['model'] for v in short_chain]
+                report['pending_review'] = True
+                if ck.commit(chain_short) >= ESCALATE_AFTER:
+                    return block('review_chain_short', 'review chain cut short %d times' % ESCALATE_AFTER)
+                return release_or_block('review_chain_short', INFRA_DEFER_S)
             if hold > REVIEWER_WAIT_S:
                 events.append('review_deferred_before_gates')
                 report['pending_review'] = True
@@ -3629,12 +3680,9 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
         # 4. Independent reviewer: another model, reasons go back as feedback.
         ck.commit(lambda s, r: set_pending(s, r))
 
+        kept_log = []     # the voices of this candidate (the telemetry reads it on every exit)
         critics = []      # the models that reviewed this candidate: the next critic is none of them, nor the coder
         told = rejected_for(ck.read(), tid)
-
-        def authors() -> list:
-            """Every model that wrote a part of this candidate: none of them judges it (nor the paid critic)."""
-            return sorted(ctx['coder_models'] | {m for m in [ctx.get('coder_model')] if m})
 
         def invoke(call_task, directory, preferred, **kwargs):
             return call('review', call_task, lambda _retry: directory, preferred,
@@ -3646,15 +3694,8 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
             votes, said, rejections = [], [], []
             approved = None
             # W-review 2: the voices already given on THIS diff (key: its hash) are not asked again after a postponement
-            diff_hash = sha256(unified_diff(ctx['baseline'], ctx['workdir'], changed, 10 ** 7).encode('utf-8', 'replace')).hexdigest() \
-                if ctx['baseline'] is not None else ''
-            kept = (ck.read()['tasks'][tid].get('pending_review') or {})
-            kept = kept.get('votes') if diff_hash and kept.get('votes_diff') == diff_hash else None
-            kept_log = []
-            for old_vote in (kept if isinstance(kept, list) else []):
-                if not (isinstance(old_vote, dict) and isinstance(old_vote.get('model'), str) and type(old_vote.get('ok')) is bool
-                        and old_vote['model'] not in critics and old_vote['model'] not in authors()):
-                    continue                 # a model never votes twice, and an author never judges its own work
+            diff_hash = sha256(diff_of(changed).encode('utf-8', 'replace')).hexdigest() if ctx['baseline'] is not None else ''
+            for old_vote in kept_votes(diff_hash):      # a model never votes twice, and an author never judges its own work
                 critics.append(old_vote['model'])
                 votes.append(old_vote['ok'])
                 kept_log.append(dict(model=old_vote['model'], ok=old_vote['ok'], why=list(old_vote.get('why') or [])[:5]))
@@ -3687,6 +3728,8 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                             ctx['paid_done'] = paid_second
                             events.append('paid_second_critic')
                             approved = paid_second['verdict'] != 'reject' and (all(votes) or mech_ok)
+                            kept_log.append(dict(model=str(paid_second.get('model') or 'paid'),   # W-review fix 6: the paid voice is a voice
+                                                 ok=paid_second['verdict'] != 'reject', why=[]))
                             if not approved:
                                 paid_critic.record_class(task, paid_second)
                                 rejections.append(scrub(redact('paid critic [%s]: %s' % (
@@ -3727,10 +3770,12 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
         except NoIndependentReviewer:
             report['pending_review'] = True
             report['review_verdict'] = 'unavailable'
+            report['review_votes'] = [dict(model=v['model'], ok=v['ok']) for v in kept_log]
             return _wait(release_or_block, report, 'no_independent_reviewer', status='WAITING_CHANNEL')
         except channels.ChannelUnavailable as error:
             report['pending_review'] = True
             report['review_verdict'] = 'unavailable'
+            report['review_votes'] = [dict(model=v['model'], ok=v['ok']) for v in kept_log]
             return _wait(release, report, 'channel_wait', error.wait_s, status='WAITING_CHANNEL',
                          channel_reason=error.reason)
         except ReviewFault as error:

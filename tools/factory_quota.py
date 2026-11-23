@@ -24,6 +24,16 @@ def publish(folder, section, quotas, *, now=None) -> None:
     os.replace(tmp, target)
 
 
+def _same_section(a, b) -> bool:
+    """Two section names that are one path spelled differently (the section is the state file's path)."""
+    if not isinstance(a, str) or not a or not b:
+        return False
+    try:
+        return os.path.normcase(os.path.realpath(a)) == os.path.normcase(os.path.realpath(str(b)))
+    except (OSError, ValueError):
+        return False
+
+
 def others(folder, section, *, now=None) -> list:
     now = time.time() if now is None else now
     folder = Path(folder)
@@ -40,6 +50,8 @@ def others(folder, section, *, now=None) -> list:
             continue
         if not isinstance(data, dict) or not isinstance(data.get('quotas'), dict):
             continue                   # not a section: skipped, never a crash
+        if _same_section(data.get('section'), section):
+            continue                   # my own section under another spelling of the path (relative, other case, ..)
         if now - float(data.get('saved') or 0) > STALE_S:
             continue
         out.append(data['quotas'])
