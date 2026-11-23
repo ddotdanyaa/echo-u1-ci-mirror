@@ -1601,6 +1601,8 @@ class Loop:
             freed = F.release_expired(state, now, keep=self.pool.tids())
         if freed:
             self.event("infra", status="released", reason="lease_expired:" + ",".join(freed))
+        self._unburn_no_answer()
+        self._book_fixture_private()
         tasks, state = self.load()
         ls = self.ls()
         ls = self._reconcile_tick(tasks, state, ls, now)
@@ -2877,6 +2879,71 @@ class Loop:
                     st["tasks"][tid].update(status="FAILED", reason="reslice:stale")
         self.event("bisect", status="requeued", reason="cards cut without the proof go back to the slicer: " + ",".join(sorted(
             {F.row_of(tasks[t].backlog_id or t) for t in cards}))[:200], count=len(cards))
+
+    NO_ANSWER_TAIL = "no answer"
+
+    def _unburn_no_answer(self) -> int:
+        """W-vgs3 2: once at the start (event supply status=unburned, id of the card): cards that went red only because the ensemble
+        got no answer at all (503) -- FAILED reslice / gate:part_failed, or READY with the last feedback ending «no answer» -- go
+        back to READY (a card a new generation superseded is not touched); the reds and strikes of that text are taken off, those
+        feedback lines dropped, and the row's to_slice / slice_wait record they caused is removed. A second start changes nothing."""
+        if self.ls().get("unburned_no_answer"):
+            return 0
+        done: list = []
+        with self.txn() as (tasks, st):
+            for tid, row in st["tasks"].items():
+                items = list(row.get("feedback") or [])
+                if not items or F.is_terminal(row.get("reason")):
+                    continue
+                if not str(items[-1].get("text", "")).rstrip().endswith(self.NO_ANSWER_TAIL):
+                    continue
+                if not (row.get("status") == "READY" or
+                        (row.get("status") == "FAILED" and row.get("reason") in ("reslice", "gate:part_failed"))):
+                    continue
+                bad = [x for x in items if str(x.get("text", "")).rstrip().endswith(self.NO_ANSWER_TAIL)]
+                row["feedback"] = [x for x in items if x not in bad]
+                row["reds"] = max(0, int(row.get("reds", 0)) - len(bad))
+                bid = row.get("backlog_id") or (tasks[tid].backlog_id if tid in tasks else "")
+                key = "bl:" + bid if bid else "task:" + tid
+                strikes = st.setdefault("strikes", {})
+                if key in strikes:
+                    strikes[key] = max(0, int(strikes[key]) - len(bad))
+                    if not strikes[key]:
+                        strikes.pop(key)
+                if row.get("status") == "FAILED":
+                    row.update(status="READY", lease=None, deadline=None, attempts=max(0, int(row.get("attempts", 0)) - len(bad)))
+                    row.pop("reason", None)
+                done.append((tid, F.row_of(bid or tid)))
+        ls = self.ls()
+        for _tid, bid in done:
+            for key in ("to_slice", "slice_wait"):
+                (ls.get(key) or {}).pop(bid, None)
+        ls["unburned_no_answer"] = True
+        self.save_ls(ls)
+        for tid, bid in done:
+            self.event("supply", status="unburned", task_id=tid, backlog_id=bid, reason="no answer of the ensemble: back to READY")
+        return len(done)
+
+    def _book_fixture_private(self) -> int:
+        """W-vgs3 4: a debt card the runner ended not_code:fixture_private is booked in the not_code book (else the supply invariant
+        would send the row back to the slicer): it does not go into the stream again."""
+        tasks, state = self.load()
+        ls = self.ls()
+        book = ls.get("not_code") or {}
+        rows = {F.row_of(r.get("backlog_id") or (tasks[t].backlog_id if t in tasks else "") or t)
+                for t, r in state["tasks"].items() if r.get("reason") == "not_code:fixture_private"}
+        rows = {b for b in rows if b and b not in book}
+        if not rows:
+            return 0
+        try:
+            hashes = self._row_hashes("text")
+        except Exception:
+            hashes = {}
+        for bid in sorted(rows):
+            self._not_code_set(ls, bid, "fixture_private", hashes.get(bid, ""))
+            self.event("supply", status="not_code", backlog_id=bid, reason="fixture_private")
+        self.save_ls(ls)
+        return len(rows)
 
     def _bisect_later(self, tasks, state) -> set:
         """W-bisect 4: the READY cards of a never_green debt row (no green point in the whole history: nothing to restore) wait while

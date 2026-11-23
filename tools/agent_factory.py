@@ -695,6 +695,16 @@ def fail_row(state: dict, tid: str, token: str, reason: str) -> str:
     return "FAILED"
 
 
+def fail_not_code(state: dict, tid: str, token: str, why: str) -> str:
+    """W-vgs3 4: a row that is not a change of this code (its red test needs private data): FAILED not_code:<why>, no strike."""
+    fence(state, tid, token)
+    row = state["tasks"][tid]
+    row.update(status="FAILED", reason="not_code:" + why, lease=None, deadline=None)
+    for key in ("began", "candidate", "pending_review", "defer_streak", "orphan_releases"):
+        row.pop(key, None)
+    return "FAILED"
+
+
 def _strike_key(row: dict, tid: str) -> str:
     return "bl:" + row["backlog_id"] if row.get("backlog_id") else "task:" + tid
 
