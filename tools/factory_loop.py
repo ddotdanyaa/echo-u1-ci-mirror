@@ -4130,8 +4130,8 @@ class Loop:
             priority = entry.get("priority")
             if priority is None:
                 priority = min((t.priority for t in tasks.values() if F.row_of(t.backlog_id or t.id) == bid), default=9)
-            tier = (2 if bid.startswith("rel-base-") else 1 if bid.startswith("rel-") else 0) if eligible.get(bid) == "dry" else 0
-            return (tier, bid.startswith("rel-base-"), int(str(priority).removeprefix("P")), not bool(entry.get("guard")), bid)
+            tier = (2 if F.is_base_debt(bid) else 1 if bid.startswith("rel-") else 0) if eligible.get(bid) == "dry" else 0
+            return (tier, F.is_base_debt(bid), int(str(priority).removeprefix("P")), not bool(entry.get("guard")), bid)
         first_waits = any(c == "first" and b not in self._slicers for b, c in eligible.items())
         for bid in sorted(eligible, key=order)[:RESLICE_PER_STEP]:
             cause = eligible[bid]
