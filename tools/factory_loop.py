@@ -3435,7 +3435,7 @@ class Loop:
                     self.err("row red evidence", exc)
         def keywords(system, user):
             status, _, answer, _ = self._light_ask(system + "\n" + user, attempt=1,
-                section="loop-keywords", quotas=self._kw_quotas, max_tokens=800, role="review", thrifty=True)
+                section="loop-keywords", quotas=getattr(self, "_kw_quotas", {}), max_tokens=800, role="review", thrifty=True)
             return answer if status == "ok" else ""
         words = A.keywords_en(title, keywords, cache=self.dir / "keywords")
         hints = [safe(x) for x in entry.get("hints", [])]
@@ -4662,7 +4662,7 @@ class Loop:
             pending += max(0, est - seen)        # the memory a live worker has not used yet is not free
         if free - pending - _reserved_bytes() < floor + est:
             return "low_ram"
-        if task is not None and self._has_code(task) and self._edit_dry():
+        if task is not None and Loop._has_code(task) and self._edit_dry():
             return ""                            # W-dry 1: a card with the code of all its parts needs no edit channel: no headroom
         try:
             state = self.load()[1]
