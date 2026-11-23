@@ -41,10 +41,9 @@ from dataclasses import replace
 
 from .agent_factory import (BudgetExhausted, DEFER_REASONS, LEASE_LIFETIME_S, MAX_ATTEMPTS, MODEL_ID, InputTooLarge,
                             InvalidPlan, Lease, LockBusy, StaleLease, Task, add_feedback, begin, charge_call, claim,
-                            defer, defer_streak, fail_not_code, fail_row, failed_models_of, is_unsafe_reject, seconds_to_local_midnight,
+                            defer, defer_streak, fail_not_code, fail_row, failed_models_of, is_base_debt, is_unsafe_reject, seconds_to_local_midnight,
                             read_plan, ready, redact, REPEAT_MARK, route, quarantine, safe_path, safe_source, settle,
                             snapshot, startable, txn, unclaim)
-from .agent_factory import is_base_debt
 from .agent_factory import TRACE_DIR, load_trace as agent_factory_load_trace, put_trace
 from .factory_context import (LARGE_FILE_CHARS, asked_names, failing_names, identifier_tokens, keywords_from, packet,
                               render, scrub_paths)
@@ -2059,11 +2058,14 @@ def _all_defs(tree) -> list:
     return out
 
 
-def _replace_function(text: str, target: str, new: str, shown: str | None = None) -> tuple[str | None, str]:
+def _replace_function(text: str, target: str, new: str, shown: str | None = None,
+                      symbols=()) -> tuple[str | None, str]:
     """``(text with the one top-level function or Class.method replaced, '')`` or ``(None, reason)``. The new
     definition is re-indented to the old one and must parse as exactly one function of the same name. ``shown``:
     the text the model saw; the old definition must stand in it whole (a function shown in part or only in the
-    outline is not replaced: the model would delete code it never read). Decorators the new text omits stay."""
+    outline is not replaced: the model would delete code it never read). Decorators the new text omits stay.
+    ``symbols``: the qualified symbols of the part's contract; a method named without its class is taken only when
+    the one def of that name is among them."""
     import ast
     if '\r' in text or '\r' in new:
         return None, "function '%s': a lone carriage return in the text" % target
@@ -2076,10 +2078,11 @@ def _replace_function(text: str, target: str, new: str, shown: str | None = None
     nested = as_method = False
     if not found:
         every = _all_defs(tree)
-        if '.' not in target:       # W-vgs3 3: a method named without its class: the one def of that name is it
-            bare = [n for q, n, _ in every if q.rpartition('.')[2] == leaf]
-            if len(bare) == 1 and any(q.rpartition('.')[2] == leaf and '.' in q and not deep for q, _, deep in every):
-                found, as_method = bare, True
+        if '.' not in target and symbols:   # W-vgs3 3: a method named without its class: the one def of that name,
+            # when its qualified name is a symbol of the part's contract (Class.name / func.inner), is it
+            bare = [(q, n) for q, n, _ in every if q.rpartition('.')[2] == leaf]
+            if len(bare) == 1 and bare[0][0] in set(symbols):
+                found, as_method = [bare[0][1]], True
     if not found:
         same_name = [(q, n) for q, n, deep in every if deep and (q == target or q.rpartition('.')[2] == leaf
                                                                   and (q.endswith('.' + target) or '.' not in target))]
@@ -2191,11 +2194,12 @@ def ensure_test_marker(task, workdir: Path, changed) -> list[str]:
     return [name]
 
 
-def apply_edit_blocks(workdir: Path, blocks, shown: str | None = None) -> tuple[list[str], dict]:
+def apply_edit_blocks(workdir: Path, blocks, shown: str | None = None, symbols=None) -> tuple[list[str], dict]:
     """Apply the blocks inside ``workdir`` (the file names come from the task, never from the model):
     ``(changed files, {failure: count})``. All or nothing: when one block fails no file is written (half a
     candidate could pass weak tests; the failure note goes to the next attempt). A CRLF file stays CRLF. ``shown``:
-    the prompt the model saw (LF); a function block is applied only to a definition that stands in it whole."""
+    the prompt the model saw (LF); a function block is applied only to a definition that stands in it whole.
+    ``symbols``: {file: [contract symbols]} for a method named without its class."""
     failed, texts, crlf, how = {}, {}, {}, []
 
     def fail(why):
@@ -2213,7 +2217,7 @@ def apply_edit_blocks(workdir: Path, blocks, shown: str | None = None) -> tuple[
             texts[name] = raw.replace('\r\n', '\n')
         text = texts[name]
         if isinstance(search, _FuncTarget):
-            new, why = _replace_function(text, str(search), replace_text, shown)
+            new, why = _replace_function(text, str(search), replace_text, shown, (symbols or {}).get(name) or ())
             if new is None:
                 fail(why)
                 continue
@@ -2499,7 +2503,11 @@ def light_attempt(task: Task, workdir: Path, model: str, timeout: int = LIGHT_TI
         if problems:      # a function block that could not be read is half a candidate: nothing is applied
             applied, failed = [], problems
         else:
-            applied, failed = apply_edit_blocks(Path(workdir), blocks, prompt.replace('\r\n', '\n'))
+            part_symbols = {}
+            for part in K.contract_of(task).get('parts') or []:
+                if isinstance(part, dict) and part.get('file'):
+                    part_symbols.setdefault(part['file'], []).extend(part.get('symbols') or [])
+            applied, failed = apply_edit_blocks(Path(workdir), blocks, prompt.replace('\r\n', '\n'), part_symbols)
         events.extend({'type': 'tool_use', 'part': {'tool': 'edit', 'state': {'input': {'filePath': n}}}}
                       for n in applied)
         note = _light_note(len(blocks) + outside + sum(problems.values()), applied, failed, outside, text)
@@ -2740,7 +2748,7 @@ def edit_parts(task: Task, parts: list, workdir: Path, call, failing: str = '', 
                         return 'the code block is not a SEARCH/REPLACE block of ' + file
             except (ValueError, OSError) as error:
                 return str(error)
-            applied, failed = apply_edit_blocks(folder, blocks)
+            applied, failed = apply_edit_blocks(folder, blocks, None, {file: part.get('symbols') or []})
             if failed:
                 return '; '.join(sorted(failed))
             target, before = folder / file, workdir / file
