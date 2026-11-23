@@ -166,6 +166,12 @@ def build_report(state_dir, since=None, now=None, paid_spend=None, money_spend=N
 
 
 CALL_SPANS = ("run", "review")       # a model call is an event of these spans with a role; the paid critic's verdict is a call too
+def is_slice_call(row) -> bool:
+    """The slicer's request to a model: a ``slice`` event with an engine whose status is not ``barred`` (a barred event is a
+    tick of a waiting row, no call was made)."""
+    return row.get("span") == "slice" and bool(row.get("engine")) and row.get("status") != "barred"
+
+
 GREEN_STATUSES = ("REVIEW", "PROMOTED", "DONE", "accepted", "promoted")
 
 
@@ -178,7 +184,7 @@ def money_report(state_dir, now=None, spend=None, until="2026-11-30") -> dict:
     accepted, calls_all, calls_day, passes = {}, 0, 0, {}
     for row in _rows(state_dir):
         t, tid, span = _t(row["ts"]), row.get("task_id"), row["span"]
-        if (span in CALL_SPANS and row.get("role")) or span == "paid_critic":
+        if (span in CALL_SPANS and row.get("role")) or span == "paid_critic" or is_slice_call(row):
             calls_all += 1
             calls_day += t >= day_ago
         if not isinstance(tid, str) or not tid:
