@@ -3196,6 +3196,108 @@ class Loop:
                 out.append("CONTRACT OF AN EARLIER GENERATION (%s):\n%s" % (task.id, text))
         return "\n\n".join(out)[:self.DOSSIER_CHARS]
 
+    # ---- W-redrow 1, 2: a row with a ready red test carries the proof of the red --------------------------------------
+    RED_SOURCE_CHARS = 6000
+    RED_HELPER_CHARS = 2000
+    RED_HELPERS_TOTAL = 4000
+
+    @staticmethod
+    def _is_red_row(row, entry) -> bool:
+        """A row that comes with a ready red test: the guard of the entry, or a rel-... regression / baseline-debt row."""
+        return bool((entry or {}).get("guard")) or str(row).startswith("rel-")
+
+    @classmethod
+    def _red_test_source(cls, root, name) -> list:
+        """[the text of the red test (the whole function, with its decorators), then one piece per helper it calls that lives
+        in the same file (module functions: called by name or taken as fixtures)]; [] when it cannot be read."""
+        import ast
+        rel, _, rest = str(name).partition("::")
+        path = (Path(root) / F.safe_path(rel)).resolve()
+        if not rel.endswith(".py") or not path.is_relative_to(Path(root).resolve()) or not path.is_file():
+            return []
+        text = path.read_text(encoding="utf-8-sig")
+        tree = ast.parse(text)
+        lines = text.splitlines()
+
+        def segment(node):
+            first = min([node.lineno] + [d.lineno for d in getattr(node, "decorator_list", [])])
+            return "\n".join(lines[first - 1:node.end_lineno])
+        scope, target = tree.body, None
+        for part in [p.split("[", 1)[0] for p in rest.split("::") if p]:
+            target = next((n for n in scope if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+                           and n.name == part), None)
+            if target is None:
+                break
+            scope = target.body
+        if target is None:
+            return []
+        out = ["TEST SOURCE (%s)\n%s" % (name, segment(target)[:cls.RED_SOURCE_CHARS])]
+        top = {n.name: n for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+        wanted = [n.func.id for n in ast.walk(target) if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)]
+        if isinstance(target, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            wanted += [a.arg for a in target.args.args + target.args.kwonlyargs]
+        total = 0
+        for helper in dict.fromkeys(w for w in wanted if w in top and w != getattr(target, "name", "")):
+            body = segment(top[helper])[:cls.RED_HELPER_CHARS]
+            if total + len(body) > cls.RED_HELPERS_TOTAL:
+                break
+            total += len(body)
+            out.append("HELPER OF THE TEST %s (same file):\n%s" % (helper, body))
+        return out
+
+    def _measure_red(self, name, sha, root) -> str:
+        """The failure text of a red test of a base the build did not report: ONE short cloud run of its file, once per
+        (test, sha) (the answer, text or none, is cached in <state>/release/measure.json).  '' when the cloud gave nothing
+        (not cached: it is tried again)."""
+        from tools import factory_release as REL
+        if self.sweep_fn is None or not sha:
+            return ""
+        book_path = REL.release_dir(self.cfg.state_dir) / "measure.json"
+        key = "%s@%s" % (name, sha)
+        book = REL._read_json(book_path, {})
+        if key in book:
+            return str(book[key] or "")
+        rel = str(name).partition("::")[0]
+        try:
+            _p, res, _id = self.sweep_fn(src=root, files=[rel], shards=1, wait_s=900,
+                                         label=REL.next_label(self.cfg.state_dir, sha, prefix="rel-m"))
+        except Exception as exc:                    # the cloud is down / queued / blocked: no measure now, no cache
+            self.err("red measure", exc)
+            return ""
+        row = (res or {}).get(rel)
+        if not isinstance(row, dict) or row.get("missing"):
+            return ""
+        texts = row.get("failures") or {}
+        text = str(texts.get(name) or next((t for n, t in texts.items() if n.split("::")[-1] == str(name).split("::")[-1]), ""))
+        book = REL._read_json(book_path, {})
+        book[key] = text[-REL.FAILURE_CHARS:]
+        if len(book) > 400:
+            book = dict(list(book.items())[-400:])
+        REL._write_json(book_path, book)
+        return book[key]
+
+    def _red_clues(self, row, entry, root) -> list:
+        """Pieces of the packet's evidence for a row with a red test: the failure text the build saved (or the one cloud
+        measure of the base), the test's source and its helpers.  Each piece passes the packet's filters on its own."""
+        from tools import factory_release as REL
+        name = str(entry.get("guard") or "")
+        if not name:
+            rec = REL.regressions(self.cfg.state_dir)
+            name = next((n for n, r in rec.items() if r.get("row") == row), "")
+        if not name:
+            return []
+        out = ["THE TEST %s IS RED ON THIS TREE (measured)." % name]
+        text = REL.failure_of(self.cfg.state_dir, name)
+        if not text:
+            text = self._measure_red(name, str(getattr(self, "base_sha", "") or ""), root)
+        out.append(("FAILURE OF THE RED TEST (assert, message, last frames):\n" + text) if text
+                   else "No failure text of this test was saved or measured: read the test and the code yourself.")
+        try:
+            out.extend(self._red_test_source(root, name))
+        except (OSError, ValueError, SyntaxError, UnicodeError):
+            pass
+        return out
+
     def _row_packet(self, row, cause, evidence, *, tasks, state, ls, root, rung=0):
         from tools import factory_architect as A, factory_classes as CL, agent_factory_import as imp
         entry = ls.get("to_slice", {}).get(row, {})
@@ -3230,6 +3332,13 @@ class Loop:
                 clues.append(rec["base_red"])
                 clues.append(self._trace_clue(task.id, rec))
         clues.append(self._guard_traces(state).get(row, []))
+        red_given = Loop._is_red_row(row, entry)
+        if red_given:
+            try:
+                clues.extend(Loop._red_clues(self, row, entry, root))
+            except Exception as exc:                # an addition to the packet: without it the packet is as before
+                if hasattr(self, "err"):
+                    self.err("row red evidence", exc)
         def keywords(system, user):
             status, _, answer, _ = self._light_ask(system + "\n" + user, attempt=1,
                 section="loop-keywords", quotas={}, max_tokens=800, role="review")
@@ -3254,7 +3363,7 @@ class Loop:
             except Exception as exc:               # an addition to the packet: without it the packet is as before
                 self.err("row dossier", exc)
         return dict(bid=row, title=safe(title), priority=entry.get("priority") or backlog.get("priority") or 9,
-                    **dossier, quotes=[s for q in quotes if (s := safe(q))], hints=hints,
+                    **dossier, **({"red_given": True} if red_given else {}), quotes=[s for q in quotes if (s := safe(q))], hints=hints,
                     examples=[s for x in CL.contract_examples([f for f in files if isinstance(f, str)], k=2)
                               if (s := safe(x))], evidence="\n".join(s for x in clues if (s := safe(x))),
                     known_ids=list(ls.get("to_slice", {})) + list({t.backlog_id for t in tasks.values()}))
@@ -3404,6 +3513,64 @@ class Loop:
             return code_sha(Path(__file__).resolve().parent.parent)
         except Exception:  # noqa: BLE001 - no SHA, no return: a tree without git never loops on it
             return ""
+
+    def _rel_entry_back(self, ls, bid):
+        """The to_slice entry of a rel-... row as it was (text, guard, priority): the kept one, else rebuilt from the build's own
+        books (the baseline debt for rel-base-<n>, the regressions for rel-<sha>-<n>); None when neither knows the row."""
+        from tools import factory_release as REL
+        kept = (ls.get("rel_entry") or {}).get(bid)
+        if isinstance(kept, dict) and kept.get("guard"):
+            return {"at": self.clock(), "hints": [], **kept}
+        found = REL.DEBT_ROW.match(bid)
+        if found:
+            for file, rec in REL.debt(self.cfg.state_dir).items():
+                if rec.get("n") == int(found.group(1)) and rec.get("tests"):
+                    names = [str(t).split("::", 1)[-1] for t in rec["tests"][:5]]
+                    sha = str((ls.get("release") or {}).get("sha") or "")[:8]
+                    return {"at": self.clock(), "hints": [], "priority": 2, "guard": str(rec["tests"][0]),
+                            "text": "тест %s красный на базе %s: %s" % (file, sha, ", ".join(names))}
+            return None
+        for name, rec in REL.regressions(self.cfg.state_dir).items():
+            if rec.get("row") == bid:
+                return {"at": self.clock(), "hints": [], "priority": 0, "guard": name,
+                        "text": "после слияний упал тест %s" % name}
+        return None
+
+    def _lift_rel_decisions(self) -> int:
+        """W-redrow 3: a no-fix answer (not_code / cannot_reproduce / already_fixed / duplicate_of) written for a rel-... row (its test
+        is red) by a step other than the agent is taken off ONCE at the start of a new slicer version: the row goes back to
+        to_slice with its own text, guard and priority.  Places: the not_code book, holds (+ hold_ver / hold_hash / hold_arch) and
+        the architect's decision record.  A row the agent decided stays."""
+        version = F.slicer_version()
+        ls = self.ls()
+        if (ls.get("redrow_lift") or {}).get("version") == version:
+            return 0
+        book, holds, arch = ls.setdefault("not_code", {}), ls.setdefault("holds", {}), ls.get("arch_decision") or {}
+        lifted = []
+        for bid in sorted({b for b in list(book) + list(holds) + list(arch) if str(b).startswith("rel-")}):
+            rec = arch.get(bid) if isinstance(arch.get(bid), dict) else {}
+            nc = book.get(bid) if isinstance(book.get(bid), dict) else None
+            kind = "not_code" if bid in book else str(rec.get("decision") or "")
+            engine = str((nc or {}).get("engine") or rec.get("engine") or "")
+            if bid in holds and bid not in book and not rec and bid not in (ls.get("hold_arch") or {}):
+                continue                                    # a hold of unknown origin: not the architect's no-fix answer
+            if kind == "hold" or engine == "agent":
+                continue
+            if kind and kind not in ("not_code", "cannot_reproduce", "already_fixed") and not kind.startswith("duplicate"):
+                continue
+            entry = self._rel_entry_back(ls, bid)
+            if entry is None:
+                continue
+            book.pop(bid, None)
+            for key in ("holds", "hold_ver", "hold_hash", "hold_arch", "arch_decision", "slice_wait", "reslices"):
+                (ls.get(key) or {}).pop(bid, None)
+            ls.setdefault("to_slice", {}).setdefault(bid, entry)
+            lifted.append(bid)
+        ls["redrow_lift"] = {"version": version, "at": self.clock(), "rows": lifted[:200]}
+        self.save_ls(ls)
+        if lifted:
+            self.event("loop", action="RECOVER", status="ok", reason="rel_decisions_lifted", count=len(lifted), rows=lifted[:20])
+        return len(lifted)
 
     def _return_worker_exceptions(self) -> int:
         """W-name 3: cards BLOCKED / FAILED by a ``worker_exception`` (a fault of the factory's code, not of the card) go
@@ -3683,6 +3850,10 @@ class Loop:
         self._slice_record(ls, row, gen, cause, now)
         if "rung" in portion:
             ls["reslices"][row]["rung"] = portion["rung"]
+        if row.startswith("rel-") and (portion.get("holds") or portion.get("not_code")) and not items:
+            kept = ls.get("to_slice", {}).get(row)       # W-redrow 3: what the row was, so a lift can give it back as it was
+            if isinstance(kept, dict):
+                ls.setdefault("rel_entry", {})[row] = {k: kept[k] for k in ("text", "guard", "priority", "hints", "at") if k in kept}
         for key in ("to_slice", "slice_wait", "parents"):
             ls.get(key, {}).pop(row, None)
         for hold in portion.get("holds") or []:
@@ -5715,6 +5886,10 @@ class Loop:
                 self._return_worker_exceptions()
             except Exception as e:  # noqa: BLE001 - a fault of the lift never stops the loop
                 self.err("worker_exception lift", e)
+            try:
+                self._lift_rel_decisions()
+            except Exception as e:  # noqa: BLE001 - a fault of the lift never stops the loop
+                self.err("rel decision lift", e)
             self._decide_experiments()
             self._discover_keys()
             while True:

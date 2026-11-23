@@ -282,6 +282,10 @@ def run(*, sha, snapshot, state_dir, sweep_fn, known=(), open_ids=(), open_tests
             if n not in names:
                 names.append(n)
     out["sweep"]["red"] = len(names)
+    try:                                # the failure text of each red test: a convenience, the verdict never waits for it
+        keep_failures(state_dir, results, names, sha)
+    except OSError:
+        pass
     base_file = rel / "baseline_red.json"
     if not base_file.is_file():
         _write_json(base_file, sorted({red_ratchet.cut(red_ratchet.norm(n)) for n in names}))
@@ -307,6 +311,45 @@ def run(*, sha, snapshot, state_dir, sweep_fn, known=(), open_ids=(), open_tests
     except OSError:
         out["debt_rows"] = []
     return out
+
+
+FAILURES_FILE = "failures.json"     # {test name: {"text": failure text (<= FAILURE_CHARS), "sha": base sha, "at": time}}
+FAILURE_CHARS = 1500
+FAILURES_KEEP = 400                 # entries kept (the newest by time)
+
+
+def failures(state_dir) -> dict:
+    """The failure texts the builds kept: ``{test name: {"text", "sha", "at"}}``."""
+    return _read_json(release_dir(state_dir) / FAILURES_FILE, {})
+
+
+def keep_failures(state_dir, results, names, sha) -> int:
+    """Writes the failure text of every red test of this sweep (``results[file]["failures"][name]``, cut to FAILURE_CHARS) into
+    ``<state>/release/failures.json``; a red test with no text in the results keeps the text of an earlier build.  Returns the number
+    of texts written."""
+    book = failures(state_dir)
+    now, written = time.time(), 0
+    for name in names:
+        row = results.get(_file_of(name)) or results.get(str(name).split("::", 1)[0]) or {}
+        text = (row.get("failures") or {}).get(name) if isinstance(row, dict) else None
+        if isinstance(text, str) and text.strip():
+            book[str(name)] = {"text": text.strip()[-FAILURE_CHARS:], "sha": str(sha), "at": now}
+            written += 1
+    if written:
+        if len(book) > FAILURES_KEEP:
+            book = dict(sorted(book.items(), key=lambda kv: float((kv[1] or {}).get("at") or 0))[-FAILURES_KEEP:])
+        _write_json(release_dir(state_dir) / FAILURES_FILE, book)
+    return written
+
+
+def failure_of(state_dir, name):
+    """The kept failure text of a test (an exact name, else the same test name in the same file), or ''."""
+    book = failures(state_dir)
+    rec = book.get(str(name))
+    if rec is None:
+        key = red_ratchet.cut(red_ratchet.norm(name))
+        rec = next((r for n, r in book.items() if red_ratchet.cut(red_ratchet.norm(n)) == key), None)
+    return str((rec or {}).get("text") or "") if isinstance(rec, dict) else ""
 
 
 DEBT_FILE = "baseline_debt.json"        # {file: {"tests": [...], "queued": bool, "n": int, "closed": bool}}
