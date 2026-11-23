@@ -467,7 +467,7 @@ def _run_once_raw(root, tests, timeout_s, workdir, wait_s, progress, deselect, w
     tests = [_node(t) for t in tests]
     if not tests:
         return _failure(-1, 'no tests given')
-    if touched is not None and not deselect and not _known_fast(root, tests):   # the product route runs the profile plugin too
+    if touched is not None and not deselect and (SELF_REPO or not _known_fast(root, tests)):   # the product route runs the profile plugin too
         cloud = _cloud_attempt(root, tests, touched, trace)
         if cloud is not None:
             _where['v'] = 'cloud'
