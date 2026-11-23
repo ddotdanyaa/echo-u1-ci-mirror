@@ -58,7 +58,8 @@ def _redact(value):
 
 KEYWORDS_PROMPT = 'Return a JSON list of up to 12 English identifiers and words to search for this request in code.'
 _SERVICE_WORDS = frozenset('thought thinking think input text root task return json list'.split())
-_PROMPT_WORDS = frozenset(w.lower() for w in re.findall(r'[A-Za-z_]+', KEYWORDS_PROMPT)) | _SERVICE_WORDS
+# the prompt's own function words and service words only: "search", "request", "code", "words" can be an honest answer
+_PROMPT_WORDS = frozenset('a of to up in this'.split()) | _SERVICE_WORDS
 
 
 def _echo(words):
@@ -107,7 +108,7 @@ def keywords_en(row_text, ask, cache: Path | None = None):
     except Exception:
         return []
     if not result:
-        return []
+        return []       # an empty answer is not cached on purpose: it is asked again on the next tick (cheap, light slot)
     if path:
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -154,7 +155,7 @@ def hint_sources(root, ranked, *, places=HINT_SOURCE_PLACES, cap=HINT_SOURCE_MAX
     """Verbatim text of the best map places ([(file, qualname, score)]): the architect sees code, not only names.
     A private piece, a forbidden path or an unreadable place is skipped; the whole stays within ``cap`` characters."""
     from tools import factory_gate as G
-    root, chunks, total, seen = Path(root), [], 0, set()
+    root, chunks, regions, total, seen = Path(root), [], [], 0, set()
     for item in ranked:
         if len(chunks) >= places:
             break
@@ -166,13 +167,19 @@ def hint_sources(root, ranked, *, places=HINT_SOURCE_PLACES, cap=HINT_SOURCE_MAX
             if G.is_forbidden(file, 'code'):
                 continue
             text = (root / file).read_text(encoding='utf-8-sig')
+            # a place that does not fit the remainder (part_region: ValueError) is skipped, the next one is tried
             header, region = K.part_region(text, [name], cap=min(K.PART_REGION_CHARS, cap - total))
         except (ValueError, TypeError, OSError, SyntaxError, IndexError):
             continue
         if F.is_private_text(region):
             continue
+        if any(region in other or other in region for other in regions):
+            continue        # a class and its own method: the text is already there
         chunk = f'{file}::{name} {header}\n{F.redact(region)}'
-        total += len(region)
+        if total + len(chunk) > cap:
+            continue        # headers, paths and redaction count against the cap too
+        total += len(chunk)
+        regions.append(region)
         chunks.append(chunk)
     return '\n\n'.join(chunks)
 

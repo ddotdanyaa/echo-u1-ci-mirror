@@ -2994,7 +2994,8 @@ class Loop:
             ranked = repomap.rank(root, title + " " + " ".join(words)) if not F.is_private_text(title) else []
             hints.append(safe(repomap.hints(ranked)))
             files.extend(r[0] for r in ranked)
-            hints.append(A.hint_sources(root, ranked))      # the text of the 3 best places, verbatim (private pieces cut)
+            if sources := A.hint_sources(root, ranked):     # the text of the 3 best places, verbatim (private pieces cut)
+                hints.append(sources)
         except ImportError:
             pass
         return dict(bid=row, title=safe(title), priority=entry.get("priority") or backlog.get("priority") or 9,
