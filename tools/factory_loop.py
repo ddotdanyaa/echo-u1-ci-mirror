@@ -599,6 +599,7 @@ RESLICE_PER_STEP = SLICE_PARALLEL      # W-feed 4: up to SLICE_PARALLEL rows go 
 RESLICE_SLEEP_S = 5
 SLICE_WAIT_S = 60
 QUARANTINE_TTL_S = 21600
+A_NO_FIX = ("cannot_reproduce", "already_fixed")      # with duplicate_of:<ID>: the architect's no-fix holds (kept by text, 7 days)
 
 
 class SliceWait(Exception):
@@ -1991,11 +1992,14 @@ class Loop:
         self.save_ls(ls)
         record("not_code", model, tokens)
 
-    def _not_code_set(self, ls, bid, why, digest) -> None:
-        """The ONE writer of the not_code book (the head's answer and the triage's structural cut, <id>)."""
+    ARCH_ENGINES = ("paid", "agent")      # the architect's own steps: their no-fix decision outlives a slicer version
+
+    def _not_code_set(self, ls, bid, why, digest, engine="") -> None:
+        """The ONE writer of the not_code book (the head's answer and the triage's structural cut, <id>).  ``engine``
+        is the step that decided; a paid/agent decision expires by the row's text or the term, not by the slicer."""
         ls.setdefault("not_code", {})[bid] = {
             "hash": digest, "reason": ("не код: " + self._scrub(F.redact(str(why))))[:200],
-            "until": self.clock() + self.cfg.not_code_term_s, "slicer": F.slicer_version()}
+            "until": self.clock() + self.cfg.not_code_term_s, "slicer": F.slicer_version(), "engine": str(engine or "")}
         ls["holds"].pop(bid, None)
         ls.get("hold_hash", {}).pop(bid, None)
 
@@ -3092,6 +3096,29 @@ class Loop:
     def _ladder_sig(self):
         return ",".join(self._asks())
 
+    TRACE_CLUE_CHARS = 1800
+
+    def _trace_clue(self, tid, rec) -> str:
+        """A reading of one card's red base for the architect: the failing tests, the first lines of the failure and the
+        functions the failing run went through, by file (the trace of base_red), so a part names the right function
+        and file instead of the one the first slicing guessed."""
+        result = (rec.get("base_red") or {}).get("result") or {}
+        try:
+            trace = F.get_trace(self.cfg.state_dir, rec)
+        except (TypeError, ValueError, AttributeError):
+            trace = ()
+        by_file: dict = {}
+        for call in trace:
+            by_file.setdefault(str(call[0]), [])
+            if str(call[1]) not in by_file[str(call[0])]:
+                by_file[str(call[0])].append(str(call[1]))
+        lines = ["red base of %s: failing %s" % (tid, ", ".join(map(str, result.get("failed_ids") or [])) or "?"),
+                 str(result.get("diag") or "")[:600], "the failing run went through:"]
+        lines += ["  %s: %s" % (f, ", ".join(q[:60] for q in qs[:12])) for f, qs in list(by_file.items())[:20]]
+        if not by_file:
+            lines.append("  (no trace kept)")
+        return "\n".join(lines)[:self.TRACE_CLUE_CHARS]
+
     def _row_packet(self, row, cause, evidence, *, tasks, state, ls, root):
         from tools import factory_architect as A, factory_classes as CL, agent_factory_import as imp
         entry = ls.get("to_slice", {}).get(row, {})
@@ -3124,6 +3151,7 @@ class Loop:
                 clues.append(diff.read_text(encoding="utf-8", errors="replace"))
             if rec.get("base_red"):
                 clues.append(rec["base_red"])
+                clues.append(self._trace_clue(task.id, rec))
         clues.append(self._guard_traces(state).get(row, []))
         def keywords(system, user):
             status, _, answer, _ = self._light_ask(system + "\n" + user, attempt=1,
@@ -3220,7 +3248,7 @@ class Loop:
             elif outcome == "not_code":
                 portion["not_code"] = [dict(backlog_id=row, reason=contract.get("why", ""))]
             else:
-                portion["holds"] = [dict(backlog_id=row, question=contract.get("why", outcome))]
+                portion["holds"] = [dict(backlog_id=row, question=contract.get("why", outcome), decision=str(outcome))]
             fresh = self.ls()
             fresh.setdefault("contracts_by_engine", {}).setdefault(engine, {"made": 0, "merged": 0})["made"] += 1
             self.save_ls(fresh)
@@ -3342,17 +3370,26 @@ class Loop:
             self.event("reslice", status="quarantine", backlog_id=bid, reason="reslice budget exhausted")
 
     def _expire_slicer_decisions(self, ls):
-        version = F.slicer_version()
+        version, now = F.slicer_version(), self.clock()
+        arch = ls.setdefault("hold_arch", {})
+        for bid in list(arch):                     # the architect's duplicate/cannot_reproduce/already_fixed hold
+            if bid not in ls["holds"]:
+                arch.pop(bid, None)
+            elif float(arch[bid] or 0) <= now:     # its term is over: the hold goes, the row is looked at again
+                arch.pop(bid, None)
+                ls["holds"].pop(bid, None)
+                ls.get("hold_ver", {}).pop(bid, None)
+                ls.get("hold_hash", {}).pop(bid, None)
         for bid in list(ls["holds"]):
             why = str(ls["holds"][bid]).lower()
-            if any(rule in why for rule in ("only_opus", "private", "приватн")):
+            if any(rule in why for rule in ("only_opus", "private", "приватн")) or bid in arch:
                 continue
             if ls.get("hold_ver", {}).get(bid, version) != version:
                 ls["holds"].pop(bid, None)
                 ls.get("hold_ver", {}).pop(bid, None)
                 ls.get("hold_hash", {}).pop(bid, None)
         for bid, rec in list(ls.get("not_code", {}).items()):
-            if rec.get("slicer") != version:
+            if rec.get("slicer") != version and rec.get("engine") not in self.ARCH_ENGINES:
                 ls["not_code"].pop(bid, None)
 
     def _resliceable(self, tasks, state, ls, now) -> dict:
@@ -3437,8 +3474,16 @@ class Loop:
             bid = hold.get("backlog_id", row)
             ls["holds"][bid] = self._scrub(str(hold.get("question", "")))
             ls.setdefault("hold_ver", {})[bid] = F.slicer_version()
+            kind = str(hold.get("decision") or "")
+            if portion.get("engine") in self.ARCH_ENGINES and (kind in A_NO_FIX or kind.startswith("duplicate")):
+                try:        # the architect's own no-fix answer: kept until the row's text changes or the term ends
+                    ls.setdefault("hold_hash", {})[bid] = self._row_hashes("text")[bid]
+                    ls.setdefault("hold_arch", {})[bid] = now + self.cfg.not_code_term_s
+                except Exception as e:
+                    self.err("hold fingerprint", e)
         for rec in portion.get("not_code") or []:
-            self._not_code_set(ls, rec.get("backlog_id", row), rec.get("reason", ""), self._row_hashes("text").get(row, ""))
+            self._not_code_set(ls, rec.get("backlog_id", row), rec.get("reason", ""), self._row_hashes("text").get(row, ""),
+                               engine=portion.get("engine", ""))
         self.save_ls(ls)
         self.event("reslice", status="applied", backlog_id=row, gen=gen, added=len(added), cause=cause)
         return len(added)

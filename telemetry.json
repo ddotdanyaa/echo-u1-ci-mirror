@@ -1,15 +1,15 @@
 {
  "accepted": 5,
- "free_ram_gb": 5.65,
+ "free_ram_gb": 4.68,
  "funnel": {
   "accepted": 5,
-  "claimed": 311,
+  "claimed": 314,
   "coded": 178,
   "found_in_backlog": "unknown",
   "gate_pass": 49,
-  "known_to_loop": 264,
+  "known_to_loop": 300,
   "promoted": 46,
-  "ready": 9,
+  "ready": 13,
   "reviewed": 133,
   "triaged": 182
  },
@@ -55,19 +55,19 @@
    "tokens_out": 6152
   },
   "google/gemini-3.1-flash-lite": {
-   "calls": 1493,
-   "calls_usage_unknown": 66,
+   "calls": 1497,
+   "calls_usage_unknown": 67,
    "errors": {
     "rate_day": 4,
-    "rate_minute": 4,
+    "rate_minute": 5,
     "transient": 58
    },
    "http_429": 4,
-   "tokens_in": 8440538,
-   "tokens_out": 563569
+   "tokens_in": 8446902,
+   "tokens_out": 566086
   },
   "google/gemini-3.1-flash-lite-preview": {
-   "calls": 210,
+   "calls": 211,
    "calls_usage_unknown": 22,
    "errors": {
     "rate_day": 5,
@@ -75,8 +75,8 @@
     "transient": 13
    },
    "http_429": 8,
-   "tokens_in": 432322,
-   "tokens_out": 66059
+   "tokens_in": 435191,
+   "tokens_out": 66315
   },
   "google/gemini-3.5-flash": {
    "calls": 23,
@@ -90,15 +90,15 @@
    "tokens_out": 1391
   },
   "google/gemini-3.5-flash-lite": {
-   "calls": 1786,
+   "calls": 1789,
    "calls_usage_unknown": 33,
    "errors": {
     "rate_day": 4,
     "transient": 29
    },
    "http_429": 4,
-   "tokens_in": 10593327,
-   "tokens_out": 570806
+   "tokens_in": 10597417,
+   "tokens_out": 572879
   },
   "google/gemini-3.6-flash": {
    "calls": 133,
@@ -125,34 +125,34 @@
    "tokens_out": 14
   },
   "google/gemini-3.8-flash": {
-   "calls": 19,
-   "calls_usage_unknown": 16,
+   "calls": 20,
+   "calls_usage_unknown": 17,
    "errors": {
-    "rate_day": 6,
+    "rate_day": 7,
     "rate_minute": 1,
     "transient": 9
    },
-   "http_429": 6,
+   "http_429": 7,
    "tokens_in": 21237,
    "tokens_out": 15
   },
   "google/gemma-4-26b-a4b-it": {
-   "calls": 243,
-   "calls_usage_unknown": 146,
+   "calls": 245,
+   "calls_usage_unknown": 148,
    "errors": {
     "rate_minute": 10,
-    "transient": 136
+    "transient": 138
    },
    "http_429": 0,
    "tokens_in": 419925,
    "tokens_out": 35023
   },
   "google/gemma-4-31b-it": {
-   "calls": 233,
-   "calls_usage_unknown": 173,
+   "calls": 234,
+   "calls_usage_unknown": 174,
    "errors": {
     "rate_minute": 17,
-    "transient": 156
+    "transient": 157
    },
    "http_429": 0,
    "tokens_in": 217340,
@@ -181,7 +181,7 @@
   }
  },
  "promoted": 46,
- "rows_recognized": 30804,
+ "rows_recognized": 30953,
  "schema": 3,
  "side": {
   "blocked": 0,
@@ -189,7 +189,7 @@
   "requeued": 6
  },
  "skipped_files": 0,
- "source_sha": "shaaf9998d7f853",
+ "source_sha": "sha754753fcb10b",
  "span": {
   "answer": {
    "calls": 0,
@@ -209,10 +209,10 @@
    "calls_usage_unknown": 0,
    "errors": {},
    "http_429": 0,
-   "rows": 4804,
+   "rows": 4826,
    "status": {
-    "ok": 4340,
-    "other": 464
+    "ok": 4352,
+    "other": 474
    },
    "tokens_in": 0,
    "tokens_out": 0
@@ -222,14 +222,14 @@
    "calls_usage_unknown": 0,
    "errors": {},
    "http_429": 0,
-   "rows": 819,
+   "rows": 821,
    "status": {
     "brake": 8,
     "brake_cleared": 1,
     "cleared": 58,
-    "deferred": 525,
+    "deferred": 526,
     "error": 15,
-    "other": 171,
+    "other": 172,
     "parked": 18,
     "released": 9,
     "run_failed": 14
@@ -242,23 +242,23 @@
    "calls_usage_unknown": 0,
    "errors": {},
    "http_429": 0,
-   "rows": 5480,
+   "rows": 5497,
    "status": {
-    "BLOCKED": 354,
+    "BLOCKED": 355,
     "FAILED": 381,
-    "READY": 1497,
+    "READY": 1498,
     "REVIEW": 59,
-    "WAITING_CHANNEL": 233,
+    "WAITING_CHANNEL": 235,
     "added": 16,
     "brake": 15,
-    "deferred": 517,
+    "deferred": 518,
     "empty": 92,
     "infra": 17,
-    "ok": 2095,
-    "other": 114,
+    "ok": 2099,
+    "other": 121,
     "refused": 1,
     "requeued": 6,
-    "stop": 83
+    "stop": 84
    },
    "tokens_in": 0,
    "tokens_out": 0
@@ -268,13 +268,13 @@
    "calls_usage_unknown": 0,
    "errors": {},
    "http_429": 0,
-   "rows": 6327,
+   "rows": 6404,
    "status": {
     "added": 6,
-    "applied": 437,
+    "applied": 470,
     "failed": 36,
-    "ok": 119,
-    "other": 5706,
+    "ok": 121,
+    "other": 5748,
     "rejected": 23
    },
    "tokens_in": 0,
@@ -295,26 +295,26 @@
    "tokens_out": 0
   },
   "review": {
-   "calls": 1065,
-   "calls_usage_unknown": 269,
+   "calls": 1072,
+   "calls_usage_unknown": 274,
    "errors": {
     "model_missing": 1,
-    "rate_day": 20,
-    "rate_minute": 8,
-    "transient": 240
+    "rate_day": 21,
+    "rate_minute": 9,
+    "transient": 243
    },
-   "http_429": 21,
-   "rows": 1963,
+   "http_429": 22,
+   "rows": 1973,
    "status": {
     "approved": 61,
-    "error": 269,
-    "ok": 1633
+    "error": 274,
+    "ok": 1638
    },
-   "tokens_in": 3857622,
-   "tokens_out": 107405
+   "tokens_in": 3863173,
+   "tokens_out": 107838
   },
   "run": {
-   "calls": 3352,
+   "calls": 3357,
    "calls_usage_unknown": 303,
    "errors": {
     "model_missing": 3,
@@ -324,28 +324,28 @@
     "transient": 217
    },
    "http_429": 42,
-   "rows": 10469,
+   "rows": 10487,
    "status": {
-    "BLOCKED": 370,
+    "BLOCKED": 371,
     "FAILED": 402,
-    "READY": 2069,
+    "READY": 2074,
     "REVIEW": 61,
-    "WAITING_CHANNEL": 244,
+    "WAITING_CHANNEL": 246,
     "error": 304,
-    "ok": 6980,
+    "ok": 6990,
     "other": 39
    },
-   "tokens_in": 18612774,
-   "tokens_out": 1392162
+   "tokens_in": 18620546,
+   "tokens_out": 1396575
   },
   "triage": {
    "calls": 0,
    "calls_usage_unknown": 0,
    "errors": {},
    "http_429": 0,
-   "rows": 345,
+   "rows": 348,
    "status": {
-    "added": 66,
+    "added": 69,
     "empty": 271,
     "hold_dropped": 3,
     "other": 5
@@ -355,40 +355,39 @@
   }
  },
  "status": {
-  "BLOCKED": 724,
+  "BLOCKED": 726,
   "FAILED": 783,
-  "READY": 3566,
+  "READY": 3572,
   "REVIEW": 120,
-  "WAITING_CHANNEL": 477,
-  "added": 88,
-  "applied": 956,
+  "WAITING_CHANNEL": 481,
+  "added": 91,
+  "applied": 989,
   "approved": 61,
   "brake": 23,
   "brake_cleared": 1,
   "cleared": 58,
-  "deferred": 1042,
+  "deferred": 1044,
   "empty": 363,
-  "error": 588,
+  "error": 593,
   "failed": 36,
   "hold_dropped": 3,
   "infra": 17,
-  "ok": 15167,
-  "other": 6553,
+  "ok": 15200,
+  "other": 6613,
   "parked": 18,
   "refused": 2,
   "rejected": 40,
   "released": 9,
   "requeued": 12,
   "run_failed": 14,
-  "stop": 83
+  "stop": 84
  },
  "summary": "ok",
  "tasks_now": {
   "DONE": 68,
-  "FAILED": 404,
+  "FAILED": 405,
   "PROMOTED": 22,
-  "READY": 9,
-  "RUNNING": 1
+  "READY": 13
  },
  "unrecognized_rows": 0
 }

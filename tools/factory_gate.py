@@ -2091,6 +2091,34 @@ def rank_path(funcs: dict, base_root, test_files, failed=()) -> list:
     return [(rel, q) for _, rel, q in sorted(scored)]
 
 
+OFF_BODIES_CHARS = 4000
+
+
+def off_path_bodies(off: dict, base_root, test_files, failed=(), limit: int = OFF_BODIES_CHARS, k: int = 4) -> str:
+    """The bodies of the first ``k`` off-path functions (rank_path order, dunders out), one per block headed by
+    ``module.qualname``, at most ``limit`` characters in all: the code the failing test runs outside the task's files,
+    so a model that cannot see it is not left to guess (live 23.11: off_path / no_effect on <id>, <id>, <id>)."""
+    out, used = [], 0
+    for rel, q in rank_path(off, base_root, test_files, failed):
+        if q.rpartition('.')[2].startswith('__') or len(out) >= k:
+            continue
+        try:
+            body = _def_sources(Path(base_root).joinpath(*rel.split('/')).read_text(encoding='utf-8',
+                                                                                  errors='replace')).get(q, '')
+        except OSError:
+            continue
+        if not body:
+            continue
+        block = '# %s.%s (%s)\n%s\n' % (_stem(rel), q, rel, body)
+        if used + len(block) > limit:
+            if out:
+                break
+            block = block[:limit]
+        out.append(block)
+        used += len(block)
+    return '\n'.join(out)
+
+
 def off_path_short(off: dict, base_root, test_files, k: int = 8, failed=()) -> list:
     """The first ``k`` off-path functions as ``stem.qualname`` (rank_path order). Dunders are left out: a constructor
     shares the most words with any test (live <id>: ``ControlledMedia.__init__`` ranked first) and names no decision."""

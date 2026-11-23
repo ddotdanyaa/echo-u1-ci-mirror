@@ -60,7 +60,8 @@ def test_a_conflict_is_aborted_and_becomes_one_line_the_tree_stays_clean(tmp_pat
 def test_the_quarantine_of_the_second_instance_opens_by_itself_with_slicer_one_point_three(tmp_path, monkeypatch):
     from tools import agent_factory as F
     from tests.test_factory_loop import task_row
-    assert F.SLICER_REV == "1.3"
+    from tools import factory_architect as A
+    assert A.CONTRACT_REV == "1.3"
     e = Env(tmp_path, monkeypatch, tasks=[task_row(1, backlog_id="fac-1"), task_row(3, backlog_id="fac-3")])
     e.set_row("T1", status="FAILED", reason="quarantine", q_ver="s0old")      # shelved by the slicer of before
     e.set_row("T3", status="FAILED", reason="quarantine", q_ver=F.slicer_version())     # shelved by this one: stays

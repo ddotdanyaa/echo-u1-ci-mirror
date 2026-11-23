@@ -29,16 +29,27 @@ RESLICE_ID = re.compile(r"_r\d+(?:_test)?$")
 CONTRACT_MAX = 32000     # room for test.new.code (up to 8000 characters)
 REASON_CLOUD_DOWN = "cloud_down"
 REASON_CLOUD_BUSY = "cloud_busy"
-SLICER_FILES: tuple[str, ...] = ("factory_architect.py", "factory_cards.py", "agent_factory_import.py")
-SLICER_REV = "1.3"      # 1.3: the second instance's cards may edit a factory test, a scanner-excluded test is asked again with its cause
+SLICER_FILES: tuple[str, ...] = ("factory_cards.py",)   # the cards; the architect's prompt and schema come from its code
 _slicer_version: str | None = None
 
 
+def _contract_text() -> tuple[str, bytes]:
+    """A.CONTRACT_REV and the text that shapes a contract: the prompt (both engines) with the schema, validate, to_tasks."""
+    import inspect
+    from tools import factory_architect as A
+    parts = [A.build_prompt({}, engine)[0] for engine in ("", "paid")]
+    parts += [inspect.getsource(A.validate), inspect.getsource(A.to_tasks)]
+    return str(A.CONTRACT_REV), "\n".join(parts).replace("\r\n", "\n").encode("utf-8")
+
+
 def slicer_version() -> str:
-    """Fingerprint the slicer's source once per process."""
+    """Fingerprint of what shapes a contract (A.CONTRACT_REV + sha1 of prompt/schema + cards), once per process.
+    An edit elsewhere in the slicer's files does not change it."""
     global _slicer_version
     if _slicer_version is None:
-        digest = sha1(SLICER_REV.encode("ascii"))     # a new revision opens every quarantine, whatever else the files hold
+        rev, text = _contract_text()
+        digest = sha1(rev.encode("ascii"))     # a new revision opens every quarantine
+        digest.update(sha1(text).digest())
         for name in SLICER_FILES:
             path = Path(name)
             if not path.is_absolute():

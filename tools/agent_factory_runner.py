@@ -911,6 +911,21 @@ OFF_PATH_NOTE = ('\nThe failing test also runs, outside the files you may change
                  'decided there, answer CANNOT: <that name>.')
 PATH_FOCUS_MAX = 12
 OFF_PATH_SHORT = 8
+FAILING_CHARS = 3000      # the red base's failure text a code card carries (was 1500: the failing line was cut off)
+OFF_BODIES_NOTE = ('\nCode the failing test runs outside the files you may change (read-only, as it is now): the '
+                   'asserted behaviour may be decided there; then answer CANNOT: <name> instead of editing around it.\n%s')
+GATE_RED = '(0 required)'     # the gate's "rc=1 (0 required)": the candidate ran and the tests stayed red
+
+
+def skip_small(k: int, attempt: int, feedback, small_follow_up: bool = False) -> tuple:
+    """Tiers a coder call skips. A second candidate never uses the small tier (<id>). The repeat of a card that came
+    back red from the gate (rc=1) is led by the main/strong tier from candidate 0: the small model already wrote the
+    candidate that did not turn the test green (live 23.11: 'gate: rc=1 (0 required)', the biggest red outcome)."""
+    if small_follow_up:
+        return ()
+    if k or (attempt > 1 and GATE_RED in str(feedback or '')):
+        return ('small',)
+    return ()
 OFF_PATH_WAIT_S = 30
 NO_EFFECT_BLOCK_AFTER = 4   # 21.11 (was 2)
 _ADDRESS = re.compile(r'0x[0-9A-Fa-f]{4,}')
@@ -1170,7 +1185,7 @@ def port_focus(repo: Path, task: Task) -> frozenset:
 def build_coder_prompt(task: Task, visible: dict[str, bytes], feedback: str | None = None,
                        prev_diff: str = '', *, goal: str | None = None, failing: str = '',
                        light: bool = False, asked: frozenset = frozenset(), reference: str = '',
-                       focus: frozenset = frozenset(), off_path=()) -> str:
+                       focus: frozenset = frozenset(), off_path=(), off_bodies: str = '') -> str:
     """The ONE builder of the coder prompt (used by the pass and by model_attempt's default). ``light``: the
     prompt of the light engine, which has no tools: no read/grep instructions (live 19.11 17:48-17:50:
     with them the model answered "CANNOT: requires access outside the provided files"). ``asked``: definitions
@@ -1204,7 +1219,7 @@ def build_coder_prompt(task: Task, visible: dict[str, bytes], feedback: str | No
         core += "\nTask text:\n" + redact(scrub_paths(goal))[:1500]
     if failing and task.kind != 'unit_test':
         core += ("\nFailing on the base now (must pass after your change):\n"
-                 + redact(failing)[:1500])
+                 + redact(failing)[:FAILING_CHARS])
     if off_path and task.kind != 'unit_test':
         core += OFF_PATH_NOTE % ', '.join(off_path)
     if reference and task.kind != 'unit_test':
@@ -1236,6 +1251,13 @@ def build_coder_prompt(task: Task, visible: dict[str, bytes], feedback: str | No
                           **({'hint': LIGHT_HINT, 'tools': False} if light else {}))
     limit = channels.PROMPT_LIMIT_CHARS
     room = limit - len(core) - 200
+    if off_bodies and task.kind != 'unit_test':
+        # after the task's own files (they come first and whole): only what the card has room for, half of it at most
+        # when a rejected diff is to follow
+        share = room // 2 if prev_diff else room
+        if share > 600:
+            core += (OFF_BODIES_NOTE % redact(off_bodies))[:share]
+            room = limit - len(core) - 200
     if prev_diff and room > 300:
         core += "\nDiff of the rejected candidate (do not repeat its mistake):\n" + prev_diff[:room]
     return core
@@ -3586,6 +3608,13 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                 raise PromptTooLarge('coder+review prompts cannot both fit')
             def failing_text() -> str:       # the red base may still be running when the first prompt is built
                 return (', '.join(base.failed_ids) + '\n' + base.diag).strip() if task.kind == 'code' and base_settled and base is not None else ''
+            def off_bodies_text() -> str:    # the code the failing test runs outside the task files, once the red base is in
+                if task.kind != 'code' or not base_settled or base is None or not off_mods:
+                    return ''
+                try:
+                    return gate.off_path_bodies(off_mods, root, task.tests, base.failed_ids)
+                except Exception:       # noqa: BLE001 - an addition to the card: without it the card is as before
+                    return ''
             # ``root`` is the loop's plain copy of the sources (no .git): an old commit is read from the repository itself
             reference = port_reference(port_repo or root, task)
             if reference:
@@ -3674,7 +3703,8 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                     return card
                 return build_coder_prompt(task, visible, feedback, prev_diff, failing=scrub(failing_text()),
                                           light=engine_for(role, task) == 'light',   # the same rule call() applies
-                                          asked=frozenset(asked) | remembered, reference=reference, focus=ported | path_focus, off_path=tuple(off_short))
+                                          asked=frozenset(asked) | remembered, reference=reference, focus=ported | path_focus, off_path=tuple(off_short),
+                                          off_bodies=off_bodies_text())
             prompt = make_prompt()
             chosen = route(task, small_model=small_model, large_model=large_model, fallback=attempt > 1)
 
@@ -3770,7 +3800,7 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                     early = settle_base()
                     if early is not None:        # green / environment / unknown base ends the pass before any model call
                         return early
-                line = scrub(failing_text()) if (attempt > 1 or feedback) else ''     # the exact failing line, shown on a repeat
+                line = scrub(failing_text())     # the exact failing line from the first attempt on (empty while the red base runs)
                 models = [set() for _ in range(count)]
                 first_booked = threading.Event()
                 older = [m for m in failed_models_of(row) if isinstance(m, str)]
@@ -3785,7 +3815,7 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                         # a part asked again goes to ANOTHER model than the ones that already gave it an unusable
                         # answer (a preference: with no other model free the call takes any, below)
                         out = sorted(mine | own | (set(older) - mine))
-                        skip = () if small_follow_up or not k else ('small',)
+                        skip = skip_small(k, attempt, feedback, small_follow_up)
 
                         def booked(model, k=k, own=own):
                             own.add(model)
@@ -3894,7 +3924,7 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                     events.append('tournament_candidate_%d' % (k + 1))
                 ctx['candidate'] = k
                 def coder_call(tried=tried, k=k, k_prompt=k_prompt):
-                    skip = () if small_follow_up or not k else ('small',)        # <id> small_follow_up
+                    skip = skip_small(k, attempt, feedback, small_follow_up)        # <id> small_follow_up; gate-red repeat
                     excluded = coder_exclusions(tried)
                     try:
                         return call(role, task, dir_for, chosen, k_prompt, exclude_model=excluded, skip_tiers=skip, later=bool(k))

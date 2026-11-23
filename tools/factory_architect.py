@@ -27,6 +27,9 @@ _agent_lock = threading.Lock()
 _agent_count = 0
 _now, _sleep = time.monotonic, time.sleep
 DECISIONS = ('fix', 'not_code', 'cannot_reproduce', 'already_fixed')
+# Bump when the contract changes in a way the prompt/schema texts do not show; with the sha1 of those texts it is the
+# slicer version (agent_factory.slicer_version), so a quarantine opens only by a change of the contract.
+CONTRACT_REV = '1.3'
 P2 = 'decide forks yourself: what is most convenient for the user and how the neighbouring mechanism already works; no questions to the owner'
 
 
