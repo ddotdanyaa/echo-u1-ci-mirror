@@ -2417,7 +2417,8 @@ def part_off_contract(parts: list, file: str, old_text: str, new_text: str) -> s
     return OFF_CONTRACT_NOTE % (', '.join(o.partition(': ')[2] or o for o in off), ', '.join(allowed))
 
 
-def edit_parts(task: Task, parts: list, workdir: Path, call, failing: str = '', use_code: bool = False) -> tuple[int, str, str]:
+def edit_parts(task: Task, parts: list, workdir: Path, call, failing: str = '', use_code: bool = False,
+               gemma_first=None, on_cut=None) -> tuple[int, str, str]:
     """Edit the parts of the contract in ``workdir``: one call per part (``call(part_task, directory, prompt)`` ->
     ``(rc, stdout, stderr)``), the parts of one stage at once (one thread and one HTTP call per part), the next stage
     when all parts of the previous one are applied. Each part works in its own copy ``<workdir>-p<i>-<try>``; its
@@ -2497,8 +2498,24 @@ def edit_parts(task: Task, parts: list, workdir: Path, call, failing: str = '', 
         sigs = K.signatures({f: t for f, t in texts.items() if f != file}, names)
         part_task = replace(task, touch_files=(file,), read_files=tuple(
             n for n in task.read_files if n != file) + tuple(n for n in task.touch_files if n != file))
-        base = K.part_prompt(file, part, header, region, failing=failing, signatures=sigs,
-                             limit=channels.PROMPT_LIMIT_CHARS - len(PART_RETRY_NOTE % ('x' * 300)))
+        prompt_limit = channels.PROMPT_LIMIT_CHARS - len(PART_RETRY_NOTE % ('x' * 300))
+        base = K.part_prompt(file, part, header, region, failing=failing, signatures=sigs, limit=prompt_limit)
+        if gemma_first is not None and gemma_first():
+            # W-gemma 3: Gemma leads and takes up to DRY_SMALL_TOKENS; a card over its short limit is CUT to the region
+            # (part_region with a smaller cap), not thrown away -- unless the named functions themselves do not fit
+            tokens = channels.estimate_tokens(len(base), 0, overhead=LIGHT_OVERHEAD_TOKENS,
+                                              cyrillic=channels.cyrillic_share(base))
+            if tokens > channels.SMALL_PROMPT_TOKENS:
+                over = int(len(base) * (tokens - channels.SMALL_PROMPT_TOKENS) / tokens) + 1
+                try:
+                    cut_header, cut_region = K.fit_region(source, part.get('symbols') or [], part.get('anchor') or '', over)
+                except (ValueError, SyntaxError):
+                    cut_header, cut_region = header, region
+                if len(cut_region) < len(region):
+                    header, region = cut_header, cut_region
+                    base = K.part_prompt(file, part, header, region, failing=failing, signatures=sigs, limit=prompt_limit)
+                    if on_cut is not None:
+                        on_cut('part_region_cut_for_gemma')
         reason, more = '', ''
         if use_code and isinstance(part.get('code'), str) and part['code'].strip():
             why_not = apply_code(index, part)
@@ -2806,6 +2823,18 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
         except Exception:       # noqa: BLE001 - a view that cannot be read is the normal mode
             return False
 
+    def gemma_first_now() -> bool:
+        """W-gemma 3: every main channel is closed by the day's mark, so Gemma leads (factory_channels.main_dry). Not so on
+        any doubt."""
+        if not configured:
+            return False
+        try:
+            quota = ck.read().get('channel_quotas') or {}
+            seen = quota_ledger.view(quota, quota_ledger.others(ledger, str(checkpoint))) if ledger is not None else quota
+            return bool(channels.main_dry(configured, seen, os.environ))
+        except Exception:       # noqa: BLE001 - a view that cannot be read is the normal mode
+            return False
+
     def timed(name: str, fn):
         t0 = time.monotonic()
         try:
@@ -2890,7 +2919,8 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
         route = 'code' if role == 'repair' else role
         excl = sorted(channels.excluded_models(exclude_model) | set(hopped)) or None
         order = channels.route_order(configured, route, attempt, base_tokens, preferred=preferred,
-                                     exclude_model=excl, skip_tiers=skip_tiers, state=live_state, later=later)
+                                     exclude_model=excl, skip_tiers=skip_tiers, state=live_state, later=later,
+                                     env=os.environ)
         if not order and route in ('code', 'edit'):     # no escalation/main channel at all: any channel is better than none
             order = channels.route_order(configured, 'code', 1, 0, preferred=preferred,
                                          exclude_model=excl,   # never a model the tournament tried
@@ -2944,7 +2974,9 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
             hopped.clear()
             return True
 
-        for retry in range(1 + TRANSIENT_HOPS + len(pauses)):
+        big = {'sends': 0, 'round': 0, 'free': 0, 'skip': set()}   # W-gemma 1: hops over big-quota channels (not counted in retry)
+        for retry in range(1 + TRANSIENT_HOPS + len(pauses) + 2 * channels.BIG_SENDS_MAX
+                           + channels.BIG_ROUNDS * (channels.BIG_SENDS_MAX + 1)):
             selected, at, chosen, kwargs = None, None, preferred, {}
             if configured:
                 route = 'code' if role == 'repair' else role
@@ -2952,6 +2984,12 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                 live_state = whole.get('channel_quotas') or {}    # a fresh private copy: ratings, parked 404s, cooling
                 order = call_order(role, preferred, base_tokens, exclude_model, hopped, skip_tiers, later, live_state,
                                    light, steps)
+                if big['skip']:      # W-gemma 1: the circle of big channels: one that just answered 503 waits its turn
+                    rest = [c for c in order if c['id'] not in big['skip']]
+                    if rest and any(channels.is_big(c) for c in rest):
+                        order = rest
+                    else:
+                        big['skip'].clear()
                 if not order and hopped:              # every other model is overloaded too: pauses, then the old path
                     if overload_pause():
                         continue
@@ -3009,7 +3047,9 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                 engine = light_attempt if light else model_attempt
                 if light:
                     kwargs['temperature'] = candidate_temperature(candidate)
-                timeout = channels.SMALL_FIRST_TIMEOUT_S if small_quick else 240
+                # W-gemma 2: 90 s for Gemma when no main channel is free (it is the only voice), else the quick 30 s
+                timeout = (channels.small_timeout(configured, live_state, base_tokens, os.environ)
+                           if small_quick else 240)
                 sent = True        # W-dry 3: from here the request may be out; an interrupted call still counts
                 code, stdout, stderr = engine(call_task, directory, chosen, timeout=timeout,
                                               prompt_override=prompt, steps=steps, **kwargs)
@@ -3125,7 +3165,32 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                 done = ck.commit(failure)
             else:
                 done = {'cool_s': info.get('retry_after_s') or 0}
-            if kind == 'transient' and selected is not None and retry < TRANSIENT_HOPS:
+            if (kind == 'transient' and selected is not None and info.get('status') in channels.OVERLOAD_STATUSES
+                    and channels.is_big(selected) and role in channels.BIG_ROLES):
+                # W-gemma 1: a 503 of Gemma: no cooling, no wait of 20 s: the next channel of the circle after 2 s
+                circle = len({c['id'] for c in configured if channels.is_big(c)})
+                step, pause = channels.big_hop(big, circle)
+                last_info = info
+
+                def refund(state):
+                    # a refused send (503, 1 s, no quota) is no model call of the card: its day budget is given back
+                    state['model_calls'] = max(0, int(state.get('model_calls') or 0) - 1)
+                if step == 'hop':
+                    big['skip'].add(selected['id'])
+                    big['free'] += 1
+                    ck.commit(lambda state, row: refund(state))
+                    time.sleep(pause)
+                    continue
+
+                def close_it(state, row):
+                    refund(state)
+                    outcome = channels.close_big(state.setdefault('channel_quotas', {}), selected)
+                    if ledger is not None:
+                        quota_ledger.publish(ledger, str(checkpoint), state['channel_quotas'])
+                    return outcome
+                ck.commit(close_it)
+                raise ChannelFault(info, channels.BIG_CLOSE_S)
+            if kind == 'transient' and selected is not None and retry - big['free'] < TRANSIENT_HOPS:
                 # owner: on a 503 the step does not wait or throw the candidate away, it moves to a free model at
                 # once (live 21.11 20:41-21:01: <id>_test lost three gate-passed candidates, 4-7 min each, because both
                 # review channels were one overloaded Gemma). Only this call skips the model; its cooling is the channel's.
@@ -3133,7 +3198,7 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                     hopped.append(chosen)
                 last_info = info
                 continue
-            if kind in ('transient', 'network') and retry == 0:
+            if kind in ('transient', 'network') and retry - big['free'] == 0:
                 if done.get('action') != 'cool_model' and not info.get('streak_cool'):   # cooled: the retry takes another one at once
                     time.sleep(channels.TRANSIENT_RETRY_S)   # (live 20.11: a 503 of Gemma cost ~67 s, 20 s of it here)
                 continue
@@ -4003,7 +4068,8 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                             base_k = ctx['baseline']
                         code, text, note = edit_parts(task, parts_now, where,
                                                       lambda pt, d, p: part_call(k, pt, d, p), failing=line,
-                                                      use_code=attempt <= 1 and not feedback and not k)
+                                                      use_code=attempt <= 1 and not feedback and not k,
+                                                      gemma_first=gemma_first_now, on_cut=events.append)
                     finally:
                         if k == 0:
                             first_booked.set()

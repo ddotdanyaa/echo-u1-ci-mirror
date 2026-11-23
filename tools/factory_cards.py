@@ -217,6 +217,20 @@ def part_region(text, symbols, anchor="", cap=PART_REGION_CHARS) -> tuple[str, s
     return f"lines {start + 1}-{end}", region
 
 
+def fit_region(text, symbols, anchor="", chars_over=0, floor=2000) -> tuple[str, str]:
+    """W-gemma 3: part_region with a smaller cap, so that about ``chars_over`` characters leave the shown region (never
+    below ``floor``). Named definitions are never cut: when they do not fit the smaller cap, the whole region comes back
+    unchanged (the caller sees it by the length)."""
+    header, region = part_region(text, symbols, anchor)
+    cap = max(floor, len(region) - max(0, int(chars_over)))
+    if cap >= len(region):
+        return header, region
+    try:
+        return part_region(text, symbols, anchor, cap=cap)
+    except ValueError:
+        return header, region
+
+
 OUTLINE_CHARS = 12000
 
 

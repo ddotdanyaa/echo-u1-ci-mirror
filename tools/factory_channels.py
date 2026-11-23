@@ -80,6 +80,7 @@ MISSING_STREAK = 3
 AFFINITY_TTL_S = 1800
 AFFINITY_MAX = 200
 SMALL_PROMPT_TOKENS = 6000
+DRY_SMALL_TOKENS = 12000       # W-gemma 3: with every main channel closed by the day's mark Gemma takes a card this big
 SMALL_FIRST_TIMEOUT_S = 30
 TIERS = ('small', 'main', 'escalation')
 # The day of a provider's daily quota (requests per day): Google AI Studio resets at midnight Pacific (the page
@@ -104,6 +105,19 @@ DAY_PROBE_FORGET_S = 4 * 3600  # a series whose last mark ended this long ago st
 # 10 calls in 80 minutes).
 HIGH_RPD = 1000
 HIGH_RPD_COOL_MAX_S = 300
+# W-gemma 1: a 503 of a big-quota model (Gemma: 35 % of the calls succeed, a refusal comes in 1 s and costs no quota) cools
+# neither the model nor the key. The call hops to the next channel of the circle (BIG_HOP_PAUSE_S), up to BIG_SENDS_MAX
+# sends, then BIG_ROUNDS more rounds (one circle each) after BIG_ROUND_PAUSE_S; only then the last channel is closed
+# for BIG_CLOSE_S. The roles below only; the answer limit of a Gemma call is BIG_TIMEOUT_S when no main channel is free.
+# 'code' is intentional: repair and unit_test cards call the model under the role 'code', so it cannot be told apart from them;
+# it is wider than edit/repair/review/unit_test only while every main channel is closed (gemma_first needs main_dry).
+BIG_ROLES = ('edit', 'review', 'repair', 'unit_test', 'code')
+BIG_SENDS_MAX = 8
+BIG_HOP_PAUSE_S = 2
+BIG_ROUNDS = 3
+BIG_ROUND_PAUSE_S = 15
+BIG_CLOSE_S = 20
+BIG_TIMEOUT_S = 90
 
 
 class ChannelUnavailable(InvalidPlan):
@@ -332,7 +346,7 @@ def missing_for_good(state, channel) -> bool:
 
 
 def route_order(channels, role, attempt, tokens, *, preferred=None, exclude_model=None, skip_tiers=(), state=None,
-                later=False):
+                later=False, env=None, now=None):
     """Channels in the order a call tries them. Coder, attempt 1: main, small (only when ``tokens`` fit its tpm),
     escalation; attempt 2 and later: escalation, main. Reviewer: small first; cross-review: main first.
     ``exclude_model`` (the coder's model) never reviews its own work; a collection of models excludes them all (the
@@ -349,7 +363,15 @@ def route_order(channels, role, attempt, tokens, *, preferred=None, exclude_mode
     ranks = _ROLE_TIERS.get(key, _ROLE_TIERS[('code', 1)])
     if role == 'edit' and attempt <= 1 and state and state.get('edit_route') == 'small_second':
         ranks = ('main', 'small')
-    if (state is not None and ranks and ranks[0] == 'small' and (role == 'review' or (role == 'edit' and attempt <= 1))
+    # W-gemma 3: every main channel is closed by the day's mark: Gemma is the only free executor and goes FIRST for the
+    # edit, repair, review and unit_test calls, whatever its rating, and a card up to DRY_SMALL_TOKENS is let in (the
+    # runner cuts a longer one to the part's region)
+    gemma_first = (state is not None and role in ('edit', 'code', 'review') and main_dry(channels, state, env, now=now))
+    if gemma_first:
+        ranks = ('small',) + tuple(t for t in ranks if t != 'small')
+    small_cap = DRY_SMALL_TOKENS if gemma_first else SMALL_PROMPT_TOKENS
+    if (state is not None and not gemma_first and ranks and ranks[0] == 'small'
+            and (role == 'review' or (role == 'edit' and attempt <= 1))
             and (tokens > SMALL_PROMPT_TOKENS or tier_rating(state, channels, 'small') < RATING_BAD)):
         # W-503: the small tier (Gemma) leads only a SHORT review or edit while at least half of its recent calls were
         # good (live 23.11: 10 ok of 45+17 failed calls); otherwise it comes after the main tier
@@ -362,10 +384,11 @@ def route_order(channels, role, attempt, tokens, *, preferred=None, exclude_mode
         tier = tier_of(channel)
         if tier not in ranks or tier in skip_tiers or channel['model'] in excluded:
             continue
-        if tier == 'small' and role == 'edit' and tokens > SMALL_PROMPT_TOKENS:
+        if tier == 'small' and role == 'edit' and tokens > small_cap:
             continue
         if tier == 'small' and role != 'edit' and small_minute_need(tokens, channel) * (2 if later else 1) > channel['tpm']:    # Gemma only when a minute of it fits
-            continue
+            if not (gemma_first and tokens <= small_cap):   # (a single light request waits for the window in choose())
+                continue
         if state is not None and missing_for_good(state, channel):
             continue
         picked.append(channel)
@@ -437,6 +460,19 @@ def _model_cool(state, channel, now=None) -> float:
         return 0.0
     now = time.time() if now is None else now
     model = channel['model']
+    if _big_daily(channel):
+        # W-gemma 1: a 503 no longer cools a big-quota model: a mark of the old overload rules (recorded as such, or
+        # born from the model's last overload with no source) is dropped when read; probes and failure series stay
+        sources = state.get('model_cool_src')
+        runs = state.get('model_overload')
+        last = _numbers(runs.get(model)) if isinstance(runs, dict) else []
+        probes = state.get('day_probe')
+        if not (isinstance(probes, dict) and 'model:' + str(model) in probes):
+            if isinstance(sources, dict) and sources.get(model) == 'overload':
+                return 0.0
+            if (not (isinstance(sources, dict) and model in sources) and len(last) == 2
+                    and 0 <= value - last[1] <= OVERLOAD_COOL_MAX_S + 1):
+                return 0.0
     if value > now + OVERLOAD_STEPS[-1]:
         # a mark made by the old overload rule (no source recorded, born from the model's last 503, up to 900 s) is cut
         # to the new limit when it is read; marks of daily quotas, probes and series of failures stay
@@ -743,11 +779,14 @@ def align_day(state, channel, quota_value, *, now=None) -> int:
     return missing
 
 
-def edit_dry(channels, state, env, *, now=None) -> bool:
-    """W-dry 1, the one definition: True when every channel that can take an edit call (the edit route of the main and
-    escalation tiers: a card's prompt is over the small tier's limit; a channel with no key or a dead key is no channel)
-    is closed by the day's mark (``daily_quota`` / ``rpd``) -- the free edit is out for the rest of the provider's day."""
+def main_dry(channels, state, env=None, *, now=None) -> bool:
+    """True when every channel that can take an edit call (the edit route of the main and escalation tiers: a card's
+    prompt is over the small tier's limit; a channel with no key or a dead key is no channel) is closed by the day's
+    mark (``daily_quota`` / ``rpd``) -- the free main edit is out for the rest of the provider's day. ``env`` None: every
+    key is taken as present (route_order has no environment)."""
     now = time.time() if now is None else now
+    if env is None:
+        env = {c['key_env']: 'x' for c in channels if 'key_env' in c}
     edit = {}
     for attempt in (1, 2):
         for channel in route_order(channels, 'edit', attempt, SMALL_PROMPT_TOKENS + 1):
@@ -756,6 +795,50 @@ def edit_dry(channels, state, env, *, now=None) -> bool:
     if not live:
         return False
     return all(row['closed_by'] in DAILY_CLOSED for row in channel_report(live, state, env, now=now))
+
+
+def small_open(channels, state, env, *, now=None) -> bool:
+    """W-gemma 4: some small-tier channel (Gemma) can still take calls today: it has a key, is not dead and is not closed
+    by the day's mark (a rest of seconds or minutes does not close it)."""
+    now = time.time() if now is None else now
+    small = usable([c for c in channels if tier_of(c) == 'small'], state, env, now=now)
+    return any(row['closed_by'] not in DAILY_CLOSED for row in channel_report(small, state, env, now=now))
+
+
+BIG_PER_CHANNEL = 2            # W-gemma 4: calls at once the pool counts on one open Gemma channel
+RESERVE_PREFIXES = ('openrouter/', 'cohere/')   # the spare channels of other providers: their exhaustion holds nobody
+
+
+def is_reserve(channel) -> bool:
+    """A spare channel of another provider (OpenRouter, Cohere): the pool's headroom never waits for it."""
+    return str(channel.get('model') or '').startswith(RESERVE_PREFIXES)
+
+
+def big_headroom(channels, state, env, *, now=None, cap=16) -> int:
+    """W-gemma 4: with every main channel closed by the day's mark (main_dry) but Gemma open, the pool counts the Gemma
+    channels instead: BIG_PER_CHANNEL calls at once on each channel that is usable and not closed by anything longer than
+    OPEN_SOON_S (a 503 costs no quota and no cooling, so two calls per channel are what it carries: four channels run
+    eight cards). 0 when a main channel is open (the normal count of headroom() holds) or Gemma is closed."""
+    now = time.time() if now is None else now
+    if not main_dry(channels, state, env, now=now):
+        return 0
+    small = [c for c in usable([c for c in channels if tier_of(c) == 'small' and not is_reserve(c)], state, env, now=now)
+             if _big_daily(c)]
+    count = 0
+    for channel in small:
+        try:
+            choose([channel], state, 1, env, now=now, grace=OPEN_SOON_S)
+        except ChannelUnavailable:
+            continue
+        count += 1
+    return min(cap, BIG_PER_CHANNEL * count)
+
+
+def edit_dry(channels, state, env, *, now=None) -> bool:
+    """W-dry 1, the one definition: the main edit is out for the day (main_dry) AND, since W-gemma 4, Gemma is closed too
+    -- while Gemma is open the factory works the normal way, on it."""
+    now = time.time() if now is None else now
+    return bool(main_dry(channels, state, env, now=now)) and not small_open(channels, state, env, now=now)
 
 
 DAILY_CLOSED = ('daily_quota', 'rpd')
@@ -1072,6 +1155,7 @@ def apply_failure(state, channel, info, *, env=None, now=None) -> dict:
         return {'action': 'cool', 'cool_s': REGION_COOL_S}
     if kind in ('rate_minute', 'rate_day'):
         if kind == 'rate_day':
+            note_day_429(state, channel, now=now)         # W-gemma 5: BEFORE the count is aligned to the provider's
             if info.get('quota_value'):
                 align_day(state, channel, info['quota_value'], now=now)
             whole = not (info.get('scope') in ('model', 'channel'))
@@ -1089,6 +1173,8 @@ def apply_failure(state, channel, info, *, env=None, now=None) -> dict:
         return {'action': 'cool', 'cool_s': seconds}
     if kind == 'transient' and info.get('scope') == 'task':
         return {'action': 'none', 'cool_s': 0}       # D #22: this task was too big for the model, the model is fine
+    if kind == 'transient' and info.get('status') in OVERLOAD_STATUSES and _big_daily(channel):
+        return {'action': 'none', 'cool_s': 0, 'reason': 'big_overload'}   # W-gemma 1: the call hops (runner), nothing cools
     if kind == 'transient' and (info.get('status') in OVERLOAD_STATUSES):
         # "This model is currently experiencing high demand" (503): the MODEL is overloaded, not the account. Cooled,
         # the retry and the next pass take another channel (live 19.11 18:18-18:20: two passes were deferred on a
@@ -1179,6 +1265,99 @@ def _big_daily(channel) -> bool:
     return type(rpd) is int and rpd >= HIGH_RPD
 
 
+def is_big(channel) -> bool:
+    """Public name of _big_daily (the runner asks it)."""
+    return _big_daily(channel)
+
+
+def big_hop(run, circle) -> tuple:
+    """The next step after a 503 of a big channel; ``run`` is the call's own {'sends', 'round'} (changed here),
+    ``circle`` the number of big channels the call may hop over. Returns ('hop', pause_s) or ('close', 0): the first
+    BIG_SENDS_MAX sends hop after BIG_HOP_PAUSE_S; then each of BIG_ROUNDS rounds of one circle starts after
+    BIG_ROUND_PAUSE_S; after the last one the channel is closed."""
+    run['sends'] = int(run.get('sends') or 0) + 1
+    rounds = int(run.get('round') or 0)
+    if rounds == 0:
+        if run['sends'] < BIG_SENDS_MAX:
+            return 'hop', BIG_HOP_PAUSE_S
+    elif run['sends'] < max(1, circle):
+        return 'hop', BIG_HOP_PAUSE_S
+    if rounds < BIG_ROUNDS:
+        run['round'], run['sends'] = rounds + 1, 0
+        return 'hop', BIG_ROUND_PAUSE_S
+    return 'close', 0
+
+
+SHARED_WINDOW_S = 3600         # W-gemma 5: daily 429s of the two keys of one model this close together
+SHARED_TOLERANCE = 0.15        # ... and a sum of their own counts this close to the model's daily limit
+
+
+def note_day_429(state, channel, *, now=None) -> dict | None:
+    """W-gemma 5: two keys of two projects may share ONE daily quota of the same model (3.5-flash-lite: 274 + 236 = 510
+    calls of a limit of 500). Every daily 429 notes the channel's own count of the day (before align_day raises it to the
+    provider's number); when the 429 of the model's other key came within SHARED_WINDOW_S and the counts of the keys add up
+    to about the limit, ``state['shared_project_suspect'][model]`` says so. Only a note: nothing is cooled or silenced by
+    it. Returns the note or None."""
+    now = time.time() if now is None else now
+    table = state.get('day_429')
+    if not isinstance(table, dict):
+        table = state['day_429'] = {}
+    group = state.get(channel['group']) if isinstance(state.get(channel['group']), dict) else {}
+    start, _ = quota_day(channel['model'], now)
+    calls = sum(1 for t in _numbers(group.get('request_times')) if t >= start)
+    prior = table.get(channel['id'])
+    if isinstance(prior, dict) and prior.get('start') == start and type(prior.get('calls')) is int:
+        calls = prior['calls']      # a repeated 429 (probe) of the same day keeps the key's own first count, not the aligned one
+    table[channel['id']] = {'model': channel['model'], 'group': channel['group'], 'at': now, 'calls': calls,
+                            'rpd': channel['rpd'], 'start': start}
+    for cid in [c for c, row in table.items() if not (isinstance(row, dict) and isinstance(row.get('at'), (int, float))
+                                                      and now - row['at'] < DAY_RESET_MAX_S)]:
+        del table[cid]
+    rows = [r for r in table.values() if isinstance(r, dict) and r.get('model') == channel['model']
+            and r.get('start') == start and abs(now - r['at']) <= SHARED_WINDOW_S]
+    by_group = {}
+    for row in rows:
+        by_group[row['group']] = row
+    limit = channel['rpd']
+    total = sum(r['calls'] for r in by_group.values())
+    if (len(by_group) >= 2 and abs(total - limit) <= SHARED_TOLERANCE * limit
+            and all(r['calls'] < (1 - SHARED_TOLERANCE) * limit for r in by_group.values())):
+        note = {'model': channel['model'], 'groups': sorted(by_group), 'sum_calls_day': total, 'limit': limit, 'at': now}
+        if not isinstance(state.get('shared_project_suspect'), dict):
+            state['shared_project_suspect'] = {}
+        state['shared_project_suspect'][channel['model']] = note
+        return note
+    return None
+
+
+def main_free(channel_list, state, tokens, env, *, now=None) -> bool:
+    """Some main-tier channel can take a one-request call now (not cooled, not dead, day and minute windows have room)."""
+    mains = [c for c in channel_list if tier_of(c) == 'main']
+    if not mains:
+        return False
+    try:
+        choose(mains, state, tokens, env, now=now)
+    except ChannelUnavailable:
+        return False
+    return True
+
+
+def small_timeout(channel_list, state, tokens, env, *, now=None) -> int:
+    """W-gemma 2: how long a call of the small tier (Gemma) may wait for its answer: SMALL_FIRST_TIMEOUT_S while a main
+    channel is free (it would answer faster), BIG_TIMEOUT_S when Gemma is the only voice left."""
+    return SMALL_FIRST_TIMEOUT_S if main_free(channel_list, state, tokens, env, now=now) else BIG_TIMEOUT_S
+
+
+def close_big(state, channel, *, now=None) -> dict:
+    """After the rounds: this channel only is closed for BIG_CLOSE_S (a mark of our own, never cut when read)."""
+    now = time.time() if now is None else now
+    out = cool_channel(state, channel, now=now, seconds=BIG_CLOSE_S)
+    if not isinstance(state.get('channel_cool_src'), dict):
+        state['channel_cool_src'] = {}
+    state['channel_cool_src'][channel['id']] = 'big_close'
+    return out
+
+
 def _overload_seconds(state, model, now, big=False) -> int:
     """OVERLOAD_COOL_S, doubled for every further overload of the same model within OVERLOAD_FORGET_S of the
     previous one, at most OVERLOAD_COOL_MAX_S -- for a ``big`` (rpd >= HIGH_RPD) channel at most HIGH_RPD_COOL_MAX_S,
@@ -1224,8 +1403,8 @@ def note_outcome(state, channel, ok, *, now=None, channels=(), overload=False) -
                     and isinstance(state.get('model_cool'), dict)):
                 state['model_cool'].pop(channel['model'], None)
         return {'action': 'none', 'cool_s': 0}
-    if overload and overload_healthy(state, channel['model']):
-        return {'action': 'none', 'cool_s': 0}     # a 503 of a healthy model has its own series (apply_failure)
+    if overload and (overload_healthy(state, channel['model']) or _big_daily(channel)):
+        return {'action': 'none', 'cool_s': 0}     # a 503 of a healthy (or big-quota) model has its own rule (apply_failure)
     prior = table.get(channel['id'])
     n = (prior if type(prior) is int and prior > 0 else 0) + 1
     big = _big_daily(channel)

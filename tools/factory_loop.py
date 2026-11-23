@@ -4683,13 +4683,16 @@ class Loop:
         tokens = int(getattr(task, "estimated_tokens", 0) or 0)
         role = "edit" if getattr(task, "contract", "") else "code"     # the cards of a contract are edit calls
         order = CH.route_order(configured, role, 1, tokens) or CH.route_order(configured, role, 1, 0)
+        order = [c for c in order if not CH.is_reserve(c)] or order    # W-gemma 4: spare channels of others hold no pool
         env = {**os.environ, **self.extra_env}
         quota = state.get("channel_quotas") if isinstance(state.get("channel_quotas"), dict) else {}
         seen = quota_ledger.view(quota, quota_ledger.others(path.resolve().parent / "quota", str(self.ckpt)))
+        # W-gemma 4: every main channel closed by the day's mark but Gemma open: the pool counts Gemma (2 calls a channel)
+        gemma = CH.big_headroom(configured, seen, env)
         live = CH.usable(order, seen, env)
         if not live:
-            return 0
-        return CH.headroom(order, seen, min(tokens, max(c["tpm"] for c in live)), env)
+            return gemma
+        return max(gemma, CH.headroom(order, seen, min(tokens, max(c["tpm"] for c in live)), env))
 
     def _snapshot(self, head: str) -> Path:
         """The tree a worker reads: a versioned copy of the mirror (hard links), never swapped under it."""
@@ -5914,6 +5917,8 @@ class Loop:
                     F.row_of(r.get("backlog_id") or tid) for tid, r in state["tasks"].items()
                     if r.get("reason") == "quarantine"})}
             stats["edit_by_tier"] = (state.get("channel_quotas") or {}).get("edit_by_tier", {})
+            # W-gemma 5: keys of two projects that seem to share one daily quota (a note only, nothing is silenced)
+            stats["shared_project_suspect"] = (state.get("channel_quotas") or {}).get("shared_project_suspect", {})
             try:        # W-dry 1: the day's refusal of the edit channels, and what waits for code because of it
                 dry = self._edit_dry(state)
                 waiting = self._dry_blocked(tasks, state) if dry else set()
