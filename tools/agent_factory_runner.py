@@ -402,6 +402,14 @@ def _base_key(base_sha, task: Task, baseline: dict) -> str | None:
     return h.hexdigest()
 
 
+def votes_of_diff(pend, diff_hash):
+    """W-base 3: the critics' voices kept on a pending review count only for the very diff they judged (its hash);
+    another diff (the merge changed the card's files) drops them."""
+    if isinstance(pend, dict) and diff_hash and pend.get('votes_diff') == diff_hash:
+        return pend.get('votes')
+    return None
+
+
 def _held_base(row: dict, key: str | None, kind: str | None = None, state_dir: Path | None = None):
     """The red base kept on the row for this key while it is fresh; None when absent, stale, foreign or unreadable
     (a damaged record only costs a new measurement). A code task's record must carry the path of its failing tests
@@ -3852,7 +3860,7 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
         def kept_votes(diff_hash, banned=()) -> list:
             """W-review 2: the valid voices already given on THIS diff (key: its hash); an author or a repeated model never votes."""
             pend = ck.read()['tasks'][tid].get('pending_review') or {}
-            kept = pend.get('votes') if diff_hash and pend.get('votes_diff') == diff_hash else None
+            kept = votes_of_diff(pend, diff_hash)
             fresh, seen_models = [], set(banned)
             for old_vote in (kept if isinstance(kept, list) else []):
                 if not (isinstance(old_vote, dict) and isinstance(old_vote.get('model'), str) and type(old_vote.get('ok')) is bool

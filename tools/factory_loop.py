@@ -4776,6 +4776,7 @@ class Loop:
                 near = self._own_neighbours(tid, tasks.get(tid), base, cur, ls)
                 if near:
                     moved, keep = "рядом сдвинулось (свой promote): " + ", ".join(near[:5]), True
+                    near_gen = self._near_gen(tasks.get(tid))
         if moved and "3-way: конфликт слияния" in moved and getattr(tasks.get(tid), "contract", ""):
             # a card of a contract whose merge conflicts: cut again on the fresh code, no strike (AF.fail_row)
             self._tx(lambda st: (self._lease_and_fail(st, tid), F.add_feedback(st, tid, "gate", moved)))
@@ -4784,6 +4785,8 @@ class Loop:
             self.save_ls(ls)
             return finish("requeued", "merge_conflict")
         if moved:
+            if keep:
+                ls.setdefault("near_once", {})[tid] = near_gen   # counted only when the card really goes back
             kept = self._tx(lambda st: self._requeue_review(st, tid, moved, keep))
             if not kept:
                 shutil.rmtree(src, ignore_errors=True)  # runner refuses an existing package
@@ -4932,7 +4935,7 @@ class Loop:
             return []
         own_ls = ls is None
         ls = self.ls() if own_ls else ls
-        if tid in ls.get("near_once", {}):
+        if ls.get("near_once", {}).get(tid) == self._near_gen(task):
             return []     # W-base 1: one return to the gates per generation of the card; the final build catches the rest
         log = git_run(self.cfg.repo, "log", "--format=%H %s", base + ".." + cur)
         own = [x.split(" ", 1)[0] for x in log.splitlines() if x.split(" ", 1)[-1].startswith("factory(")]
@@ -4947,12 +4950,15 @@ class Loop:
         code = sorted(f for f in files if f.endswith(".py") and f in graph.files and not graph.is_test(f))
         if not code:
             return []
-        near = self._near_code(task, code, graph, base)
-        if near:
-            ls.setdefault("near_once", {})[tid] = True
-            if own_ls:
-                self.save_ls(ls)     # from promote() the caller saves its own ls right after the requeue
-        return near
+        return self._near_code(task, code, graph, base)
+
+    @staticmethod
+    def _near_gen(task) -> str:
+        """The generation of a card: its contract and files. A resliced or re-cut card has another one, so the single
+        return to the gates is counted per generation, not for the whole life of the id."""
+        raw = "%s|%s|%s" % (getattr(task, "contract", ""), list(getattr(task, "touch_files", ()) or ()),
+                            list(getattr(task, "tests", ()) or ()))
+        return hashlib.sha1(raw.encode("utf-8", "replace")).hexdigest()[:12]
 
     def _near_code(self, task, code, graph, base) -> list:
         """The changed code files the card's own files or functions depend on: the same file, or radius 1 (the card's
