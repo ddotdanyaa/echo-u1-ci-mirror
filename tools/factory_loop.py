@@ -1845,6 +1845,12 @@ class Loop:
             Q.gate_clear(folder, channel["id"])      # W-gemma2 3: an answer 200 ends the day's closing of the channel
         except OSError as e:
             self.err(section + " day gate", e)
+        with self._ask_lock:       # ... and of the channel report's own probe series (day_probe) kept in the same ledger
+            try:
+                C.note_outcome(quotas, channel, True, now=self.clock())
+                publish()
+            except Exception as e:      # an aid: the answer stands
+                self.err(section + " day probe", e)
         try:
             data = json.loads(raw.decode("utf-8") if isinstance(raw, bytes) else raw)
             answer = data["choices"][0]["message"].get("content") or ""

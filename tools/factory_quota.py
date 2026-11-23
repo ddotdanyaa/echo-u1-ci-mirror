@@ -1,4 +1,5 @@
 """<id> foundation: one shared ledger of key usage per channel registry folder. Each task state publishes its own channel quotas as one section file (one writer per state: its checkpoint lock); a call chooses on the union of its own quotas and the other sections; old sections stop counting; an unreadable file is skipped, never a crash."""
+import contextlib
 import copy
 import hashlib
 import json
@@ -106,34 +107,78 @@ def gate_closed(folder, *, since=None) -> set:
             if isinstance(row.get('at'), (int, float)) and row['at'] >= since.get(cid, 0)}
 
 
+GATE_LOCK_WAIT_S = 5.0           # a gate update waits this long for the other instance's lock
+GATE_LOCK_STALE_S = 10.0         # a lock file older than this is a dead holder's: it is broken
+
+
+@contextlib.contextmanager
+def _gate_lock(folder):
+    """The read-change-write of day_gate.json is one step: a lock file made with O_EXCL (works across processes on every
+    platform). A lock older than GATE_LOCK_STALE_S is a crashed holder's; after GATE_LOCK_WAIT_S the step goes on without
+    the lock (an aid must not hang a call: the worst case is the old race, one extra probe)."""
+    folder = Path(folder)
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / (GATE_NAME + '.lock')
+    deadline = time.monotonic() + GATE_LOCK_WAIT_S
+    held = False
+    while True:
+        try:
+            os.close(os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+            held = True
+            break
+        except FileExistsError:
+            try:
+                if time.time() - path.stat().st_mtime > GATE_LOCK_STALE_S:
+                    path.unlink()
+                    continue
+            except OSError:
+                continue
+        except OSError:
+            break
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(0.01)
+    try:
+        yield
+    finally:
+        if held:
+            try:
+                path.unlink()
+            except OSError:
+                pass
+
+
 def gate_note(folder, channel_id, *, now=None) -> None:
     """The channel answered a daily 429 (or is seen closed by the day's mark): the next probe is DAY_ASK_PROBE_S away."""
     now = time.time() if now is None else now
-    table = _gate_read(folder)
-    row = table.get(channel_id)
-    table[channel_id] = {'at': now, 'probe_at': row['probe_at'] if isinstance(row, dict)
-                         and isinstance(row.get('probe_at'), (int, float)) else now}
-    _gate_write(folder, table)
+    with _gate_lock(folder):
+        table = _gate_read(folder)
+        row = table.get(channel_id)
+        table[channel_id] = {'at': now, 'probe_at': row['probe_at'] if isinstance(row, dict)
+                             and isinstance(row.get('probe_at'), (int, float)) else now}
+        _gate_write(folder, table)
 
 
 def gate_claim(folder, channel_id, *, now=None) -> bool:
-    """True for the ONE ask that may probe this closed channel now (the claim is written before the request goes out, in
-    the folder both instances share); False while the last probe is under DAY_ASK_PROBE_S old."""
+    """True for the ONE ask that may probe this closed channel now (the claim is read and written under the lock of the
+    folder both instances share, before the request goes out); False while the last probe is under DAY_ASK_PROBE_S old."""
     now = time.time() if now is None else now
-    table = _gate_read(folder)
-    row = table.get(channel_id)
-    last = row.get('probe_at') if isinstance(row, dict) else None
-    if isinstance(last, (int, float)) and now - last < DAY_ASK_PROBE_S:
-        return False
-    table[channel_id] = {'at': row.get('at', now) if isinstance(row, dict) else now, 'probe_at': now}
-    _gate_write(folder, table)
-    return True
+    with _gate_lock(folder):
+        table = _gate_read(folder)
+        row = table.get(channel_id)
+        last = row.get('probe_at') if isinstance(row, dict) else None
+        if isinstance(last, (int, float)) and now - last < DAY_ASK_PROBE_S:
+            return False
+        table[channel_id] = {'at': row.get('at', now) if isinstance(row, dict) else now, 'probe_at': now}
+        _gate_write(folder, table)
+        return True
 
 
 def gate_clear(folder, channel_id) -> None:
-    table = _gate_read(folder)
-    if table.pop(channel_id, None) is not None:
-        _gate_write(folder, table)
+    with _gate_lock(folder):
+        table = _gate_read(folder)
+        if table.pop(channel_id, None) is not None:
+            _gate_write(folder, table)
 
 
 def view(own, others_list, *, now=None) -> dict:
