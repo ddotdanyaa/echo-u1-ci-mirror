@@ -1,6 +1,6 @@
 # Factory status (generated, structured data only)
 
-Generated: 2026-11-23T13:36:54Z
+Generated: 2026-11-23T13:41:38Z
 Source commit: shaef054dadd0e3
 
 ## Commits (sha, time)
@@ -35,16 +35,16 @@ Source commit: shaef054dadd0e3
 | gate_pass | 67 |
 | known_to_loop | 471 |
 | promoted | 63 |
-| ready | 109 |
+| ready | 96 |
 | reviewed | 164 |
 | triaged | 305 |
 
 Side counters: blocked=0, parked=0, requeued=7
-Tasks now: DONE=68, FAILED=475, PROMOTED=39, READY=109, RUNNING=1
+Tasks now: DONE=68, FAILED=477, PROMOTED=39, READY=96, RUNNING=12
 Accepted: 17
 Promoted: 63
-Free RAM, GB: 4.86
-Telemetry rows: 34535 recognised, 0 unrecognised
+Free RAM, GB: 4.4
+Telemetry rows: 34610 recognised, 0 unrecognised
 
 ## Spend per model
 | model | calls | tokens_in | tokens_out | usage_unknown | http_429 | errors |
@@ -54,12 +54,12 @@ Telemetry rows: 34535 recognised, 0 unrecognised
 | cohere/north-mini-code-1.0 | 6 | 4159 | 237 | 3 | 0 | 3 |
 | google/gemini-3-flash-preview | 31 | 37167 | 6757 | 14 | 13 | 14 |
 | google/gemini-3.1-flash-lite | 1610 | 8691485 | 609968 | 75 | 4 | 75 |
-| google/gemini-3.1-flash-lite-preview | 329 | 637165 | 120093 | 41 | 8 | 41 |
+| google/gemini-3.1-flash-lite-preview | 336 | 651688 | 126154 | 43 | 8 | 43 |
 | google/gemini-3.5-flash | 34 | 30545 | 1824 | 24 | 22 | 24 |
-| google/gemini-3.5-flash-lite | 1920 | 10852491 | 630615 | 43 | 10 | 43 |
+| google/gemini-3.5-flash-lite | 1921 | 10852491 | 630615 | 44 | 11 | 44 |
 | google/gemini-3.6-flash | 135 | 414079 | 20196 | 57 | 12 | 57 |
 | google/gemini-3.7-flash | 22 | 9121 | 14 | 21 | 10 | 21 |
-| google/gemini-3.8-flash | 24 | 21237 | 15 | 21 | 9 | 21 |
+| google/gemini-3.8-flash | 26 | 21237 | 15 | 23 | 11 | 23 |
 | google/gemma-4-26b-a4b-it | 285 | 439603 | 37703 | 182 | 0 | 182 |
 | google/gemma-4-31b-it | 276 | 243011 | 8846 | 209 | 0 | 209 |
 | openrouter/nvidia/nemotron-3-ultra-550b-a55b:free | 115 | 663252 | 151232 | 2 | 2 | 2 |
@@ -69,13 +69,13 @@ Telemetry rows: 34535 recognised, 0 unrecognised
 | span | rows | calls |
 |---|---|---|
 | answer | 536 | 0 |
-| gate | 5448 | 0 |
-| infra | 886 | 0 |
-| loop | 5849 | 0 |
-| other | 7906 | 0 |
+| gate | 5452 | 0 |
+| infra | 887 | 0 |
+| loop | 5858 | 0 |
+| other | 7948 | 0 |
 | promote | 79 | 0 |
 | review | 2144 | 1167 |
-| run | 11311 | 3733 |
+| run | 11330 | 3743 |
 | triage | 376 | 0 |
 
 ## Channels (model ids)
