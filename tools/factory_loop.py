@@ -3548,6 +3548,10 @@ class Loop:
                               if (s := safe(x))], evidence="\n".join(s for x in clues if (s := safe(x))),
                     known_ids=list(ls.get("to_slice", {})) + list({t.backlog_id for t in tasks.values()}))
 
+    def _fresh_waiting(self, ls) -> bool:
+        """W-money 2: the slicer's queue holds an ECHO row or a fresh regression rel-<sha8>-<n> without an active slicing."""
+        return any(F.is_fresh_row(bid) and bid not in self._slicers for bid in (ls.get("to_slice") or {}))
+
     def _slice(self, row, cause, rung, evidence, *, gen, tasks, state, ls, now):
         from tools import factory_architect as A
         job = self._slicers.get(row)
@@ -3568,6 +3572,14 @@ class Loop:
                 if not left:
                     raise SliceWait()
                 asks = left
+            base_debt = F.is_base_debt(row)
+            fresh_waiting = base_debt and self._fresh_waiting(ls)
+            if fresh_waiting:                  # W-money 2: no paid step for the old debt while a fresh row waits for its slicing
+                left = {k: v for k, v in asks.items() if k in ("free", "free_main")}
+                if not left:
+                    self.event("slice", backlog_id=row, status="barred", engine="paid,agent", rung=rung, ladder="")
+                    raise SliceWait()
+                asks = left
             cached = dict(self._wait_record(ls, row).get("engines") or {})
             ctx = dict(root=root, gen=gen, rung=rung, cause=cause, ladder=",".join(asks))
             task_copy, state_copy, ls_copy = copy.deepcopy((tasks, state, ls))
@@ -3577,6 +3589,10 @@ class Loop:
                                          rung=rung)
                 if dry_now:
                     packet["edit_dry"] = True
+                if base_debt:
+                    packet["base_debt"] = True
+                    if fresh_waiting:
+                        packet["fresh_waiting"] = True
                 if self.cfg.self_repo:      # the second instance: a new test imports only the modules the mirror publishes
                     packet["publishable"] = ", ".join(A.publishable_modules())
                 extra = {"named_ok": True} if self.cfg.self_repo else {}      # 8.1: the factory's own files are the contract's subject
@@ -4117,8 +4133,8 @@ class Loop:
             priority = entry.get("priority")
             if priority is None:
                 priority = min((t.priority for t in tasks.values() if F.row_of(t.backlog_id or t.id) == bid), default=9)
-            tier = (2 if bid.startswith("rel-base-") else 1 if bid.startswith("rel-") else 0) if eligible.get(bid) == "dry" else 0
-            return (tier, bid.startswith("rel-base-"), int(str(priority).removeprefix("P")), not bool(entry.get("guard")), bid)
+            tier = (2 if F.is_base_debt(bid) else 1 if bid.startswith("rel-") else 0) if eligible.get(bid) == "dry" else 0
+            return (tier, F.is_base_debt(bid), int(str(priority).removeprefix("P")), not bool(entry.get("guard")), bid)
         first_waits = any(c == "first" and b not in self._slicers for b, c in eligible.items())
         for bid in sorted(eligible, key=order)[:RESLICE_PER_STEP]:
             cause = eligible[bid]
@@ -6020,6 +6036,14 @@ class Loop:
                 if self.clock() - at < 3600:
                     counts[kind] = counts.get(kind, 0) + 1
             stats["slice_faults"] = counts
+            try:        # W-money 4: the owner's money numbers
+                money = factory_metrics.money_report(self.dir, now=self.ts())
+                stats["accepted_hour"] = money["accepted_hour"]
+                stats["accepted_per_1000_calls"] = money["accepted_per_1000_calls"]
+                stats["edit_first_try_pct"] = money["edit_first_try_pct"]
+                stats["allowance_left"] = money["allowance_left"]
+            except Exception as exc:
+                stats["money"] = {"error": F.redact(type(exc).__name__)}
             try:
                 from tools import factory_paid_critic as PK
                 stats["paid"] = dict(PK.day_report(), ladder=self._ladder_sig())

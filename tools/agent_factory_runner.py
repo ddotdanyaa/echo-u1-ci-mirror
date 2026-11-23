@@ -2418,8 +2418,20 @@ def part_off_contract(parts: list, file: str, old_text: str, new_text: str) -> s
     return OFF_CONTRACT_NOTE % (', '.join(o.partition(': ')[2] or o for o in off), ', '.join(allowed))
 
 
+UNDEF_RETRIES = 1       # re-asks of one part for a new undefined name that cost no PART_RETRIES try (W-see 4)
+
+
+def part_undefined(file: str, old_text: str, new_text: str) -> str:
+    """W-see 4: '' when the edit of ``file`` brings no new undefined name (ruff, the undefined-name rules: names the base
+    did not have; no ruff: no check), else the note for the part's next ask."""
+    if not file.endswith('.py'):
+        return ''
+    names = K.new_undefined_names(old_text, new_text)
+    return K.UNDEFINED_NOTE % (file, ', '.join(names[:8])) if names else ''
+
+
 def edit_parts(task: Task, parts: list, workdir: Path, call, failing: str = '', use_code: bool = False,
-               gemma_first=None, on_cut=None) -> tuple[int, str, str]:
+               gemma_first=None, on_cut=None, trace=(), fail_ids=(), info=None, on_event=None) -> tuple[int, str, str]:
     """Edit the parts of the contract in ``workdir``: one call per part (``call(part_task, directory, prompt)`` ->
     ``(rc, stdout, stderr)``), the parts of one stage at once (one thread and one HTTP call per part), the next stage
     when all parts of the previous one are applied. Each part works in its own copy ``<workdir>-p<i>-<try>``; its
@@ -2430,10 +2442,43 @@ def edit_parts(task: Task, parts: list, workdir: Path, call, failing: str = '', 
     executor, W-hard 3): a part that carries ``code`` (the whole new text of each named function, or a SEARCH/REPLACE
     block for a file that is not .py) is applied from it WITHOUT a model, under the same checks as a model's answer
     (it changes something, only what the contract names); a part whose code cannot be applied goes to the model with
-    the exact reason."""
+    the exact reason. W-see: every card also carries a context pack (K.context_pack: the red test and what the code
+    reads; ``trace`` = the failing path, ``fail_ids`` = the red test ids); ``info`` (a dict) gets ``context_chars`` and
+    ``context_sections``; ``on_event(name)`` hears the re-ask for a new undefined name."""
     workdir = Path(workdir)
     answers: list[str] = []
     lock = threading.Lock()
+    contract = K.contract_of(task)
+    test_ids = [str((contract.get('test') or {}).get('use') or '')] + [str(i) for i in fail_ids or ()] + list(task.tests or ())
+    test_ids = [t for t in test_ids if t]
+    notify = on_event or (lambda name: None)
+
+    def with_context(file, part, header, region, sigs, base):
+        """``base`` (the card with no pack) and the card with the pack of this part: the pack fills what is left up to
+        SMALL_PROMPT_TOKENS for a card that fits it (a short card stays a Gemma card), else up to 6000 characters, always
+        inside the prompt limit."""
+        limit = channels.PROMPT_LIMIT_CHARS - len(PART_RETRY_NOTE % ('x' * 300))
+
+        def tokens(n, text):
+            return channels.estimate_tokens(n, 0, overhead=LIGHT_OVERHEAD_TOKENS, cyrillic=channels.cyrillic_share(text))
+        if tokens(len(base), base) < channels.SMALL_PROMPT_TOKENS:
+            budget = (channels.SMALL_PROMPT_TOKENS - tokens(len(base), base)) * 3
+        else:
+            budget = 6000
+        budget = min(budget, limit - len(base) - 2)
+        for _ in range(5):
+            if budget < 300:
+                return base, ''
+            pack = K.context_pack(workdir, part, region, test_ids=test_ids, trace=trace, budget=budget,
+                                  clean=lambda text: redact(text))
+            if not pack:
+                return base, ''
+            card = K.part_prompt(file, part, header, region, failing=failing, signatures=sigs, limit=limit, context=pack)
+            if tokens(len(base), base) >= channels.SMALL_PROMPT_TOKENS or \
+                    tokens(len(card), card) <= channels.SMALL_PROMPT_TOKENS:
+                return card, pack
+            budget = int(budget * 0.7)
+        return base, ''
 
     def apply_code(index: int, part: dict) -> str:
         """'' when ``part['code']`` was applied to the file in ``workdir``; else the exact reason it was not."""
@@ -2469,6 +2514,12 @@ def edit_parts(task: Task, parts: list, workdir: Path, call, failing: str = '', 
                     reason = part_off_contract(parts, file, before.read_text(encoding='utf-8-sig', errors='replace')
                                                if before.is_file() else '',
                                                target.read_text(encoding='utf-8-sig', errors='replace'))
+                except (OSError, ValueError):
+                    reason = ''
+            if not reason:
+                try:
+                    reason = part_undefined(file, before.read_text(encoding='utf-8-sig', errors='replace')
+                                            if before.is_file() else '', target.read_text(encoding='utf-8-sig', errors='replace'))
                 except (OSError, ValueError):
                     reason = ''
             if reason:
@@ -2517,6 +2568,16 @@ def edit_parts(task: Task, parts: list, workdir: Path, call, failing: str = '', 
                     base = K.part_prompt(file, part, header, region, failing=failing, signatures=sigs, limit=prompt_limit)
                     if on_cut is not None:
                         on_cut('part_region_cut_for_gemma')
+        try:
+            base, pack = with_context(file, part, header, region, sigs, base)
+        except Exception:       # noqa: BLE001 - an addition to the card: without it the card is as before
+            pack = ''
+        if pack and pack.split('\n', 1)[0] not in base:
+            pack = ''
+        if info is not None:
+            with lock:
+                info['context_chars'] = info.get('context_chars', 0) + len(pack)
+                info['context_sections'] = sorted(set(info.get('context_sections', [])) | set(K.context_sections(pack)))
         reason, more = '', ''
         if use_code and isinstance(part.get('code'), str) and part['code'].strip():
             why_not = apply_code(index, part)
@@ -2524,7 +2585,9 @@ def edit_parts(task: Task, parts: list, workdir: Path, call, failing: str = '', 
                 return ''
             more = ('\nThe architect wrote code for this part; it could not be applied (%s). Make the change the '
                     'instruction asks for.\n' % why_not[:300])
-        for attempt_no in range(PART_RETRIES + 1):
+        tries, spin, free_asks = 0, 0, UNDEF_RETRIES
+        while tries <= PART_RETRIES:
+            attempt_no, spin = spin, spin + 1
             folder = workdir.parent / ('%s-p%d-%d' % (workdir.name, index, attempt_no))
             shutil.rmtree(folder, ignore_errors=True)
             with lock:          # a copy of the work directory is never read while another part writes its file into it
@@ -2544,12 +2607,25 @@ def edit_parts(task: Task, parts: list, workdir: Path, call, failing: str = '', 
                                                    target.read_text(encoding='utf-8-sig', errors='replace'))
                     except (OSError, ValueError):
                         reason = ''
+                undefined = False
+                if rc == 0 and not reason:      # a name the edit uses and nothing defines: the part is asked again, no strike
+                    try:
+                        reason = part_undefined(file, before.read_text(encoding='utf-8-sig', errors='replace')
+                                                if before.is_file() else '', target.read_text(encoding='utf-8-sig', errors='replace'))
+                    except (OSError, ValueError):
+                        reason = ''
+                    undefined = bool(reason)
                 if rc == 0 and not reason:
                     with lock:
                         before.parent.mkdir(parents=True, exist_ok=True)
                         shutil.copyfile(target, before)
                     return ''
                 reason = reason or 'the call failed'
+                if undefined and free_asks > 0:
+                    free_asks -= 1
+                    notify('undefined_name_reask')
+                else:
+                    tries += 1
                 if 'CANNOT' in reason and not more:
                     # "the code is not shown" (live 23.11: 6 of 24 part_failed): the next ask shows what the file holds
                     # (names and signatures, read only), so the model can say where the code it misses is
@@ -3853,7 +3929,7 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
             if not has_contract and small_total + REVIEW_DIFF_LIMIT + REVIEW_OVERHEAD > channels.PROMPT_LIMIT_CHARS:
                 raise PromptTooLarge('coder+review prompts cannot both fit')
             def failing_text() -> str:       # the red base may still be running when the first prompt is built
-                return (', '.join(base.failed_ids) + '\n' + base.diag).strip() if task.kind == 'code' and base_settled and base is not None else ''
+                return K.failure_block(base.failed_ids, base.diag) if task.kind == 'code' and base_settled and base is not None else ''
             def off_bodies_text() -> str:    # the code the failing test runs outside the task files, once the red base is in
                 if task.kind != 'code' or not base_settled or base is None or not off_mods:
                     return ''
@@ -4053,7 +4129,12 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                     early = settle_base()
                     if early is not None:        # green / environment / unknown base ends the pass before any model call
                         return early
-                line = scrub(failing_text())     # the exact failing line from the first attempt on (empty while the red base runs)
+                # the failing block (ids and the last 12 lines of the failure: assert with its values) from the first
+                # attempt on (empty while the red base runs); the same text on every repeat of a part
+                line = scrub(failing_text())
+                part_trace = tuple(getattr(base, 'path', ()) or ()) if base_settled and base is not None else ()
+                part_fail_ids = tuple(getattr(base, 'failed_ids', ()) or ()) if base_settled and base is not None else ()
+                see = {}        # the context pack of the parts: context_chars, context_sections (telemetry)
                 models = [set() for _ in range(count)]
                 first_booked = threading.Event()
                 older = [m for m in failed_models_of(row) if isinstance(m, str)]
@@ -4106,7 +4187,9 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                         code, text, note = edit_parts(task, parts_now, where,
                                                       lambda pt, d, p: part_call(k, pt, d, p), failing=line,
                                                       use_code=attempt <= 1 and not feedback and not k,
-                                                      gemma_first=gemma_first_now, on_cut=events.append)
+                                                      gemma_first=gemma_first_now, on_cut=events.append,
+                                                      trace=part_trace, fail_ids=part_fail_ids, info=see,
+                                                      on_event=events.append)
                     finally:
                         if k == 0:
                             first_booked.set()
@@ -4149,6 +4232,8 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                             break
                 finally:
                     ctx['coder_models'] |= set().union(*models)
+                    report['context_chars'] = see.get('context_chars', 0)
+                    report['context_sections'] = see.get('context_sections', [])
                 if outcome is not None:
                     return outcome
                 if retry is not None:

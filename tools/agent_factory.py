@@ -71,6 +71,28 @@ def row_of(backlog_id: str) -> str:
     return backlog_id.split("#")[0]
 
 
+_REGRESSION_ROW = re.compile(r"^rel-[0-9a-f]{8}-\d+$")
+
+
+def _row_id(row) -> str:
+    if isinstance(row, dict):
+        row = row.get("bid") or row.get("id") or row.get("key") or row.get("backlog_id") or ""
+    else:
+        row = getattr(row, "backlog_id", None) or getattr(row, "id", None) or row
+    return row_of(str(row or ""))
+
+
+def is_base_debt(row) -> bool:
+    """W-money 2: the old baseline debt row rel-base-<n> (a row id, a dict with its id, or a task)."""
+    return _row_id(row).startswith("rel-base-")
+
+
+def is_fresh_row(row) -> bool:
+    """W-money 2: a row that goes before the old debt: a fresh regression rel-<sha8>-<n> or an ECHO row (not fac-*)."""
+    rid = _row_id(row)
+    return bool(rid) and not is_base_debt(rid) and (bool(_REGRESSION_ROW.match(rid)) or not rid.lower().startswith(("fac-", "rel-")))
+
+
 def call_cap(parts: int = 1) -> int:
     return 2 * (max(1, parts) * 3 + 4)
 
@@ -475,7 +497,7 @@ def ready(tasks: dict[str, Task], state: dict, *, google: bool = True,
     def spent(t) -> int:      # W-gemma5 2: 0 = a fresh card (no attempt, not deferred by the last pass), 1 = a repeat
         row = state["tasks"][t]
         return 1 if (fresh_first and (row.get("attempts", 0) or row.get("defer_reason"))) else 0
-    for tid in sorted(tasks, key=lambda t: (spent(t), tasks[t].priority, t)):
+    for tid in sorted(tasks, key=lambda t: (spent(t), is_base_debt(tasks[t]), tasks[t].priority, t)):
         task = tasks[tid]
         if _startable(tasks, state, tid, write_in_use, read_in_use, google, now):
             found.append(tid)

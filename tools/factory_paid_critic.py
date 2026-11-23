@@ -24,7 +24,10 @@ MODELS = ('claude-sonnet-5-5', 'claude-haiku-5-5')      # the first is asked, th
 DEFAULT_ENV = r'C:\agent-factory\secrets\anthropic.env'
 DEFAULT_DIR = r'C:\agent-factory\echo'
 ALLOWANCE_FIRST_USD = 120.0
-ALLOWANCE_DAILY_USD = 10.0
+ALLOWANCE_SECOND_USD = 145.0      # 23.11: the owner's 130 became 145
+ALLOWANCE_REST_USD = 55.0         # the rest, spread evenly over 24.11 - 30.11
+ALLOWANCE_REST_DAYS = 7
+ALLOWANCE_DAILY_USD = ALLOWANCE_REST_USD / ALLOWANCE_REST_DAYS
 ALLOWANCE_TOTAL_USD = 200.0
 ALLOWANCE_FROM = '2026-11-22'
 UNKNOWN_RESERVE_USD = 5.0
@@ -85,7 +88,22 @@ def _today() -> str:
 
 def allowance(day: str) -> float:
     days = max(0, (datetime.date.fromisoformat(day) - datetime.date.fromisoformat(ALLOWANCE_FROM)).days)
-    return min(ALLOWANCE_TOTAL_USD, ALLOWANCE_FIRST_USD + ALLOWANCE_DAILY_USD * min(8, days))
+    if days == 0:
+        return ALLOWANCE_FIRST_USD
+    steps = min(ALLOWANCE_REST_DAYS, days - 1)      # 23.11 -> 0 steps; 24.11 -> 1; 30.11 and later -> 7
+    if steps >= ALLOWANCE_REST_DAYS:
+        return ALLOWANCE_TOTAL_USD
+    return min(ALLOWANCE_TOTAL_USD, ALLOWANCE_SECOND_USD + ALLOWANCE_DAILY_USD * steps)
+
+
+def allowance_left_by_day(spent=0.0, until='2026-11-30', since=None):
+    """Allowance still free at the end of each day up to ``until`` (list of {day, allowance, left})."""
+    first = datetime.date.fromisoformat(since or _today())
+    last = datetime.date.fromisoformat(until)
+    return [{'day': (first + datetime.timedelta(days=i)).isoformat(),
+             'allowance': round(allowance((first + datetime.timedelta(days=i)).isoformat()), 2),
+             'left': round(allowance((first + datetime.timedelta(days=i)).isoformat()) - float(spent), 2)}
+            for i in range(max(0, (last - first).days + 1))]
 
 
 def _spend_file() -> Path:

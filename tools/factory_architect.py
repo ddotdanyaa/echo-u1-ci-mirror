@@ -221,7 +221,7 @@ def build_prompt(packet, engine=''):
               (DRY_RULE + '\n' if engine in ('paid', 'agent') and packet.get('edit_dry') else '') +
               'Schema: ' + json.dumps(schema, ensure_ascii=False) + '\nExamples:\n' +
               '\n'.join(str(e) for e in packet.get('examples', [])))
-    user = '\n'.join(f'{k}: {v}' for k, v in packet.items() if k not in ('examples', 'known_ids', 'rung', 'red_given', 'edit_dry'))
+    user = '\n'.join(f'{k}: {v}' for k, v in packet.items() if k not in ('examples', 'known_ids', 'rung', 'red_given', 'edit_dry', 'base_debt', 'fresh_waiting'))
     return system, user
 
 
@@ -564,8 +564,12 @@ def validate(contract, root, *, bid='', title='', known_ids=None, named_ok=False
     return faults
 
 
-def ladder(rung, *, rungs, red=False, dry=False):
-    if dry and not red:      # W-dry 1: the edit channels are dry: agent, then paid give the finished code; the free steps last
+def ladder(rung, *, rungs, red=False, dry=False, base_debt=False, fresh_waiting=False):
+    """W-money 2: a row of the old baseline debt (base_debt) never starts with a paid step: free, free_main, then paid/agent;
+    with a fresh regression / ECHO row waiting for its slicing (fresh_waiting) the paid steps are closed to it altogether."""
+    if base_debt:
+        order = ('free', 'free_main') if fresh_waiting else ('free', 'free_main', 'paid', 'agent')
+    elif dry and not red:      # W-dry 1: the edit channels are dry: agent, then paid give the finished code; the free steps last
         order = ('agent', 'paid', 'free', 'free_main')
     elif red:           # W-pay 2: a row with a ready red test: the agent reads the code itself and mends a flaw in one re-ask
         order = ('agent', 'paid', 'free', 'free_main')
@@ -767,7 +771,10 @@ def contract_for(packet, *, rung, root, asks, named_ok=False, red_given=None, sk
     skip = {e: v for e, v in (skip or {}).items() if e in asks and isinstance(v, dict)}
     cache = dict(skip)
     dry = bool(packet.get('edit_dry'))
-    for engine in [e for e in ladder(rung, rungs=tuple(asks), red=red, dry=dry) if e not in skip]:
+    base_debt = bool(packet.get('base_debt')) or F.is_base_debt(str(packet.get('bid', '')))
+    fresh_waiting = bool(packet.get('fresh_waiting'))
+    for engine in [e for e in ladder(rung, rungs=tuple(asks), red=red, dry=dry, base_debt=base_debt,
+                                     fresh_waiting=fresh_waiting) if e not in skip]:
         user, rounds, shrunk, fixed, idle = initial, 0, False, False, 0
         dry_asked = False
         replied, raw = False, ''

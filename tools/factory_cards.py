@@ -3,6 +3,7 @@ import ast
 import json
 import os
 import re
+import textwrap
 from pathlib import Path, PurePosixPath
 
 PART_REGION_CHARS = 24000
@@ -301,8 +302,8 @@ EDITOR_RULES = (
     "with a SEARCH/REPLACE block: the file path on its own line, a line <<<<<<< SEARCH, lines copied EXACTLY from "
     "the shown code (every character, comment and blank line; enough lines to be unique; never line numbers or "
     "omission markers), a line =======, the new lines, a line >>>>>>> REPLACE. An empty SEARCH part creates a new "
-    "file. Edit only this file and only what the instruction asks; keep the rest as it is. Answer with the blocks "
-    "only, no explanation. To add a new function, write an ordinary SEARCH/REPLACE block that repeats the last "
+    "file. Edit only this file and only what the instruction asks; keep the rest as it is. First write ONE line "
+    "'# WHY: the value the test gets now and why it changes', then the blocks only, no other explanation. To add a new function, write an ordinary SEARCH/REPLACE block that repeats the last "
     "lines of the function named in 'add after' and appends the new function after them. To replace a whole "
     "function shown whole, write the line REPLACE FUNCTION <path> <name> (name: func or Class.method), then a "
     "```python fence with the complete new definition, then a closing ``` line. If the code you must change is "
@@ -398,12 +399,14 @@ def _def_lines(region: str) -> str:
     return "\n".join(rows)
 
 
-def part_prompt(file, part, header, region, failing="", signatures="", limit=None) -> str:
+def part_prompt(file, part, header, region, failing="", signatures="", limit=None, context="") -> str:
     """The card of one part: its own file only. The first line is ``FILE <path>``. With ``limit`` (characters) a
-    card over it gives up, in this order: the signatures of other files, the head of the failing line, and (only for a
+    card over it gives up, in this order: the signatures of other files, the context pack (``context``: the red test
+    and what the code reads, by whole lines from the end), the head of the failing line, and (only for a
     part with no named symbols, a window of the file) the end of the window. The code of the named symbols, the
     instruction and the answer format stay whole; when they alone are over the limit: CardTooLarge."""
-    def build(sigs, fail, shown):
+    def build(sigs, fail, shown, ctx=None):
+        ctx = context if ctx is None else ctx
         out = [f"FILE {file}", "Instruction: " + str(part.get("instruction", "")).strip()]
         if part.get("keep"):
             out.append("Keep: " + str(part["keep"]).strip())
@@ -412,6 +415,8 @@ def part_prompt(file, part, header, region, failing="", signatures="", limit=Non
         out.append(f"Code of {file} ({header}), shown exactly:\n{shown}")
         if sigs:
             out.append("Signatures of functions in other files that the instruction names (read only):\n" + sigs)
+        if ctx:
+            out.append(ctx)
         if fail:
             out.append("The check fails with this exact line:\n" + fail.strip())
         out.append(EDITOR_RULES)
@@ -423,15 +428,18 @@ def part_prompt(file, part, header, region, failing="", signatures="", limit=Non
     sigs = signatures
     while sigs and len(build(sigs, failing, region)) > limit:       # other files' signatures: line by line from the end
         sigs = sigs.rpartition("\n")[0]
-    card = build(sigs, failing, region)
+    ctx = context
+    while ctx and len(build(sigs, failing, region, ctx)) > limit:      # the context pack: whole lines from the end
+        ctx = ctx.rpartition("\n")[0]
+    card = build(sigs, failing, region, ctx)
     if len(card) > limit and failing:
-        room = limit - len(build(sigs, "x", region)) + 1
-        card = build(sigs, failing.strip()[-room:] if room > 40 else "", region)
+        room = limit - len(build(sigs, "x", region, ctx)) + 1
+        card = build(sigs, failing.strip()[-room:] if room > 40 else "", region, ctx)
     if len(card) > limit and not part.get("symbols"):
         over = len(card) - limit
         keep = len(region) - over - len(CUT_NOTE)
         if keep > 0:
-            card = build(sigs, "", region[:keep] + CUT_NOTE)
+            card = build(sigs, "", region[:keep] + CUT_NOTE, ctx)
     if len(card) > limit:
         raise CardTooLarge("the card of %s is %d characters, the limit is %d" % (file, len(card), limit))
     return card
@@ -473,6 +481,372 @@ def signature_lines(source: str, symbols, file: str = "") -> list[str]:
                 add(owner + ".__init__")
             add(name)
     return out
+
+
+CONTEXT_SECTIONS = ("RED TEST", "THIS MODULE", "CALLED", "CALLERS")
+RED_TEST_SHARE = 0.45           # of the context budget: the body of the red test
+CONTEXT_READ_ONLY = "read only, not an edit target"
+_WORD = re.compile(r"[^\W\d]\w*")
+
+
+def _read_text(root, rel) -> str:
+    """Text of ``rel`` under ``root`` ('' when it is outside root, missing, too big or unreadable)."""
+    try:
+        base = Path(root).resolve()
+        path = (base / str(rel)).resolve()
+        if not path.is_relative_to(base) or not path.is_file() or path.stat().st_size > 400000:
+            return ""
+        return path.read_text(encoding="utf-8-sig", errors="replace")
+    except (OSError, ValueError):
+        return ""
+
+
+def _cut_lines(text: str, room: int) -> str:
+    """The first whole lines of ``text`` that fit ``room`` characters."""
+    if room <= 0:
+        return ""
+    if len(text) <= room:
+        return text
+    out, size = [], 0
+    for line in text.split("\n"):
+        if size + len(line) + 1 > room:
+            break
+        out.append(line)
+        size += len(line) + 1
+    return "\n".join(out)
+
+
+def _tree(text: str):
+    try:
+        return ast.parse(text)
+    except (SyntaxError, ValueError):
+        return None
+
+
+def _test_target(root, tid) -> tuple[str, str]:
+    """(file, test name) of a test id: ``tests/test_x.py::test_a`` or the JUnit form ``tests.test_x.Class::test_a``."""
+    head, _, rest = str(tid).partition("::")
+    name = rest.rpartition("::")[2].split("[")[0] if rest else ""
+    head = head.replace("\\", "/")
+    parts = head.split(".")
+    for rel in ([head] if head.endswith(".py") else []) + ["/".join(parts[:n]) + ".py" for n in range(len(parts), 0, -1)]:
+        if _read_text(root, rel):
+            return rel, name
+    return "", name
+
+
+def _red_test_text(root, tid, cap: int) -> tuple[str, str]:
+    """(label, text): the test, the fixtures it takes and the helpers/constants of its own file it uses, at most ``cap``."""
+    rel, name = _test_target(root, tid)
+    text = _read_text(root, rel) if rel else ""
+    tree = _tree(text) if text and name else None
+    if tree is None:
+        return "", ""
+    top, methods, consts = {}, {}, {}
+    for node in tree.body:
+        if _is_function(node):
+            top[node.name] = node
+        elif isinstance(node, ast.ClassDef):
+            for sub in node.body:
+                if _is_function(sub):
+                    methods.setdefault(sub.name, sub)
+        elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+            for target in (node.targets if isinstance(node, ast.Assign) else [node.target]):
+                if isinstance(target, ast.Name):
+                    consts[target.id] = node
+    target = top.get(name) or methods.get(name)
+    if target is None:
+        return "", ""
+    chosen, queue = [], [target]
+    while queue and len(chosen) < 8:
+        node = queue.pop(0)
+        if node in chosen:
+            continue
+        chosen.append(node)
+        used = [a.arg for a in node.args.args + node.args.kwonlyargs]
+        used += [n.func.id for n in ast.walk(node) if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)]
+        queue += [top[u] for u in used if u in top and top[u] not in chosen]
+    loaded = {n.id for node in chosen for n in ast.walk(node) if isinstance(n, ast.Name)}
+    chosen += [consts[c] for c in sorted(loaded & set(consts)) if (consts[c].end_lineno - consts[c].lineno) < 12][:6]
+    lines, picked, left = text.split("\n"), [], cap
+    for node in chosen:
+        start, end = (_node_start(node) if _is_function(node) else node.lineno), node.end_lineno
+        body = "\n".join(lines[start - 1:end])
+        body = _cut_lines(body, left) if node is target else (body if len(body) + 2 <= left else "")
+        if body:
+            picked.append((start, body))
+            left -= len(body) + 2
+    return rel + "::" + name, "\n\n".join(b for _, b in sorted(picked))
+
+
+def _first_row(text: str, limit: int = 4) -> str:
+    rows = [row[:200] for row in text.split("\n")[:limit]]
+    return "\n".join(rows) + (" ..." if len(text.split("\n")) > limit else "")
+
+
+def _module_rows(source: str, found: dict, symbols, words: set) -> list[str]:
+    """Module constants and class fields (annotations, ``self.x =`` of __init__) whose names the region uses."""
+    owners = {s.rpartition(".")[0] for s in symbols if "." in s}
+    rows = []
+    for name, node in found.items():
+        if isinstance(node, (ast.Assign, ast.AnnAssign)):
+            owner, _, leaf = name.rpartition(".")
+            if (owner and owner not in owners) or leaf not in words or name in symbols:
+                continue
+            rows.append(_first_row(ast.get_source_segment(source, node) or ""))
+    for owner in sorted(owners):
+        init = found.get(owner + ".__init__")
+        for sub in ast.walk(init) if init is not None else ():
+            targets = sub.targets if isinstance(sub, ast.Assign) else [sub.target] if isinstance(sub, ast.AnnAssign) else []
+            for target in targets:
+                if (isinstance(target, ast.Attribute) and isinstance(target.value, ast.Name) and target.value.id == "self"
+                        and target.attr in words):
+                    row = "self.%s = %s" % (target.attr, ast.unparse(sub.value)[:160] if getattr(sub, "value", None) is not None else "...")
+                    if row not in rows:
+                        rows.append(row)
+    return rows
+
+
+def _imports(tree, file: str) -> dict:
+    """local name -> (module file stem 'a/b', imported name or None) of the file's imports (any depth)."""
+    package = PurePosixPath(file).parent.parts
+    out = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            base = list(package[:max(0, len(package) - (node.level - 1))]) if node.level else []
+            stem = "/".join(base + (node.module.split(".") if node.module else []))
+            for alias in node.names:
+                out[alias.asname or alias.name] = (stem, alias.name)
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                out[alias.asname or alias.name.split(".")[0]] = (
+                    alias.name.replace(".", "/") if alias.asname else alias.name.split(".")[0], None)
+    return out
+
+
+def _module_symbols(root, stem: str, cache: dict):
+    """(rel, source, symbols) of the module file ``stem`` ('' when it is not a file of the product)."""
+    if stem not in cache:
+        cache[stem] = ("", "", {})
+        for rel in (stem + ".py", stem + "/__init__.py"):
+            text = _read_text(root, rel)
+            tree = _tree(text) if text else None
+            if tree is not None:
+                cache[stem] = (rel, text, _symbols(tree))
+                break
+    return cache[stem]
+
+
+def _doc_line(node) -> str:
+    doc = ast.get_docstring(node) if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) else ""
+    return (doc or "").strip().split("\n")[0][:140]
+
+
+def _called_rows(root, file: str, source: str, found: dict, tree, region: str, symbols) -> list[str]:
+    """Signature and first docstring line of what the region calls: this file first, then one level of imports."""
+    rtree = _tree(textwrap.dedent(region))
+    wanted = []        # (kind, a, b)
+    if rtree is None:
+        wanted = [("name", n, "") for n in dict.fromkeys(re.findall(r"\b([^\W\d]\w*)\(", region))]
+    else:
+        for node in ast.walk(rtree):
+            if not (isinstance(node, ast.Call)):
+                continue
+            func = node.func
+            if isinstance(func, ast.Name):
+                item = ("name", func.id, "")
+            elif isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
+                item = ("self" if func.value.id == "self" else "attr", func.value.id, func.attr)
+            else:
+                continue
+            if item not in wanted:
+                wanted.append(item)
+    imports, cache = _imports(tree, file), {}
+    owners = sorted({s.rpartition(".")[0] for s in symbols if "." in s})
+    own, other = [], []
+
+    def row(rel, text, qual, node):
+        lines = signature_lines(text, [qual], rel)
+        doc = _doc_line(node)
+        return (lines[-1] + ("  -- " + doc if doc else "")) if lines else ""
+
+    for kind, a, b in wanted:
+        if kind == "self":
+            for owner in owners:
+                qual = owner + "." + b
+                if qual in found and qual not in symbols and _is_function(found[qual]):
+                    own.append(row(file, source, qual, found[qual]))
+        elif kind == "name" and a in found and a not in symbols and (_is_function(found[a]) or isinstance(found[a], ast.ClassDef)):
+            own.append(row(file, source, a, found[a]))
+        elif kind == "name" and a in imports and imports[a][1]:
+            stem, orig = imports[a]
+            rel, text, syms = _module_symbols(root, stem, cache)
+            if orig in syms and (_is_function(syms[orig]) or isinstance(syms[orig], ast.ClassDef)):
+                other.append(row(rel, text, orig, syms[orig]))
+        elif kind == "attr" and a in imports:
+            stem, orig = imports[a]
+            if orig:
+                stem = stem + "/" + orig        # ``from pkg import mod`` then mod.fn
+            rel, text, syms = _module_symbols(root, stem, cache)
+            if b in syms and (_is_function(syms[b]) or isinstance(syms[b], ast.ClassDef)):
+                other.append(row(rel, text, b, syms[b]))
+    return [r for r in dict.fromkeys(own + other) if r][:14]
+
+
+def _caller_rows(root, file: str, symbols, trace) -> list[str]:
+    """Up to 3 lines of the failing path's functions (``trace``: (file, qualname, line)) that call the edited function."""
+    leaves = {s.rpartition(".")[2] for s in symbols} - {"__init__"}
+    rows = []
+    for entry in trace or ():
+        try:
+            rel, qual = str(entry[0]), str(entry[1])
+        except (IndexError, TypeError):
+            continue
+        if not leaves or rel == file or not rel.endswith(".py") or rel.startswith("tests/"):
+            continue
+        text = _read_text(root, rel)
+        tree = _tree(text) if text else None
+        node = _symbols(tree).get(qual) if tree is not None else None
+        if node is None or not _is_function(node):
+            continue
+        lines = text.split("\n")
+        for sub in ast.walk(node):
+            if isinstance(sub, ast.Call):
+                name = sub.func.id if isinstance(sub.func, ast.Name) else sub.func.attr if isinstance(sub.func, ast.Attribute) else ""
+                if name in leaves and sub.lineno <= len(lines):
+                    row = "%s:%d: %s" % (rel, sub.lineno, lines[sub.lineno - 1].strip()[:200])
+                    if row not in rows:
+                        rows.append(row)
+        if len(rows) >= 3:
+            break
+    return rows[:3]
+
+
+def context_pack(root, part, region, *, test_ids, trace=(), budget, clean=None) -> str:
+    """What the editor of one part may read besides its code (all of it ``read only, not an edit target``), at most
+    ``budget`` characters, sections in the order of their worth, each cut by whole lines: RED TEST (the body of the red
+    test with its fixtures and helpers, up to 45 % of the budget), THIS MODULE (constants and class fields the region
+    names), CALLED (signature and first docstring line of what the region calls: this file, then one level of its
+    imports), CALLERS (up to 3 call lines from the failing path ``trace``). ``clean`` (text -> text) is the caller's
+    secret filter. '' when there is nothing or no room."""
+    if budget < 200:
+        return ""
+    file = str(part.get("file") or "")
+    symbols = [s for s in (part.get("symbols") or []) if isinstance(s, str)]
+    source = _read_text(root, file) if file.endswith(".py") else ""
+    tree = _tree(source) if source else None
+    blocks, left = [], budget
+
+    def add(name, label, body, cap):
+        nonlocal left
+        if clean is not None:
+            body = clean(body)
+        head = "== %s%s (%s) ==\n" % (name, " " + label if label else "", CONTEXT_READ_ONLY)
+        cost = 2 if blocks else 0
+        room = min(cap, left - cost) - len(head)
+        body = _cut_lines(body.strip("\n"), room)
+        if len(body) < 20:
+            return
+        blocks.append(head + body)
+        left -= cost + len(head) + len(body)
+
+    cap_test = int(budget * RED_TEST_SHARE)
+    texts, labels = [], []
+    for tid in dict.fromkeys(str(t) for t in test_ids or ()):
+        label, text = _red_test_text(root, tid, cap_test - sum(len(t) + 2 for t in texts))
+        if text:
+            texts.append(text)
+            labels.append(label)
+        if sum(len(t) + 2 for t in texts) >= cap_test * 0.9:
+            break
+    if texts:
+        add("RED TEST", ", ".join(labels), "\n\n".join(texts), cap_test)
+    if tree is not None:
+        found = _symbols(tree)
+        words = set(_WORD.findall(region))
+        rows = _module_rows(source, found, symbols, words)
+        if rows:
+            add("THIS MODULE", file, "\n".join(rows), left)
+        rows = _called_rows(root, file, source, found, tree, region, symbols)
+        if rows:
+            add("CALLED", "", "\n".join(rows), left)
+    rows = _caller_rows(root, file, symbols, trace)
+    if rows:
+        add("CALLERS", "", "\n".join(rows), left)
+    return "\n\n".join(blocks)
+
+
+def context_sections(pack: str) -> list[str]:
+    """The names of the sections a context pack holds."""
+    return [n for n in CONTEXT_SECTIONS if ("== " + n) in (pack or "")]
+
+
+FAIL_LINES = 12
+
+
+def failure_block(failed_ids, diag: str, lines: int = FAIL_LINES) -> str:
+    """The failing ids and the last ``lines`` non-empty lines of the failure text (assert with its values, E lines):
+    one text, the same on a repeat."""
+    rows = [r.rstrip()[:300] for r in str(diag or "").splitlines() if r.strip()]
+    marked = [r for r in rows if r.lstrip().startswith("E ")]
+    rows = (marked if len(marked) >= 2 else rows)[-lines:]
+    return (", ".join(failed_ids or ()) + "\n" + "\n".join(rows)).strip()
+
+
+UNDEF_CODES = ("F8" + "21", "F8" + "22", "F8" + "23")      # ruff's undefined name / in __all__ / local before assignment
+
+
+def _ruff_names(text: str, runner) -> set | None:
+    import json as _json
+    got = runner(text)
+    if got is None:
+        return None
+    try:
+        data = _json.loads(got)
+    except ValueError:
+        return None
+    return {(d.get("code"), m.group(1)) for d in data if isinstance(d, dict)
+            for m in [re.search(r"`([^`]+)`", str(d.get("message", "")))] if m}
+
+
+def _ruff_run(text: str):
+    """ruff's JSON for ``text`` (the undefined-name rules only), None when ruff is not there or does not answer in 0.5 s.
+    No ready ruff call exists in tools/ (checked with git grep -i ruff: factory_mirror and the chain do not run it; the
+    pyflakes check lives only in tests/test_factory_undefined_names.py), so this is the one call."""
+    import shutil
+    import subprocess
+    import sys
+    exe = shutil.which("ruff")
+    argv = [exe] if exe else []
+    if not argv:
+        try:
+            import importlib.util
+            if importlib.util.find_spec("ruff") is None:
+                return None
+        except (ImportError, ValueError):
+            return None
+        argv = [sys.executable, "-m", "ruff"]
+    try:
+        done = subprocess.run(argv + ["check", "--select", ",".join(UNDEF_CODES), "--isolated", "--no-cache",
+                                      "--output-format", "json", "--stdin-filename", "part.py", "-"],
+                              input=text, capture_output=True, text=True, timeout=0.5, encoding="utf-8")
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+    return done.stdout if done.returncode in (0, 1) and done.stdout.strip() else None
+
+
+UNDEFINED_NOTE = ("your edit uses names that are not defined in %s: %s. Define or import them, or use only the names the "
+                  "shown code and its signatures have")
+
+
+def new_undefined_names(old: str, new: str, runner=None) -> list[str]:
+    """Names ruff (the undefined-name rules) finds undefined in ``new`` that it did not in ``old``; [] when ruff is absent."""
+    runner = runner or _ruff_run
+    now = _ruff_names(new, runner)
+    if not now:
+        return []
+    before = _ruff_names(old, runner) if old else set()
+    return sorted({name for _, name in now - (before or set())})
 
 
 def example_test(root: Path, symbols, limit: int = EXAMPLE_CHARS) -> str:
