@@ -9,6 +9,8 @@ The module reads and writes only ``<state>/release/`` and imports nothing from `
 import json
 import os
 import re
+import time
+import uuid
 from pathlib import Path
 
 from tools import red_ratchet
@@ -79,16 +81,52 @@ def record_regressions(state_dir, names, row_of, at) -> None:
     _write_json(release_dir(state_dir) / "regressions.json", book)
 
 
-def next_label(state_dir, sha) -> str:
-    """``rel-<sha8>-<n>``: the mirror branch of a sweep is new for every attempt (a branch of an earlier attempt stays on the mirror,
-    a push without force to its name is refused).  The attempt number per SHA is kept in ``<state>/release/attempts.json``."""
-    key = str(sha)[:8]
+def _locked(path):
+    """A lock file next to ``path`` (O_EXCL; a lock older than 30 s is taken over): two runs never read the same attempt number."""
+    class _Lock:
+        def __enter__(self):
+            lock = Path(str(path) + ".lock")
+            lock.parent.mkdir(parents=True, exist_ok=True)
+            end = time.time() + 10
+            while True:
+                try:
+                    os.close(os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+                    break
+                except FileExistsError:
+                    try:
+                        if time.time() - lock.stat().st_mtime > 30:
+                            lock.unlink()
+                            continue
+                    except OSError:
+                        pass
+                    if time.time() > end:
+                        break                       # a stuck lock must not stop the build: the random suffix still keeps the name unique
+                    time.sleep(0.05)
+            self.lock = lock
+            return self
+
+        def __exit__(self, *exc):
+            try:
+                self.lock.unlink()
+            except OSError:
+                pass
+    return _Lock()
+
+
+def next_label(state_dir, sha, prefix="rel") -> str:
+    """``<prefix>-<sha8>-<n>-<rand>``: the mirror branch of a sweep is new for every attempt (a branch of an earlier attempt stays on
+    the mirror, a push without force to its name is refused).  The attempt number per prefix and SHA is kept in
+    ``<state>/release/attempts.json`` under a lock; the random suffix keeps the name new even when that state was reset.
+    (A finished cloud run of the SHA is not reused: ``echo_cloud.sweep`` hands back a run id only together with its results,
+    which ``run`` consumes at once, so no finished run is left to pick up, and the sweep module is not this task's to change.)"""
+    key = "%s-%s" % (prefix, str(sha)[:8])
     path = release_dir(state_dir) / "attempts.json"
-    book = _read_json(path, {})
-    n = int(book.get(key) or 0) + 1
-    book[key] = n
-    _write_json(path, book)
-    return "rel-%s-%d" % (key, n)
+    with _locked(path):
+        book = _read_json(path, {})
+        n = int(book.get(key) or 0) + 1
+        book[key] = n
+        _write_json(path, book)
+    return "%s-%d-%s" % (key, n, uuid.uuid4().hex[:6])
 
 
 def run(*, sha, snapshot, state_dir, sweep_fn, known=(), open_ids=(), open_tests=(), recheck_fn=None, shards=SWEEP_SHARDS[1],

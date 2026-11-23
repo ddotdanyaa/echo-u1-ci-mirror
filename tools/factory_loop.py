@@ -5223,7 +5223,7 @@ def _release_fn(a):
         def recheck(names):                         # one short cloud run of the red files; a file that did not finish counts as reproduced
             files = sorted({n.split("::", 1)[0] for n in names})
             _p, res, _id = echo_cloud.sweep(src=kw["snapshot"], files=files, shards=min(len(files), 4) or 1,
-                                            label="rel-re-" + str(kw["sha"])[:8])
+                                            label=factory_release.next_label(kw["state_dir"], kw["sha"], prefix="rel-re"))
             if any(isinstance(r, dict) and r.get("missing") for r in res.values()):
                 return list(names)
             return [n for r in res.values() for n in (r.get("failed_ids") or ())]
