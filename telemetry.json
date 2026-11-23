@@ -1,9 +1,9 @@
 {
  "accepted": 17,
- "free_ram_gb": 2.73,
+ "free_ram_gb": 3.89,
  "funnel": {
   "accepted": 17,
-  "claimed": 421,
+  "claimed": 425,
   "coded": 183,
   "found_in_backlog": "unknown",
   "gate_pass": 67,
@@ -137,28 +137,28 @@
    "tokens_out": 15
   },
   "google/gemma-4-26b-a4b-it": {
-   "calls": 494,
-   "calls_usage_unknown": 381,
+   "calls": 507,
+   "calls_usage_unknown": 392,
    "errors": {
     "rate_minute": 24,
-    "timeout": 39,
-    "transient": 318
+    "timeout": 40,
+    "transient": 328
    },
    "http_429": 0,
-   "tokens_in": 453120,
-   "tokens_out": 41506
+   "tokens_in": 455112,
+   "tokens_out": 41664
   },
   "google/gemma-4-31b-it": {
-   "calls": 447,
-   "calls_usage_unknown": 375,
+   "calls": 465,
+   "calls_usage_unknown": 390,
    "errors": {
     "rate_minute": 35,
     "timeout": 26,
-    "transient": 314
+    "transient": 329
    },
    "http_429": 0,
-   "tokens_in": 250295,
-   "tokens_out": 9968
+   "tokens_in": 253562,
+   "tokens_out": 10878
   },
   "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free": {
    "calls": 115,
@@ -183,7 +183,7 @@
   }
  },
  "promoted": 63,
- "rows_recognized": 39015,
+ "rows_recognized": 39085,
  "schema": 3,
  "side": {
   "blocked": 0,
@@ -191,7 +191,7 @@
   "requeued": 7
  },
  "skipped_files": 0,
- "source_sha": "sha7f4dfe043c32",
+ "source_sha": "sha91719ddfb08c",
  "span": {
   "answer": {
    "calls": 0,
@@ -211,10 +211,10 @@
    "calls_usage_unknown": 0,
    "errors": {},
    "http_429": 0,
-   "rows": 5738,
+   "rows": 5748,
    "status": {
-    "ok": 4966,
-    "other": 772
+    "ok": 4972,
+    "other": 776
    },
    "tokens_in": 0,
    "tokens_out": 0
@@ -224,12 +224,12 @@
    "calls_usage_unknown": 0,
    "errors": {},
    "http_429": 0,
-   "rows": 972,
+   "rows": 973,
    "status": {
     "brake": 8,
     "brake_cleared": 1,
     "cleared": 58,
-    "deferred": 599,
+    "deferred": 600,
     "error": 88,
     "other": 177,
     "parked": 18,
@@ -244,7 +244,7 @@
    "calls_usage_unknown": 0,
    "errors": {},
    "http_429": 0,
-   "rows": 6505,
+   "rows": 6511,
    "status": {
     "BLOCKED": 364,
     "FAILED": 439,
@@ -253,11 +253,11 @@
     "WAITING_CHANNEL": 304,
     "added": 16,
     "brake": 15,
-    "deferred": 578,
+    "deferred": 579,
     "empty": 92,
     "infra": 17,
-    "ok": 2282,
-    "other": 268,
+    "ok": 2283,
+    "other": 272,
     "refused": 1,
     "requeued": 7,
     "stop": 100
@@ -270,14 +270,14 @@
    "calls_usage_unknown": 0,
    "errors": {},
    "http_429": 0,
-   "rows": 10310,
+   "rows": 10326,
    "status": {
     "added": 12,
     "applied": 974,
     "error": 1,
     "failed": 36,
     "ok": 162,
-    "other": 9102,
+    "other": 9118,
     "rejected": 23
    },
    "tokens_in": 0,
@@ -318,30 +318,30 @@
    "tokens_out": 114906
   },
   "run": {
-   "calls": 4074,
-   "calls_usage_unknown": 713,
+   "calls": 4105,
+   "calls_usage_unknown": 739,
    "errors": {
     "model_missing": 3,
     "other": 1,
     "rate_day": 89,
     "rate_minute": 75,
-    "timeout": 43,
-    "transient": 503
+    "timeout": 44,
+    "transient": 528
    },
    "http_429": 91,
-   "rows": 12206,
+   "rows": 12243,
    "status": {
     "BLOCKED": 381,
     "FAILED": 471,
-    "READY": 2646,
+    "READY": 2650,
     "REVIEW": 79,
     "WAITING_CHANNEL": 319,
-    "error": 714,
-    "ok": 7557,
+    "error": 740,
+    "ok": 7564,
     "other": 39
    },
-   "tokens_in": 19234517,
-   "tokens_out": 1563440
+   "tokens_in": 19239776,
+   "tokens_out": 1564508
   },
   "triage": {
    "calls": 0,
@@ -362,7 +362,7 @@
  "status": {
   "BLOCKED": 745,
   "FAILED": 910,
-  "READY": 4594,
+  "READY": 4598,
   "REVIEW": 153,
   "WAITING_CHANNEL": 623,
   "added": 108,
@@ -371,14 +371,14 @@
   "brake": 23,
   "brake_cleared": 1,
   "cleared": 58,
-  "deferred": 1177,
+  "deferred": 1179,
   "empty": 381,
-  "error": 1202,
+  "error": 1228,
   "failed": 36,
   "hold_dropped": 3,
   "infra": 17,
-  "ok": 16781,
-  "other": 10434,
+  "ok": 16795,
+  "other": 10458,
   "parked": 18,
   "refused": 2,
   "rejected": 40,

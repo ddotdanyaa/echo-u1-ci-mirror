@@ -1182,7 +1182,11 @@ def review_candidate(task: Task, workdir: Path, model: str, invoke, *,
             test_names = (set(re.findall(r'::([A-Za-z_]\w*)', ' '.join(task.tests) + ' ' + (execution or ''))) |
                           set(asked_names(execution or '')))
             focus = review_focus(baseline, workdir, task.touch_files, files, frozenset(test_names))
-            if focus and whole:
+            # no named red test and a large test file: "every test that calls the changed function" is hundreds of
+            # bodies; the outline view of the file (failing test first) is the right picture then
+            unnamed_big_test = not test_names and any(
+                n.replace('\\', '/').rsplit('/', 1)[-1].startswith('test_') for n in large_names(task, files))
+            if focus and whole and not unnamed_big_test:
                 piece = head + 'Candidate diff:\n' + whole + '\n' + focus
                 if len(piece) <= REVIEW_FOCUS_LIMIT and 'diff truncated' not in whole:
                     focused = piece

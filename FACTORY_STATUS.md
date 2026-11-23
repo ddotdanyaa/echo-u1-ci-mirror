@@ -1,9 +1,10 @@
 # Factory status (generated, structured data only)
 
-Generated: 2026-11-23T19:21:06Z
-Source commit: sha7f4dfe043c32
+Generated: 2026-11-23T19:26:23Z
+Source commit: sha91719ddfb08c
 
 ## Commits (sha, time)
+- sha91719ddf 2026-11-23T22:25:38+03:00
 - sha7f4dfe04 2026-11-23T22:18:48+03:00
 - shab794e8f9 2026-11-23T22:15:51+03:00
 - sha362fa108 2026-11-23T22:11:45+03:00
@@ -23,13 +24,12 @@ Source commit: sha7f4dfe043c32
 - shaf470fec8 2026-11-23T19:22:11+03:00
 - sha7084e94b 2026-11-23T18:54:37+03:00
 - sha4706837e 2026-11-23T18:50:10+03:00
-- shafda42831 2026-11-23T18:42:52+03:00
 
 ## Funnel
 | step | count |
 |---|---|
 | accepted | 17 |
-| claimed | 421 |
+| claimed | 425 |
 | coded | 183 |
 | found_in_backlog | unknown |
 | gate_pass | 67 |
@@ -43,8 +43,8 @@ Side counters: blocked=0, parked=0, requeued=7
 Tasks now: DONE=68, FAILED=483, PROMOTED=39, READY=126, RUNNING=5
 Accepted: 17
 Promoted: 63
-Free RAM, GB: 2.73
-Telemetry rows: 39015 recognised, 0 unrecognised
+Free RAM, GB: 3.89
+Telemetry rows: 39085 recognised, 0 unrecognised
 
 ## Spend per model
 | model | calls | tokens_in | tokens_out | usage_unknown | http_429 | errors |
@@ -60,8 +60,8 @@ Telemetry rows: 39015 recognised, 0 unrecognised
 | google/gemini-3.6-flash | 135 | 414079 | 20196 | 57 | 12 | 57 |
 | google/gemini-3.7-flash | 26 | 9121 | 14 | 25 | 14 | 25 |
 | google/gemini-3.8-flash | 28 | 21237 | 15 | 25 | 13 | 25 |
-| google/gemma-4-26b-a4b-it | 494 | 453120 | 41506 | 381 | 0 | 381 |
-| google/gemma-4-31b-it | 447 | 250295 | 9968 | 375 | 0 | 375 |
+| google/gemma-4-26b-a4b-it | 507 | 455112 | 41664 | 392 | 0 | 392 |
+| google/gemma-4-31b-it | 465 | 253562 | 10878 | 390 | 0 | 390 |
 | openrouter/nvidia/nemotron-3-ultra-550b-a55b:free | 115 | 663252 | 151232 | 2 | 2 | 2 |
 | other | 65 | 1154192 | 66710 | 6 | 0 | 7 |
 
@@ -69,13 +69,13 @@ Telemetry rows: 39015 recognised, 0 unrecognised
 | span | rows | calls |
 |---|---|---|
 | answer | 536 | 0 |
-| gate | 5738 | 0 |
-| infra | 972 | 0 |
-| loop | 6505 | 0 |
-| other | 10310 | 0 |
+| gate | 5748 | 0 |
+| infra | 973 | 0 |
+| loop | 6511 | 0 |
+| other | 10326 | 0 |
 | promote | 79 | 0 |
 | review | 2292 | 1261 |
-| run | 12206 | 4074 |
+| run | 12243 | 4105 |
 | triage | 377 | 0 |
 
 ## Channels (model ids)
