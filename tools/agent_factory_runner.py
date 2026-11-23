@@ -1372,7 +1372,8 @@ def model_attempt(task: Task, workdir: Path, model: str, timeout: int,
 LIGHT_MAX_FILES = 10   # 23.11: a contract of up to 10 parts (one stage) is edited by the light engine, one card per file
 PART_RETRIES = 2      # a part whose answer cannot be applied is asked again this many times (no strike)
 FEEDBACK_CARD_CHARS = 3000   # the feedback a contract test card carries (its newest end)
-PART_WAIT_S = 30      # a call waits for the nearest free channel at most this long, then the pass is deferred
+PART_WAIT_REST_S = 60    # a pass that found no free channel for PART_WAIT_S rests at least this long (fresh cards go first meanwhile)
+PART_WAIT_S = 30     # a call waits for the nearest free channel at most this long, then the pass is deferred
 PART_RETRY_NOTE = ('\nYour previous answer for this file could not be used: %s\nAnswer again for this file only, '
                    'copying the SEARCH lines exactly from the code shown above.\n')
 LIGHT_OVERHEAD_TOKENS = 600      # the rules below and the chat wrapper (Kilo: 5 300-7 300)
@@ -2811,15 +2812,22 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
         pend['chain_short'] = (prior if type(prior) is int and prior > 0 else 0) + 1
         return pend['chain_short']
 
+    def live_quotas(state=None) -> dict:
+        """W-gemma5 1: THE quota view of the executor: the state's channel_quotas merged with the other states' sections of
+        the shared ledger (the same view call() books on). Every rule that asks main_dry / main_open / edit_dry / route_order /
+        usable reads this one, never the raw state. For reading only: the state for a write is not changed."""
+        quota = (state if state is not None else ck.read()).get('channel_quotas') or {}
+        if ledger is None:
+            return quota
+        return quota_ledger.view(quota, quota_ledger.others(ledger, str(checkpoint)))
+
     def dry_now() -> bool:
         """W-dry 2: every channel of the edit role is closed by the day's mark (factory_channels.edit_dry): the review
         goes by Gemma with repeats and the paid Haiku gives the missing voice. Not dry (the normal mode) on any doubt."""
         if not configured:
             return False
         try:
-            quota = ck.read().get('channel_quotas') or {}
-            seen = quota_ledger.view(quota, quota_ledger.others(ledger, str(checkpoint))) if ledger is not None else quota
-            return bool(channels.edit_dry(configured, seen, os.environ))
+            return bool(channels.edit_dry(configured, live_quotas(), os.environ))
         except Exception:       # noqa: BLE001 - a view that cannot be read is the normal mode
             return False
 
@@ -2829,9 +2837,7 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
         if not configured:
             return False
         try:
-            quota = ck.read().get('channel_quotas') or {}
-            seen = quota_ledger.view(quota, quota_ledger.others(ledger, str(checkpoint))) if ledger is not None else quota
-            return bool(channels.main_dry(configured, seen, os.environ))
+            return bool(channels.main_dry(configured, live_quotas(), os.environ))
         except Exception:       # noqa: BLE001 - a view that cannot be read is the normal mode
             return False
 
@@ -2941,7 +2947,7 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
         """W-gemma4 1: skip_small on the live quota state: with no open main/escalation channel the small tier is not skipped."""
         if not configured or not (k or attempt > 1):
             return skip_small(k, attempt, feedback, small_follow_up)
-        live = ck.read().get('channel_quotas') or {}
+        live = live_quotas()
         return skip_small(k, attempt, feedback, small_follow_up, channels.main_open(configured, live, os.environ))
 
     def call_affinity(role) -> list:
@@ -2998,7 +3004,7 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
             if configured:
                 route = 'code' if role == 'repair' else role
                 whole = ck.read()
-                live_state = whole.get('channel_quotas') or {}    # a fresh private copy: ratings, parked 404s, cooling
+                live_state = live_quotas(whole)    # W-gemma5 1: the merged view (a private copy: ratings, parked 404s, cooling)
                 order = call_order(role, preferred, base_tokens, exclude_model, hopped, skip_tiers, later, live_state,
                                    light, steps)
                 if big['skip']:      # W-gemma 1: the circle of big channels: one that just answered 503 waits its turn
@@ -3236,8 +3242,7 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
         if not configured:
             return default
         pool = [c for c in configured if not (ctx['role'] == 'review' and c['model'] == ctx['coder_model'])]
-        quota = ck.read().get('channel_quotas', {})
-        seen = quota_ledger.view(quota, quota_ledger.others(ledger, str(checkpoint))) if ledger is not None else quota
+        seen = live_quotas()
         wait = channels.next_wait(pool, seen, ctx['last_tokens'], os.environ,
                                   requests=1 if ctx.get('light') else
                                   requests_for(REVIEW_STEPS if ctx['role'] == 'review' else PROVIDER_STEPS))
@@ -3252,7 +3257,10 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
         if ctx['role'] == 'review' and kind in ('timeout', 'launcher'):
             return release_or_block('reviewer_failed', INFRA_DEFER_S)  # the candidate stays pending
         if kind in ('rate_minute', 'rate_day'):
-            return release(kind, soonest(error.wait_s or error.info.get('retry_after_s') or channels.DEFAULT_COOL_S))
+            pause = soonest(error.wait_s or error.info.get('retry_after_s') or channels.DEFAULT_COOL_S)
+            if error.info.get('part_wait'):      # W-gemma5 2: no free channel within PART_WAIT_S: not back in 5 s to take the seat again
+                pause = max(PART_WAIT_REST_S, pause)
+            return release(kind, pause)
         if kind == 'region':
             return release(kind, soonest(60))
         if kind in ('key_invalid', 'model_missing'):
@@ -4016,7 +4024,7 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                 now_out = list(tried_now)
                 older = [m for m in failed_models_of(row) if m not in now_out]
                 if older and configured:
-                    live_now = ck.read().get('channel_quotas') or {}
+                    live_now = live_quotas()
                     if channels.usable(channels.route_order(
                             configured, 'code', attempt, channels.estimate_tokens(len(prompt), 0),
                             exclude_model=now_out + older, state=live_now,
@@ -4080,7 +4088,7 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                             if error.reason in INFRA_CHANNEL_REASONS:
                                 raise
                             if waited >= PART_WAIT_S:      # no free channel in time: deferred, no strike
-                                raise ChannelFault({'kind': 'rate_minute'}, error.wait_s)
+                                raise ChannelFault({'kind': 'rate_minute', 'part_wait': True}, error.wait_s)
                             step = min(max(1.0, error.wait_s), PART_WAIT_S - waited)
                             time.sleep(step)
                             waited += step
@@ -4291,13 +4299,13 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
             except Exception:                        # the gates / the call will name it
                 return 0.0, '', [], []
             light, base_tokens, steps, booked = call_size('review', call_task, len(prompt), channels.cyrillic_share(prompt))
-            live_state = ck.read().get('channel_quotas') or {}
+            live_state = live_quotas()
             scratch_events = list(events)            # _kilo_fits writes into it: the precheck leaves no event behind
             order = call_order('review', review_model, base_tokens, authors() + voted, (), (), False, live_state, light, steps,
                                scratch_events)
             if not order:
                 return 0.0, '', kept, kept           # without a voice the call's own NoIndependentReviewer path decides
-            seen = quota_ledger.view(live_state, quota_ledger.others(ledger, str(checkpoint))) if ledger is not None else live_state
+            seen = live_state                        # already the merged view
             try:
                 call_pick(order, seen, base_tokens, booked, call_affinity('review'))
             except channels.ChannelUnavailable as error:

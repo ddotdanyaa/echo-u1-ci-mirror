@@ -464,7 +464,7 @@ def stuck_rows(state, tasks) -> dict[str, list[str]]:
 
 
 def ready(tasks: dict[str, Task], state: dict, *, google: bool = True,
-          occupied: tuple[str, ...] = (), now: float | None = None) -> list[str]:
+          occupied: tuple[str, ...] = (), now: float | None = None, fresh_first: bool = False) -> list[str]:
     """Sorted tasks ready to execute, mutually compatible. Busy = RUNNING and REVIEW rows (a candidate holds its files
     until it is promoted). Exclusive = touch_files + tests, reads = read_files: two tasks never share an exclusive
     file, and one never writes what the other reads."""
@@ -477,7 +477,10 @@ def ready(tasks: dict[str, Task], state: dict, *, google: bool = True,
             write_in_use.update(write_claims(tasks[tid]))
             read_in_use.update(p.casefold() for p in tasks[tid].read_files)
     found = []
-    for tid in sorted(tasks, key=lambda t: (tasks[t].priority, t)):
+    def spent(t) -> int:      # W-gemma5 2: 0 = a fresh card (no attempt, not deferred by the last pass), 1 = a repeat
+        row = state["tasks"][t]
+        return 1 if (fresh_first and (row.get("attempts", 0) or row.get("defer_reason"))) else 0
+    for tid in sorted(tasks, key=lambda t: (spent(t), tasks[t].priority, t)):
         task = tasks[tid]
         if state["tasks"][tid]["status"] != "READY":
             continue
@@ -1030,7 +1033,7 @@ def next_action(state: dict, now: float, channel_wait_s: float,
               if row["status"] == "REVIEW" and tid not in skip]
     if review:
         return {"action": "PROMOTE", "task_id": min(review)[1], "reason": "review_pending"}
-    runnable = [t for t in ready(tasks, state, google=google, now=now) if t not in skip]
+    runnable = [t for t in ready(tasks, state, google=google, now=now, fresh_first=True) if t not in skip]
     expired = sorted((float(row["block_until"]), tid) for tid, row in rows.items()
                      if row["status"] == "BLOCKED" and tid not in skip
                      and type(row.get("block_until")) in (int, float) and row["block_until"] <= now)

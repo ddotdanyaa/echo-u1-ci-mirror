@@ -602,7 +602,8 @@ SLICE_PAUSES = (60, 120, 300, 600)        # W-pay 2: the pause of a row's repeat
 SLICE_HOPELESS_S = 600                    # W-gemma2 4: a row without a step (no money, no main channel) waits at least this
 QUARANTINE_TTL_S = 21600
 DRY_SLICE_MAX = 8           # W-dry 1: rows of cards without code that go to the slicer for code at the same time
-DRY_CACHE_S = 5             # the edit_dry reading is kept this long
+STATE_LOCKED_SLEEP_S = 3    # W-gemma5 3: a busy state lock lives milliseconds: WAIT state_locked sleeps this long
+DRY_CACHE_S = 5            # the edit_dry reading is kept this long
 KW_DAY_LEFT_MIN = 0.2       # W-dry 3: links/keywords go to a main-tier channel only while this share of its day is left
 HARD_FAILED_GENS = 6        # W-hard 1: generations that reached a red fix: from here the row sits until CONTRACT_REV changes
 HARD_REOPEN_S = 86400       # ... and opens by a new CONTRACT_REV no more than once a day
@@ -1246,7 +1247,7 @@ class Loop:
         try:
             out = self._step()
         except F.LockBusy:      # the state is locked by a live writer: the same wait as always, no failure
-            out = Outcome(sleep=60, action="WAIT", reason="state_locked")
+            out = Outcome(sleep=STATE_LOCKED_SLEEP_S, action="WAIT", reason="state_locked")
         except Exception as e:  # a. one error never kills the loop
             reason = "%s: %s" % (type(e).__name__, F.redact(str(e))[:300])
             streak = self.note_infra(None)
@@ -1399,7 +1400,10 @@ class Loop:
                 return True
             configured = json.loads(Path(self.cfg.channels).read_text(encoding="utf-8"))["channels"]
             quota = self.load()[1].get("channel_quotas")
-            live = CH.usable(configured, quota if isinstance(quota, dict) else {}, {**os.environ, **self.extra_env})
+            quota = quota if isinstance(quota, dict) else {}
+            seen = quota_ledger.view(quota, quota_ledger.others(Path(self.cfg.channels).resolve().parent / "quota",
+                                                                str(self.ckpt)))     # W-gemma5 1: the one merged view
+            live = CH.usable(configured, seen, {**os.environ, **self.extra_env})
             return not [c["id"] for c in live if c["id"] not in book]
         except Exception as e:
             self.err("series check", e)
@@ -4900,8 +4904,8 @@ class Loop:
                    "stages": {}, "events": [], "infra": False, "wait_s": round(F.seconds_to_local_midnight(), 1)}
             return self._account(Worker(slot=-1, tid=tid, token=None, base_sha=base, exps=exps, hint=tid), res=res)
         except F.LockBusy:
-            return Outcome(sleep=60, action="WAIT", reason="state_locked")
-        except F.InvalidPlan:                                  # no longer runnable (another writer): choose again
+            return Outcome(sleep=STATE_LOCKED_SLEEP_S, action="WAIT", reason="state_locked")
+        except F.InvalidPlan:                                 # no longer runnable (another writer): choose again
             return 0
         try:
             root = self._snapshot(base)
