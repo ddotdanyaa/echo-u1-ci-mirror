@@ -339,6 +339,10 @@ def run_tests(root, tests, timeout_s, workdir=None, wait_s=None, hung=(), budget
     task (mirror route) or of any tree with a ``touched`` of () or more (product route) may run in the cloud gate (_cloud_attempt), a continuation call stays local. The continuation spends at most ``budget_s`` (SPLIT_BUDGET_S) seconds. ``trace``: source prefixes whose
     functions the failing tests ran are recorded in GateResult.path (the verdict never depends on it)."""
     deadline = time.monotonic() + (SPLIT_BUDGET_S if budget_s is None else budget_s)
+    if SELF_REPO:
+        hung = ()                # the cloud runs the whole list as one call: a base-hang list is for the local pytest only
+        if touched is None:
+            touched = ()
     if not hung:
         parts = _fit(root, list(tests), timeout_s, workdir, wait_s, deadline, first=True, touched=touched,
                      **_traced(trace))
@@ -364,7 +368,7 @@ def _fit(root, tests, timeout_s, workdir, wait_s, deadline, first=False, deselec
         return [(tuple(tests), _failure(-1, SPENT_DIAG % timeout_s))]
     seen = {}
     result = _run_once(root, tests, timeout_s, workdir=workdir, wait_s=wait_s, progress=seen, deselect=deselect,
-                       **_traced(trace), **({'touched': touched} if first and touched is not None else {}))
+                       **_traced(trace), **({'touched': touched} if (first or SELF_REPO) and touched is not None else {}))
     if not _timed_out(result):
         return [(tuple(tests), result)]
     items, started = seen.get('items') or [], seen.get('started') or []
@@ -467,6 +471,9 @@ def _run_once_raw(root, tests, timeout_s, workdir, wait_s, progress, deselect, w
     tests = [_node(t) for t in tests]
     if not tests:
         return _failure(-1, 'no tests given')
+    if SELF_REPO and (touched is None or deselect):
+        # the second instance has no local run on any path (a continuation, a hung list, a deselect): never pytest here
+        return replace(_failure(-1, NOT_STARTED + 'cloud: cloud_down'), env_reason='cloud_down')
     if touched is not None and not deselect and (SELF_REPO or not _known_fast(root, tests)):   # the product route runs the profile plugin too
         cloud = _cloud_attempt(root, tests, touched, trace)
         if cloud is not None:
@@ -616,11 +623,11 @@ def _cloud_attempt(root, tests, touched, trace=()):
     same profile plugin and the JUnit comes back with the path of the failing tests (parse_junit fills GateResult.path)."""
     try:
         from . import factory_cloud_gate
-        extra = _take_companions(root, tests)
         if SELF_REPO:            # the second loop instance: the cloud only, the answer is the candidate's own run; no local fallback
-            extra = []
+            extra = []           # decided before taking: the offer is left for cloud_each, which runs the neighbours itself
             got = factory_cloud_gate.attempt(root, tests, touched, self_repo=True)
         else:
+            extra = _take_companions(root, tests)
             got = factory_cloud_gate.attempt(root, tests, touched, **({'companions': extra} if extra else {}), **_traced(trace))
         sign = _cloud_sign(factory_cloud_gate, got)
         if sign:                 # the cloud gave no verdict: nothing runs here; the pass is released or the row re-sliced

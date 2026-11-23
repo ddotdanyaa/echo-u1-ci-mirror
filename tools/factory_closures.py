@@ -71,10 +71,16 @@ def _locked(path):
         except FileExistsError:
             try:
                 if time.time() - lock.stat().st_mtime > LOCK_STALE_S:
-                    lock.rmdir()
+                    # a second waiter may have taken the dead lock over just now: look at the age once more right before
+                    # the rmdir so a fresh lock is not removed (a window of microseconds is left; it needs a dead writer
+                    # and two waiters in the same instant, and the cost is one lost closure that the loop writes again)
+                    if time.time() - lock.stat().st_mtime > LOCK_STALE_S:
+                        lock.rmdir()
                     continue
             except OSError:
                 pass
+        except PermissionError:
+            pass                 # Windows: mkdir against a folder another waiter is removing right now; try again
         except OSError:
             break
         if time.monotonic() > end:
