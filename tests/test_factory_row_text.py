@@ -53,14 +53,15 @@ def repo(tmp_path):
     return tmp_path
 
 
-def test_triage_holds_a_bare_priority_row_and_makes_tasks_of_a_real_one(tmp_path, repo):
+def test_triage_hands_both_a_bare_priority_row_and_a_real_one_to_the_slicer(tmp_path, repo):
     backlog = tmp_path / 'B.md'
     backlog.write_text(_md('### 4.11 Причины\n' + CAUSE +
                            '| J7 | P1 | **Коротко** | `echo_sync/alpha.py` | правка | тест | открыто |\n'
                            '| J8 | P1 | ' + LONG + ' в `echo_sync/alpha.py` | лог | правка | тест | открыто |\n'),
                        encoding='utf-8')
     out = imp.triage_portion(backlog, repo, set(), 12)
-    held = {h['backlog_id']: h['question'] for h in out['holds']}
-    assert 'J7' in held and 'формулировк' in held['J7']
-    assert not [t for t in out['tasks'] if t.get('backlog_id') == 'J7']
-    assert [t for t in out['tasks'] if t.get('backlog_id') == 'J8']
+    # triage makes no tasks and no holds any more: every code row goes to the slicer queue, which owns the text
+    assert not out['tasks'] and not out['holds']
+    queued = {r['backlog_id']: r for r in out['to_slice']}
+    assert set(queued) == {'J7', 'J8'}
+    assert 'echo_sync/alpha.py' in queued['J8']['hints']

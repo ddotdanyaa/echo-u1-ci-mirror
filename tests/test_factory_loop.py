@@ -20,6 +20,21 @@ from tools import factory_loop as L
 PY = sys.executable
 BRANCH = "factory/test"
 
+EMPTY = {"tasks": [], "holds": [], "stale": [], "skipped": []}
+
+
+def _plan(*rows):
+    return F.read_plan({"tasks": list(rows)})
+
+
+def _reject(e, loop, remark="fails at index off by one in the helper because of the loop"):
+    st = e.state()
+    F.add_feedback(st, "T1", "gate", remark)
+    F.save_atomic(e.state_dir / "state.json", st)
+    e.runner_says({"status": "READY", "task": "T1", "reason": "gate:red", "calls": [],
+                   "tests": {"collected": 3}})
+    loop.step()
+
 FAKE_RUNNER = """\
 import os, sys
 with open(os.environ["FAKE_LOG"], "a", encoding="utf-8") as fh:
@@ -310,7 +325,9 @@ def test_once_runs_one_iteration(env):
 
 # ---- single instance --------------------------------------------------------------------
 
-def test_second_instance_refuses(env):
+def test_second_instance_refuses(env, monkeypatch):
+    # A live loop must pass the <id> process identity check; pytest is not a loop.
+    monkeypatch.setattr(L, "proc_info", lambda pid: ("python -m tools.factory_loop", env.clock.t))
     (env.state_dir / "loop.pid").write_text(str(os.getpid()), encoding="utf-8")
     assert env.loop(once=True).run() == 4
     assert env.runs() == 0

@@ -96,7 +96,7 @@ def test_fresh_dir_is_not_removed(slots):
 def test_run_tests_without_a_slot_is_environment_not_a_pass(slots, tmp_path, monkeypatch):
     for d in slots:
         os.mkdir(d)
-    monkeypatch.setattr(G, 'SLOT_WAIT_S', 0)
+    monkeypatch.setattr(G, 'SLOT_QUEUE_S', 0)
     (tmp_path / 't.py').write_text('def test_a():\n    assert True\n', encoding='utf-8')
     r = G.run_tests(tmp_path, ['t.py'], 5)
     assert not r.junit_ok and r.env_reason and 'slot' in r.env_reason
@@ -105,7 +105,7 @@ def test_run_tests_without_a_slot_is_environment_not_a_pass(slots, tmp_path, mon
 def test_profile_without_a_slot_is_unknown(slots, tmp_path, monkeypatch):
     for d in slots:
         os.mkdir(d)
-    monkeypatch.setattr(G, 'SLOT_WAIT_S', 0)
+    monkeypatch.setattr(G, 'SLOT_QUEUE_S', 0)
     (tmp_path / 't.py').write_text('def test_a():\n    assert True\n', encoding='utf-8')
     assert G.profile_tests(tmp_path, ['t.py'], 5).verdict == 'unknown'
 
@@ -183,8 +183,8 @@ def test_accept_unit_test_env_prefix():
     assert not ok and not reason.startswith('env:')
 
 
-def test_wait_s_is_passed_through_and_default_is_one_hundred_twenty():
-    assert G.SLOT_WAIT_S == 120
+def test_wait_s_is_passed_through_and_default_is_the_queue_time():
+    assert G.SLOT_QUEUE_S == 900                      # the one queue time of a slot and of a cloud place (replaces SLOT_WAIT_S = 120)
     import inspect
     assert 'wait_s' in inspect.signature(G.run_tests).parameters
     assert 'wait_s' in inspect.signature(G.profile_tests).parameters

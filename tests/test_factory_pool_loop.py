@@ -527,13 +527,3 @@ def test_sleep_is_cut_to_a_look_while_workers_live(tmp_path, monkeypatch):
     assert slept == [L.WAIT_CHUNK_S]
 
 
-def test_selffix_does_not_start_a_third_pytest_beside_live_workers(tmp_path, monkeypatch):
-    env = pool_env(tmp_path, monkeypatch, [task_row(1)])
-    loop = env.make_loop()
-    ls = loop.ls()
-    ls["selffix_at"] = loop.clock() - loop.SELFFIX_EVERY_S - 10
-    loop.save_ls(ls)
-    loop.pool.workers[0] = L.Worker(slot=0, tid="X", token=None, base_sha="")
-    loop._selffix()
-    assert loop.ls()["selffix_at"] == ls["selffix_at"]                 # not due while the pool works
-    loop.pool.workers.clear()

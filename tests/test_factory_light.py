@@ -37,12 +37,13 @@ def test_engine_rule_review_and_small_tasks_are_light_multi_file_edits_are_kilo(
     assert W.engine_for('review', task(touch=())) == 'light'
     assert W.engine_for('code', task(touch=('a.py',))) == 'light'
     assert W.engine_for('repair', task(touch=('a.py', 'b.py'))) == 'light'
-    # 3 files were light since 20.11 (Kilo never reached a review in 14 passes); 21.11: LIGHT_MAX_FILES 5 = the triage's
-    # MAX_TOUCH, so 4 and 5 files are light too and only a sixth file goes to Kilo
-    assert W.LIGHT_MAX_FILES == 5
+    # 3 files were light since 20.11 (Kilo never reached a review in 14 passes); 23.11: LIGHT_MAX_FILES 10 = the most parts
+    # of one contract stage, so up to 10 files are light and only an eleventh file goes to Kilo
+    assert W.LIGHT_MAX_FILES == 10
     assert W.engine_for('code', task(touch=('a.py', 'b.py', 'c.py'))) == 'light'
-    assert W.engine_for('code', task(touch=('a.py', 'b.py', 'c.py', 'd.py', 'e.py'))) == 'light'
-    assert W.engine_for('code', task(touch=('a.py', 'b.py', 'c.py', 'd.py', 'e.py', 'f.py'))) == 'kilo'
+    assert W.engine_for('code', task(touch=tuple('f%d.py' % i for i in range(7)))) == 'light'
+    assert W.engine_for('code', task(touch=tuple('f%d.py' % i for i in range(10)))) == 'light'
+    assert W.engine_for('code', task(touch=tuple('f%d.py' % i for i in range(11)))) == 'kilo'
 
 
 def test_blocks_name_their_file_and_a_block_for_another_file_is_refused():

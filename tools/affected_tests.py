@@ -377,7 +377,54 @@ def changed_between(base, head, root=ROOT):
     return [x.strip() for x in out.splitlines() if x.strip()]
 
 
+def neighbors_map(root: Path, radius: int = 1) -> dict[str, list[str]]:
+    """``{file: [tests within ``radius`` import hops of it]}`` for every .py file of the tree (the union of
+    ``affected([file], radius)``); a file of ALL_TESTS_TRIGGERS has no entry (a change there means every test). Built ONCE per
+    base commit by a background job, so that the workers read this file and never build the import graph themselves."""
+    g = Graph(Path(root))
+    out: dict[str, list[str]] = {}
+    for rel in sorted(g.files):
+        if rel in ALL_TESTS_TRIGGERS or not rel.endswith('.py'):
+            continue
+        found, _, _ = affected([rel], radius=radius, g=g)
+        out[rel] = sorted(found)
+    return out
+
+
+def build_neighbors(root: Path, out: Path, *, run=None, timeout: int = 300) -> bool:
+    """Build the neighbour map of ``root`` in ONE child process (``python -B -m tools.affected_tests neighbors ROOT TMP``) and
+    put it at ``out`` with ``os.replace``. True when the file is there. Never raises. (The child, not this process, holds the
+    graph: the loop stays small; ``run`` is factory_process.run_owned unless a test gives its own.)"""
+    import os
+    try:
+        if run is None:
+            from . import factory_process as PR
+            run = PR.run_owned
+        out = Path(out)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        tmp = out.with_name(out.name + '.tmp%d' % os.getpid())
+        home = Path(__file__).resolve().parents[1]      # the factory's own code, never the product's old tools/affected_tests.py
+        env = dict(os.environ)
+        env['PYTHONPATH'] = os.pathsep.join([str(home)] + ([env['PYTHONPATH']] if env.get('PYTHONPATH') else []))
+        done = run([sys.executable, '-B', '-m', 'tools.affected_tests', 'neighbors', str(Path(root).resolve()), str(tmp)],
+                   cwd=str(home), env=env, timeout=timeout)
+        if getattr(done, 'returncode', 1) != 0 or not tmp.is_file():
+            tmp.unlink(missing_ok=True)
+            return False
+        os.replace(tmp, out)
+        return True
+    except Exception:           # noqa: BLE001  a map that was not built is "no map": the workers use the graph as before
+        return False
+
+
 def main(argv=None):
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == 'neighbors':       # before parse_args: its positional list is changed files, not ROOT OUT
+        if len(argv) != 3:
+            print('usage: python -m tools.affected_tests neighbors ROOT OUT', file=sys.stderr)
+            return 2
+        Path(argv[2]).write_text(json.dumps(neighbors_map(Path(argv[1]).resolve()), sort_keys=True), encoding='utf-8')
+        return 0
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('files', nargs='*')
     ap.add_argument('--base')

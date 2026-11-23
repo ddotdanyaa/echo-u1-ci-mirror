@@ -351,3 +351,34 @@ def critic_lesson(task, failure='', *, base=None):
             break
         out += '\n- ' + p
     return out if out != head else ''
+
+
+def record_contract(bid, files, contract_json, *, base=None):
+    """Keep an accepted contract for future architects; acceptance owns this call."""
+    if base is None and registry_dir() is None:
+        return
+    data = _load(base)
+    records = data.setdefault('contracts', [])
+    record = {'bid': str(bid), 'files': _contract_files(files), 'contract': contract_json}
+    records.append(record)
+    _save(base, data)
+
+
+def _contract_files(files):
+    return sorted({str(f).replace(chr(92), '/').removeprefix('./') for f in files or () if str(f).strip()})
+
+
+def contract_examples(files, k=2, *, base=None) -> list[str]:
+    """Prefer the same full path, then a sibling file; retain the entire history."""
+    if k <= 0:
+        return []
+    mine = set(_contract_files(files))
+    directories = {str(Path(f).parent).replace(chr(92), '/') for f in mine}
+    same, nearby = [], []
+    for record in reversed(_load(base).get('contracts', [])):
+        other = set(record['files'])
+        if mine & other:
+            same.append(record['contract'])
+        elif directories & {str(Path(f).parent).replace(chr(92), '/') for f in other}:
+            nearby.append(record['contract'])
+    return (same + nearby)[:k]

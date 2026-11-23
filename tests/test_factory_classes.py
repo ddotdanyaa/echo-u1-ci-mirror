@@ -72,3 +72,22 @@ def test_a_test_of_a_code_task_cut_at_the_limit_is_its_own_class():
         == 'gate-cut'
     assert K.classify('[attempt 3] junit not ok: timeout after 30s (process tree killed)') == 'test-hang'
     assert 'gate-cut' not in K.INFRASTRUCTURE_CLASSES
+
+
+def test_an_accepted_contract_becomes_an_example_for_the_same_file_first(tmp_path):
+    K.record_contract("B1", ["echo_sync/engine.py"], '{"row": "B1"}', base=tmp_path)
+    K.record_contract("B2", ["echo_sync/other.py"], '{"row": "B2"}', base=tmp_path)
+    assert K.contract_examples(["echo_sync/engine.py"], k=2, base=tmp_path) == ['{"row": "B1"}', '{"row": "B2"}']
+    for i in range(50):
+        K.record_contract("B%d" % (i % 9 + 1), ["tools/a.py"], '{"part": %d}' % i, base=tmp_path)
+    assert len(K.contract_examples(["tools/a.py"], k=99, base=tmp_path)) == 50
+
+
+def test_accepted_contract_examples_keep_paths_and_survive_other_registry_updates(tmp_path):
+    K.record_contract("B1", ["one/a.py"], '{"row":"B1"}', base=tmp_path)
+    K.record_contract("B2", ["two/a.py"], '{"row":"B2"}', base=tmp_path)
+    K.record_contract("B3", ["one/b.py"], '{"row":"B3"}', base=tmp_path)
+    K.record_paid("T1", "repair", ["one/a.py"], "gate-red", "bad sum", base=tmp_path)
+    assert K.contract_examples(["one/a.py"], k=9, base=tmp_path) == ['{"row":"B1"}', '{"row":"B3"}']
+    assert K.contract_examples(["other/c.py"], base=tmp_path) == []
+    assert K.contract_examples(["one/a.py"], k=0, base=tmp_path) == []

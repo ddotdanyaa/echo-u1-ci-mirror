@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import contextlib
+import ctypes
 import copy
 import errno
 import hashlib
@@ -61,7 +62,10 @@ EST_KEEP, EST_MIN_SAMPLES = 20, 5
 LIGHT_FLOOR = 768 * 2 ** 20
 # While the cloud answers the candidate checks run there (no local slot, no RAM budget): the pool counts no RAM per worker
 # and takes up to factory_cloud_gate.MAX_LIVE tasks; only this emergency floor of the whole machine stays.
-CLOUD_FLOOR = 256 * 2 ** 20
+CLOUD_FLOOR = 1536 * 2 ** 20          # free memory below this stops admission whatever the cloud says; above it the measured estimate rules
+CLOUD_TRIAL_S = 60                    # a cloud that does not answer is asked again by ONE trial card per this long (_capacity)
+FAST_LOCAL_SHARE = 0.20               # more of the gate time than this spent on local runs: new workers send every test to the cloud
+FAST_LOCAL_HOLD_S = 3600
 WAIT_CHUNK_S = 3.0                    # real seconds between two looks at the pool while workers run
 STALE_INDEX_LOCK_S = 120
 ES_CONTINUOUS = 0x80000000
@@ -113,7 +117,6 @@ def _env_values(text: str, names) -> dict:
 
 # <id>: A/B experiments. A new one = one line here plus the place that reads Loop.arm(tid, name).
 EXPERIMENTS = {
-    "spec_pass": ("on", "off"),
     "coder_model": ("google/gemini-3.5-flash-lite", "google/gemini-3.1-flash-lite"),
     # 20.11 02:05: a small-tier model (Gemma 4) as a later tournament candidate won 0 of ~20 coder calls of the
     # night and took ~175 s per call (503s, answers cut at the output cap): the runner's --small-follow-up
@@ -130,21 +133,18 @@ CHANNEL_REASONS = DEAD_CHANNEL | frozenset(("rate_minute", "rate_day", "region",
 # an exponential, jittered pause. They never grow the brake series. A permanent break (a dead channel, a dead
 # runner, "infra" without such a reason) still does.
 TEMPORARY_CHANNEL = frozenset(("rate_limited_suspect", "rate_limited", "429", "channel_timeout"))
-TEMPORARY_TASK = frozenset(("transient", "env_shortage", "fresh_model_busy"))
+TEMPORARY_TASK = frozenset(("transient", "env_shortage"))
 BACKOFF_FIRST_S, BACKOFF_MAX_S = 60, 1800
 JUDGED_OUTCOMES = frozenset(("off_path", "no_changes", "no_effect", "cannot_repeat", "scope_violation",
                              "review_chain_short", "context_too_large"))   # a weak candidate or task, not a dead pipeline
 GLOBAL_WAIT_MAX_S = 300   # owner: a dead route gets 5 min, then the fallback. A wait no channel owns holds the
                           # whole loop, so it never exceeds this (live 21.11 12:22: an unnamed 'dead' held 12 tasks 1 h)
-BRAKE_SPAN_S, BRAKE_MAX_S = 600, 1800           # 21.11 (was 1800, 7200): the brake has a term; a failed trial doubles it up to 30 min
+BRAKE_SPAN_S, BRAKE_MAX_S = 60, 60             # one minute, then one trial; a failed trial waits one minute again
+GIT_WAIT_FIRST_S, GIT_WAIT_MAX_S = 30, 300
 TIER_ORDER = ("small", "main", "escalation")
 ERROR_MEMORY_MAX = 200
 BEFORE_MODEL = frozenset(("already_green", "context_too_large", "scope_violation", "no_diff"))
 SCOPE_MAX_FILES = LIGHT_MAX_FILES   # a task widened beyond it would leave the light engine
-try:    # 22.11: the paid escalation tier takes up to factory_paid_coder.MAX_FILES files; optional like in the runner
-    from tools import factory_paid_coder as _paid_coder
-except ImportError:  # pragma: no cover
-    _paid_coder = None
 CLEANUP_EVENTS = ("stale_baseline_kept", "pending_copy_kept")
 TELEMETRY_MAX_BYTES = 20 * 1024 * 1024
 REJECT_PREFIXES = ("gate:", "weakening:", "review:")  # a real rejection, not a deferral
@@ -159,6 +159,49 @@ WORK = Path(r"<project-root>")
 # ---- OS helpers -------------------------------------------------------------------------
 
 pid_alive = F.pid_alive    # moved to agent_factory: the checkpoint lock reads its holder with it
+
+
+def boot_time() -> float:
+    """Best-effort boot epoch; process identity remains the primary lock check."""
+    try:
+        if os.name == "nt":
+            ticks = ctypes.windll.kernel32.GetTickCount64
+            ticks.restype = ctypes.c_ulonglong
+            return time.time() - ticks() / 1000
+        for line in Path("/proc/stat").read_text(encoding="ascii").splitlines():
+            if line.startswith("btime "):
+                return float(line.split()[1])
+    except Exception:
+        pass
+    return 0.0
+
+
+def proc_info(pid: int) -> tuple[str, float] | None:
+    """Command line and creation epoch, or None when the process cannot be verified."""
+    try:
+        import psutil
+    except ImportError:
+        psutil = None
+    if psutil is not None:
+        try:
+            proc = psutil.Process(pid)
+            return " ".join(proc.cmdline()), proc.create_time()
+        except psutil.Error:
+            return None
+    if os.name == "nt":
+        try:
+            script = ("Get-CimInstance Win32_Process -Filter 'ProcessId=%d' | "
+                      "ForEach-Object { [pscustomobject]@{cmd=$_.CommandLine;"
+                      "created=[DateTimeOffset]::new($_.CreationDate).ToUnixTimeMilliseconds()/1000} } | "
+                      "ConvertTo-Json -Compress") % int(pid)
+            out = subprocess.run(["powershell", "-NoProfile", "-Command", script], capture_output=True,
+                                 text=True, encoding="utf-8", errors="replace", timeout=10, check=True)
+            info = json.loads(out.stdout or "null")
+            if info:
+                return str(info.get("cmd") or ""), float(info["created"])
+        except (OSError, subprocess.SubprocessError, ValueError, TypeError, KeyError):
+            pass
+    return None
 
 
 def set_execution_state(flags: int) -> None:
@@ -305,6 +348,8 @@ def retry_fs(fn, *args, tries: int = 5, delay: float = 0.1, sleep=None):
 @dataclass
 class Config:
     state_dir: Path
+    architect_rungs: tuple = ()
+    hard_first_rung: int = 1
     repo: Path = WORK / "CLOUD_REPO"
     branch: str = "factory/night-20261119"
     worktree: Path = WORK / "W7" / "stage" / "factory_night_wt"
@@ -334,6 +379,8 @@ class Config:
     ready_target: int = 15          # <id> (owner): the slicer keeps this many tasks READY (0: off)
     ready_triage_s: int = 60        # <id>: READY below the target: the next top-up triage after this term (doubles while a portion is empty, up to triage_retry_s)
     not_code_term_s: int = 7 * 86400   # <id>: a row the head model called not code is looked at again after this term
+    self_repo: bool = False         # 8.1: the second instance: the repository is the factory's own code (fac-* rows only)
+    exit_when_idle: bool = False    # 1.6: the canary's loop ends when nothing is left to do
 
 
 class _Later(Exception):
@@ -347,6 +394,7 @@ class Outcome:
     action: str = ""
     reason: str = ""
     status: str = "ok"
+    blockers: dict | None = None
     proof: bool = False   # evidence that the pipeline works: the only thing that resets the series
 
 
@@ -471,6 +519,47 @@ class Prefetch:
             self.done.set()
 
 
+MEM_RESERVE_DIR = DEFAULT_STATE_DIR.parent / "mem_reserve"     # next to the state dir; bookings of memory by the builders' runs and the runs waiting for it (0.5)
+
+
+def _reserved_bytes() -> int:
+    """Memory that is spoken for outside the pool: the architect's live agents (``EST_AGENT_BYTES`` x ``agent_live()``, 2.6:
+    zero until that module is merged) and the bookings of the build (one file per booking holding the number of bytes)."""
+    total = 0
+    try:
+        from tools import factory_architect as A
+        total += int(A.EST_AGENT_BYTES) * int(A.agent_live())
+    except (ImportError, AttributeError, TypeError, ValueError):
+        pass
+    try:
+        for item in MEM_RESERVE_DIR.iterdir() if MEM_RESERVE_DIR.is_dir() else ():
+            try:
+                text = item.read_text(encoding="utf-8").strip()
+                if text.startswith("{"):
+                    text = str(json.loads(text).get("bytes", 0))
+                total += max(0, int(text))
+            except (OSError, ValueError, TypeError, AttributeError):
+                continue
+    except OSError:
+        pass
+    return total
+
+
+FAULT_CLASSES = ("prompt oversize", "need rounds exhausted", "file not found", "symbol", "forbidden need", "oversize")
+
+
+def fault_class(text: str) -> str:
+    """The class of an architect fault: a known phrase, an http code, or the first word."""
+    low = str(text).strip().lower()
+    for known in FAULT_CLASSES:
+        if low.startswith(known) or known in low:
+            return known
+    m = re.search(r"\b(?:http\s*)?([45]\d\d)\b", low)
+    if m:
+        return "http " + m.group(1)
+    return (low.split() or ["unknown"])[0].rstrip(":;,")[:40]
+
+
 def _cloud_up(fn) -> bool:
     """True when the cloud-gate probe ``fn`` says the cloud answers; no probe or any fault of it: the local rules."""
     try:
@@ -479,13 +568,26 @@ def _cloud_up(fn) -> bool:
         return False
 
 
+LINKS_EVERY_S = 600     # 4.2 (<id>): the owner's journal is linked to backlog rows at most this often, and only when it grew
+SLICE_PARALLEL = 12
+RESLICE_PER_STEP = 12
+RESLICE_SLEEP_S = 5
+SLICE_WAIT_S = 60
+QUARANTINE_TTL_S = 21600
+
+
+class SliceWait(Exception):
+    """No slicer channel is currently available; retry without spending a rung."""
+
+
 class Loop:
     TXN_WAIT_S = 10.0       # a transaction on the state waits at most this long for the lock (a commit lasts ms)
     CLAIM_WAIT_S = 2.0      # the claim waits less: a held lock is WAIT state_locked, not a stalled loop
 
     def __init__(self, cfg: Config, *, triage_fn=None, runner_cmd=None, clock=time.time,
                  sleep=time.sleep, power_fn=set_execution_state, free_ram_fn=free_ram_bytes,
-                 extra_env=None, startup_notes=None, rng=None, wait_fn=None, cloud_fn=None, reap_fn=None, sweep_fn=None):
+                 extra_env=None, startup_notes=None, rng=None, wait_fn=None, cloud_fn=None, reap_fn=None, sweep_fn=None, release_fn=None,
+                 slice_fn=None, architect_fn=None):
         if cfg.review_model in (cfg.small_model, cfg.large_model):
             raise ValueError("review model must differ from the code model: " + cfg.review_model)
         self.cfg = cfg
@@ -493,9 +595,21 @@ class Loop:
         self.extra_env = dict(extra_env or {})
         self.startup_notes = list(startup_notes or [])
         self.triage_fn = triage_fn
+        from tools import factory_architect as A
+        self.architect_fn = architect_fn or A.contract_for
+        self.slice_fn = slice_fn if slice_fn is not None else (self._slice if cfg.architect_rungs else None)
+        self._slicers: dict[str, Prefetch] = {}
+        self._ask_lock = threading.Lock()
+        self._arch_quotas = None       # restored once, then owned in memory under _ask_lock
         self.sweep_fn = sweep_fn        # None: no cloud sweep (tests); main passes tools.echo_cloud.sweep
         self._sw = None                 # the cloud sweep job in flight (Prefetch) or None
         self._sw_refresh_at = 0.0
+        self._lk = None                 # the owner-links job in flight (Prefetch) or None (4.2)
+        self._lk_at, self._lk_size, self._lk_unlinked = 0.0, -1, None
+        self._lk_quotas = {}            # the links job's own quota ledger, one for the life of the loop (only that job's thread uses it)
+        self.release_fn = release_fn    # None: no final build (tests); main passes the cloud one (tools.factory_release)
+        self._rel = None                # the final build in flight (Prefetch, its own slot) or None
+        self._rel_snap = None           # the snapshot the final build reads: _prune_snapshots keeps it
         self.runner_cmd = list(runner_cmd or [sys.executable, "-B", "-m",
                                               "tools.agent_factory_runner"])
         self.clock, self.sleep_fn = clock, sleep
@@ -548,9 +662,7 @@ class Loop:
         return factory_ab.assign(tid, name, arms)
 
     def _task_experiments(self, tid: str, task, ls: dict) -> dict:
-        names = ["coder_model", "small_follow_up"] + (
-            ["spec_pass"] if task is not None and task.kind == "unit_test" else [])
-        return {n: self.arm(tid, n, ls) for n in names}
+        return {n: self.arm(tid, n, ls) for n in ("coder_model", "small_follow_up")}
 
     DISCOVER_EVERY_S = 86400
 
@@ -707,7 +819,9 @@ class Loop:
         F.save_atomic(self.ls_path, ls)
 
     # -- instance lock
-    def acquire(self) -> bool:
+    def acquire(self, boot=None) -> bool:
+        boot = boot_time() if boot is None else boot
+        self._boot_time = boot
         self.dir.mkdir(parents=True, exist_ok=True)
         for _ in range(2):
             try:
@@ -717,15 +831,18 @@ class Loop:
                     self._pid_trouble(e)
                     return False
                 try:
+                    written = self.pidfile.stat().st_mtime
                     other = int(self.pidfile.read_text(encoding="utf-8").strip())
                 except ValueError:
                     other = 0                                 # an empty or torn file: stale
                 except OSError as e2:
                     self._pid_trouble(e2)                    # unreadable (antivirus): not "already running"
                     return False
-                if other and pid_alive(other):
-                    self.event("infra", status="refused", reason="already_running", pid=other)
-                    return False
+                if other and written >= boot - 5 and pid_alive(other):
+                    info = proc_info(other)
+                    if info and "tools.factory_loop" in info[0] and 0 < info[1] <= written + 5:
+                        self.event("infra", status="refused", reason="already_running", pid=other)
+                        return False
                 self.event("infra", status="cleared", reason="stale_pid", pid=other)
                 if other:
                     self.event("loop", action="RECOVER", status="ok", reason="crash_recovery", pid=other)
@@ -957,7 +1074,9 @@ class Loop:
                 pid = int(text) if text else None   # anonymous: an older runner, or between mkdir and the write
             except ValueError:
                 pid = 0                     # garbage is no live holder
-            age = time.time() - lock.stat().st_mtime
+            written = lock.stat().st_mtime
+            age = time.time() - written
+            preboot = written < getattr(self, "_boot_time", 0.0) - 5
             alive = pid is not None and pid != os.getpid() and pid_alive(pid)
             if pid is None:
                 stale = age > F.LOCK_STALE_S
@@ -965,7 +1084,7 @@ class Loop:
                 # a pid is reused (a reboot, hours later); no pass outlives RUNNER_TIMEOUT_S (the loop kills it);
                 # the loop itself is never the holder (critic 19.11 18:39)
                 stale = not alive or age > RUNNER_TIMEOUT_S + F.LOCK_STALE_S
-            if stale:
+            if stale or preboot:
                 owner.unlink(missing_ok=True)
                 lock.rmdir()
                 self.event("infra", status="cleared", reason="stale_lockdir",
@@ -1091,7 +1210,7 @@ class Loop:
         self.event("loop", action=out.action, reason=out.reason, status=out.status,
                    sleep_s=out.sleep, dur_s=round(self.clock() - t0, 3),
                    base_sha=self.base_sha or None, iteration=self.iterations,
-                   experiments=exps or None)
+                   experiments=exps or None, blockers=out.blockers)
         self._stats()
         self._hourly_metrics()
         return out
@@ -1111,21 +1230,17 @@ class Loop:
             self.err("metrics", e)
 
     def _brake(self, streak: int, out: Outcome) -> Outcome:
-        """The brake has a term (BRAKE_SPAN_S, 10 min). After it ONE trial pass runs (half-open): a proof closes the
-        brake, an infrastructure failure brakes again for twice as long (at most BRAKE_MAX_S, 30 min)."""
+        """Pause for one minute, then ONE trial pass. A failed trial repeats the same pause."""
         now = self.clock()
         ls = self.ls()
-        old = ls.get("brake") if isinstance(ls.get("brake"), dict) else {}
         span = BRAKE_SPAN_S
-        if old.get("half_open"):
-            span = min(BRAKE_MAX_S, max(BRAKE_SPAN_S, int(old.get("span") or BRAKE_SPAN_S)) * 2)
         ls["brake"] = {"until": now + span, "span": span, "half_open": False, "since": now}
         self.save_ls(ls)
         text = self._scrub("brake: %d infrastructure failures in a row at %s (%s); retry after %d s\n" % (
             streak, self.ts(), out.reason, span))
         self.brake.write_text(text, encoding="utf-8")
         self.event("infra", status="brake", reason=text.strip()[:300], infra_streak=streak,
-                   span_s=span, retry_at=self._iso(now + span), doubled=bool(old.get("half_open")) or None)
+                   span_s=span, retry_at=self._iso(now + span))
         out.code, out.status = EXIT_BRAKE, "brake"
         return out
 
@@ -1280,17 +1395,45 @@ class Loop:
         out.status, out.reason, out.sleep = "deferred", reason, (5 if channel else 1)
         return out
 
+    def _git_wait(self, e) -> Outcome:
+        """A git launch/OS failure waits independently of the infrastructure brake."""
+        now, ls = self.clock(), self.ls()
+        n = int((ls.get("git_wait") or {}).get("n", 0)) + 1
+        delay = min(GIT_WAIT_MAX_S, GIT_WAIT_FIRST_S * 2 ** min(n - 1, 10))
+        ls["git_wait"] = {"n": n, "at": now, "until": now + delay}
+        self.save_ls(ls)
+        self.event("infra", status="git_wait", reason="%s: %s" % (type(e).__name__, self.rs(str(e), 300)),
+                   delay_s=delay, backoff_n=n, retry_at=self._iso(now + delay))
+        if self.pool.workers:
+            return self._await_workers()
+        return Outcome(action="WAIT", status="git_wait", reason="git_wait", sleep=delay)
+
     def _act(self, state, tasks, ls, now) -> dict:
         wait_s = max(0.0, float(ls.get("channel_until", 0)) - now)
         free = 1 if (self.pool.workers and not self._capacity(None)) else 0
-        return F.next_action(state, now, wait_s, self._has_more(ls, now), tasks, free=free, skip=self.pool.tids())
+        eligible = self._resliceable(tasks, state, ls, now) if self.slice_fn else {}
+        waits = [until - now for until in ls.get("slice_wait", {}).values() if until > now]
+        return F.next_action(state, now, wait_s, self._has_more(ls, now), tasks, free=free,
+                             skip=self.pool.tids(), resliceable=frozenset(eligible),
+                             slice_wait_s=min(waits) if waits else None)
 
     def _step(self) -> Outcome:
         cfg, now = self.cfg, self.clock()
-        self.base_sha = refresh_mirror(cfg.repo, cfg.branch, self.mirror)
+        try:
+            self.base_sha = refresh_mirror(cfg.repo, cfg.branch, self.mirror)
+        except (subprocess.CalledProcessError, OSError) as e:
+            return self._git_wait(e)
+        ls = self.ls()
+        if ls.pop("git_wait", None) is not None:
+            self.save_ls(ls)
         self.apply_answers()  # Opus answers first: before anything else touches the state
         self._bg_poll()       # a finished background triage / hold pick is applied here, in this thread
         self._sweep_tick(now)  # the red-guard supply follows the loop's own results and a periodic cloud sweep
+        self._links_tick(now)  # the owner's words are linked to backlog rows in their own slot (4.2)
+        self._release_tick(now)  # the final build: a full cloud sweep in its own slot, then the acceptance of merged rows
+        self._neighbors_tick(self.base_sha, None)  # the neighbour map of the base: built once per SHA in the background
+        tasks, state = self.load()
+        self._reslice_tick(tasks, state, self.ls(), now)
         with self.txn() as (_tasks, state):       # a lease a live worker still holds is ended by the loop, not freed
             freed = F.release_expired(state, now, keep=self.pool.tids())
         if freed:
@@ -1335,31 +1478,25 @@ class Loop:
                 self._bg.done.wait(WAIT_CHUNK_S)
                 return Outcome(sleep=0, action="WAIT", reason="prefetch_running")
             out = self._triage(state, tasks, ls, now)
-            if out.status == "empty":           # the backlog gave nothing: a FAILED task past its term instead
-                return self._idle_requeue(tasks, state, now) or out
             return out
         if self.pool.workers:                  # nothing more to start now: wait for the next worker to end
             return self._await_workers()
         if name == "RUN":                      # work is ready but no worker may start: the reason is the wait
             return Outcome(sleep=60, action="WAIT", reason=self._refused or "not_runnable")
         if name == "WAIT":
-            if why == "not_before_or_lease":       # 21.11 rule 3: only delayed tasks are left; the jam gives FAILED ones back
-                got = self._idle_requeue(tasks, state, now)
-                if got is not None:
-                    return got
             return Outcome(sleep=min(max(float(act.get("wait_s") or 0), 5), 60),
                            action="WAIT", reason=why)
-        if name in ("HOLD", "DONE"):
-            got = self._idle_requeue(tasks, state, now)
-            if got is not None:
-                return got
+        if name == "RESLICE":
+            return Outcome(sleep=RESLICE_SLEEP_S, action="RESLICE", reason=why)
         if name == "HOLD":
             self._write_questions(tasks, state, ls)
             self._write_reconcile(tasks, state, self.ls(), now)
             sleep = cfg.hold_sleep
             if isinstance(act.get("wait_s"), (int, float)):     # the earliest block term ends the HOLD
                 sleep = min(sleep, max(5.0, float(act["wait_s"])))
-            return Outcome(sleep=sleep, action="HOLD", reason=why)
+            return Outcome(sleep=sleep, action="HOLD", reason=why, blockers=act.get("blockers"))
+        if cfg.exit_when_idle and not self._slicers and not ls.get("to_slice"):
+            return Outcome(code=EXIT_OK, action="DONE", reason=why)        # 1.6: the canary's loop ends when nothing is left
         return Outcome(sleep=cfg.done_sleep, action="DONE", reason=why)
 
     def _auto_unblock(self, act) -> Outcome:
@@ -1424,12 +1561,11 @@ class Loop:
             refused = self._capacity(tasks.get(tid))
             if refused:
                 break
-            if not self._spec_pass(tid, tasks, state, ls):
-                got = self._admit(tid, tasks, ls)
-                if isinstance(got, Outcome):
-                    self._pool_event(admitted, refused, live0)
-                    return got, act, tasks, state, ls
-                admitted += got
+            got = self._admit(tid, tasks, ls)
+            if isinstance(got, Outcome):
+                self._pool_event(admitted, refused, live0)
+                return got, act, tasks, state, ls
+            admitted += got
             tasks, state = self.load()          # the claim changed the state, the loop state: nothing stale is kept
             ls = self.ls()
             act = self._act(state, tasks, ls, now)
@@ -1523,96 +1659,16 @@ class Loop:
             out.status = "ok"
         return out
 
-    # -- <id> spec pass: one free model call turns a unit_test row into a spec before the test is written
-    SPEC_CODE_MAX = 40000          # all files shown together; a file above LARGE_FILE_CHARS is shown as a view
-    SPEC_FILE_ROOM = 14000         # the view of one large file: outline + the parts the row names
-    SPEC_FINAL = frozenset(("ok", "not_testable", "failed", "too_large"))   # "later": no channel or HTTP error
-
-    def _spec_pass(self, tid: str, tasks, state, ls) -> bool:
-        """True when the task's goal changed or the task was parked (the caller chooses again). Never raises."""
-        task = tasks.get(tid)
-        if (task is None or task.kind != "unit_test" or not task.privacy_safe or task.only_opus
-                or ls.get("specs", {}).get(tid) in self.SPEC_FINAL
-                or self.arm(tid, "spec_pass", ls) == "off"):
-            return False
-        try:
-            return self._spec_one(tid, task, state, ls)
-        except Exception as e:
-            self.err("spec", e)
-            try:
-                ls.setdefault("specs", {})[tid] = "failed"
-                self.save_ls(ls)
-            except Exception as e2:
-                self.err("spec mark", e2)
-            return False
-
-    def _spec_one(self, tid: str, task, state, ls) -> bool:
-        from tools import factory_context as X
-        from tools import factory_requeue
-        from tools import factory_spec
-        specs = ls.setdefault("specs", {})
-        code, total = {}, 0
-        words = X.keywords_from(task.title or "", task.goal or "", strict=False)
-        for rel in task.read_files:
-            try:
-                text = (self.mirror / rel).read_text(encoding="utf-8", errors="replace")
-            except OSError:
-                continue
-            if len(text) > X.LARGE_FILE_CHARS:   # live 20.11: 10 of 16 test tasks read a file above 24k chars
-                text = X.large_view(rel, text, words, self.SPEC_FILE_ROOM, hint="", tools=False)
-            code[rel], total = text, total + len(text)
-        if not code:
-            specs[tid] = "failed"
-            self.save_ls(ls)
-            self.event("spec", task_id=tid, status="failed", reason="no code to show")
-            return False
-        if total > self.SPEC_CODE_MAX:
-            specs[tid] = "too_large"
-            self.save_ls(ls)
-            self.event("spec", task_id=tid, status="too_large", chars=total)
-            return False
-        bid = task.backlog_id or ""
-        row = F.redact(((task.title or "") + chr(10) + (task.goal or "")).strip())
-        text = factory_spec.prompt(row, code)
-        status, model, answer, used = self._light_ask(text, attempt=1, section="loop-spec",
-                                                      quotas=ls.setdefault("spec_quotas", {}), max_tokens=1500)
-        later = status != "ok"          # no channel or an HTTP error: not the row's fault, the next RUN asks again
-        if not later:
-            status = "failed"           # until the answer parses
-        spec = factory_spec.parse(answer, code) if answer else None
-        changed = False
-        if later:
-            specs[tid] = "later"
-        elif spec is None:
-            specs[tid] = "failed"
-        elif spec["testable"]:
-            payload = {"task_id": tid, "goal": factory_spec.goal(spec, bid) + " Row: " + (task.goal or "")[:600]}
-            factory_requeue._write_answer(self.dir / "answers", payload, tid)
-            specs[tid], status = "ok", "ok"
-        else:
-            why = "spec: not a testable code defect: " + spec["why"]
-            ls["holds"][bid] = why
-            specs[tid], status = "not_testable", "not_testable"
-        self.save_ls(ls)
-        self.event("spec", task_id=tid, model=self.rs(model), status=status, tokens=used)
-        if specs[tid] == "ok":
-            self.apply_answers()
-            changed = True
-        elif specs[tid] == "not_testable":
-            self._park(tid, "spec_not_testable", why)
-            self._write_questions(*self.load(), self.ls())
-            changed = True
-        return changed
-
-    def _light_ask(self, text: str, *, attempt: int, section: str, quotas: dict, max_tokens: int):
-        """One free model call outside the runner (the <id> spec pass, the <id> self-fix head): a registry channel in
+    def _light_ask(self, text: str, *, attempt: int, section: str, quotas: dict, max_tokens: int, role: str = "code"):
+        """One free model call outside the runner (the <id> self-fix head): a registry channel in
         route_order (attempt 1: main first; 2: escalation first), booked in the shared quota ledger under `section`
         and cooled there on 429/5xx. Returns (status, model, answer, tokens): status 'ok', 'no_channel' or
         'http_<code>'; tokens = the usage of the answer, else the estimate."""
         from tools import agent_factory_runner as R
         from tools import factory_channels as C
         from tools import factory_quota as Q
-        tokens = C.estimate_tokens(len(text), 0, 500)
+        share = sum("\u0400" <= c <= "\u04ff" for c in text) / max(1, len(text))
+        tokens = C.estimate_tokens(len(text), 0, 500, cyrillic=share)
         channels = json.loads(Path(self.cfg.channels).read_text(encoding="utf-8"))["channels"]
         env = {**os.environ, **self.extra_env}
         folder = Path(self.cfg.channels).resolve().parent / "quota"
@@ -1622,22 +1678,24 @@ class Loop:
                 Q.publish(folder, section, quotas)
             except OSError as e:
                 self.err(section + " ledger", e)
-        try:
-            channel = C.choose(C.route_order(channels, "code", attempt, tokens),
-                               Q.view(quotas, Q.others(folder, section)), tokens, env, now=self.clock())
-        except C.ChannelUnavailable:
-            return "no_channel", None, "", tokens
-        model = channel["model"]
-        C.reserve(quotas, channel, tokens, now=self.clock())
-        publish()
+        with self._ask_lock:
+            try:
+                channel = C.choose(C.route_order(channels, role, attempt, tokens),
+                                   Q.view(quotas, Q.others(folder, section)), tokens, env, now=self.clock())
+            except C.ChannelUnavailable:
+                return "no_channel", None, "", tokens
+            model = channel["model"]
+            C.reserve(quotas, channel, tokens, now=self.clock())
+            publish()
         provider, _, model_id = model.partition("/")
         body = {"model": model_id, "temperature": 0, "max_tokens": max_tokens,       # ERROR_PATTERNS inline-thought
                 "messages": [{"role": "user", "content": R.NO_THOUGHT + "\n\n" + text}]}
         code_http, raw = _light_post(R.LIGHT_ENDPOINTS[provider], env[channel["key_env"]], body, 120)
         if code_http != 200:
             if code_http in (429, 500, 503):      # the next call takes another channel for a while
-                C.cool(quotas, channel, now=self.clock())
-                publish()
+                with self._ask_lock:
+                    C.cool_channel(quotas, channel, now=self.clock())
+                    publish()
             return "http_%s" % code_http, model, "", tokens
         try:
             data = json.loads(raw.decode("utf-8") if isinstance(raw, bytes) else raw)
@@ -1646,15 +1704,6 @@ class Loop:
         except (ValueError, KeyError, IndexError, TypeError, AttributeError):
             answer, used = "", None
         return "ok", model, answer, used or tokens
-
-    # -- <id> self-fix: a failure class that repeated becomes a self-build task designed by a free head model
-    SELFFIX_EVERY_S = 3600
-    SELF_DIR = None     # the self-build folder: plans, trees, queue pid, the self-fix ledger; None: self_dir()
-
-    def self_dir(self) -> Path:
-        """The factory's self-build folder next to this project's state dir (<id>: the register lives in the factory,
-        not in ECHO; it came from the hard-coded ECHO default before)."""
-        return Path(self.SELF_DIR) if self.SELF_DIR is not None else Path(self.cfg.state_dir).parent / "self"
 
     def _telemetry_rows(self) -> list:
         """The rows of telemetry.jsonl and .1 (a broken line is skipped)."""
@@ -1672,69 +1721,6 @@ class Loop:
                 if isinstance(row, dict):
                     rows.append(row)
         return rows
-
-    def _selffix(self) -> None:
-        """At most once an hour: the most frequent failure class that repeated (<id>) and has no open self-fix gets ONE
-        self-build plan from a free head model (strongest channel first): a red-by-assert test in a copy of the
-        factory source and the exact change (tools/factory_selffix.py). The plan goes to the self-build queue when
-        none runs; its candidate waits for the coordinator's acceptance. A fault never stops the loop."""
-        from tools import factory_selffix as X
-        try:
-            ls = self.ls()
-            since = self.clock() - float(ls.get("selffix_at") or 0)
-            if since < self.SELFFIX_EVERY_S:
-                return
-            if self.pool.workers and since < 4 * self.SELFFIX_EVERY_S:
-                return          # its pytest is a third one beside the gates' two slots: it waits for an idle pool
-            ls["selffix_at"] = self.clock()
-            self.save_ls(ls)
-            self_dir = self.self_dir()
-            if X.queue_running(self_dir):
-                self.event("selffix", status="queue_busy")
-                return
-            src_root, base_sha = (self_dir / "src_path.txt").read_text(encoding="utf-8").split()[:2]
-            # one row per finished runner attempt (the loop's own RUN event repeats it: counted twice, a single
-            # failure would look like a repeat)
-            rows = [r for r in self._telemetry_rows()
-                    if r.get("span") == "run" and r.get("attempt") and r.get("reason")]
-            # the ledger is the factory's, one for every project (X.LEDGER); a project's old entries move in once
-            stored = X.load_ledger(self_dir)
-            ledger = X.load_ledger(self_dir, seed=ls.get("selffix"))
-            quotas = ls.setdefault("selffix_quotas", {})
-            asked = {}
-            # only the cases of public tasks go to the free head, as for the coder's class note (_class_note)
-            tasks, _ = self.load()
-            public = {k for k, t in (tasks or {}).items()
-                      if getattr(t, "privacy_safe", False) is True and not getattr(t, "only_opus", True)}
-
-            def ask(prompt):
-                status, model, answer, used = self._light_ask(prompt, attempt=2, section="loop-selffix",
-                                                              quotas=quotas, max_tokens=4000)
-                asked.update(status=status, model=model, tokens=used)
-                return answer
-            stamp = dt.datetime.fromtimestamp(self.clock()).strftime("%m%d%H%M")
-            before = json.loads(json.dumps(ledger))
-            report = X.run(rows, ledger, ask=ask, repo_root=src_root, src_root=src_root, self_dir=self_dir,
-                           base_sha=base_sha, python=sys.executable, now_iso=self.ts(), stamp=stamp,
-                           clean=lambda text: self._public_case(text, 300), public=public)
-            if asked and asked.get("status") != "ok":     # the head was not reached: ask again next hour
-                # the class's entry as it was before this turn, whole: an open one keeps its plan, a closed or
-                # reopened one its tests (a filtered copy dropped them, and the reopened class lost its variation
-                # check); a failed open entry ages out again next hour, so its tries are not lost
-                cls = report.get("cls")
-                if cls in before:
-                    ledger[cls] = before[cls]
-                else:
-                    ledger.pop(cls, None)
-            X.save_ledger(self_dir, ledger, stored)
-            ls.pop("selffix", None)                     # moved into the factory's ledger
-            self.save_ls(ls)
-            launched = report.get("status") == "open" and X.launch(_ROOT, report["plan"], self_dir, sys.executable)
-            self.event("selffix", status=report.get("status"), reason=self.rs(
-                "%s: %s" % (report.get("cls"), report.get("plan") or report.get("why") or ""), 300),
-                model=self.rs(asked.get("model") or None), tokens=asked.get("tokens"), launched=launched or None)
-        except Exception as e:
-            self.err("selffix", e)
 
     # -- the free head answers the mechanical holds (which file to change): at once when idle, when READY is
     # low after HOLDS_LOW_EVERY_S, else every 20 min. With live workers the asks run in the background thread.
@@ -1944,12 +1930,13 @@ class Loop:
         """The ONE writer of the not_code book (the head's answer and the triage's structural cut, <id>)."""
         ls.setdefault("not_code", {})[bid] = {
             "hash": digest, "reason": ("не код: " + self._scrub(F.redact(str(why))))[:200],
-            "until": self.clock() + self.cfg.not_code_term_s}
+            "until": self.clock() + self.cfg.not_code_term_s, "slicer": F.slicer_version()}
         ls["holds"].pop(bid, None)
         ls.get("hold_hash", {}).pop(bid, None)
 
     def _not_code_known(self, ls, now) -> set:
         """Rows of the not_code book whose term is live and whose text is unchanged; the rest leave the book."""
+        self._expire_slicer_decisions(ls)
         book = ls.get("not_code")
         if not isinstance(book, dict) or not book:
             return set()
@@ -2092,7 +2079,7 @@ class Loop:
             cands.sort(key=lambda t: (getattr(tasks.get(t), "kind", "code") == "unit_test") != want_unit)
             tid = cands[0] if cands else ""
         fields = {k: ans.get(k) for k in ("touch_files", "tests", "read_files",
-                                           "context_targets", "depends_on", "port_from")
+                                           "context_targets", "depends_on", "port_from", "contract")
                   if ans.get(k) is not None}
         kind = tasks[tid].kind if tid in tasks else (ans.get("kind") or "code")
         if ans.get("accept"):
@@ -2156,6 +2143,8 @@ class Loop:
                "context_targets": dict(ans.get("context_targets") or {}),
                "depends_on": list(ans.get("depends_on") or []), "backlog_id": bid,
                "estimated_tokens": 4000, "priority": 1}
+        if ans.get("contract") is not None:
+            row["contract"] = ans["contract"]
         if ans.get("port_from"):
             row["port_from"] = str(ans["port_from"])
         if ans.get("kind") == "unit_test":
@@ -2249,9 +2238,10 @@ class Loop:
 
     def _write_closure(self, tid, bid, row, how="accepted") -> None:
         """<id>: an ACCEPTED (coordinator) or PROMOTED (merged by the loop) ECHO task goes into the backlog's closures table
-        (one atomic idempotent writer); fac-* never, and a row without a commit sha never (closed by the head, a duplicate)."""
+        (one atomic idempotent writer); fac-* only by the second (self-repo) instance, ECHO rows only by the first, and a row
+        without a commit sha never (closed by the head, a duplicate)."""
         sha = row.get("commit")
-        if not bid or not sha or str(bid).lower().startswith("fac-"):
+        if not bid or not sha or str(bid).lower().startswith("fac-") != self.cfg.self_repo:
             return
         try:
             note = "free loop, merged by the loop (not yet taken)" if how == "promoted" else "free loop, accepted by the coordinator"
@@ -2319,11 +2309,253 @@ class Loop:
         except Exception as e:
             self.err("sweep", e)
 
+    def _links_tick(self, now) -> None:
+        """4.2 (<id>, <id>, <id>): every LINKS_EVERY_S, when OWNER_WORDS.md grew, ONE background job links the new entries to
+        backlog rows (factory_intake.run_links; the small free tier first, role review; private chunks never leave).  The loop's
+        own thread only starts it and books the count of unlinked requirements into reconcile.json."""
+        try:
+            from tools import backlog_register as B
+            from tools import factory_intake as I
+        except ImportError:
+            return          # the mirror (cloud matrix) does not carry the product's modules: nothing to link there, not an error
+        try:
+            job = self._lk
+            if job is not None and job.done.is_set():
+                self._lk = None
+                if job.error is not None:
+                    self.event("links", status="failed", dur_s=round(job.dur_s, 3), reason=F.redact(str(job.error))[:200])
+                else:
+                    data = job.result or {}
+                    self._links_note(len(data.get("unlinked") or []))
+                    self.event("links", status="partial" if data.get("partial") else "done", dur_s=round(job.dur_s, 3), reason="linked rows=%d unlinked=%d" % (
+                        len(data.get("links") or {}), len(data.get("unlinked") or [])))
+            if self._lk is not None or self._ending() or now - self._lk_at < LINKS_EVERY_S:
+                return
+            words = next((c for c in B.OWNER_WORDS_CANDIDATES if c.exists()), None)
+            if words is None or words.stat().st_size == self._lk_size:
+                return
+            self._lk_at, size = now, words.stat().st_size
+            md = Path(self.cfg.backlog).read_bytes().decode("utf-8-sig")
+            from tools import agent_factory_import as imp
+            try:
+                rows = {r["backlog_id"]: str(r.get("text") or "")[:200] for r in imp.parse_section4(md)}
+            except ValueError:
+                return      # a backlog without a bounded section 4 has no rows to link to: nothing to do, not an error
+            if not rows:
+                return
+            out = words.parent / "owner_links.json"
+
+            def ask(prompt):
+                status, _, answer, _ = self._light_ask(prompt, attempt=1, section="loop-links", quotas=self._lk_quotas, max_tokens=300, role="review")
+                if status != "ok":
+                    raise RuntimeError("links: no answer (%s)" % status)    # run_links stops here and resumes from this entry
+                return answer
+
+            def work():
+                data = I.run_links(words, rows, out, ask=ask, scrub=I.scrub)
+                done = all(e["line"] <= int(data.get("upto_line") or 0) for e in I._entries(words)[0]); self._lk_size = size if done else self._lk_size; data = {**data, "partial": not done}
+                I.audit_closed_rows(self.cfg.backlog, out, lambda p, n: self._light_ask(p, attempt=n, section="loop-links", quotas=self._lk_quotas, max_tokens=300, role="review")[:3], I.scrub)
+                return data
+            self._lk = Prefetch("links", work, {})
+            self._lk.thread.start()
+        except Exception as e:
+            self.err("links", e)
+
+    def _links_note(self, unlinked: int) -> None:
+        self._lk_unlinked = unlinked          # written into reconcile.json by _write_reconcile_now
+
+    def _release_tick(self, now) -> None:
+        """The final build (5.1): (1) a finished build is judged here, in the loop's thread: the merged rows are accepted, a new red
+        test becomes an urgent row; (2) with none in flight and one due (REL.due) a full cloud sweep starts in its OWN slot, so the pool
+        goes on.  A build that did not end or failed leaves the record as it was and is repeated after REL.RETRY_S."""
+        try:
+            from tools import factory_release as REL
+        except ImportError:
+            return
+        try:
+            job = self._rel
+            if job is not None and job.done.is_set():
+                self._rel, self._rel_snap = None, None
+                self._release_done(job, now, REL)
+            if self.release_fn is None or self._rel is not None or self._ending() or not self.base_sha:
+                return
+            ls = self.ls()
+            if REL.due(ls, now):
+                self._release_start(ls, now, REL)
+        except Exception as e:
+            self.err("release", e)
+
+    def _release_start(self, ls, now, REL) -> None:
+        tasks, state = self.load()
+        unfinished = {tid for tid, r in state["tasks"].items() if r.get("status") not in ("PROMOTED", "DONE")}
+        open_bids = {self._bid(state, tasks, tid) for tid in unfinished}
+        open_tests = {f for tid in unfinished if tid in tasks for f in tasks[tid].tests}
+        to_slice = ls.get("to_slice") or {}
+        for name, rec in REL.regressions(self.cfg.state_dir).items():       # a confirmed regression is open work until its row is closed
+            if rec.get("row") in to_slice or rec.get("row") in open_bids:
+                open_tests.add(name.split("::", 1)[0])
+        accepted = ls.get("accepted") or {}
+        tids = sorted(tid for tid, r in state["tasks"].items()
+                      if r.get("status") == "PROMOTED" and tid not in accepted and tid in tasks
+                      and (self._bid(state, tasks, tid) or "") and not self._bid(state, tasks, tid).lower().startswith("fac-")
+                      and self._bid(state, tasks, tid) not in open_bids)     # only whole stories: no unfinished task of the row
+        try:
+            open_ids = set(self._row_hashes("text"))
+        except ValueError:                  # a backlog with no open-rows section: no row is open (a guard of it is a plain red)
+            open_ids = set()
+        except Exception as e:              # the file cannot be read now: the build waits for the next tick
+            self.err("release: backlog unreadable", e)
+            return
+        shards = REL.shards_for(self._release_places())
+        if not shards:                      # fewer than the minimum places left over by the task cards: wait for the next tick
+            return
+        snap = self._snapshot(self.base_sha)
+        sha = self.base_sha
+        ls["release_run"] = {"sha": sha, "tids": tids, "open_tests": sorted(open_tests),
+                             "promoted_total": int(ls.get("promoted_total") or 0)}
+        self.save_ls(ls)
+        fn, state_dir = self.release_fn, self.cfg.state_dir
+        self._rel_snap = snap
+        self._rel = Prefetch("release", lambda: fn(sha=sha, snapshot=snap, state_dir=state_dir, open_ids=open_ids,
+                                                    open_tests=set(open_tests), shards=shards), {})
+        self._rel.thread.start()
+        self.event("release", status="started", base_sha=sha, reason="final build: %d rows to accept" % len(tids))
+
+    def _release_places(self) -> int:
+        """Cloud job places the task cards leave free: the free plan's jobs minus what the live workers may hold (each one
+        a candidate run of PRODUCT_SHARDS jobs - an upper bound, so the sweep never starves a card)."""
+        if factory_cloud_gate is None:          # no cloud gate module: the cards hold no cloud places
+            return 10 ** 6
+        used = len(self.pool.workers) * factory_cloud_gate.PRODUCT_SHARDS
+        return max(0, factory_cloud_gate.FREE_PLAN_JOBS - used)
+
+    def _release_near(self, task, red_files) -> bool:
+        """True when the task's files are neighbours of a red test (the neighbour map of 3.1, <state>/neighbors/latest.json:
+        {source file: [test files]}); no map: every task is a neighbour (nothing is accepted next to a regression blindly)."""
+        try:
+            data = json.loads((Path(self.cfg.state_dir) / "neighbors" / "latest.json").read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                return True
+        except (OSError, ValueError):
+            return True
+        if red_files & {str(t).replace("\\", "/") for t in task.tests}:
+            return True
+        return any(red_files & {str(t).replace("\\", "/") for t in (data.get(f) or ())} for f in task.touch_files)
+
+    def _release_done(self, job, now, REL) -> None:
+        ls = self.ls()
+        run = ls.get("release_run") or {}
+        res = job.result if isinstance(job.result, dict) else {}
+        status = res.get("status") or ""
+        if job.error is not None or status not in ("baseline", "green", "new_red"):
+            ls["release_retry_at"] = now + REL.RETRY_S              # no verdict: the record stays, the sweep repeats
+            self.save_ls(ls)
+            why = F.redact(str(job.error))[:200] if job.error is not None else (res.get("reason") or status or "no result")
+            self.event("release", status="failed" if job.error is not None else (status or "failed"), dur_s=round(job.dur_s, 3),
+                       reason=str(why)[:200], base_sha=run.get("sha"))
+            return
+        sha = str(res.get("sha") or run.get("sha") or "")
+        new_red = [str(n) for n in ((res.get("sweep") or {}).get("new_red") or ())]
+        tasks, state = self.load()
+        taken = []
+        if status in ("green", "new_red"):
+            red_files = {n.split("::", 1)[0] for n in new_red}
+            for tid in run.get("tids") or ():
+                row, task = state["tasks"].get(tid) or {}, tasks.get(tid)
+                if row.get("status") != "PROMOTED" or task is None or tid in (ls.get("accepted") or {}):
+                    continue                                        # rejected or taken meanwhile
+                if new_red and self._release_near(task, red_files):
+                    continue                                        # a neighbour of the regression waits for the next build
+                taken.append(tid)
+        if not isinstance(ls.get("accepted"), dict):
+            ls["accepted"] = {}
+        for tid in taken:
+            ls["accepted"][tid] = {"at": self.ts(), "note": "release %s" % sha[:8]}
+        if status == "new_red":
+            commits = ", ".join(str((state["tasks"].get(t) or {}).get("commit") or "")[:8] for t in (run.get("tids") or ())[:8]) or "-"
+            rows = {}
+            for n, name in enumerate(new_red, 1):
+                key = "rel-%s-%d" % (sha[:8], n)
+                rows[name] = key
+                ls.setdefault("to_slice", {})[key] = {"at": now, "text": "после слияний %s упал тест %s" % (commits, name),
+                                                      "guard": name, "hints": [], "priority": 0}
+            try:
+                REL.record_regressions(self.cfg.state_dir, new_red, rows, now)
+            except OSError as e:
+                self.err("release: regressions", e)
+        ls["release"] = {"sha": sha, "at": now, "promoted_total": int(run.get("promoted_total") or 0),
+                         "status": status, "new_red": new_red}
+        if status == "green":                   # coordinator 22.11 23:20: a green build deploys only when the deploy exists
+            deploy = getattr(REL, "deploy", None)
+            if deploy is None:
+                ls["release"]["deploy_wait"] = "no_deploy_yet"
+            else:
+                try:
+                    deploy(sha=sha, state_dir=self.cfg.state_dir)
+                except Exception as e:
+                    ls["release"]["deploy_wait"] = "deploy_failed"
+                    self.err("release: deploy", e)
+        ls.pop("release_retry_at", None)
+        self.save_ls(ls)
+        self.event("release", status=status, dur_s=round(job.dur_s, 3), base_sha=sha, reason=str(res.get("reason") or "")[:200],
+                   new_red=len(new_red), accepted=len(taken))
+        for tid in taken:
+            row, bid = state["tasks"].get(tid) or {}, self._bid(state, tasks, tid)
+            self.event("accept", task_id=tid, backlog_id=bid, status="accepted", reason="accepted_by_release")
+            try:
+                res_note = factory_closures.update_note(self.cfg.backlog, bid, str(row.get("commit") or ""), "accepted in release %s" % sha[:8])
+                self.event("closure", task_id=tid, backlog_id=bid, status=res_note, reason="accepted_by_release")
+            except Exception as e:
+                self.err("release: closure note", e)
+            task = tasks.get(tid)
+            if task is not None and getattr(task, "contract", ""):
+                try:                                    # an accepted fix, not a merged one, becomes the architect's example
+                    from tools import factory_classes as CL
+                    CL.record_contract(bid, task.touch_files, task.contract)
+                except Exception as e:
+                    self.err("release: contract example", e)
+
+    def _neighbors_tick(self, head, root=None) -> None:
+        """The neighbour map (``{file: [tests one import hop away]}``) of the base ``head``, built ONCE per SHA by one child
+        process in a background slot (like the sweep): the workers read the copy of the last finished map from their snapshot
+        and never build the import graph. Neither the step nor a card waits for it; a base without a map (the first run, a map
+        that failed) is served by the graph as before. ``latest.json`` is moved to the new map after it is complete."""
+        try:
+            from tools import affected_tests as AT
+            nb = Path(self.cfg.state_dir) / "neighbors"
+            job = getattr(self, "_nb", None)
+            if job is not None:
+                if not job.done.is_set():
+                    return
+                self._nb = None
+                if job.error is None and job.result:
+                    shutil.copyfile(nb / (job.ctx["sha"] + ".json"), nb / "latest.json.new")
+                    os.replace(nb / "latest.json.new", nb / "latest.json")
+                    self.event("neighbors", status="done", dur_s=round(job.dur_s, 3), base_sha=job.ctx["sha"])
+                else:
+                    self.event("neighbors", status="failed", dur_s=round(job.dur_s, 3),
+                               reason=F.redact(str(job.error or "no map"))[:200])
+            if not head or getattr(self, "_nb_sha", None) == head or self._ending():
+                return
+            self._nb_sha = head
+            target = nb / (head[:12] + ".json")
+            nb.mkdir(parents=True, exist_ok=True)
+            if target.is_file():                       # built by an earlier run of the loop
+                shutil.copyfile(target, nb / "latest.json.new")
+                os.replace(nb / "latest.json.new", nb / "latest.json")
+                return
+            tree = Path(root) if root is not None else self._snapshot(head)
+            self._nb = Prefetch("neighbors", lambda: AT.build_neighbors(tree, target), {"sha": head[:12]})
+            self._nb.thread.start()
+        except Exception as e:      # noqa: BLE001  without a map the workers use the graph
+            self.err("neighbors", e)
+
     @staticmethod
     def _closes_row(task, parents=None) -> bool:
         """A promoted task closes its backlog row only when it is the whole row's code task: a test sub-task or one part of
         a cut row shares the backlog ID but proves nothing about the row (the parents path closes a cut row)."""
         return (task is not None and getattr(task, "kind", "code") == "code"
+                and not Loop._contract(task).get("more")
                 and getattr(task, "backlog_id", "") not in (parents or {}))
 
     def _sync_stale_rows(self, ids, sha_of=None) -> int:
@@ -2368,7 +2600,7 @@ class Loop:
             r = st["tasks"][tid]
             if r["status"] != "PROMOTED":
                 raise F.InvalidPlan("only a PROMOTED task can be rejected (it is %s)" % r["status"])
-            r.update(status="READY", attempts=0, commit=None, lease=None, deadline=None)
+            r.update(status="READY", attempts=0, reds=0, commit=None, lease=None, deadline=None)
             F.add_feedback(st, tid, "opus", note or "rejected by Opus")
         self._tx(reset)
         bid = bid or row.get("backlog_id")
@@ -2618,59 +2850,408 @@ class Loop:
             self.err("ready top-up", e)
             return False
 
-    def _stalled_path(self) -> Path:
-        return self.dir / "stalled_tasks.json"
-
-    def _stalled(self) -> dict:
-        """<id> rule 3 book {"quarantine": {task id: record}, "slice": {backlog id: record}}. Its own file, not loop_state:
-        the pass that accounts a result saves its older copy of the loop state after the learning step."""
+    @staticmethod
+    def _contract(task):
         try:
-            book = json.loads(self._stalled_path().read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            book = {}
-        book = book if isinstance(book, dict) else {}
-        for key in ("quarantine", "slice"):
-            if not isinstance(book.get(key), dict):
-                book[key] = {}
-        return book
+            value = json.loads(getattr(task, "contract", "") or "{}")
+            return value if isinstance(value, dict) else {}
+        except (ValueError, TypeError):
+            return {}
 
-    def _quarantined(self) -> set:
-        """<id> rule 3: task ids that get no more attempts (quarantine record, or sliced into one-file parts)."""
-        book = self._stalled()
-        out = set(book["quarantine"])
-        out |= {str(rec.get("task")) for rec in book["slice"].values() if isinstance(rec, dict) and rec.get("task")}
+    def _asks(self, root=None) -> dict:
+        from tools import factory_architect as A, factory_paid_critic as PK
+        asks = {}
+        for engine in self.cfg.architect_rungs:
+            if engine in ("free", "free_main"):
+                role = "architect" if engine == "free" else "code"
+                def ask(system, user, role=role):
+                    status, _, answer, _ = self._light_ask(system + "\n\n" + user, attempt=1,
+                        section="loop-architect", quotas=self._arch_quotas, max_tokens=12000, role=role)
+                    if status != "ok":
+                        raise A.ContractFault(status)
+                    return answer
+                asks[engine] = ask
+            elif engine == "paid" and (self.extra_env.get("ANTHROPIC_API_KEY") or
+                                      os.environ.get("ANTHROPIC_API_KEY") or getattr(self, "_paid_available", False)):
+                if not PK.credit_dead():
+                    asks[engine] = A.ask_paid
+            elif engine == "agent" and callable(getattr(A, "ask_agent", None)) and shutil.which("claude"):
+                asks[engine] = lambda system, user, _root=root: A.ask_agent(system, user, cwd=_root)
+        return asks
+
+    def _ladder_sig(self):
+        return ",".join(self._asks())
+
+    def _row_packet(self, row, cause, evidence, *, tasks, state, ls, root):
+        from tools import factory_architect as A, factory_classes as CL, agent_factory_import as imp
+        entry = ls.get("to_slice", {}).get(row, {})
+        try:
+            backlog = next((r for r in imp.parse_section4(self.cfg.backlog.read_text(encoding="utf-8-sig"))
+                            if r["backlog_id"] == row), {})
+        except (ValueError, OSError):
+            backlog = {}
+        previous = [t for t in tasks.values() if F.row_of(t.backlog_id or t.id) == row]
+        title = str(entry.get("text") or backlog.get("text") or
+                    next((t.goal or t.title for t in previous), row))
+        def safe(value):
+            text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+            return "" if F.is_private_text(text) else F.redact(text)
+        quotes = [backlog.get("owner_cell", "")]
+        try:
+            from tools import backlog_register
+            quotes.extend(backlog_register.owner_excerpts(row, k=3, chars=600))
+        except ImportError:
+            pass
+        clues = [cause, evidence, entry.get("done", ""), entry.get("guard", "")]
+        files = list(entry.get("hints") or [])
+        for task in previous:
+            files.extend(task.touch_files)
+            rec = state["tasks"].get(task.id, {})
+            clues.extend([rec.get("reason", ""), task.contract or ""])
+            clues.extend(rec.get("feedback", [])[-2:])
+            diff = self.stage / "prev-diff" / (task.id + ".diff")
+            if diff.is_file():
+                clues.append(diff.read_text(encoding="utf-8", errors="replace"))
+            if rec.get("base_red"):
+                clues.append(rec["base_red"])
+        clues.append(self._guard_traces(state).get(row, []))
+        def keywords(system, user):
+            status, _, answer, _ = self._light_ask(system + "\n" + user, attempt=1,
+                section="loop-keywords", quotas={}, max_tokens=800, role="review")
+            return answer if status == "ok" else ""
+        words = A.keywords_en(title, keywords, cache=self.dir / "keywords")
+        hints = [safe(x) for x in entry.get("hints", [])]
+        try:
+            from tools import repomap
+            # the row's own words travel too: rank() expands their Russian stems through repomap.expand (glossary)
+            ranked = repomap.rank(root, title + " " + " ".join(words)) if not F.is_private_text(title) else []
+            hints.append(safe(repomap.hints(ranked)))
+            files.extend(r[0] for r in ranked)
+            if sources := A.hint_sources(root, ranked):     # the text of the 3 best places, verbatim (private pieces cut)
+                hints.append(sources)
+        except ImportError:
+            pass
+        return dict(bid=row, title=safe(title), priority=entry.get("priority") or backlog.get("priority") or 9,
+                    quotes=[s for q in quotes if (s := safe(q))], hints=hints,
+                    examples=[s for x in CL.contract_examples([f for f in files if isinstance(f, str)], k=2)
+                              if (s := safe(x))], evidence="\n".join(s for x in clues if (s := safe(x))),
+                    known_ids=list(ls.get("to_slice", {})) + list({t.backlog_id for t in tasks.values()}))
+
+    def _slice(self, row, cause, rung, evidence, *, gen, tasks, state, ls, now):
+        from tools import factory_architect as A
+        job = self._slicers.get(row)
+        if job is None:
+            if len(self._slicers) >= SLICE_PARALLEL:
+                return None
+            if len(F.ready(tasks, state, now=now)) >= 2 * self._slice_pool_cap():
+                return None
+            if self._arch_quotas is None:
+                self._arch_quotas = copy.deepcopy(ls.get("architect_quotas") or {})
+            root = self._snapshot(self.base_sha)
+            ctx = dict(root=root, gen=gen, rung=rung, cause=cause)
+            task_copy, state_copy, ls_copy = copy.deepcopy((tasks, state, ls))
+            def work():
+                packet = self._row_packet(row, cause, evidence, tasks=task_copy, state=state_copy, ls=ls_copy, root=root)
+                extra = {"named_ok": True} if self.cfg.self_repo else {}      # 8.1: the factory's own files are the contract's subject
+                try:
+                    result = self.architect_fn(packet, rung=rung, root=root, asks=self._asks(root), **extra)
+                except A.Exhausted as exc:
+                    try:
+                        system, user = A.build_prompt(dict(packet, rung=rung))
+                        exc.prompt_chars = len(system) + len(user)
+                    except Exception:
+                        pass
+                    raise
+                return packet, result
+            job = self._slicers[row] = Prefetch("slice", work, ctx)
+            job.thread.start()
+            return None
+        if not job.done.is_set():
+            return None
+        del self._slicers[row]
+        fresh = self.ls()
+        with self._ask_lock:
+            fresh["architect_quotas"] = copy.deepcopy(self._arch_quotas)
+        self.save_ls(fresh)
+        engine, outcome, extra = "", "error", {}
+        try:
+            if job.error is not None:
+                if isinstance(job.error, A.Exhausted):
+                    engine = ",".join(str(f.get("engine", "")) for f in job.error.faults)
+                    faults = [{"engine": str(f.get("engine", "")), "fault": F.redact(str(f.get("fault", "")))[:300]}
+                              for f in job.error.faults]
+                    extra["faults"] = faults
+                    if getattr(job.error, "prompt_chars", None) is not None:
+                        extra["prompt_chars"] = job.error.prompt_chars
+                    if faults:
+                        keep = self.ls()
+                        log = [x for x in keep.get("slice_faults", []) if now - x[0] < 3600]
+                        log += [[now, fault_class(f["fault"])] for f in faults]
+                        keep["slice_faults"] = log
+                        self.save_ls(keep)
+                    outcome = "void" if job.error.answered else "unavailable"
+                    if job.error.answered:
+                        return {"engine": engine, "rung": job.ctx["rung"]}
+                    raise SliceWait()
+                raise job.error
+            packet, result = job.result
+            contract, engine = result["contract"], result["engine"]
+            outcome = contract["decision"]
+            portion = dict(engine=engine, rung=job.ctx["rung"])
+            if outcome == "fix":
+                prior = [t for t in tasks.values() if t.kind == "code" and F.row_of(t.backlog_id or t.id) == row]
+                prior.sort(key=lambda t: (int((re.search(r"_r(\d+)$", t.id) or [None, "0"])[1]), t.id))
+                base = F.RESLICE_ID.sub("", prior[-1].id) if prior else "bl_" + re.sub(r"[^A-Za-z0-9_]", "_", row)
+                priority = packet["priority"]
+                priority = int(str(priority).removeprefix("P"))
+                portion["tasks"] = A.to_tasks(contract, bid=row, base_id=base, gen=job.ctx["gen"],
+                                              priority=priority, title=packet["title"])
+            elif outcome == "not_code":
+                portion["not_code"] = [dict(backlog_id=row, reason=contract.get("why", ""))]
+            else:
+                portion["holds"] = [dict(backlog_id=row, question=contract.get("why", outcome))]
+            fresh = self.ls()
+            fresh.setdefault("contracts_by_engine", {}).setdefault(engine, {"made": 0, "merged": 0})["made"] += 1
+            self.save_ls(fresh)
+            return portion
+        except SliceWait:
+            raise
+        except Exception as exc:
+            self.err("slice", exc)
+            raise SliceWait() from exc
+        finally:
+            self.event("slice", backlog_id=row, engine=engine, status=outcome, rung=job.ctx["rung"], **extra)
+
+    def _slice_pool_cap(self):
+        if _cloud_up(self.cloud_fn):
+            return max(1, factory_cloud_gate.MAX_LIVE)
+        cap = max(1, int((self.free_ram_fn() - LIGHT_FLOOR) / max(1, self._estimate())))
+        if Path(self.cfg.channels).is_file():
+            cap = min(cap, max(1, self._headroom(None, self.load()[1])))
+        return cap
+
+    def _reenter_rows(self, bids):
+        version = F.slicer_version()
+        def reopen(st):
+            for tid, row in st["tasks"].items():
+                if F.row_of(row.get("backlog_id") or tid) in bids and row.get("reason") == "quarantine":
+                    row["reason"] = "reenter"
+                    st.setdefault("strikes", {}).pop(F._strike_key(row, tid), None)
+            for bid in bids:
+                st.setdefault("strikes", {}).pop("bl:" + bid, None)
+        self._tx(reopen)
+
+    def _reenter_on_new_slicer(self) -> int:
+        tasks, state = self.load()
+        version, now, ls = F.slicer_version(), self.clock(), self.ls()
+        bids = {F.row_of(row.get("backlog_id") or tid) for tid, row in state["tasks"].items()
+                if row["status"] == "FAILED" and row.get("reason") == "quarantine" and row.get("q_ver") != version}
+        bids |= {bid for bid, rec in ls.get("quarantine", {}).items() if rec.get("version") != version}
+        if not bids:
+            return 0
+        self._reenter_rows(bids)
+        tasks, state = self.load()
+        owned = {F.row_of(r.get("backlog_id") or t) for t, r in state["tasks"].items()
+                 if r["status"] in ("READY", "BLOCKED", "FAILED", "RUNNING", "REVIEW") and not F.is_terminal(r.get("reason"))}
+        for bid in bids:
+            ls.get("quarantine", {}).pop(bid, None)
+            # A row record can exist without any task: only such a row goes back to the queue.
+            # A row with a re-entered task is stuck, and the slicer takes it from there.
+            if bid not in owned:
+                ls.setdefault("to_slice", {}).setdefault(bid, {"at": now, "hints": [], "guard": ""})
+        ls["reentry"] = {"version": version, "at": now, "rows": sorted(bids)}
+        self.save_ls(ls)
+        return len(bids)
+
+    def _quarantine_rows(self, tasks, state, ls, now):
+        version, ladder = F.slicer_version(), self._ladder_sig()
+        reopened = {bid for bid, rec in ls.get("quarantine", {}).items()
+                    if rec.get("ladder", "") != ladder or now - float(rec.get("at", 0)) >= QUARANTINE_TTL_S}
+        if reopened:
+            self._reenter_rows(reopened)
+            for bid in reopened:
+                ls["quarantine"].pop(bid, None)
+                ls.get("reslices", {}).get(bid, {})["used"] = 0
+                ls.setdefault("to_slice", {}).setdefault(bid, {"at": now, "hints": [], "guard": ""})
+            self.save_ls(ls)
+            tasks, state = self.load()
+        candidates = set(F.stuck_rows(state, tasks)) | set(ls.get("to_slice", {}))
+        for bid in sorted(candidates - set(ls.get("quarantine", {}))):
+            rec = ls.get("reslices", {}).get(bid, {})
+            if rec.get("version") != version or rec.get("used", 0) < F.MAX_RESLICES:
+                continue
+            # A stale return gets its free retry even when the charged budget is spent.
+            stuck = F.stuck_rows(state, tasks).get(bid, [])
+            if stuck and not rec.get("stale") and all(state["tasks"][t].get("reason") == "reslice:stale" for t in stuck):
+                continue
+            if ls.get("slice_wait", {}).get(bid, 0) > now:
+                continue
+            with self.txn() as (fresh, st):
+                for tid, task in fresh.items():
+                    row = st["tasks"][tid]
+                    if F.row_of(task.backlog_id or tid) == bid and row["status"] in ("READY", "BLOCKED", "FAILED") and not F.is_terminal(row.get("reason")):
+                        row.update(status="FAILED", reason="quarantine", q_ver=version)
+            ls.setdefault("quarantine", {})[bid] = {"version": version, "ladder": ladder, "at": now, "why": "reslice budget exhausted"}
+            ls.get("to_slice", {}).pop(bid, None)
+            ls.get("slice_wait", {}).pop(bid, None)
+            self.save_ls(ls)
+            self.event("reslice", status="quarantine", backlog_id=bid, reason="reslice budget exhausted")
+
+    def _expire_slicer_decisions(self, ls):
+        version = F.slicer_version()
+        for bid in list(ls["holds"]):
+            why = str(ls["holds"][bid]).lower()
+            if any(rule in why for rule in ("only_opus", "private", "приватн")):
+                continue
+            if ls.get("hold_ver", {}).get(bid, version) != version:
+                ls["holds"].pop(bid, None)
+                ls.get("hold_ver", {}).pop(bid, None)
+                ls.get("hold_hash", {}).pop(bid, None)
+        for bid, rec in list(ls.get("not_code", {}).items()):
+            if rec.get("slicer") != version:
+                ls["not_code"].pop(bid, None)
+
+    def _resliceable(self, tasks, state, ls, now) -> dict:
+        stuck = F.stuck_rows(state, tasks)
+        out = {}
+        for bid in sorted(set(stuck) | set(ls.get("to_slice", {}))):
+            related = [t for t in tasks.values() if F.row_of(t.backlog_id or t.id) == bid]
+            if any(t.only_opus or not t.privacy_safe or F.is_private_text(t.title + " " + (t.goal or "")) for t in related):
+                continue
+            entry = ls.get("to_slice", {}).get(bid, {})
+            if entry.get("private") or entry.get("only_opus") or F.is_private_text(str(entry.get("text", ""))):
+                continue
+            if bid in ls.get("quarantine", {}) or ls.get("slice_wait", {}).get(bid, 0) > now:
+                continue
+            if any(F.row_of(t.backlog_id or tid) == bid and state["tasks"][tid]["status"] in
+                   ("RUNNING", "REVIEW") for tid, t in tasks.items()):
+                continue
+            rec = ls.get("reslices", {}).get(bid, {})
+            if rec.get("version") != F.slicer_version():
+                cause = "first"
+            elif (stuck.get(bid) and not rec.get("stale") and all(
+                    state["tasks"][t].get("reason") == "reslice:stale" for t in stuck[bid])):
+                cause = "stale"
+            else:
+                cause = "stuck"
+            if cause == "stuck" and rec.get("used", 0) >= F.MAX_RESLICES:
+                continue
+            out[bid] = cause
         return out
 
-    def _stall(self, tid, tasks, state, sig, tier, rkey) -> None:
-        """<id> rule 3: the same failure again after the tier was raised ESC_FAILS times: no more attempts. A task of 2+
-        files goes to the slicer (ls['slice'][backlog_id]: the next triage cuts its row into one-file parts); any other
-        goes to a quarantine record with the reason. Either way the row is FAILED and never requeued."""
-        task = tasks.get(tid)
-        row0 = state["tasks"].get(tid) or {}
-        bid = str(row0.get("backlog_id") or (task.backlog_id if task else "") or "")
-        cls = self._reason_class(rkey)
-        book = self._stalled()
-        now = self.clock()
-        files = list(task.touch_files) if task else []
-        slice_it = bool(bid) and len(files) >= 2 and not (task and (task.only_opus or not task.privacy_safe))
-        if slice_it:
-            book["slice"][bid] = {"task": tid, "reason": cls, "at": now}
-            reason = ("sliced:" + cls)[:80]
-        else:
-            book["quarantine"][tid] = {"backlog_id": bid, "tier": tier, "reason": cls, "sig": sig[:120], "at": now}
-            reason = "quarantine"
-        F.save_atomic(self._stalled_path(), book)
+    def _slice_record(self, ls, row, gen, cause, now, void=False):
+        old = ls.setdefault("reslices", {}).get(row, {})
+        ls["reslices"][row] = {"n": max(gen, old.get("n", 0)),
+            "used": 0 if cause == "first" else old.get("used", 0) + (cause == "stuck" or void),
+            "stale": cause == "stale", "at": now, "version": F.slicer_version()}
 
-        def settle(st):
-            row = st["tasks"].get(tid)
-            if row is None:
-                return
-            row.update(status="FAILED", reason=reason, lease=None, deadline=None)
-            for key in ("pending_review", "candidate", "not_before", "began", "blocked_reason"):
-                row.pop(key, None)
-        self._tx(settle)
-        self.event("route", task_id=tid, backlog_id=bid or None, status="sliced" if slice_it else "quarantined",
-                   reason=self.rs(cls, 80), tier_from=tier, signature=self.rs(sig, 120))
+    def _apply_portion(self, row, gen, portion, cause) -> int:
+        now = self.clock()
+        items = list(portion.get("tasks") or [])
+        ids = {t["id"] for t in items}
+        why = "empty portion"
+        valid = bool(items or portion.get("holds") or portion.get("not_code"))
+        added = []
+        if valid:
+            self._tx(lambda st: st.setdefault("strikes", {}).pop("bl:" + row, None))
+            try:
+                added = F.append_tasks(self.plan_path, items)
+                tasks, state = self.load()
+                valid = ids <= set(tasks)
+                if not valid:
+                    why = "portion tasks were skipped"
+            except F.InvalidPlan as exc:
+                valid, why = False, str(exc)
+        ls = self.ls()
+        if not valid:
+            self._slice_record(ls, row, ls.get("reslices", {}).get(row, {}).get("n", 0), cause, now, void=True)
+            if "rung" in portion:
+                ls["reslices"][row]["rung"] = portion["rung"]
+                if ls["reslices"][row]["used"] >= F.MAX_RESLICES:
+                    ls.setdefault("quarantine", {})[row] = dict(version=F.slicer_version(), ladder=self._ladder_sig(),
+                                                                at=now, why="reslice budget exhausted")
+            self.save_ls(ls)
+            self.event("reslice", status="void", backlog_id=row, cause=cause, reason=why)
+            return 0
+        with self.txn() as (tasks, state):
+            for tid, task in tasks.items():
+                rec = state["tasks"][tid]
+                if tid in ids and portion.get("engine"):
+                    rec["engine"] = portion["engine"]
+                if F.row_of(task.backlog_id or tid) == row and tid not in ids and rec["status"] in ("READY", "BLOCKED", "FAILED"):
+                    rec.update(status="FAILED", reason="superseded:reslice%d" % gen)
+        self._slice_record(ls, row, gen, cause, now)
+        if "rung" in portion:
+            ls["reslices"][row]["rung"] = portion["rung"]
+        for key in ("to_slice", "slice_wait", "parents"):
+            ls.get(key, {}).pop(row, None)
+        for hold in portion.get("holds") or []:
+            bid = hold.get("backlog_id", row)
+            ls["holds"][bid] = self._scrub(str(hold.get("question", "")))
+            ls.setdefault("hold_ver", {})[bid] = F.slicer_version()
+        for rec in portion.get("not_code") or []:
+            self._not_code_set(ls, rec.get("backlog_id", row), rec.get("reason", ""), self._row_hashes("text").get(row, ""))
+        self.save_ls(ls)
+        self.event("reslice", status="applied", backlog_id=row, gen=gen, added=len(added), cause=cause)
+        return len(added)
+
+    def _reslice_tick(self, tasks, state, ls, now) -> int:
+        if self.slice_fn is None:
+            return 0
+        try:
+            self._quarantine_rows(tasks, state, ls, now)
+        except Exception as exc:                  # a failure of the quarantine pass is an event, not a brake
+            self.event("reslice", status="error", reason="quarantine pass: " + F.redact(str(exc)))
+        tasks, state = self.load()
+        ls = self.ls()
+        count = 0
+        if self.cfg.architect_rungs:
+            changed = False
+            for bid, rec in list(ls.get("quarantine", {}).items()):
+                if rec.get("version") != F.slicer_version() or rec.get("ladder") != self._ladder_sig():
+                    ls["quarantine"].pop(bid)
+                    ls.get("reslices", {}).pop(bid, None)
+                    changed = True
+            if changed:
+                self.save_ls(ls)
+        eligible = self._resliceable(tasks, state, ls, now)
+        def order(bid):
+            entry = ls.get("to_slice", {}).get(bid, {})
+            priority = entry.get("priority")
+            if priority is None:
+                priority = min((t.priority for t in tasks.values() if F.row_of(t.backlog_id or t.id) == bid), default=9)
+            return (bid.startswith("rel-base-"), int(str(priority).removeprefix("P")), not bool(entry.get("guard")), bid)
+        first_waits = any(c == "first" and b not in self._slicers for b, c in eligible.items())
+        for bid in sorted(eligible, key=order)[:RESLICE_PER_STEP]:
+            cause = eligible[bid]
+            if first_waits and cause != "first" and bid not in self._slicers and sum(
+                    j.ctx["cause"] != "first" for j in self._slicers.values()) >= SLICE_PARALLEL // 3:
+                continue
+            try:
+                tasks, state = self.load()        # the previous row moved the plan: evidence is read fresh
+                ls = self.ls()
+                rec = ls.get("reslices", {}).get(bid, {})
+                used = rec.get("used", 0)
+                rung = 0 if cause == "first" else used + (cause == "stuck")
+                if self.cfg.architect_rungs and self.slice_fn == self._slice:
+                    guarded = ls.get("to_slice", {}).get(bid, {}).get("guard") or self._guard_traces(state).get(bid)
+                    hard_rung = self.cfg.hard_first_rung if "paid" in self.cfg.architect_rungs else 0
+                    rung = (0 if guarded else hard_rung) if cause == "first" else rec.get("rung", used) + (cause == "stuck")
+                    if ls.get("to_slice", {}).get(bid, {}).get("done"):
+                        rung = 0 if guarded else hard_rung
+                evidence = "\n".join(tid + ": " + str(state["tasks"][tid].get("reason") or "")
+                    for tid in F.stuck_rows(state, tasks).get(bid, []))
+                portion = self.slice_fn(bid, cause, rung, evidence, gen=rec.get("n", 0) + 1,
+                                       tasks=tasks, state=state, ls=ls, now=now)
+                if portion is not None:
+                    count += self._apply_portion(bid, rec.get("n", 0) + 1, portion, cause)
+            except Exception as exc:
+                ls = self.ls()
+                ls.setdefault("slice_wait", {})[bid] = now + SLICE_WAIT_S
+                self.save_ls(ls)
+                if not isinstance(exc, SliceWait):
+                    self.event("reslice", status="error", backlog_id=bid, reason=F.redact(str(exc)))
+        return count
 
     def _triage_prefetch(self, state, tasks, ls, now, limit=None, topup=False) -> bool:
         """The same portion in the background thread: the loop keeps admitting and reaping meanwhile."""
@@ -2704,6 +3285,7 @@ class Loop:
         fn = self.triage_fn
         if fn is None:
             from tools.agent_factory_import import triage_portion as fn
+        self._expire_slicer_decisions(ls)
         known = {r.get("backlog_id") for r in state["tasks"].values() if r.get("backlog_id")}
         known |= {t.backlog_id for t in tasks.values() if t.backlog_id}
         mtime = cfg.backlog.stat().st_mtime
@@ -2716,83 +3298,30 @@ class Loop:
         known |= self._not_code_known(ls, now)              # <id>: survives edits until the row's own text changes
         known |= {b for b, rec in (ls.get("parents") or {}).items()
                   if rec.get("children") and all(c in known for c in rec["children"])}   # all parts exist: no re-import
-        slicing = {b for b in self._stalled()["slice"] if b not in (ls.get("parents") or {})}
-        known -= slicing                                    # <id>: a row whose task stalled is imported again, cut into one-file parts
-        refeed = self._refeed_pick(state, tasks, ls)        # owner rule 3: a red guard is a new method for a failed row
-        known -= set(refeed)
+        known |= set(ls.get("to_slice", {})) | set(ls.get("quarantine", {}))
         t0 = self.clock()
         kwargs = dict(backlog_path=cfg.backlog, head_root=cfg.worktree,
                       known_backlog_ids=known, limit=cfg.triage_limit)
+        if _accepts(fn, "self_repo"):
+            kwargs["self_repo"] = cfg.self_repo
         if _accepts(fn, "profile_attempts"):
             kwargs["profile_attempts"] = dict(ls.get("profile_attempts") or {})
-        if _accepts(fn, "known_parts"):
-            kwargs["known_parts"] = self._known_parts()
         scopes = {b: s for b, s in (ls.get("head_scope") or {}).items() if b not in known and isinstance(s, dict)}
         if scopes and _accepts(fn, "scopes"):
             kwargs["scopes"] = scopes
-        if slicing and _accepts(fn, "force_slice"):
-            kwargs["force_slice"] = slicing
         if _accepts(fn, "trace"):
             kwargs["trace"] = self._guard_traces(state)
         if _accepts(fn, "ask"):
             kwargs["ask"] = self._locate_ask(ls, quotas)
-        if refeed and _accepts(fn, "refeed"):
-            kwargs["refeed"] = set(refeed)
-        else:
-            refeed = {}
-        return {"fn": fn, "kwargs": kwargs, "mtime": mtime, "dropped": dropped, "t0": t0, "now": now, "refeed": refeed}
+        return {"fn": fn, "kwargs": kwargs, "mtime": mtime, "dropped": dropped, "t0": t0, "now": now}
 
-    def _refeed_pick(self, state, tasks, ls) -> dict:
-        """{backlog_id: {guards, supersede}} of the rows to re-feed by their red guard (tools.factory_autofeed.refeed_rows);
-        a row the loop holds or closed is left alone. A fault is no re-feed."""
-        try:
-            from tools import factory_autofeed as AF
-            ids = {str(r.get("backlog_id") or "").split("#")[0] for r in state["tasks"].values()} - {""}
-            guards = AF.guard_map(AF.load_sweep(self.cfg.worktree), sorted(ids))
-            got = AF.refeed_rows(state["tasks"], tasks, guards, ls.get("refed") or {})
-            return {b: v for b, v in got.items() if b not in ls["holds"] and b not in ls["closed"]}
-        except ImportError:          # the public mirror withholds the feed module: no re-feed there
-            return {}
-        except Exception as e:
-            self.err("refeed pick", e)
-            return {}
-
-    def _refeed_book(self, ctx, portion, added, ls) -> None:
-        """The rows whose _g task was really added: one re-feed per row per guard file is recorded, and the old READY code tasks
-        that waited on a FAILED dependency of the row are closed (FAILED superseded_by_guard, no more attempts)."""
-        refeed = ctx.get("refeed") or {}
-        done = [t["backlog_id"] for t in portion if isinstance(t, dict) and str(t.get("id", "")).endswith(F.REFEED_SUFFIX)
-                and t.get("backlog_id") in refeed and t["id"] in set(added)]
-        if not done:
-            return
-        stalled = self._stalled()
-        close = []
-        for bid in done:
-            ls.setdefault("refed", {})[bid] = sorted(set(ls.get("refed", {}).get(bid, [])) | set(refeed[bid]["guards"]))
-            close += refeed[bid]["supersede"]
-            for tid in refeed[bid]["supersede"]:
-                stalled["quarantine"][tid] = {"backlog_id": bid, "reason": "superseded_by_guard", "at": self.clock()}
-        F.save_atomic(self._stalled_path(), stalled)
-
-        def settle(st):
-            for tid in close:
-                row = st["tasks"].get(tid)
-                if row is not None and row.get("status") == "READY":
-                    row.update(status="FAILED", reason="superseded_by_guard", lease=None, deadline=None)
-                    for key in ("pending_review", "candidate", "not_before", "began", "blocked_reason"):
-                        row.pop(key, None)
-        self._tx(settle)
-        self.event("triage", status="refed", reason="guard re-feed of %s; closed %d waiting tasks" % (
-            ",".join(done)[:100], len(close)))
-
-    @staticmethod
-    def _guard_traces(state) -> dict:
+    def _guard_traces(self, state) -> dict:
         """<id>: {backlog_id: [(rel, qualname, line)]} - the cloud trace of the failing guard the gate returned (base_red.result.path
         of the row's task), for the slicer to narrow each one-file part's guard to its file's functions."""
         out = {}
         for row in (state.get("tasks") or {}).values():
             try:
-                path = ((row.get("base_red") or {}).get("result") or {}).get("path") or ()
+                path = F.get_trace(self.cfg.state_dir, row)      # <id>: the trace lives beside the state
                 bid = row.get("backlog_id")
                 if bid and path:
                     out[str(bid)] = [(str(c[0]), str(c[1]), int(c[2])) for c in path][:400]
@@ -2837,11 +3366,10 @@ class Loop:
             if bid and bid not in ls["holds"]:
                 ls["holds"][bid] = self._scrub(F.redact(str(h.get("question", ""))))[:500]
                 new_holds.append(bid)
-        self._take_parents(res.get("parents"), ls)
-        try:
-            self._refeed_book(ctx, portion, added, ls)
-        except Exception as e:
-            self.err("refeed book", e)
+        queued = list(res.get("to_slice") or [])
+        for entry in queued:
+            bid = entry["backlog_id"]
+            ls.setdefault("to_slice", {}).setdefault(bid, dict(entry, at=now))
         self._sync_stale_rows(res.get("stale") or ())
         if res.get("not_code"):       # <id>: rows the triage cut by structure (documentation only) join the not_code book
             try:
@@ -2869,6 +3397,7 @@ class Loop:
         if isinstance(res.get("profile_attempts"), dict):
             ls.setdefault("profile_attempts", {}).update(res["profile_attempts"])
         for bid in new_holds:
+            ls.setdefault("hold_ver", {})[bid] = F.slicer_version()
             ls.get("profile_attempts", {}).pop(bid, None)
         deferred = list(res.get("deferred") or [])  # postponed by the portion deadline: not seen
         events = [self.rs(str(x)) for x in (res.get("events") or [])[:10]]
@@ -2880,7 +3409,7 @@ class Loop:
                         ls["hold_hash"][b] = texts[b]
             except Exception as e:
                 self.err("hold fingerprint", e)
-        progress = bool(added) or bool(new_holds)
+        progress = bool(added) or bool(new_holds) or bool(queued)
         if ctx.get("topup"):                         # <id>: an empty top-up portion lengthens the wait of the next one
             ls["ready_triage_idle"] = 0 if progress else min(int(ls.get("ready_triage_idle") or 0) + 1, 4)
         ls["triage_empty"] = None if (progress or deferred) else {"mtime": mtime,
@@ -2928,52 +3457,6 @@ class Loop:
         return len(weak)
 
     PARENTS_MAX = 100
-
-    def _known_parts(self) -> dict:
-        """{child backlog id: [files of that part]} of the parts that are already tasks (fields parent/part of the
-        plan rows; ids are never parsed): lets the triage see a changed file layout of a known part."""
-        try:
-            rows = json.loads(self.plan_path.read_text(encoding="utf-8")).get("tasks") or []
-        except (OSError, ValueError, AttributeError) as e:
-            self.err("known_parts: plan unreadable", e)
-            return {}
-        out = {}
-        for r in rows:
-            if (isinstance(r, dict) and r.get("parent") and r.get("part") and r.get("backlog_id")
-                    and r.get("kind", "code") != "unit_test" and isinstance(r.get("touch_files"), list)):
-                out[str(r["backlog_id"])] = [str(x) for x in r["touch_files"]][:20]
-        return out
-
-    def _take_parents(self, records, ls: dict) -> None:
-        """Remember the cut rows (E's ``parents`` records) until every code part is DONE/PROMOTED."""
-        if not isinstance(records, list):
-            return
-        if not isinstance(ls.get("parents"), dict):
-            ls["parents"] = {}
-        book = ls["parents"]
-        for rec in records:
-            try:
-                bid = str(rec["backlog_id"])
-                code = [str(x) for x in rec["code_tasks"]]
-                kids = [str(x) for x in rec["children"]]
-                tests = [str(x) for x in rec.get("test_tasks") or []]
-            except (KeyError, TypeError):
-                continue
-            if bid in ls["closed"]:
-                continue
-            if (not bid or not code or len(bid) > 64 or len(code) > 20 or len(kids) > 20
-                    or (bid not in book and len(book) >= self.PARENTS_MAX)):
-                self.event("triage", status="parent_dropped", reason="cut row %s is not remembered (%s)" % (
-                    self.rs(bid, 64), "table full" if len(book) >= self.PARENTS_MAX else "bad record"))
-                continue
-            book2 = self._stalled()
-            if book2["slice"].pop(bid, None) is not None:   # <id>: the stalled row is cut: its slice request is used up
-                F.save_atomic(self._stalled_path(), book2)
-            book[bid] = {"backlog_id": bid, "parts": len(code), "children": kids,
-                         "code_tasks": code, "test_tasks": tests[:20]}      # idempotent merge by backlog id
-            files = rec.get("files")
-            if isinstance(files, (list, dict)) and len(files) <= 20:
-                book[bid]["files"] = files
 
     def _close_parents(self, tasks, state, ls: dict) -> dict:
         """A cut row is closed (the durable close path) once ALL its code tasks are DONE or PROMOTED."""
@@ -3135,6 +3618,8 @@ class Loop:
         for r in rows.values():
             counts[r["state"]] = counts.get(r["state"], 0) + 1
         body = {"backlog_rows": len(backlog), "counts": dict(sorted(counts.items())), "rows": dict(sorted(rows.items()))}
+        if self._lk_unlinked is not None:
+            body["unlinked_requirements"] = self._lk_unlinked
         path = self.cfg.state_dir / "reconcile.json"
         try:
             old = json.loads(path.read_text(encoding="utf-8"))
@@ -3229,11 +3714,25 @@ class Loop:
         (only CLOUD_FLOOR of the machine stays) and the pool takes up to factory_cloud_gate.MAX_LIVE tasks."""
         self._headroom_seen = None
         free = self.free_ram_fn()
-        cloud = _cloud_up(getattr(self, "cloud_fn", None))   # the checks of a candidate run in the cloud: no RAM budget
-        floor = CLOUD_FLOOR if cloud else self._floor(task)
+        cloud_fn = getattr(self, "cloud_fn", None)
+        cloud = _cloud_up(cloud_fn)       # the checks of a candidate run in the cloud: no RAM budget
+        floor = CLOUD_FLOOR if cloud_fn is not None else self._floor(task)
         if free < floor:
             return "low_ram"
         live = list(self.pool.workers.values())
+        if cloud_fn is not None and not cloud:
+            # the cloud does not answer: no check can run (nothing runs on the laptop in its place). The cards wait; one
+            # trial card per CLOUD_TRIAL_S goes through to ask the cloud again (triage, slicer and links go on meanwhile).
+            now = self.clock()
+            if live or now - float(getattr(self, "_cloud_trial_at", 0.0) or 0.0) < CLOUD_TRIAL_S:
+                self._cloud_was_down = True
+                return "cloud_down"
+            self._cloud_trial_at = now
+            self._cloud_was_down = True
+            return ""
+        if cloud_fn is not None and getattr(self, "_cloud_was_down", False):
+            self._cloud_was_down = False
+            self._wake_cloud_defers()         # the first answer of the cloud: every card waiting for it starts now
         if not live:
             return ""
         if cloud and len(live) >= factory_cloud_gate.MAX_LIVE:
@@ -3247,14 +3746,14 @@ class Loop:
                 return "brake_trial"             # the half-open brake lets ONE trial pass through
         except Exception as e:
             self.err("capacity brake", e)
-        if not cloud:
-            est = self._estimate()
-            pending = 0
-            for w in live:
-                seen = (w.owned.peak_bytes() if w.owned is not None else None) or 0
-                pending += max(0, est - seen)    # the memory a live worker has not used yet is not free
-            if free - pending < floor + est:
-                return "low_ram"
+        # memory by the measure, with the cloud or without it: the <id> of the peaks of the last workers (``_estimate``)
+        est = self._estimate()
+        pending = 0
+        for w in live:
+            seen = (w.owned.peak_bytes() if w.owned is not None else None) or 0
+            pending += max(0, est - seen)        # the memory a live worker has not used yet is not free
+        if free - pending - _reserved_bytes() < floor + est:
+            return "low_ram"
         try:
             state = self.load()[1]
             unbooked = sum(1 for w in live if not (state["tasks"].get(w.tid, {}).get("began") or {}).get("booked"))
@@ -3270,9 +3769,10 @@ class Loop:
         """First model calls that could be booked now on the code route (0 when the quota is unknown)."""
         path = Path(self.cfg.channels)
         configured = json.loads(path.read_text(encoding="utf-8"))["channels"]
-        CH.validate(configured)
+        configured = CH.validate(configured)
         tokens = int(getattr(task, "estimated_tokens", 0) or 0)
-        order = CH.route_order(configured, "code", 1, tokens) or CH.route_order(configured, "code", 1, 0)
+        role = "edit" if getattr(task, "contract", "") else "code"     # the cards of a contract are edit calls
+        order = CH.route_order(configured, role, 1, tokens) or CH.route_order(configured, role, 1, 0)
         env = {**os.environ, **self.extra_env}
         quota = state.get("channel_quotas") if isinstance(state.get("channel_quotas"), dict) else {}
         seen = quota_ledger.view(quota, quota_ledger.others(path.resolve().parent / "quota", str(self.ckpt)))
@@ -3296,6 +3796,11 @@ class Loop:
             except OSError:
                 shutil.copy2(src, dst)
         shutil.copytree(self.mirror, tmp, copy_function=link)
+        try:        # the last finished neighbour map rides in the snapshot: the worker reads it, it never builds the graph
+            from tools.agent_factory_runner import NEIGHBORS_FILE
+            shutil.copyfile(Path(self.cfg.state_dir) / "neighbors" / "latest.json", tmp / NEIGHBORS_FILE)
+        except OSError:
+            pass
         os.replace(tmp, target)
         return target
 
@@ -3303,8 +3808,11 @@ class Loop:
         """Every snapshot but the newest and those a live worker reads goes (one that cannot be deleted waits)."""
         try:
             keep = {r.resolve() for r in self.pool.roots()}
+            keep.update(Path(j.ctx["root"]).resolve() for j in self._slicers.values())
             if self.base_sha:
                 keep.add((self.snap_dir / self.base_sha[:12]).resolve())
+            if self._rel_snap:                          # the final build reads its snapshot for as long as it sweeps
+                keep.add(Path(self._rel_snap).resolve())
             for d in self.snap_dir.iterdir() if self.snap_dir.is_dir() else ():
                 if d.resolve() in keep:
                     continue
@@ -3332,6 +3840,41 @@ class Loop:
             raise                                  # the claim is still ours: the caller retries (a row held for a lease)
         except (F.InvalidPlan, OSError) as e:
             self.err("unclaim " + tid, e)
+
+    def _wake_cloud_defers(self) -> None:
+        """The cloud answered again: every task postponed for ``cloud_down`` / ``cloud_busy`` may start now."""
+        def wake(state):
+            now = time.time()
+            for row in state["tasks"].values():
+                if (isinstance(row, dict) and row.get("status") == "READY"
+                        and row.get("defer_reason") in ("cloud_down", "cloud_busy")
+                        and float(row.get("not_before") or 0) > now):
+                    row["not_before"] = now
+        try:
+            self._tx(wake)
+        except Exception as e:      # noqa: BLE001  the defers expire by themselves in a minute
+            self.err("wake cloud defers", e)
+
+    def _note_gate(self, res: dict) -> None:
+        """The seconds of the gate of a finished pass by where they ran (``gate_secs``: cloud / local_fast / local). One
+        ``gate`` event per place; when the local share of the last hour is above FAST_LOCAL_SHARE the next workers get
+        ``--fast-local-s 0`` (every test to the cloud) for an hour (``gate status=fast_local_off``)."""
+        secs = res.get("gate_secs") if isinstance(res, dict) else None
+        if not isinstance(secs, dict):
+            return
+        now = self.clock()
+        log = [e for e in (getattr(self, "_gate_log", None) or []) if now - e[0] <= 3600]
+        for where in ("cloud", "local_fast", "local"):
+            value = secs.get(where)
+            if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0:
+                log.append((now, where, float(value)))
+                self.event("gate", status="where", where=where, secs=round(float(value), 3))
+        self._gate_log = log
+        total = sum(e[2] for e in log)
+        local = sum(e[2] for e in log if e[1] != "cloud")
+        if total > 0 and local / total > FAST_LOCAL_SHARE and now >= getattr(self, "_fast_local_off_until", 0.0):
+            self._fast_local_off_until = now + FAST_LOCAL_HOLD_S
+            self.event("gate", status="fast_local_off", reason="local share %.0f%% of %.0f s" % (100 * local / total, total))
 
     def _admit(self, tid: str, tasks, ls):
         """Claim ``tid`` in one transaction and start its runner. 1 = started, 0 = not runnable any more, an Outcome =
@@ -3373,11 +3916,16 @@ class Loop:
                 "--small-model", small, "--large-model", large,
                 "--review-model", review, "--channels", str(cfg.channels),
                 "--task", tid, "--lease", token, "--max-attempts", str(cfg.max_attempts),
+                "--reslice-after", str(F.RESLICE_AFTER),
                 "--max-model-calls", str(budget), "--base-sha", base,
                 "--port-repo", str(cfg.repo),    # the runner's --root is a plain copy: a port task's old commit lives here
                 "--execute", "--ack-host-access-risk"]
+            if cfg.self_repo:
+                cmd += ["--self-repo"]                        # 8.1: the gate of the second instance is the cloud only
             if (exps or {}).get("small_follow_up") in EXPERIMENTS["small_follow_up"]:
                 cmd += ["--small-follow-up", exps["small_follow_up"]]
+            if self.clock() < getattr(self, "_fast_local_off_until", 0.0):
+                cmd += ["--fast-local-s", "0"]                # local runs took too much: every test goes to the cloud
             slot = self.pool.free_slot()
             self.workers_dir.mkdir(parents=True, exist_ok=True)
             out_p, err_p = self.workers_dir / ("%d.out" % slot), self.workers_dir / ("%d.err" % slot)
@@ -3464,11 +4012,14 @@ class Loop:
         st = res.get("status")
         tid = res.get("task_id") or res.get("task") or ""
         calls = [c for c in (res.get("calls") or []) if isinstance(c, dict)]
+        if isinstance(res.get("edit_route_change"), dict):
+            self.event("route", **res["edit_route_change"])
         tin = self._sum_known(calls, "input_tokens", "input")
         tout = self._sum_known(calls, "output_tokens", "output")
         model = next((c.get("model") for c in calls if c.get("model")), None)
         reason = res.get("reason") or res.get("blocked_reason") or res.get("error")
         bid = self._bid(state, tasks, tid)
+        self._note_gate(res)
         self.event("run", task_id=tid or None, backlog_id=bid, dur_s=dur, status=st,
                    model=self.rs(model), base_sha=base, calls=len(calls) or None,
                    reason=F.redact(str(reason))[:200] if reason else None,
@@ -3616,8 +4167,7 @@ class Loop:
                 label = self._scrub(rkey or str(res.get("blocked_reason") or st))[:80]
                 ls.setdefault("no_proof", {})[key] = label
                 self.save_ls(ls)
-                if len(ls["no_proof"]) >= cfg.max_infra:
-                    return self._spread_brake(ls, out)
+                return self._spread_brake(ls, out)
             if st == "IDLE":
                 out.sleep = 60  # runner sees nothing to take although the checkpoint has READY
         return out
@@ -3763,16 +4313,6 @@ class Loop:
             if not repeat:
                 seen.append(sig)
                 del seen[:-5]
-            stalled, tier0 = False, None
-            if repeat:                        # <id> rule 3: the same failure again after the tier was raised
-                tier0 = (state["tasks"].get(tid) or {}).get("tier_floor")
-                if tier0 in TIER_ORDER and tier0 != TIER_ORDER[0]:
-                    esc = mem.setdefault("esc", {})
-                    old = esc.get(tid) if isinstance(esc, dict) else None
-                    n = (old.get("n", 0) if isinstance(old, dict) and old.get("sig") == sig else 0) + 1
-                    if isinstance(esc, dict):
-                        esc[tid] = {"sig": sig, "n": n}
-                    stalled = n >= self.ESC_FAILS
             task = tasks2.get(tid)
             for f in (task.touch_files if task else ())[:10]:
                 bucket = per_file.setdefault(f, {})
@@ -3783,25 +4323,9 @@ class Loop:
                 while len(table) > ERROR_MEMORY_MAX:
                     table.pop(next(iter(table)))
             F.save_atomic(self._mem_path(), mem)
-            if stalled and tid in state["tasks"]:
-                self._stall(tid, tasks2, state, sig, tier0, rkey)
-                return
             if repeat and tid in state["tasks"]:
                 note = F.REPEAT_MARK + " " + (words or self._reason_class(rkey))
-                marks = {}
-
-                def raise_floor(st):
-                    row = st["tasks"][tid]
-                    F.add_feedback(st, tid, "gate", note)
-                    cur = row.get("tier_floor") if row.get("tier_floor") in TIER_ORDER else TIER_ORDER[0]
-                    new = TIER_ORDER[min(TIER_ORDER.index(cur) + 1, len(TIER_ORDER) - 1)]
-                    row["tier_floor"] = new
-                    marks.update(cur=cur, new=new)
-                self._tx(raise_floor)
-                cur, new = marks["cur"], marks["new"]
-                # the runner does not read tier_floor yet (backlog fac-tier-floor): "requested", never a false "raised"
-                self.event("route", task_id=tid, status="requested", reason="repeated_error",
-                           signature=self.rs(sig, 120), tier_from=cur, tier_to=new, applied=False)
+                self._tx(lambda st: F.add_feedback(st, tid, "gate", note))
         except Exception as e:                           # memory is an aid: it must never stop the loop
             self.err("error memory", e)
 
@@ -3822,14 +4346,8 @@ class Loop:
 
     @staticmethod
     def _scope_limit(state, tid: str) -> int:
-        """SCOPE_MAX_FILES, or the paid tier's limit for a task whose tier_floor is 'escalation'."""
-        row = ((state or {}).get("tasks") or {}).get(tid) or {}
-        if _paid_coder is None or row.get("tier_floor") != "escalation":
-            return SCOPE_MAX_FILES
-        try:
-            return max(SCOPE_MAX_FILES, int(_paid_coder.files_limit(int(row.get("attempts") or 0), "escalation")))
-        except Exception:  # noqa: BLE001 - an extra: without it the free limit stands
-            return SCOPE_MAX_FILES
+        """The same file bound applies to every free editor."""
+        return SCOPE_MAX_FILES
 
     def _scope_add(self, tid: str, tasks: dict, add, state=None) -> None:
         """The runner's path check found a module the failing test runs outside the task, and the model named it
@@ -3865,6 +4383,9 @@ class Loop:
         """The run reached the model or the gates (so a failure is about the pipeline), and it was
         not a wait, a budget stop or a block BEFORE the model."""
         blocked = str(res.get("blocked_reason") or "")
+        waits = {"cloud_down", "cloud_busy", "reslice:stale", "SliceWait"}
+        if (st in waits or rkey in waits or blocked in waits or res.get("channel_reason") in waits):
+            return False
         if (st in ("WAITING_CHANNEL", "IDLE", "NO_RESULT") or rkey in CHANNEL_REASONS
                 or rkey in BEFORE_MODEL or blocked in BEFORE_MODEL
                 or rkey == "review_chain_short"):   # a wait for a free critic model, not a failed run: never brakes
@@ -3886,7 +4407,11 @@ class Loop:
                 rkey in JUDGED_OUTCOMES or blocked in JUDGED_OUTCOMES)
 
     def _spread_brake(self, ls: dict, out: Outcome) -> Outcome:
-        """K different tasks failed without any proof of work: the same BRAKE path, with the causes."""
+        """At least five different failures, covering half the live cards, warrant a trial pause."""
+        state = self.load()[1]
+        live = sum(row.get("status") not in F.SATISFIED | {"FAILED"} for row in state["tasks"].values())
+        if len(ls["no_proof"]) < max(5, (live + 1) // 2):
+            return out
         hist: dict = {}
         for label in ls["no_proof"].values():
             hist[label] = hist.get(label, 0) + 1
@@ -3961,6 +4486,45 @@ class Loop:
         return row.get("backlog_id") or (tasks[tid].backlog_id if tid in tasks else None) or None
 
     # -- PROMOTE
+    def _after_merge(self, tid: str, sha: str, *, recovered: bool = False, ls: dict | None = None,
+                     base_sha: str | None = None, head: str | None = None,
+                     dur_s: float | None = None) -> None:
+        """Complete the durable post-merge effects on both normal and recovery paths.  ``ls``: the caller's own loop state, which it
+        saves itself (a second copy saved here would be overwritten by it); without it the state is read and saved here."""
+        from tools import factory_architect as A
+        tasks, state = self.load()
+        own = ls is None
+        ls = self.ls() if own else ls
+        task = tasks.get(tid)
+        bid = self._bid(state, tasks, tid)
+        dirty = False
+        if bid and not str(bid).lower().startswith("fac-"):     # every merge of a product row counts, a repeated one too: a final build is due
+            ls["promoted_total"] = int(ls.get("promoted_total") or 0) + 1
+            dirty = True
+        if tid not in ls.setdefault("slicer_merges", {}):
+            ls["slicer_merges"][tid] = sha
+            engine = state["tasks"].get(tid, {}).get("engine")
+            if engine:
+                ls.setdefault("contracts_by_engine", {}).setdefault(engine, {"made": 0, "merged": 0})["merged"] += 1
+            more = self._contract(task).get("more")
+            if task and task.kind == "code" and more:
+                bid = F.row_of(task.backlog_id or tid)
+                step = ls.setdefault("row_steps", {}).get(bid, 0) + 1
+                ls["row_steps"][bid] = step
+                if step < A.MAX_STEPS:
+                    ls.setdefault("to_slice", {})[bid] = dict(at=self.clock(), hints=list(task.touch_files),
+                        guard="", priority=task.priority, done=F.redact("Merged " + tid + ": " + str(more)))
+                else:
+                    ls["holds"][bid] = "architect step limit reached"
+            dirty = True
+        if dirty and own:
+            self.save_ls(ls)
+        if self._closes_row(task, ls.get("parents")):
+            self._write_closure(tid, self._bid(state, tasks, tid), {"commit": sha}, "promoted")
+        self.event("promote", task_id=tid, backlog_id=self._bid(state, tasks, tid),
+                   status="promoted", reason="already_merged" if recovered else "promoted",
+                   commit=sha, recovered=recovered, base_sha=base_sha, head=head, dur_s=dur_s)
+
     def _promote(self, tid, tasks, state, ls) -> Outcome:
         cfg, wt = self.cfg, Path(self.cfg.worktree)
         t0 = self.clock()
@@ -4013,8 +4577,10 @@ class Loop:
                 break
         if done_sha:
             self._tx(lambda st: F.mark_promoted(st, tid, done_sha))
+            self._after_merge(tid, done_sha, recovered=True, ls=ls, base_sha=fields["base_sha"],
+                              head=cur, dur_s=round(self.clock() - t0, 3))
             package_done()
-            return finish("promoted", "already_merged", commit=done_sha)
+            return Outcome(action="PROMOTE", reason="already_merged", status="promoted")
         try:
             why = self._refuse_reason(rel, src, tasks.get(tid))
         except Exception as e:  # a package we cannot even read is a package failure
@@ -4041,6 +4607,13 @@ class Loop:
                 near = self._own_neighbours(tid, tasks.get(tid), base, cur)
                 if near:
                     moved, keep = "рядом сдвинулось (свой promote): " + ", ".join(near[:5]), True
+        if moved and "3-way: конфликт слияния" in moved and getattr(tasks.get(tid), "contract", ""):
+            # a card of a contract whose merge conflicts: cut again on the fresh code, no strike (AF.fail_row)
+            self._tx(lambda st: (self._lease_and_fail(st, tid), F.add_feedback(st, tid, "gate", moved)))
+            shutil.rmtree(src, ignore_errors=True)
+            ls["bases"].pop(tid, None)
+            self.save_ls(ls)
+            return finish("requeued", "merge_conflict")
         if moved:
             kept = self._tx(lambda st: self._requeue_review(st, tid, moved, keep))
             if not kept:
@@ -4071,6 +4644,13 @@ class Loop:
                 shutil.copyfile(path, dst)
             if conflicts:
                 self._restore(wt, rel)
+                if getattr(tasks.get(tid), "contract", ""):       # a card of a contract: cut again on the fresh code
+                    self._tx(lambda st: (self._lease_and_fail(st, tid),
+                                         F.add_feedback(st, tid, "gate", "3-way: конфликт слияния: " + ", ".join(conflicts[:5]))))
+                    shutil.rmtree(src, ignore_errors=True)
+                    ls["bases"].pop(tid, None)
+                    self.save_ls(ls)
+                    return finish("requeued", "merge_conflict")
                 kept = self._tx(lambda st: self._requeue_review(st, tid, "3-way: конфликт слияния: " + ", ".join(conflicts[:5]), False))
                 shutil.rmtree(src, ignore_errors=True)
                 ls["bases"].pop(tid, None)
@@ -4115,12 +4695,12 @@ class Loop:
             return finish("no_diff", "no_diff", "no_diff")
         sha = git_run(wt, "rev-parse", "HEAD").strip()
         self._tx(lambda st: F.mark_promoted(st, tid, sha))
-        if self._closes_row(tasks.get(tid), ls.get("parents")):
-            self._write_closure(tid, fields.get("backlog_id"), {"commit": sha}, "promoted")
+        self._after_merge(tid, sha, ls=ls, base_sha=fields["base_sha"], head=cur,
+                          dur_s=round(self.clock() - t0, 3))
         self._clear_requeues(ls, tid)
         ls.get("promote_fail", {}).pop(tid, None)
         package_done()
-        return finish("promoted", "promoted", proof=True, commit=sha)
+        return Outcome(action="PROMOTE", reason="promoted", status="promoted", proof=True)
 
     @staticmethod
     def _block_review(state, tid, reason, note, now=None) -> None:
@@ -4159,6 +4739,14 @@ class Loop:
             except Exception:
                 bad.append(name)
         return "3-way: конфликт слияния: " + ", ".join(bad[:5]) if bad else "3-way: слияние чистое, нужен перепрогон ворот"
+
+    @staticmethod
+    def _lease_and_fail(state, tid) -> str:
+        """A REVIEW row holds no lease: it takes one for this write, then AF.fail_row sends the row back to the slicer
+        (reslice:stale, no strike)."""
+        token = "promote-" + uuid.uuid4().hex
+        state["tasks"][tid].update(status="RUNNING", lease=token)
+        return F.fail_row(state, tid, token, "reslice:stale")
 
     def _requeue_review(self, state, tid, note, keep) -> bool:
         """REVIEW -> READY. ``keep``: the approved candidate resumes at the gates on the new base, no coder call."""
@@ -4215,8 +4803,9 @@ class Loop:
             return "outside task scope: " + ", ".join(extra[:5])
         texts = {r: (src.joinpath(*r.split("/"))).read_text(encoding="utf-8", errors="replace")
                  for r in rel}
-        bad = factory_gate.weakening_violations(self.mirror, texts, task.kind)   # no names: the loop never
-        return "; ".join(bad[:3]) if bad else ""                                  # merges the factory's own code
+        named = tuple(task.touch_files) if getattr(getattr(self, "cfg", None), "self_repo", False) and task else ()   # 8.1: only the second instance merges the factory's
+        bad = factory_gate.weakening_violations(self.mirror, texts, task.kind, named)   # own code, and only files the contract names
+        return "; ".join(bad[:3]) if bad else ""
 
     @staticmethod
     def _dirty_paths(wt: Path) -> list[str]:
@@ -4258,6 +4847,7 @@ class Loop:
                     key = str(r.get("blocked_reason") or "unknown")
                     blocked[key] = blocked.get(key, 0) + 1
             stats = {
+                "contracts_by_engine": ls.get("contracts_by_engine", {}),
                 "promoted": sum(r["status"] == "PROMOTED" for r in rows),     # merged into the factory branch
                 "accepted": len(ls["accepted"]) if isinstance(ls.get("accepted"), dict) else 0,   # taken by the coordinator
                 "rejected": tot.get("rejected", 0),
@@ -4273,6 +4863,22 @@ class Loop:
                 "last_iteration": self.ts(), "run_id": self.run_id,
                 "iterations": self.iterations,
                 "max_workers": self._max_k, "mean_k": round(self._k_sum / self._k_n, 2) if self._k_n else None}
+            stats["blockers"] = F.hold_census(state, tasks)
+            stats["queues"] = {"to_slice": len(ls.get("to_slice", {})),
+                "slicing": len(ls.get("slicing", {})),
+                "slice_wait": sum(until > self.clock() for until in ls.get("slice_wait", {}).values()),
+                "ready": sum(r["status"] == "READY" for r in rows),
+                "running": sum(r["status"] == "RUNNING" for r in rows),
+                "review": sum(r["status"] == "REVIEW" for r in rows),
+                "quarantine": len(set(ls.get("quarantine", {})) | {
+                    F.row_of(r.get("backlog_id") or tid) for tid, r in state["tasks"].items()
+                    if r.get("reason") == "quarantine"})}
+            stats["edit_by_tier"] = (state.get("channel_quotas") or {}).get("edit_by_tier", {})
+            counts: dict = {}
+            for at, kind in ls.get("slice_faults", []):
+                if self.clock() - at < 3600:
+                    counts[kind] = counts.get(kind, 0) + 1
+            stats["slice_faults"] = counts
             F.save_atomic(self.stats_path, stats)
             if blocked or stats["quarantine"] or ls["holds"] or any(
                     t.only_opus or not t.privacy_safe for t in tasks.values()):
@@ -4345,56 +4951,6 @@ class Loop:
             else:
                 os.environ[name] = value
 
-    def _idle_requeue(self, tasks, state, now):
-        """<id> (live 20.11: HOLD only_opus_or_blocked with 7 FAILED tasks of a retryable class that only a new factory
-        version would have given back): nothing runnable, so every F.BLOCK_TERM_S the FAILED/BLOCKED tasks whose last
-        return is older than cfg.requeue_term_s go back through the answer box (factory_requeue, max 3 shared). Only
-        Opus and private tasks are never given back to an external model. Outcome, or None (nothing given back)."""
-        from tools import factory_requeue
-        if not any(r.get("status") in ("FAILED", "BLOCKED") for r in state["tasks"].values()):
-            return None
-        ls = self.ls()
-        if now - float(ls.get("requeue_at") or 0) < F.BLOCK_TERM_S:
-            return None
-        ls["requeue_at"] = now
-        self.save_ls(ls)
-        skip = {tid for tid, t in tasks.items() if t.only_opus or not t.privacy_safe}
-        skip |= set(state["tasks"]) - set(tasks)    # no plan row: privacy unknown, never given to an external model
-        skip |= self._quarantined()                 # <id> rule 3: no more attempts
-        # 21.11 rule 3: a jam (nothing runnable, nothing running) lifts the max_times ceiling and the unclassified skip
-        # for the tasks above (one round per jam episode, factory_requeue.jam_of); FAILED test tasks that READY code
-        # tasks wait for come first. The skip above (owner rules, quarantine) is never lifted.
-        runnable = [] if self.pool.workers else F.ready(tasks, state, now=now)
-        jam = factory_requeue.jam_of(state, runnable) and not self.pool.workers
-        blocking = {dep for tid, t in tasks.items() if (state["tasks"].get(tid) or {}).get("status") == "READY"
-                    for dep in t.depends_on if (state["tasks"].get(dep) or {}).get("status") in ("FAILED", "BLOCKED")}
-        try:
-            done = factory_requeue.run(self.cfg.state_dir, _ROOT.name, skip=skip, check=self._check_note,
-                                       now=now, term_s=self.cfg.requeue_term_s, jam=jam, blocking=blocking)
-        except Exception as e:
-            self.err("idle requeue", e)
-            return None
-        if not done:
-            return None
-        text = "term %ds: %s" % (self.cfg.requeue_term_s, ",".join(done))
-        self.event("loop", action="REQUEUE", status="ok", reason=text[:200])
-        return Outcome(sleep=1, action="REQUEUE", reason=self.rs(text, 200))
-
-    def _requeue_on_new_version(self) -> None:
-        """<id>: a new factory version gets one more try at the FAILED/BLOCKED tasks whose failure class it may have
-        fixed (tools/factory_requeue.py); the answers go through the Opus answer box; a fault never stops the loop."""
-        from tools import factory_requeue
-        try:
-            tasks, _ = self.load()
-            skip = {tid for tid, t in tasks.items() if t.only_opus or not t.privacy_safe} | self._quarantined()
-            done = factory_requeue.run(self.cfg.state_dir, _ROOT.name, skip=skip, check=self._check_note)
-        except Exception as e:
-            self.err("requeue", e)
-            return
-        if done:
-            self.event("loop", action="REQUEUE", status="ok",
-                       reason="version %s: %s" % (_ROOT.name, ",".join(done))[:200])
-
     def _drain_before_exit(self) -> None:
         """STOP, the deadline or --once with workers still live: no admission, every worker is accounted first."""
         if self.pool.workers:
@@ -4423,7 +4979,7 @@ class Loop:
                 self.event("infra", status="skipped_channel", reason=note)
             self.event("loop", action="START", status="ok", reason="start", pid=os.getpid(),
                        branch=cfg.branch, until=str(cfg.until) if cfg.until else None)
-            self._requeue_on_new_version()
+            self._reenter_on_new_slicer()
             self._decide_experiments()
             self._discover_keys()
             while True:
@@ -4436,7 +4992,6 @@ class Loop:
                     self.event("loop", action="EXIT", status="deadline", reason="deadline")
                     return EXIT_OK
                 self._survive_tick()                # <id>: reaper, idle watchdog
-                self._selffix()                     # at most once an hour (<id>)
                 self._head_holds()                  # idle: at once, busy: every 20 min (<id>/<id>)
                 out = self.step()
                 self._last_out = out
@@ -4668,6 +5223,8 @@ def parse_args(argv=None):
     p.add_argument("--once", action="store_true", help="one iteration (debugging)")
     p.add_argument("--clear-brake", action="store_true", help="remove BRAKE and start")
     p.add_argument("--no-cloud-sweep", action="store_true", help="do not refresh the red-guard sweep in the cloud")
+    p.add_argument("--self-repo", action="store_true", help="the repository is the factory's own code: fac-* rows only, named files mergeable")
+    p.add_argument("--exit-when-idle", action="store_true", help="end the loop when nothing is left to do (the canary)")
     p.add_argument("--env-file", type=Path, help="read ONLY the channels' key_env names from it")
     p.add_argument("--small-model", default=Config.small_model)
     p.add_argument("--large-model", default=Config.large_model)
@@ -4714,6 +5271,7 @@ def answer_main(argv) -> int:
     p.add_argument("--kind", choices=("code", "unit_test"), help="for a new task from a hold")
     p.add_argument("--port", help="a port task: the old-branch commit whose behaviour it brings over (its diff is "
                                   "shown to the coder as a reference)")
+    p.add_argument("--contract", help="JSON architect contract")
     p.add_argument("--note", default="")
     a = p.parse_args(argv)
     if a.port is not None and not F.PORT_SHA.fullmatch(a.port):
@@ -4754,6 +5312,13 @@ def answer_main(argv) -> int:
             p.error("several tasks share %s (%s): give --task-id" % (a.backlog_id, ", ".join(same[:5])))
     ans = {"backlog_id": a.backlog_id, "task_id": a.task_id, "note": F.redact(a.note),
            "goal": a.goal}
+    if a.contract is not None:
+        try:
+            if not isinstance(json.loads(a.contract), dict):
+                raise ValueError("contract must be an object")
+        except ValueError as exc:
+            p.error(str(exc))
+        ans["contract"] = a.contract
     if a.release_private:
         ans["release_private"] = True
     if a.port:
@@ -4807,7 +5372,7 @@ def answer_main(argv) -> int:
             pass
     ans = {k: v for k, v in ans.items() if v not in (None, "")}
     if not any(k in ans for k in ("touch_files", "tests", "read_files", "context_targets",
-                                  "depends_on", "note", "close", "goal", "accept", "port_from")):
+                                  "depends_on", "note", "close", "goal", "accept", "port_from", "contract")):
         p.error("empty answer: give fields or --note")
     box = Path(a.state_dir) / "answers"
     box.mkdir(parents=True, exist_ok=True)
@@ -4838,6 +5403,28 @@ def _cloud_sweep_fn(a):
         return None
 
 
+def _release_fn(a):
+    """The final build (tools.factory_release.run over the cloud sweep), or None with --no-cloud-sweep / --self-repo (the second
+    instance has no product to build) / when a module is absent."""
+    if getattr(a, "no_cloud_sweep", False) or getattr(a, "self_repo", False):
+        return None
+    try:
+        from tools import echo_cloud, factory_release
+    except Exception:
+        return None
+
+    def build(**kw):
+        def recheck(names):                         # one short cloud run of the red files; a file that did not finish counts as reproduced
+            files = sorted({n.split("::", 1)[0] for n in names})
+            _p, res, _id = echo_cloud.sweep(src=kw["snapshot"], files=files, shards=min(len(files), 4) or 1,
+                                            label=factory_release.next_label(kw["state_dir"], kw["sha"], prefix="rel-re"))
+            if any(isinstance(r, dict) and r.get("missing") for r in res.values()):
+                return list(names)
+            return [n for r in res.values() for n in (r.get("failed_ids") or ())]
+        return factory_release.run(sweep_fn=echo_cloud.sweep, recheck_fn=recheck, **kw)
+    return build
+
+
 def main(argv=None) -> int:
     argv = sys.argv[1:] if argv is None else list(argv)
     if argv and argv[0] == "answer":
@@ -4850,10 +5437,19 @@ def main(argv=None) -> int:
     cfg = Config(state_dir=a.state_dir, repo=a.repo, branch=a.branch, worktree=a.worktree,
                  backlog=a.backlog, channels=a.channels, until=a.until, once=a.once,
                  small_model=a.small_model, large_model=a.large_model,
-                 review_model=a.review_model, env_file=a.env_file, clear_brake=a.clear_brake)
+                 review_model=a.review_model, env_file=a.env_file, clear_brake=a.clear_brake,
+                 self_repo=a.self_repo, exit_when_idle=a.exit_when_idle)
+    from tools import factory_paid_critic as PK, factory_architect as A
+    rungs = ["free", "free_main"]
+    paid = bool((keys.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_API_KEY")) and not PK.credit_dead())
+    if paid:
+        rungs.append("paid")
+        if callable(getattr(A, "ask_agent", None)) and shutil.which("claude"):
+            rungs.append("agent")
+    cfg.architect_rungs = tuple(rungs)
     try:
         loop = Loop(cfg, extra_env=keys, startup_notes=["no key for channel env " + n for n in absent],
-                    cloud_fn=getattr(factory_cloud_gate, "available", None), sweep_fn=_cloud_sweep_fn(a), reap_fn=lambda **kw: SV.reap(procs_fn=SV.list_processes, kill_fn=SV.kill_tree, **kw))
+                    cloud_fn=getattr(factory_cloud_gate, "available", None), sweep_fn=_cloud_sweep_fn(a), release_fn=_release_fn(a), reap_fn=lambda **kw: SV.reap(procs_fn=SV.list_processes, kill_fn=SV.kill_tree, **kw))
     except ValueError as e:
         raise SystemExit(str(e))
     return loop.run()

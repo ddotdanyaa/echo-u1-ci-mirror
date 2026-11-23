@@ -9,7 +9,7 @@ from __future__ import annotations
 import contextlib
 import logging
 from dataclasses import dataclass
-from hashlib import sha256
+from hashlib import sha1, sha256
 from pathlib import Path, PurePosixPath
 import json
 import os
@@ -23,6 +23,46 @@ import xml.etree.ElementTree as ET
 STATES = frozenset(("READY", "RUNNING", "REVIEW", "DONE", "PROMOTED", "FAILED", "BLOCKED"))
 SATISFIED = frozenset(("DONE", "PROMOTED"))  # dependency is met
 REFEED_SUFFIX = "_g"   # id suffix of the guard-backed re-feed of a failed row (tools.factory_autofeed.refeed_rows)
+MAX_RESLICES = 2
+RESLICE_AFTER = 2
+RESLICE_ID = re.compile(r"_r\d+(?:_test)?$")
+CONTRACT_MAX = 24000
+REASON_CLOUD_DOWN = "cloud_down"
+REASON_CLOUD_BUSY = "cloud_busy"
+SLICER_FILES: tuple[str, ...] = ("factory_architect.py", "factory_cards.py", "agent_factory_import.py")
+_slicer_version: str | None = None
+
+
+def slicer_version() -> str:
+    """Fingerprint the slicer's source once per process."""
+    global _slicer_version
+    if _slicer_version is None:
+        digest = sha1()
+        for name in SLICER_FILES:
+            path = Path(name)
+            if not path.is_absolute():
+                path = Path(__file__).parent / path
+            try:
+                digest.update(path.read_bytes())
+            except FileNotFoundError:
+                continue
+        _slicer_version = "s" + digest.hexdigest()[:10]
+    return _slicer_version
+
+
+def is_terminal(reason: str | None) -> bool:
+    return bool(reason and (reason == "quarantine" or
+                           reason.startswith(("superseded", "closed", "not_code", "sliced"))))
+
+
+def row_of(backlog_id: str) -> str:
+    return backlog_id.split("#")[0]
+
+
+def call_cap(parts: int = 1) -> int:
+    return 2 * (max(1, parts) * 3 + 4)
+
+
 FEEDBACK_SOURCES = frozenset(("gate", "review", "opus"))
 MAX_STRIKES = 6   # 21.11 (was 3): the line a quarantine needs. A plain red (gate/review/no effect) is a retry and saturates one below it
 UNSAFE_STRIKE = 2  # strikes one unsafe rejection counts (MAX_STRIKES // 3: three unsafe candidates quarantine)
@@ -150,6 +190,8 @@ class Task:
     goal: str = ""      # the backlog row text the coder works from (<= GOAL_MAX chars)
     port_from: str = ""  # a port task: the old-branch commit whose behaviour it brings over (its diff is a reference)
 
+    contract: str = ""
+
     @property
     def scope(self) -> frozenset[str]:
         return frozenset(p.casefold() for p in self.touch_files)
@@ -239,6 +281,16 @@ def read_plan(plan: object) -> dict[str, Task]:
         port_from = row.get("port_from", "")
         if not isinstance(port_from, str) or (port_from and not PORT_SHA.fullmatch(port_from)):
             raise InvalidPlan("port_from must be a commit sha")
+        contract = row.get("contract", "")
+        if not isinstance(contract, str) or len(contract) > CONTRACT_MAX:
+            raise InvalidPlan("invalid contract")
+        if contract:
+            try:
+                parsed_contract = json.loads(contract)
+            except ValueError as exc:
+                raise InvalidPlan("contract must be a JSON object") from exc
+            if not isinstance(parsed_contract, dict):
+                raise InvalidPlan("contract must be a JSON object")
         scope = set(files['touch_files'] + files['read_files'] + files['tests'])
         if any(k not in scope or not isinstance(v, str) for k, v in targets.items()):
             raise InvalidPlan('context target outside approved files')
@@ -246,7 +298,7 @@ def read_plan(plan: object) -> dict[str, Task]:
                            files["touch_files"], files["read_files"], files["tests"],
                            row.get("privacy_safe", True) and not is_private_text(title + "\n" + goal), size, opus,
                            tuple(sorted(targets.items())), kind, budget,
-                           backlog_id, priority, work_kind, goal, port_from)
+                           backlog_id, priority, work_kind, goal, port_from, contract)
     for task in result.values():
         if any(d not in result or d == task.id for d in task.depends_on):
             raise InvalidPlan("missing/self dependency")
@@ -296,7 +348,7 @@ def sync_state(tasks: dict[str, Task], state: dict) -> dict:
         if row is None:
             row = state["tasks"][tid] = _row_for(task)
             if is_quarantined(state, task.backlog_id):
-                row.update(status="FAILED", reason="quarantine")
+                row.update(status="FAILED", reason="quarantine", q_ver=slicer_version())
         elif isinstance(row, dict):
             for k, v in _row_for(task).items():
                 if k not in ("status", "attempts", "lease", "deadline", "evidence"):
@@ -356,6 +408,34 @@ def validate_state(tasks: dict[str, Task], state: dict) -> None:
         raise InvalidPlan("invalid infra streak")
 
 
+def stuck_rows(state, tasks) -> dict[str, list[str]]:
+    """Current-generation failures, grouped by the whole backlog row."""
+    grouped = {}
+    for tid, task in tasks.items():
+        bid = row_of(task.backlog_id or tid)
+        grouped.setdefault(bid, []).append(tid)
+    result = {}
+    rows = state["tasks"]
+    for bid, ids in grouped.items():
+        if any(rows[t]["status"] in ("RUNNING", "REVIEW") for t in ids):
+            continue
+        def generation(t):
+            match = re.search(r"_r(\d+)(?:_test)?$", t)
+            return int(match[1]) if match else 0
+        newest = max(map(generation, ids))
+        current = [t for t in ids if generation(t) == newest]
+        code = [t for t in current if tasks[t].kind == "code"]
+        if code and all(rows[t]["status"] in SATISFIED for t in code):
+            continue
+        stuck = [t for t in current if (
+            rows[t]["status"] == "FAILED" and not is_terminal(rows[t].get("reason"))) or (
+            rows[t]["status"] == "READY" and any(
+                rows.get(d, {}).get("status") == "FAILED" for d in tasks[t].depends_on))]
+        if stuck:
+            result[bid] = sorted(stuck)
+    return result
+
+
 def ready(tasks: dict[str, Task], state: dict, *, google: bool = True,
           occupied: tuple[str, ...] = (), now: float | None = None) -> list[str]:
     """Sorted tasks ready to execute, mutually compatible. Busy = RUNNING and REVIEW rows (a candidate holds its files
@@ -364,10 +444,10 @@ def ready(tasks: dict[str, Task], state: dict, *, google: bool = True,
     validate_state(tasks, state)
     now = time.time() if now is None else float(now)
     read_in_use = set()
-    write_in_use = {p.casefold() for p in occupied}
+    write_in_use = {(p.casefold(), None) for p in occupied}
     for tid, row in state["tasks"].items():
         if row["status"] in ("RUNNING", "REVIEW"):
-            write_in_use.update(p.casefold() for p in tasks[tid].touch_files + tasks[tid].tests)
+            write_in_use.update(write_claims(tasks[tid]))
             read_in_use.update(p.casefold() for p in tasks[tid].read_files)
     found = []
     for tid in sorted(tasks, key=lambda t: (tasks[t].priority, t)):
@@ -379,14 +459,58 @@ def ready(tasks: dict[str, Task], state: dict, *, google: bool = True,
         if google and (not task.privacy_safe or task.only_opus):
             continue
         reads = {p.casefold() for p in task.read_files}
-        writes = {p.casefold() for p in task.touch_files + task.tests}
-        if (writes & (write_in_use | read_in_use)) or (reads & write_in_use):
+        writes = write_claims(task)
+        if _claims_clash(writes, write_in_use) or {f for f, _ in writes} & read_in_use \
+                or reads & {f for f, _ in write_in_use}:
             continue
         if all(state["tasks"][dep]["status"] in SATISFIED for dep in task.depends_on):
             found.append(tid)
             write_in_use.update(writes)
             read_in_use.update(reads)
     return found
+
+
+def write_claims(task: Task) -> set[tuple[str, str | None]]:
+    """What a task books for writing: (file, None) is the whole file; (file, function) only that function. A task with
+    a contract books the pairs "file + function" of its parts; a part with an anchor or without symbols, a test file
+    and a file the contract does not name book the whole file."""
+    whole = {p.casefold() for p in task.touch_files + task.tests}
+    by_file: dict[str, set[str] | None] = {}
+    if task.contract:
+        try:
+            parts = json.loads(task.contract).get("parts") or []
+        except (ValueError, AttributeError):
+            parts = []
+        for part in parts:
+            if not isinstance(part, dict) or not isinstance(part.get("file"), str):
+                continue
+            name = part["file"].casefold()
+            symbols = part.get("symbols") or []
+            if part.get("anchor") or not symbols:
+                by_file[name] = None
+            elif by_file.get(name, set()) is not None:
+                by_file.setdefault(name, set()).update(str(s) for s in symbols)
+    claims = set()
+    for name in whole:
+        symbols = by_file.get(name)
+        if symbols:
+            claims.update((name, s) for s in symbols)
+        else:
+            claims.add((name, None))
+    return claims
+
+
+def _claims_clash(claims, in_use) -> bool:
+    for name, symbol in claims:
+        for other, other_symbol in in_use:
+            if name == other and (symbol is None or other_symbol is None or _symbols_overlap(symbol, other_symbol)):
+                return True
+    return False
+
+
+def _symbols_overlap(a: str, b: str) -> bool:
+    """The same name, or one inside the other: a class ``Foo`` holds its method ``Foo.bar``."""
+    return a == b or a.startswith(b + ".") or b.startswith(a + ".")
 
 
 def acquire(tasks: dict[str, Task], state: dict, tid: str, *,
@@ -437,7 +561,7 @@ def unclaim(state: dict, tid: str, token: str) -> None:
 
 def settle(state: dict, tid: str, token: str, *,
            tests_ok: bool, evidence: str, max_attempts: int = MAX_ATTEMPTS,
-           strike: bool = True, unsafe: bool = False, failed_models=()) -> str:
+           strike: bool = True, unsafe: bool = False, failed_models=(), reslice_after: int = 0) -> str:
     """Fenced completion. Green requires manual review, never auto-DONE.
 
     A red result is a strike by backlog_id unless strike=False (channel/provider
@@ -461,15 +585,31 @@ def settle(state: dict, tid: str, token: str, *,
         # A strike is only a candidate failing the gate/reviewer (never a channel fault).
         add_strike(state, tid, unsafe=unsafe)
         note_failed_models(row, failed_models)
+        row["reds"] = row.get("reds", 0) + 1
+        if reslice_after and row["reds"] >= reslice_after:
+            next_status = "FAILED"
+            row.update(status="FAILED", reason="reslice")
     if state.get("strikes", {}).get(_strike_key(row, tid), 0) >= MAX_STRIKES:
         next_status = "FAILED"
-        row.update(status="FAILED", reason="quarantine")
+        row.update(status="FAILED", reason="quarantine", q_ver=slicer_version())
     elif next_status == "REVIEW":
         row["reviewed_at"] = time.time()
         row["lease_expiries"] = 0
     if row["status"] != "REVIEW":
         row.pop("candidate", None)
     return next_status
+
+
+def fail_row(state: dict, tid: str, token: str, reason: str) -> str:
+    """Return an unusable contract to the slicer without charging a strike."""
+    if reason not in {"reslice", "reslice:stale"}:
+        raise InvalidPlan("invalid fail_row reason")
+    fence(state, tid, token)
+    row = state["tasks"][tid]
+    row.update(status="FAILED", reason=reason, lease=None, deadline=None)
+    for key in ("began", "candidate", "pending_review", "defer_streak", "orphan_releases"):
+        row.pop(key, None)
+    return "FAILED"
 
 
 def _strike_key(row: dict, tid: str) -> str:
@@ -535,7 +675,7 @@ def add_strike(state: dict, tid: str, *, unsafe: bool = False) -> int:
         for other, orow in state["tasks"].items():
             if (_strike_key(orow, other) == key and
                     orow["status"] in ("READY", "BLOCKED")):
-                orow.update(status="FAILED", reason="quarantine", blocked_reason=None)
+                orow.update(status="FAILED", reason="quarantine", q_ver=slicer_version(), blocked_reason=None)
                 _clear_block(orow)
     return strikes[key]
 
@@ -607,12 +747,11 @@ def quarantine(state: dict, tid: str, token: str, *, reason: str, now: float | N
     row["evidence"] = sha256(reason.encode("utf-8")).hexdigest()
 
 
-DEFER_REASONS = frozenset(("rate_minute", "rate_day", "transient", "network", "region", "key_invalid",
+DEFER_REASONS = frozenset((REASON_CLOUD_DOWN, REASON_CLOUD_BUSY, "rate_minute", "rate_day", "transient", "network", "region", "key_invalid",
                            "balance", "model_missing",
                            "provider_error", "gate_unknown", "no_independent_reviewer",
                            "channel_wait", "reviewer_failed", "budget_exhausted", "os_error",
                            "review_chain_short",   # one critic approved, no other model now: the candidate waits
-                           "fresh_model_busy",     # only models that failed this task are free now: a minute, not an attempt
                            "env_shortage",    # no slot / RAM: never a strike, never a block
                            "off_path"))      # the failing test runs a module outside the task: the loop widens it
 
@@ -640,7 +779,7 @@ def defer(state: dict, tid: str, token: str, reason: str, seconds: float, *,
                evidence=sha256(reason.encode("utf-8")).hexdigest())
     row.pop("orphan_releases", None)
     if state.get("strikes", {}).get(_strike_key(row, tid), 0) >= MAX_STRIKES:
-        row.update(status="FAILED", reason="quarantine")
+        row.update(status="FAILED", reason="quarantine", q_ver=slicer_version())
     return row["status"]
 
 
@@ -740,7 +879,7 @@ def unblock(state: dict, tid: str, note: str | None) -> None:
         raise InvalidPlan("task is not blocked")
     state.get("strikes", {}).pop(_strike_key(row, tid), None)
     row.update(status="READY", attempts=0, lease=None, deadline=None,
-               blocked_reason=None, reason=None, lease_expiries=0)
+               blocked_reason=None, reason=None, lease_expiries=0, reds=0)
     _clear_block(row)
     row.pop("not_before", None)
     row.pop("pending_review", None)
@@ -820,9 +959,35 @@ def note_infra(state: dict, ok: bool) -> int:
     return state["infra_streak"]
 
 
+def hold_census(state, tasks, *, google=True) -> dict[str, int]:
+    counts = {}
+    for tid, row in state["tasks"].items():
+        status, reason = row["status"], row.get("reason")
+        task = tasks.get(tid)
+        if reason == "quarantine":
+            key = "quarantine"
+        elif is_terminal(reason):
+            continue
+        elif status == "BLOCKED":
+            key = "owner_rule" if row.get("blocked_reason") in OWNER_RULES else "blocked_term"
+        elif status == "READY" and google and task and task.only_opus:
+            key = "only_opus"
+        elif status == "READY" and google and task and not task.privacy_safe:
+            key = "private"
+        elif status == "READY" and task and any(state["tasks"].get(d, {}).get("status") == "FAILED" for d in task.depends_on):
+            key = "ready_dead_dep"
+        elif status == "FAILED":
+            key = "failed_other"
+        else:
+            continue
+        counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
 def next_action(state: dict, now: float, channel_wait_s: float,
                 backlog_has_more: bool, tasks: dict[str, Task], *,
-                google: bool = True, free: int = 0, skip=()) -> dict:
+                google: bool = True, free: int = 0, skip=(),
+                resliceable: frozenset[str] = frozenset(), slice_wait_s: float | None = None) -> dict:
     """PROMOTE | RUN | WAIT | TRIAGE | HOLD | DONE.
 
     Candidates come only from ready() (same google flag as the runner), so scope
@@ -863,9 +1028,15 @@ def next_action(state: dict, now: float, channel_wait_s: float,
         return {"action": "WAIT", "wait_s": 5, "reason": "running_lease"}
     if backlog_has_more:
         return {"action": "TRIAGE", "reason": "no_runnable_tasks"}
+    if resliceable:
+        return {"action": "RESLICE", "reason": "rows_to_slice", "backlog_ids": sorted(resliceable)}
+    if slice_wait_s is not None:
+        return {"action": "WAIT", "wait_s": max(5, slice_wait_s), "reason": "architect_wait"}
     held, owner, terms = False, set(), []
     for tid, row in rows.items():
         st = row["status"]
+        if is_terminal(row.get("reason")) and row.get("reason") != "quarantine":
+            continue
         task = tasks.get(tid)
         if st == "BLOCKED" and row.get("blocked_reason") in OWNER_RULES:
             owner.add(row["blocked_reason"])
@@ -880,11 +1051,13 @@ def next_action(state: dict, now: float, channel_wait_s: float,
         elif st == "READY":
             held = True  # not runnable now: dead dependency, conflict
     if terms:        # the HOLD ends at the earliest term: then that block is lifted (UNBLOCK)
-        return {"action": "HOLD", "reason": "blocked_until", "wait_s": max(5.0, min(terms) - now)}
+        return {"action": "HOLD", "reason": "blocked_until", "wait_s": max(5.0, min(terms) - now),
+                "blockers": hold_census(state, tasks, google=google)}
     if held:
-        return {"action": "HOLD", "reason": "only_opus_or_blocked"}
+        return {"action": "HOLD", "reason": "only_opus_or_blocked", "blockers": hold_census(state, tasks, google=google)}
     if owner:
-        return {"action": "HOLD", "reason": "owner_rule:" + ",".join(sorted(owner))}
+        return {"action": "HOLD", "reason": "owner_rule:" + ",".join(sorted(owner)),
+                "blockers": hold_census(state, tasks, google=google)}
     return {"action": "DONE", "reason": "nothing_left"}
 
 
@@ -1078,7 +1251,7 @@ def append_tasks(plan_path: Path, tasks: list[dict], *,
                 result.skipped.append({"id": rid, "backlog_id": bid, "reason": "duplicate id"})
                 continue
             if (bid and (bid, row.get("kind", "code")) in known_backlog   # a unit_test sub-task shares its backlog_id
-                    and not rid.endswith(REFEED_SUFFIX)):                 # a guard re-feed of a failed row (its own id: no duplicate)
+                    and not rid.endswith(REFEED_SUFFIX) and not RESLICE_ID.search(rid)):                 # a guard re-feed of a failed row (its own id: no duplicate)
                 result.skipped.append({"id": rid, "backlog_id": bid,
                                        "reason": "duplicate backlog_id"})
                 continue
@@ -1094,7 +1267,7 @@ def append_tasks(plan_path: Path, tasks: list[dict], *,
 
 
 def amend_task(plan_path: Path, tid: str, *, touch_files=None, tests=None, read_files=None,
-               context_targets=None, depends_on=None, goal=None, port_from=None, state_path=None,
+               context_targets=None, depends_on=None, goal=None, port_from=None, contract=None, state_path=None,
                lock_timeout_s: float = 10.0) -> dict:
     """Opus corrects one task of a live plan: only the given fields change, the whole plan is
     re-validated by read_plan, the write is atomic and happens under the plan's lockdir.
@@ -1136,6 +1309,8 @@ def amend_task(plan_path: Path, tid: str, *, touch_files=None, tests=None, read_
             new["context_targets"] = dict(context_targets)
         if goal is not None:
             new["goal"] = redact(str(goal))[:1000]
+        if contract is not None:
+            new["contract"] = contract
         if port_from is not None:
             new["port_from"] = str(port_from)
         rows = rows[:idx] + [new] + rows[idx + 1:]
@@ -1277,8 +1452,56 @@ def save_atomic(path: Path, state: dict) -> None:
                 pass
 
 
+TRACE_DIR = "traces"
+
+
+def put_trace(state_dir: Path, tid: str, path) -> str:
+    """<id>: the cloud trace of a red base lives beside the state (traces/<tid>.json), not inside it; returns the file name."""
+    name = re.sub(r"[^A-Za-z0-9_.-]", "_", str(tid))[:80] or "task"
+    if name != str(tid):                 # ids that clean to the same name (T/1, T_1) must not share a file
+        name += "-" + sha256(str(tid).encode("utf-8")).hexdigest()[:8]
+    folder = Path(state_dir) / TRACE_DIR
+    folder.mkdir(parents=True, exist_ok=True)
+    save_atomic(folder / (name + ".json"), {"path": [[str(c[0]), str(c[1]), int(c[2])] for c in path]})
+    return name + ".json"
+
+
+def get_trace(state_dir: Path, row: dict) -> tuple:
+    """The trace of the row's red base as ((file, qualname, line), ...); () when there is none or the file is unreadable."""
+    return load_trace(state_dir, row) or ()
+
+
+def load_trace(state_dir: Path, row: dict):
+    """Like get_trace, but None when the trace is unreadable (file missing, torn, garbage) - an empty trace is a real answer.
+    A record that still carries the trace inline (written before <id>) is read as it is."""
+    try:
+        result = (row.get("base_red") or {}).get("result") or {}
+        if result.get("path_file"):
+            name = Path(str(result["path_file"])).name
+            data = json.loads((Path(state_dir) / TRACE_DIR / name).read_text(encoding="utf-8"))
+            raw = data["path"]
+        else:
+            raw = result.get("path") or ()
+        return tuple((str(c[0]), str(c[1]), int(c[2])) for c in raw)
+    except (OSError, ValueError, TypeError, KeyError, IndexError, AttributeError):
+        return None
+
+
+def _move_traces(state_dir: Path, data: dict) -> None:
+    """One-off move of inline base_red traces of an old state into their files (the state shrinks on its next save)."""
+    for tid, row in (data.get("tasks") or {}).items():
+        result = ((row.get("base_red") or {}).get("result")) if isinstance(row, dict) else None
+        if isinstance(result, dict) and "path" in result:
+            try:
+                result["path_file"] = put_trace(state_dir, tid, result["path"])
+                del result["path"]
+            except (OSError, ValueError, TypeError, IndexError):
+                continue                      # unreadable trace: it stays inline, a damaged record only costs a new measurement
+
+
 def load_state(path: Path, tasks: dict[str, Task]) -> dict:
     data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else initial_state(tasks)
+    _move_traces(path.parent, data)
     sync_state(tasks, data)
     validate_state(tasks, data)
     return data

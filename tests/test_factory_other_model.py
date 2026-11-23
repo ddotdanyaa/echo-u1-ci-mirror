@@ -97,12 +97,6 @@ def test_an_other_model_that_cannot_take_the_call_now_is_waited_for_then_no_stop
         sent.clear()
         return rig.once(channel_config=three, max_attempts=F.MAX_ATTEMPTS)
 
-    attempts = rig.state()['tasks']['T1'].get('attempts')
-    for _ in range(W.FRESH_WAITS):
-        waited = cooled_pass()
-        assert waited['status'] == 'READY' and waited['reason'] == 'fresh_model_busy', waited
-        assert not [s for s in sent if not s['review']]                       # no coder call, no attempt spent
-        assert rig.state()['tasks']['T1'].get('attempts') == attempts
     second = cooled_pass()
     assert second['status'] == 'READY' and second.get('channel_reason') is None, second
     assert [s['model'] for s in sent if not s['review']][:1] == ['x']

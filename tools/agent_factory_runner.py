@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import concurrent.futures
 import contextlib
 import difflib
 from hashlib import sha256
@@ -25,8 +26,14 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
+try:
+    import tomllib
+except ImportError:      # Python < 3.11: a .toml answer is then only read as text
+    tomllib = type('tomllib', (), {'loads': staticmethod(lambda text: None)})
 import logging
+import concurrent.futures
 import urllib.error
 import urllib.request
 import dataclasses
@@ -34,23 +41,20 @@ from dataclasses import replace
 
 from .agent_factory import (BudgetExhausted, DEFER_REASONS, LEASE_LIFETIME_S, MAX_ATTEMPTS, MODEL_ID, InputTooLarge,
                             InvalidPlan, Lease, LockBusy, StaleLease, Task, add_feedback, begin, charge_call, claim,
-                            defer, defer_streak, failed_models_of, is_unsafe_reject, seconds_to_local_midnight,
+                            defer, defer_streak, fail_row, failed_models_of, is_unsafe_reject, seconds_to_local_midnight,
                             read_plan, ready, redact, REPEAT_MARK, route, quarantine, safe_path, safe_source, settle,
                             snapshot, txn, unclaim)
+from .agent_factory import TRACE_DIR, load_trace as agent_factory_load_trace, put_trace
 from .factory_context import (LARGE_FILE_CHARS, asked_names, failing_names, identifier_tokens, keywords_from, packet,
                               render, scrub_paths)
 from .factory_process import kilo_argv, run_owned
 from . import affected_tests
 from . import factory_channels as channels
 from . import factory_gate as gate
+from . import factory_cards as K
 from . import factory_tree
 from . import factory_quota as quota_ledger
 from . import factory_paid_critic as paid_critic
-try:        # the paid escalation coder is optional: without the module (or the key) the free contour is unchanged
-    from . import factory_paid_coder as paid_coder
-except ImportError:
-    paid_coder = None
-
 _log = logging.getLogger(__name__)
 ENV_ALLOW = ("PATH", "PATHEXT", "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC", "LANG")
 POLICY_FILE = "kilo.jsonc"
@@ -121,13 +125,6 @@ ESCALATE = frozenset(("gate_unknown", "provider_error", "no_independent_reviewer
                       "review_chain_short"))
 ESCALATE_AFTER = 3          # the same postponement this many times in a row becomes BLOCKED
 INFRA_CHANNEL_REASONS = frozenset(("dead", "no_key", "no_channels", "reservation_exceeds_tpm"))
-# owner (barrier 15): no pause for a "fresh" model - 24 one-minute holds froze 7 tasks in one slice; the call
-# takes any free model at once (the tried models are still skipped while another one is free). Was 2, 60.
-FRESH_WAITS, FRESH_WAIT_S = 0, 60
-
-
-class _FreshBusy(Exception):
-    """Only models that already failed this task can take the coder call now (handled inside once())."""
 REVIEW_HINT = ("The file is large: read the places you need with the read tool by line numbers from the "
                "outline. Do not edit anything: you only judge the diff.")
 LIGHT_REVIEW_HINT = "The file is large: only its outline and the parts below are shown. You only judge the diff."
@@ -209,18 +206,26 @@ def scratch_redirect(staging):
                 os.environ[key] = value
 
 
-def sweep_scratch(staging, max_age: float = 86400.0) -> list:
-    """Orphans of killed passes (Kilo homes, review copies, tmp/*) older than a day, strictly inside staging.
+PROMOTED_KEEP_S = 7 * 86400.0       # stage/promoted/<tid> packages are kept this long
+SCRATCH_KEEP_S = 7200.0             # the folders of failed passes are kept 2 hours (they were 24), then swept
+
+
+def sweep_scratch(staging, max_age: float = SCRATCH_KEEP_S) -> list:
+    """Orphans of killed passes (Kilo homes, review copies, tmp/*) older than ``max_age`` (2 hours), and the promoted
+    packages (stage/promoted/<tid>) older than a week, strictly inside staging.
     Returns the names it could not remove (a held file): the caller records them. Junctions are never followed."""
     staging = Path(staging)
     failed: list = []
     isjunction = getattr(os.path, 'isjunction', lambda _p: False)
     found = list(staging.glob('factory-kilo-home-*')) + list(staging.glob('factory-review-*'))
     found += list((staging / 'tmp').glob('*')) if (staging / 'tmp').is_dir() else []
-    for item in found:
+    ages = {item: max_age for item in found}
+    if (staging / 'promoted').is_dir():       # the packages of promoted tasks (stage/promoted/<tid>) only pile up: a week is enough
+        ages.update({item: PROMOTED_KEEP_S for item in (staging / 'promoted').glob('*')})
+    for item, keep in ages.items():
         try:
             if (item.is_symlink() or isjunction(item) or not inside_staging(item.resolve(), staging)
-                    or time.time() - item.stat().st_mtime <= max_age):
+                    or time.time() - item.stat().st_mtime <= keep):
                 continue
             if item.is_dir():
                 shutil.rmtree(item, onexc=lambda _f, _p, _e, name=item.name: failed.append(name))
@@ -361,56 +366,6 @@ def rejected_for(state: dict, tid: str) -> str:
     return redact('\n'.join(lines))[-REVIEW_NOTE_LIMIT:]
 
 
-def paid_large_names(task: Task, files: dict[str, bytes], cap: int | None = None) -> set[str]:
-    """The paid tier's counterpart of large_names: the files of the task smallest first stay whole while they fit
-    ``cap`` (PAID_WHOLE_CHARS) together; the rest is shown as outline + parts."""
-    cap = PAID_WHOLE_CHARS if cap is None else cap
-    scope = set(task.touch_files) | set(task.read_files) | set(task.tests)
-    big, used = set(), 0
-    for size, name in sorted((len(v), n) for n, v in files.items() if n in scope):
-        if used + size > cap:
-            big.add(name)
-        else:
-            used += size
-    return big
-
-
-def paid_trace_bodies(path, root, shown=(), tests=(), failed=(), cap: int | None = None) -> str:
-    """Read-only context for the paid tier: the bodies of the functions the failing test ran (``path``: (file, qualname,
-    line)) in echo_sync files that are not shown whole already, the ones that share the most words with the failing
-    test first, dunders left out. At most ``cap`` characters (PAID_TRACE_CHARS); '' when nothing can be read."""
-    cap = PAID_TRACE_CHARS if cap is None else cap
-    skip = {str(n).replace(chr(92), '/') for n in shown}
-    funcs: dict = {}
-    for rel, qual, _line in path or ():
-        rel = str(rel).replace(chr(92), '/')
-        if rel.startswith('echo_sync/') and rel not in skip and not qual.rpartition('.')[2].startswith('__'):
-            funcs.setdefault(rel, set()).add(qual)
-    if not funcs or cap <= 0:
-        return ''
-    try:
-        ranked = gate.rank_path({k: sorted(v) for k, v in funcs.items()}, root, tests, failed)
-    except Exception:  # noqa: BLE001 - an order only: the unsorted list still serves
-        ranked = [(rel, q) for rel, qs in funcs.items() for q in sorted(qs)]
-    sources: dict = {}
-    parts, used = [], 0
-    for rel, qual in ranked:
-        if rel not in sources:
-            try:
-                sources[rel] = gate._def_sources(Path(root).joinpath(*rel.split('/')).read_text(encoding='utf-8', errors='replace'))
-            except OSError:
-                sources[rel] = {}
-        body = sources[rel].get(qual)
-        if not body:
-            continue
-        part = 'FUNCTION %s :: %s\n%s' % (rel, qual, body)
-        if used + len(part) + 2 > cap:
-            continue
-        parts.append(part)
-        used += len(part) + 2
-    return redact('\n\n'.join(parts))[:cap]
-
-
 def large_names(task: Task, files: dict[str, bytes]) -> set[str]:
     """The files of the task shown as outline + parts, not whole: each over LARGE_FILE_CHARS, tests too, then the
     largest of the rest until the whole ones and VIEW_ROOM per view fit FIT_ROOM. The ONE rule of the coder prompt,
@@ -444,7 +399,7 @@ def _base_key(base_sha, task: Task, baseline: dict) -> str | None:
     return h.hexdigest()
 
 
-def _held_base(row: dict, key: str | None, kind: str | None = None):
+def _held_base(row: dict, key: str | None, kind: str | None = None, state_dir: Path | None = None):
     """The red base kept on the row for this key while it is fresh; None when absent, stale, foreign or unreadable
     (a damaged record only costs a new measurement). A code task's record must carry the path of its failing tests
     (GateResult.path; a record written before the trace existed is measured once more)."""
@@ -454,9 +409,17 @@ def _held_base(row: dict, key: str | None, kind: str | None = None):
     try:
         if not 0 <= _now() - float(held['at']) < BASE_CACHE_S:
             return None
-        if kind == 'code' and 'path' not in held['result']:
+        if kind == 'code' and 'path' not in held['result'] and 'path_file' not in held['result']:
             return None
         fields = {k: tuple(v) if isinstance(v, list) else v for k, v in held['result'].items()}
+        if 'path_file' in fields:       # <id>: the trace lives in its own file beside the state; it is put back for the result
+            name = Path(str(fields.pop('path_file'))).name
+            if state_dir is None or not (Path(state_dir) / TRACE_DIR / name).is_file():
+                return None             # the file is gone: measure once more
+            trace = agent_factory_load_trace(state_dir, row)
+            if trace is None:
+                return None             # the file is there but unreadable (torn write, garbage): measure once more
+            fields['path'] = tuple(tuple(p) for p in trace)
         if 'path' in fields:
             fields['path'] = tuple(tuple(p) for p in fields['path'])
         return gate.GateResult(**fields)
@@ -541,13 +504,36 @@ def inspect_changes(task: Task, workdir: Path, staged: dict[str, bytes]) -> tupl
     return tuple(sorted(n for n in allowed if found.get(n) != staged.get(n)))
 
 
+NEIGHBORS_FILE = ".factory_neighbors.json"   # {file: [tests one import hop away]} of the snapshot's base, built once per base by the loop
+
+
+def _mapped_neighbors(root: Path, task: Task):
+    """The sorted neighbour tests of the task's touched files from the map file in ``root``, or None (no usable file, or a
+    touched file the map does not know): the import graph is built only then."""
+    try:
+        table = json.loads((Path(root) / NEIGHBORS_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(table, dict):
+        return None
+    found: set = set()
+    for name in task.touch_files:
+        names = table.get(name)
+        if not isinstance(names, list) or not all(isinstance(n, str) for n in names):
+            return None
+        found.update(names)
+    return sorted(found)
+
+
 def neighbor_tests(root: Path, task: Task) -> list[str]:
     """Tests one import hop from the touched files (risk register #35): at most MAX_NEIGHBORS,
     only files that exist in ``root``, never the task's own tests. The graph is built over ``root``
     (the mirror of HEAD), not over the tool's tree. Any failure RAISES: the caller records
     ``neighbors_unavailable`` instead of silently treating it as "no neighbours"."""
-    graph = affected_tests.Graph(Path(root))
-    found, _, _ = affected_tests.affected(list(task.touch_files), radius=1, g=graph)
+    found = _mapped_neighbors(Path(root), task)
+    if found is None:       # no map yet (the first run of a base) or a touched file missing in it: the graph, as before
+        graph = affected_tests.Graph(Path(root))
+        found, _, _ = affected_tests.affected(list(task.touch_files), radius=1, g=graph)
     out: list[str] = []
     for name in found:
         if name in task.tests or name in task.touch_files or name in out:
@@ -709,8 +695,9 @@ def event_summary(stdout: bytes, workdir: Path | None = None) -> dict:
     return result
 
 
-def unified_diff(baseline: dict[str, bytes], workdir: Path, names, limit: int) -> str:
-    """Redacted, truncated unified diff of the candidate against the baseline."""
+def unified_diff(baseline: dict[str, bytes], workdir: Path, names, limit: int, per_file: bool = False) -> str:
+    """Redacted, truncated unified diff of the candidate against the baseline. ``per_file``: ``limit`` is the cut of
+    EACH file's diff (a change by parts is shown part by part), not of the whole text."""
     chunks = []
     for name in sorted(names):
         path = workdir.joinpath(*name.split("/"))
@@ -718,7 +705,14 @@ def unified_diff(baseline: dict[str, bytes], workdir: Path, names, limit: int) -
             continue
         old = baseline.get(name, b'').decode('utf-8', 'replace').splitlines(keepends=True)
         new = path.read_bytes().decode('utf-8', 'replace').splitlines(keepends=True)
-        chunks.extend(difflib.unified_diff(old, new, 'a/' + name, 'b/' + name, n=2))
+        piece = list(difflib.unified_diff(old, new, 'a/' + name, 'b/' + name, n=2))
+        if per_file:
+            text = redact(''.join(piece))
+            chunks.append(text if len(text) <= limit else text[:limit] + DIFF_CUT % limit)
+        else:
+            chunks.extend(piece)
+    if per_file:
+        return ''.join(chunks)
     text = redact(''.join(chunks))
     return text if len(text) <= limit else text[:limit] + DIFF_CUT % limit
 
@@ -829,14 +823,6 @@ OFF_PATH_NOTE = ('\nThe failing test also runs, outside the files you may change
                  'decided there, answer CANNOT: <that name>.')
 PATH_FOCUS_MAX = 12
 OFF_PATH_SHORT = 8
-# 22.11 (live 02:55-03:20: 17 paid-coder calls, 0 accepted): the paid tier (Sonnet, 200k context) sees every touched
-# file WHOLE up to PAID_WHOLE_CHARS together (then windows for the rest), the bodies of the trace functions of other
-# echo_sync files (read-only) up to PAID_TRACE_CHARS, and the failing assertion up to PAID_FAILING_CHARS. The free tier
-# keeps its windows (large_names).
-PAID_WHOLE_CHARS = 240000
-PAID_TRACE_CHARS = 40000
-PAID_FAILING_CHARS = 6000
-PAID_PROMPT_CHARS = 290000      # below factory_paid_coder.PROMPT_LIMIT_CHARS
 OFF_PATH_WAIT_S = 30
 NO_EFFECT_BLOCK_AFTER = 4   # 21.11 (was 2)
 _ADDRESS = re.compile(r'0x[0-9A-Fa-f]{4,}')
@@ -981,7 +967,9 @@ def review_candidate(task: Task, workdir: Path, model: str, invoke, *,
                 earlier + (execution if rubric else '') +
                 (RUBRIC_ASK if rubric else 'Return exactly JSON {"approved":true|false,"reasons":["each concrete defect"]}.\n'))
         files = {n: v for n, v in snapshot.items() if n != POLICY_FILE}
-        full_diff = unified_diff(baseline, workdir, task.touch_files, REVIEW_DIFF_LIMIT) if baseline is not None else ''
+        by_parts = bool(K.contract_of(task).get('parts'))     # a change by parts is judged part by part
+        full_diff = (unified_diff(baseline, workdir, task.touch_files, REVIEW_DIFF_LIMIT, per_file=by_parts)
+                     if baseline is not None else '')
         priority = frozenset(keywords_from(task.title, strict=False)
                              | identifier_tokens(getattr(task, 'goal', '') or ''))
         words = priority | keywords_from(full_diff)
@@ -995,7 +983,9 @@ def review_candidate(task: Task, workdir: Path, model: str, invoke, *,
         room = channels.PROMPT_LIMIT_CHARS - len(head) - len(body) - 250  # the diff takes only what is left
         diff = ''
         if baseline is not None and room > 300:
-            diff = unified_diff(baseline, workdir, task.touch_files, min(REVIEW_DIFF_LIMIT, room))
+            diff = (unified_diff(baseline, workdir, task.touch_files,
+                                 min(REVIEW_DIFF_LIMIT, room // max(1, len(task.touch_files))), per_file=True)
+                    if by_parts else unified_diff(baseline, workdir, task.touch_files, min(REVIEW_DIFF_LIMIT, room)))
         prompt = head + ('Candidate diff:\n' + diff + '\n' if diff else '') + body
         rc, stdout, _ = invoke(reviewer, review_root, model, prompt_override=prompt)
         if rc != 0 or inspect_changes(reviewer, review_root, snapshot):
@@ -1090,13 +1080,12 @@ def port_focus(repo: Path, task: Task) -> frozenset:
 def build_coder_prompt(task: Task, visible: dict[str, bytes], feedback: str | None = None,
                        prev_diff: str = '', *, goal: str | None = None, failing: str = '',
                        light: bool = False, asked: frozenset = frozenset(), reference: str = '',
-                       focus: frozenset = frozenset(), off_path=(), paid: bool = False, trace: str = '') -> str:
+                       focus: frozenset = frozenset(), off_path=()) -> str:
     """The ONE builder of the coder prompt (used by the pass and by model_attempt's default). ``light``: the
     prompt of the light engine, which has no tools: no read/grep instructions (live 19.11 17:48-17:50:
     with them the model answered "CANNOT: requires access outside the provided files"). ``asked``: definitions
     a model of this pass asked to see; with the ones the feedback names (asked_names) they are shown first.
-    ``off_path``: functions the failing test runs outside the task's files (OFF_PATH_NOTE). ``paid``: the paid tier's
-    view (touched files whole up to PAID_WHOLE_CHARS, the failing assertion longer, ``trace`` bodies appended)."""
+    ``off_path`` names functions outside the allowed files."""
     asked = frozenset(asked) | asked_names(feedback or '')
     targets = visible_targets(task)
     if task.kind == 'unit_test':
@@ -1111,10 +1100,7 @@ def build_coder_prompt(task: Task, visible: dict[str, bytes], feedback: str | No
                 ". Read-only tests: " + ", ".join(task.tests) +
                 ". Do not modify tests, execute deployment, read parent folders, "
                 "or use network tools other than the configured model.")
-    if paid:
-        core += ("\nThe task files are below, whole (a file too large for the room is an outline and the parts "
-                 "that matter). Edit only the files you may change; everything else is read-only context.")
-    elif light:
+    if light:
         core += ("\nThe task files are below: small files whole, a large file as its outline and the parts "
                  "that matter for the task.")
     else:
@@ -1128,7 +1114,7 @@ def build_coder_prompt(task: Task, visible: dict[str, bytes], feedback: str | No
         core += "\nTask text:\n" + redact(scrub_paths(goal))[:1500]
     if failing and task.kind != 'unit_test':
         core += ("\nFailing on the base now (must pass after your change):\n"
-                 + redact(failing)[:PAID_FAILING_CHARS if paid else 1500])
+                 + redact(failing)[:1500])
     if off_path and task.kind != 'unit_test':
         core += OFF_PATH_NOTE % ', '.join(off_path)
     if reference and task.kind != 'unit_test':
@@ -1152,22 +1138,12 @@ def build_coder_prompt(task: Task, visible: dict[str, bytes], feedback: str | No
                          | identifier_tokens(goal or '') | asked | failing_names(failing, tests_shown)
                          | frozenset(focus))
     words = priority | keywords_from(tests_text, prev_diff, feedback)
-    if paid:
-        budget = PAID_WHOLE_CHARS - len(core) - 60
-        core += '\n' + render(visible, {}, large=paid_large_names(task, visible), keywords=words,
-                              budget_chars=budget, small_tokens=PAID_PROMPT_CHARS, priority=priority,
-                              asked=asked, pinned=pinned_targets(task), hint=LIGHT_HINT, tools=False)
-        if trace:
-            core += ('\n\nREAD-ONLY CONTEXT: functions the failing test runs in other files (do not edit them; if '
-                     'the fix belongs there, answer CANNOT and name the function):\n\n' + trace[:PAID_TRACE_CHARS])
-        limit = PAID_PROMPT_CHARS
-    else:
-        budget = channels.PROMPT_LIMIT_CHARS - REVIEW_OVERHEAD - len(core) - (2500 if prev_diff else 0) - 60
-        core += '\n' + render(visible, targets, large=large_names(task, visible), keywords=words,
-                              budget_chars=budget, small_tokens=max(task.context_budget, budget), priority=priority,
-                              asked=asked, pinned=pinned_targets(task),
-                              **({'hint': LIGHT_HINT, 'tools': False} if light else {}))
-        limit = channels.PROMPT_LIMIT_CHARS
+    budget = channels.PROMPT_LIMIT_CHARS - REVIEW_OVERHEAD - len(core) - (2500 if prev_diff else 0) - 60
+    core += '\n' + render(visible, targets, large=large_names(task, visible), keywords=words,
+                          budget_chars=budget, small_tokens=max(task.context_budget, budget), priority=priority,
+                          asked=asked, pinned=pinned_targets(task),
+                          **({'hint': LIGHT_HINT, 'tools': False} if light else {}))
+    limit = channels.PROMPT_LIMIT_CHARS
     room = limit - len(core) - 200
     if prev_diff and room > 300:
         core += "\nDiff of the rejected candidate (do not repeat its mistake):\n" + prev_diff[:room]
@@ -1253,13 +1229,21 @@ def model_attempt(task: Task, workdir: Path, model: str, timeout: int,
 # a coder task that changes more files is a multi-file edit: Kilo. 3 since 20.11 (telemetry of the whole run: Kilo 0 of
 # 14 passes ever reached a review, every one of the 17 promoted candidates came from the light engine; 08:44-08:46 a
 # 3-file row burned its three passes on 'steps exhausted'); the triage's MAX_TOUCH is 3, so no triaged task goes to Kilo
-LIGHT_MAX_FILES = 5   # 21.11 (was 3): the same as the triage's MAX_TOUCH
+LIGHT_MAX_FILES = 10   # 23.11: a contract of up to 10 parts (one stage) is edited by the light engine, one card per file
+PART_RETRIES = 2      # a part whose answer cannot be applied is asked again this many times (no strike)
+PART_WAIT_S = 30      # a call waits for the nearest free channel at most this long, then the pass is deferred
+PART_RETRY_NOTE = ('\nYour previous answer for this file could not be used: %s\nAnswer again for this file only, '
+                   'copying the SEARCH lines exactly from the code shown above.\n')
 LIGHT_OVERHEAD_TOKENS = 600      # the rules below and the chat wrapper (Kilo: 5 300-7 300)
 LIGHT_TIMEOUT_S = 180
 LIGHT_MAX_OUTPUT = 8192
 LIGHT_REASONING_TOKENS = 2048
 LIGHT_ENDPOINTS = {'google': 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions',
-                   'openrouter': 'https://openrouter.ai/api/v1/chat/completions'}
+                   'openrouter': 'https://openrouter.ai/api/v1/chat/completions',
+                   'groq': 'https://api.groq.com/openai/v1/chat/completions',
+                   'cerebras': 'https://api.cerebras.ai/v1/chat/completions',
+                   'cohere': 'https://api.cohere.com/compatibility/v1/chat/completions',
+                   'huggingface': 'https://router.huggingface.co/v1/chat/completions'}
 # The bound of an explicit day budget of model calls: above the capacity of every free key (~60 000 a day, 20.11);
 # the loop passes the registry's capacity (factory_loop.Loop._call_budget), each channel's rpd stays its limit.
 MAX_MODEL_CALLS = 100_000
@@ -2078,21 +2062,15 @@ def light_attempt(task: Task, workdir: Path, model: str, timeout: int = LIGHT_TI
     if task.only_opus:
         return 125, b'', b'opus-only-task'
     provider, _, model_id = model.partition('/')
-    paid_kind = provider == 'anthropic'
-    if paid_kind:      # the paid escalation coder (owner rule 4): the Messages API, never Opus, capped, key from the env file
-        if paid_coder is None or 'opus' in model.lower() or model_id not in paid_coder.MODELS or not paid_coder.available():
-            return 125, b'', b'light: the paid coder is unavailable (no key, over the cap, or a refused model)'
-        url, post = paid_critic.URL, paid_coder.post_chat
-    else:
-        url = LIGHT_ENDPOINTS.get(provider)
+    url = LIGHT_ENDPOINTS.get(provider)
     if url is None or not model_id:
         return 125, b'', b'light: unsupported provider'
     if not MODEL_ID.fullmatch(model):      # 0 rubles: an OpenRouter model without ':free' never leaves the machine
         return 125, b'', b'light: model id refused (a paid or malformed model)'
     prompt = prompt_override if prompt_override is not None else _default_prompt(task, workdir, light=True)
-    if (len(prompt) > paid_coder.PROMPT_LIMIT_CHARS) if paid_kind else channels.prompt_too_big(prompt):
+    if channels.prompt_too_big(prompt):
         return 125, b'', b'context-too-large'
-    key = 'paid' if paid_kind else os.environ.get(key_env or ('OPENROUTER_API_KEY' if provider == 'openrouter' else 'GOOGLE_GENERATIVE_AI_API_KEY'), '')
+    key = os.environ.get(key_env or {'openrouter': 'OPENROUTER_API_KEY', 'google': 'GOOGLE_GENERATIVE_AI_API_KEY'}.get(provider, ''), '')
     if not key:
         return 1, _light_error(401, b'{"error": {"message": "no API key in the environment"}}'), b''
     review = not task.touch_files
@@ -2171,6 +2149,115 @@ def light_attempt(task: Task, workdir: Path, model: str, timeout: int = LIGHT_TI
     return 0, ''.join(json.dumps(e, ensure_ascii=False) + '\n' for e in events).encode('utf-8'), note.encode('utf-8')
 
 
+class _SerialLease:
+    """The pass's lease for threads: the parts of one card call the router at once, and every transaction on the
+    checkpoint (the booking of a channel, the account of a call) runs one at a time under the lock of the process,
+    so two threads never spend the same free request."""
+
+    def __init__(self, lease):
+        self._lease, self._lock = lease, threading.RLock()
+
+    def __getattr__(self, name):
+        return getattr(self._lease, name)
+
+    def commit(self, fn):
+        with self._lock:
+            return self._lease.commit(fn)
+
+    def read(self):
+        with self._lock:
+            return self._lease.read()
+
+
+_PART_FAILED = re.compile(r'; \d+: |block\(s\) for a file outside')
+
+
+def part_failure(note: str, changed: bool) -> str:
+    """Why the answer for one part cannot be used ('' when it can): nothing changed, or a block of it did not apply."""
+    if not changed:
+        return note or 'the answer changed nothing'
+    if _PART_FAILED.search(note or ''):
+        return note
+    return ''
+
+
+def edit_parts(task: Task, parts: list, workdir: Path, call, failing: str = '') -> tuple[int, str, str]:
+    """Edit the parts of the contract in ``workdir``: one call per part (``call(part_task, directory, prompt)`` ->
+    ``(rc, stdout, stderr)``), the parts of one stage at once (one thread and one HTTP call per part), the next stage
+    when all parts of the previous one are applied. Each part works in its own copy ``<workdir>-p<i>-<try>``; its
+    file goes into ``workdir`` when the answer applied. A part whose answer cannot be applied (no block, SEARCH not
+    found, CANNOT) is asked again, only that part, up to PART_RETRIES times with the reason; the other parts of the
+    stage neither wait nor repeat. ``(0, answers, '')`` when every part applied, else ``(1, answers, evidence)``:
+    the CANNOT text or the SEARCH miss of the part that stayed unapplied."""
+    workdir = Path(workdir)
+    answers: list[str] = []
+    lock = threading.Lock()
+
+    def current_texts() -> dict:
+        """The files of the parts as they are in ``workdir`` NOW: the parts of an earlier stage are already applied."""
+        with lock:
+            return {p['file']: (workdir / p['file']).read_text(encoding='utf-8-sig', errors='replace')
+                    for p in parts if (workdir / p['file']).is_file()}
+
+    def one(index: int, part: dict):
+        file = part['file']
+        texts = current_texts()
+        source = texts.get(file, '')
+        try:
+            header, region = K.part_region(source, part.get('symbols') or [], part.get('anchor') or '')
+        except (ValueError, SyntaxError) as error:     # the code is not what the contract describes
+            return '%s: the part cannot be shown (%s)' % (file, error)
+        said =' '.join(str(part.get(k, '')) for k in ('instruction', 'keep'))
+        names = set(re.findall(r'[^\W\d]\w*', said))
+        sigs = K.signatures({f: t for f, t in texts.items() if f != file}, names)
+        part_task = replace(task, touch_files=(file,), read_files=tuple(
+            n for n in task.read_files if n != file) + tuple(n for n in task.touch_files if n != file))
+        base = K.part_prompt(file, part, header, region, failing=failing, signatures=sigs)
+        reason = ''
+        for attempt_no in range(PART_RETRIES + 1):
+            folder = workdir.parent / ('%s-p%d-%d' % (workdir.name, index, attempt_no))
+            shutil.rmtree(folder, ignore_errors=True)
+            with lock:          # a copy of the work directory is never read while another part writes its file into it
+                shutil.copytree(workdir, folder)
+            try:
+                rc, out, err = call(part_task, folder, base + (PART_RETRY_NOTE % reason if reason else ''))
+                note = err.decode('utf-8', 'replace') if isinstance(err, bytes) else str(err or '')
+                target, before = folder / file, workdir / file
+                with lock:
+                    changed = target.is_file() and (not before.is_file() or target.read_bytes() != before.read_bytes())
+                    answers.append(event_summary(out)['text'] if rc == 0 and out else '')
+                reason = part_failure(note, changed)
+                if rc == 0 and not reason:
+                    with lock:
+                        before.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copyfile(target, before)
+                    return ''
+                reason = reason or 'the call failed'
+            finally:
+                shutil.rmtree(folder, ignore_errors=True)
+        return '%s: %s' % (file, reason)
+
+    failed: list[str] = []
+    index = 0
+    for stage in K.stages(parts):
+        batches: list[list] = []
+        for part in stage:                       # one file twice in a stage: the copies would race, so in turn
+            for batch in batches:
+                if all(q['file'] != part['file'] for _, q in batch):
+                    batch.append((index, part))
+                    break
+            else:
+                batches.append([(index, part)])
+            index += 1
+        for batch in batches:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=len(batch)) as pool:
+                futures = [pool.submit(one, i, p) for i, p in batch]
+            failed.extend(f.result() for f in futures if f.result())
+        if failed:
+            break
+    return (1, '\n'.join(answers), '; '.join(failed)) if failed else (0, '\n'.join(answers), '')
+
+
 def _digest(*parts) -> str:
     return sha256('|'.join(str(p) for p in parts).encode('utf-8', 'replace')).hexdigest()
 
@@ -2211,7 +2298,7 @@ def _drop_claim(kwargs: dict, box: dict) -> None:
 def _once(*, root: Path, plan: Path, checkpoint: Path, staging: Path,
          small_model: str, large_model: str, execute: bool = False,
          acknowledge: bool = False, review_model: str | None = None,
-         channel_config: Path | None = None, max_attempts: int = MAX_ATTEMPTS,
+         channel_config: Path | None = None, max_attempts: int = MAX_ATTEMPTS, reslice_after: int = 0,
          max_model_calls: int | None = None, base_sha: str | None = None,
          small_follow_up: bool = False, port_repo: Path | None = None,
          task_id: str | None = None, lease: str | None = None, _box: dict | None = None) -> dict:
@@ -2245,7 +2332,7 @@ def _once(*, root: Path, plan: Path, checkpoint: Path, staging: Path,
     configured = []
     if channel_config is not None:
         configured = json.loads(channel_config.read_text(encoding='utf-8'))['channels']
-        channels.validate(configured)
+        configured = channels.validate(configured)
         if not configured or any(c.get('verified') is not True for c in configured):
             raise InvalidPlan('channels require actual verified model/tool availability')
     if not configured and not os.environ.get("GOOGLE_GENERATIVE_AI_API_KEY"):
@@ -2284,7 +2371,7 @@ def _once(*, root: Path, plan: Path, checkpoint: Path, staging: Path,
     _box['passed'] = True      # from here the pass itself returns or ends the lease
     return _pass(task, Lease(checkpoint, plan, tid, token), checkpoint=checkpoint, root=root, staging=staging,
                  small_model=small_model, large_model=large_model, review_model=review_model,
-                 configured=configured, max_attempts=max_attempts, swept_failed=swept_failed,
+                 configured=configured, max_attempts=max_attempts, reslice_after=reslice_after, swept_failed=swept_failed,
                  base_sha=base_sha or os.environ.get('FACTORY_BASE_SHA'), small_follow_up=small_follow_up,
                  port_repo=port_repo,
                  ledger=(channel_config.resolve().parent / 'quota') if channel_config is not None else None)
@@ -2307,10 +2394,11 @@ def _pass(task: Task, ck: Lease, **kwargs) -> dict:
 def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging: Path,
           small_model: str, large_model: str, review_model: str, configured: list,
           max_attempts: int, base_sha: str | None, swept_failed=(), ledger: Path | None = None,
-          small_follow_up: bool = False, port_repo: Path | None = None) -> dict:
+          small_follow_up: bool = False, port_repo: Path | None = None, reslice_after: int = 0) -> dict:
     """The pass of the lease ``ck`` (the task is already RUNNING under it). It keeps read-only facts (``state`` and
     ``row`` are a copy taken at the start); every change of the state is ONE ``ck.commit`` on the FRESH state."""
     tid, token = task.id, ck.token
+    ck = _SerialLease(ck)       # the parts of a card call the router from threads: one transaction at a time
     try:
         staging.mkdir(parents=True, exist_ok=True)
         ck.commit(lambda s, r: begin(s, tid, token, os.getpid()))   # fenced: a foreign or dead lease stops the pass here
@@ -2326,7 +2414,8 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
     calls: list[dict] = []
     stages: dict[str, float] = {}
     events: list[str] = ['sweep_failed'] if swept_failed else []
-    ctx = {'workdir': staging / prefix, 'baseline': {}, 'coder_model': None, 'counts': None, 'role': 'code',
+    ctx = {'workdir': staging / prefix, 'baseline': {}, 'coder_model': None, 'coder_models': set(), 'counts': None,
+           'role': 'code', 'lock': threading.Lock(),     # the lock guards what the threads of one card write: role, light, last_tokens
            'read_chars': 0, 'last_tokens': 0, 'last_text': '', 'roots': [root, staging]}
     scrub = lambda text: scrub_paths(text, ctx['roots'] + [ctx['workdir']])  # noqa: <id>
     report = {'task_id': tid, 'task': tid, 'backlog_id': task.backlog_id, 'base_sha': base_sha,
@@ -2341,6 +2430,13 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
         (status, more report fields) -- all of it ONE commit."""
         def commit(state, row):
             status, more = apply(state, row)
+            edits = [c for c in calls if c['role'] == 'edit']
+            if edits and (status == 'REVIEW' or extra.get('reason', '').startswith(('gate:', 'weakening:'))):
+                # one sample per card (pass), not per call: the tier that delivered, the time spent in edit calls only
+                change = channels.note_edit_outcome(state.setdefault('channel_quotas', {}), edits[-1]['tier'],
+                                                    status == 'REVIEW', sum(c.get('dur_s') or 0 for c in edits))
+                if change:
+                    report['edit_route_change'] = change
             if status not in ('READY', 'WAITING_CHANNEL'):      # settled, blocked or quarantined: every series is over
                 table = factory_env(state)
                 for key in ('task:%s:code' % tid, 'task:%s:review' % tid):
@@ -2354,6 +2450,7 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
         report['deploy_blocked'] = blocked
         report['status'] = status
         report['tests'] = _counts(ctx['counts'])
+        report['gate_secs'] = gate.where_secs()
         report['dur_s'] = round(time.monotonic() - started_pass, 3)
         return report
 
@@ -2363,7 +2460,8 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
     def set_pending(state, row) -> None:
         old = row.get('pending_review') if isinstance(row.get('pending_review'), dict) else {}
         row['pending_review'] = dict(workdir=str(ctx['workdir']), baseline_digest=baseline_digest,
-                                     coder_model=ctx['coder_model'])
+                                     coder_model=ctx['coder_model'],
+                                     coder_models=sorted(ctx['coder_models'] | {m for m in [ctx['coder_model']] if m}))
         short = old.get('chain_short')
         if old.get('workdir') == str(ctx['workdir']) and type(short) is int and short > 0:
             row['pending_review']['chain_short'] = short     # the same candidate: its short chains keep counting
@@ -2439,34 +2537,28 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
             if mark is not None:
                 mark(row)
             failed = (list(ctx.get('tried', ())) + [m for m, _ in ctx.get('gate_red', ()) if m]
-                      + ([ctx['coder_model']] if ctx.get('coder_model') else []))   # every model this pass tried
+                      + ([ctx['coder_model']] if ctx.get('coder_model') else [])
+                      + sorted(ctx['coder_models']))   # every model this pass tried
             status = settle(state, tid, token, tests_ok=False, evidence=_digest(reason, text),
-                            max_attempts=max_attempts, unsafe=is_unsafe_reject(reason), failed_models=failed)
+                            max_attempts=max_attempts, unsafe=is_unsafe_reject(reason), failed_models=failed, reslice_after=reslice_after)
             row.pop('pending_review', None)
             return status, None
         return end(apply, reason=reason, reason_detail=redact(text)[:400])
 
     def call(role: str, call_task: Task, directory_for, preferred: str, prompt: str,
-             *, exclude_model: str | None = None, skip_tiers: tuple = (), later: bool = False) -> tuple[int, bytes, bytes]:
+             *, exclude_model: str | None = None, skip_tiers: tuple = (), later: bool = False,
+             candidate: int | None = None, models_out: set | None = None, on_booked=None) -> tuple[int, bytes, bytes]:
         """One real model call with reservation, charging, classification, one transient retry. ``skip_tiers``:
-        channel tiers this call may not use (factory_channels.route_order)."""
-        ctx['role'] = role
+        channel tiers this call may not use (factory_channels.route_order). ``candidate``: the number of the candidate
+        the call belongs to (parts of one card run in threads, so it is not read from ``ctx``); ``models_out``: the set
+        the model of the call is added to as soon as it is booked; ``on_booked(model)``: called at the same moment."""
+        if candidate is None:
+            candidate = ctx.get('candidate') or 0
         if channels.prompt_too_big(prompt):
             raise PromptTooLarge(str(len(prompt)))
-        # the paid escalation coder (owner rule 4): only a coder call of a pass after a free attempt (or a raised tier
-        # floor), once per pass, the first candidate; up to 8 files; any fault or refusal leaves the free route as it was
-        # a later attempt is a 'repair' call (live 02:50); only a code task with a ready failing test (a unit_test task
-        # writes a new test: the paid critic kept rejecting those, 03:36-03:50); once per pass, the first candidate
-        paid_try = (role in ('code', 'repair') and getattr(call_task, 'kind', 'code') == 'code' and paid_coder is not None
-                    and not later and not ctx.get('paid_tried')
-                    and len(call_task.touch_files) <= paid_coder.MAX_FILES and paid_coder.available()
-                    and paid_coder.wanted(attempt, ((ck.read().get('tasks') or {}).get(tid) or {}).get('tier_floor')))
-        if paid_try and ctx.get('paid_prompt'):
-            try:      # 22.11: the paid tier sees the touched files whole and the trace bodies; the free prompt stays for the free tier
-                prompt = ctx['paid_prompt']()
-            except Exception:  # noqa: BLE001 - an extra view: without it the paid call gets the free prompt
-                pass
-        light = ctx['light'] = paid_try or engine_for(role, call_task) == 'light'    # one request, the files travel in the prompt
+        light = engine_for(role, call_task) == 'light'
+        with ctx['lock']:
+            ctx['role'], ctx['light'] = role, light
         base_tokens = channels.estimate_tokens(len(prompt), 0 if light else ctx['read_chars'],
                                                overhead=LIGHT_OVERHEAD_TOKENS if light else None,
                                                cyrillic=channels.cyrillic_share(prompt))
@@ -2481,49 +2573,19 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
         suffix = ':review' if role == 'review' else ''      # a reviewer must not move the coder's remembered channel
         affinity = ['task:' + tid + suffix] + (['family:' + family + suffix] if family else [])
 
-        if paid_try:
-            ctx['paid_tried'] = True
-            def charge_paid(state, row):
-                charge_call(state, tid)
-                booked_one(row)
-            ck.commit(charge_paid)
-            ctx['last_tokens'] = base_tokens
-            began = time.monotonic()
-            directory = directory_for(0)
-            code, stdout, stderr = light_attempt(call_task, directory, paid_coder.MODEL, timeout=240,
-                                                 prompt_override=prompt, steps=1)
-            summary = event_summary(stdout, directory)
-            calls.append({'role': role, 'attempt': attempt, 'channel': 'paid-coder', 'model': paid_coder.MODEL,
-                          'reserved_tokens': base_tokens, 'actual_tokens': None, 'candidate': ctx.get('candidate', 0),
-                          'dur_s': round(time.monotonic() - began, 3), 'returncode': code,
-                          'error_class': None if code == 0 else 'paid_coder_failed',
-                          'input_tokens': summary['input_tokens'], 'output_tokens': summary['output_tokens'],
-                          'tool_events': summary['tool_events'], 'steps': summary['steps'],
-                          'finish_reason': summary['finish_reason']})
-            if code == 0:
-                events.append('paid_coder')
-                ctx['paid_coder'] = True
-                ctx['last_text'] = summary['text']
-                ctx['light_note'] = stderr.decode('utf-8', 'replace')[:300]
-                return code, stdout, stderr
-            events.append('paid_coder_failed')        # the free route below is asked as if the paid one never existed
-            if engine_for(role, call_task) != 'light':     # wider than the free engine takes: wait, never a half-booked Kilo run
-                raise channels.ChannelUnavailable('the paid coder failed on a task wider than the free engine takes',
-                                                  'paid_coder_failed', 300)
         hopped, last_info = [], None     # models that answered "overloaded" in THIS call: the next hop skips them
         for retry in range(1 + TRANSIENT_HOPS):
             selected, at, chosen, kwargs = None, None, preferred, {}
             if configured:
-                route = 'review' if role == 'review' else 'code'
+                route = 'code' if role == 'repair' else role
                 whole = ck.read()
                 live_state = whole.get('channel_quotas') or {}    # a fresh private copy: ratings, parked 404s, cooling
-                floor = ((whole.get('tasks') or {}).get(tid) or {}).get('tier_floor')   # D #20: the loop's raised tier
                 excl = sorted(channels.excluded_models(exclude_model) | set(hopped)) or None
                 order = channels.route_order(configured, route, attempt, base_tokens, preferred=preferred,
                                              exclude_model=excl, skip_tiers=skip_tiers, state=live_state,
-                                             later=later, tier_floor=floor)
-                if not order and route == 'code':     # no escalation/main channel at all: any channel is better than none
-                    order = channels.route_order(configured, route, 1, 0, preferred=preferred,
+                                             later=later)
+                if not order and route in ('code', 'edit'):     # no escalation/main channel at all: any channel is better than none
+                    order = channels.route_order(configured, 'code', 1, 0, preferred=preferred,
                                                  exclude_model=excl,   # never a model the tournament tried
                                                  skip_tiers=skip_tiers, state=live_state, later=later)
                 if not order and hopped:              # every other model is overloaded too: the old transient path
@@ -2563,14 +2625,20 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                     charge_call(state, tid)
                     booked_one(row)
                 ck.commit(charge)
-            ctx['last_tokens'] = tokens
+            with ctx['lock']:
+                ctx['last_tokens'] = tokens
+            if models_out is not None:
+                models_out.add(chosen)
+            if on_booked is not None:
+                on_booked(chosen)
             began = time.monotonic()
             try:
                 directory = directory_for(retry)
                 engine = light_attempt if light else model_attempt
                 if light:
-                    kwargs['temperature'] = candidate_temperature(ctx.get('candidate') or 0)
-                code, stdout, stderr = engine(call_task, directory, chosen, timeout=240,
+                    kwargs['temperature'] = candidate_temperature(candidate)
+                timeout = channels.SMALL_FIRST_TIMEOUT_S if role == 'edit' and selected and channels.tier_of(selected) == 'small' else 240
+                code, stdout, stderr = engine(call_task, directory, chosen, timeout=timeout,
                                               prompt_override=prompt, steps=steps, **kwargs)
             except BaseException:
                 if selected is not None:    # booked, never accounted: the reservation goes back (the call did not finish)
@@ -2646,13 +2714,14 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
             if info.get('suspect') and 'rate_limited_suspect' not in events:
                 events.append('rate_limited_suspect')
             calls.append({'role': role, 'attempt': attempt, 'channel': selected['id'] if selected else None,
-                          'model': chosen, 'reserved_tokens': tokens, 'actual_tokens': actual,
+                          'model': chosen, 'tier': channels.tier_of(selected) if selected else 'main',
+                          'reserved_tokens': tokens, 'actual_tokens': actual,
                           'actual_input_tokens': actual_input,
                           'input_tokens': summary['input_tokens'], 'output_tokens': summary['output_tokens'],
                           'reasoning_tokens': summary['reasoning_tokens'],
                           'cache_read_tokens': summary['cache_read_tokens'],
                           'cache_write_tokens': summary['cache_write_tokens'],
-                          'candidate': ctx.get('candidate', 0) if role != 'review' else None,
+                          'candidate': candidate if role != 'review' else None,
                           'dur_s': elapsed, 'error_class': None if info['kind'] == 'ok' else info['kind'],
                           'http_status': info.get('status'), 'returncode': code,
                           'tool_events': summary['tool_events'], 'steps': summary['steps'],
@@ -2665,6 +2734,8 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
             kind = info['kind']
             if kind == 'ok' or (kind == 'unknown' and code == 0):
                 return code, stdout, stderr
+            if kind == 'timeout' and role == 'edit' and selected and channels.tier_of(selected) == 'small':
+                info['kind'] = kind = 'transient'
             if kind in ('timeout', 'launcher'):
                 raise ChannelFault(info)
             if selected is not None:
@@ -2733,6 +2804,7 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
         return release_or_block('provider_error', INFRA_DEFER_S)
 
     base_holder = None
+    bg = bg_pool = None            # the red base measured in the background while the model answers (task 3.2)
     gate_tmp = staging / 'tmp'     # pytest's own temp (--basetemp) stays inside staging, never under the profile
     slot = {'armed': False, 'left': float(SLOT_BUDGET_S), 'waited': 0.0}   # armed at the FIRST gate run
 
@@ -2768,6 +2840,21 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
         for Opus with the candidate saved. (A dedicated defer reason waits for <id>; 'transient' is whitelisted.)"""
         reason = why_text[4:].lstrip() if why_text.startswith('env:') else why_text
         report['reason_detail'] = scrub(redact(reason))[:300]
+        if reason == 'bad_tests':
+            # the contract names a test that is not there: the row goes back to the slicer, no strike
+            events.append('bad_tests')
+            return end(lambda s, r: (fail_row(s, tid, token, 'reslice:stale'), None), reason='reslice:stale')
+        if reason == 'private_edit':
+            # the scanner found private text in the files this candidate changed: an ordinary bad edit (a strike)
+            return reject('gate', 'private_text', 'the edit carries private text; remove it and do not copy it from elsewhere',
+                          [])
+        if reason in ('cloud_down', 'cloud_busy'):
+            # the cloud gave no verdict (down, or no free place): the first thing handled. Not a strike, not counted toward
+            # ENV_OTHER_CEILING, never parks the task; the finished candidate waits, the pass is released for a minute.
+            events.append(reason)
+            if candidate:
+                report['pending_review'] = bool(ck.commit(lambda state, row: (set_pending(state, row), bool(row.get('pending_review')))[1]))
+            return release(reason, 60)
         events.append('env_shortage')
 
         def count_it(state, row):
@@ -2859,50 +2946,100 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
             else:
                 ctx['workdir'] = old.resolve()
                 ctx['coder_model'] = pending.get('coder_model')
+                ctx['coder_models'] = {m for m in (pending.get('coder_models') or []) if isinstance(m, str)}
 
         # 1. Base verdict before any model call: green = already done, unknown = infrastructure. A red base measured on
         # the same commit with the same tests and files is reused (base_red): it cannot change, and with a hanging
         # test file it cost 70 s every pass (live 20.11 05:25-05:37).
+        # a contract is checked against the fresh snapshot before any model call: a part that no longer fits the code
+        # (the file or the function is gone) goes back to the slicer, without a strike (reslice:stale)
+        parts_now = []
+        if task.kind == 'code' and not pending and K.contract_of(task).get('parts'):
+            try:
+                parts_now = K.contract_parts(task, root)
+            except K.StaleContract as error:
+                detail = scrub(redact(str(error)))[:300]
+                return end(lambda s, r: (fail_row(s, tid, token, 'reslice:stale'), None), reason='reslice:stale',
+                           reason_detail=detail)
         key = _base_key(base_sha, task, ctx['baseline'])
-        held = _held_base(row, key, task.kind)
+        held = _held_base(row, key, task.kind, checkpoint.parent)
         if held is not None:
             verdict, base = 'red', held
             events.append('base_reused')
         else:
-            verdict, base = timed('red_before_s', lambda: gate.red_before(
-                base_root() if task.kind != 'unit_test' else root, task.tests, GATE_TIMEOUT_S, task.kind,
-                wait_s=(min(RED_BEFORE_WAIT_S, max(0.0, slot['left'])) if slot['armed'] else RED_BEFORE_WAIT_S),
-                workdir=gate_tmp, touched=(), **({'trace': path_trace(task)} if path_trace(task) else {})))
-            keep_red = (key and verdict == 'red' and not base.env_reason and task.kind != 'unit_test')
+            red_args = (base_root() if task.kind != 'unit_test' else root, task.tests, GATE_TIMEOUT_S, task.kind)
+            red_kwargs = dict(wait_s=(min(RED_BEFORE_WAIT_S, max(0.0, slot['left'])) if slot['armed'] else RED_BEFORE_WAIT_S),
+                              workdir=gate_tmp, touched=(), **({'trace': path_trace(task)} if path_trace(task) else {}))
 
-            def note_base(state, row):
-                row.pop('base_red', None)
-                if keep_red:
-                    row['base_red'] = {'key': key, 'at': _now(), 'result': dataclasses.asdict(base)}
-            ck.commit(note_base)
-        ctx['counts'] = base
-        if verdict == 'green':
-            return block('already_green', 'the task tests already pass on the base')
-        if verdict == 'unknown' and base.env_reason:
-            return env_release(base.env_reason, candidate=False)    # the machine, not the task: never a block
-        if verdict == 'unknown':
-            report['reason_detail'] = scrub(redact(base.diag))[:300]
-            return release_or_block('gate_unknown', INFRA_DEFER_S)
+            def measure_base():
+                return timed('red_before_s', lambda: gate.red_before(*red_args, **red_kwargs))
+            if pending:
+                verdict, base = measure_base()      # a candidate is already there: no model call to overlap with
+            else:
+                # 3.2: the red base is a cloud run too; it goes in the background while the coder answers, and the
+                # gates wait for both (settle_base below, right after the first coder call)
+                bg_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix='red-base')
+                bg = bg_pool.submit(measure_base)
+        base_fresh = held is None
+        base_settled = False
+        on_mods, off_mods, off_short, path_focus = {}, {}, [], frozenset()
 
-        # the path of the failing tests: on it in the task's files (shown first) / outside them (named, checked)
-        on_mods, off_mods = gate.path_split(getattr(base, 'path', ()), task.touch_files) if task.kind == 'code' \
-            else ({}, {})
-        try:
-            off_short = gate.off_path_short(off_mods, root, task.tests, OFF_PATH_SHORT, base.failed_ids) \
-                if off_mods else []
-            ranked_on = gate.rank_path(on_mods, root, task.tests, base.failed_ids) if on_mods else []
-        except Exception:  # noqa: BLE001 - an order of names only: without it the lists stay unsorted
-            off_short = ['%s.%s' % (m.rsplit('/', 1)[-1].rsplit('.', 1)[0], q)
-                         for m, qs in off_mods.items() for q in qs][:OFF_PATH_SHORT]
-            ranked_on = [(m, q) for m, qs in on_mods.items() for q in qs]
-        leaves = [q.rpartition('.')[2] for _, q in ranked_on]
-        path_focus = frozenset([n for n in dict.fromkeys(leaves)
-                                if identifier_tokens(n) == {n} and not n.startswith('__')][:PATH_FOCUS_MAX])
+        def settle_base():
+            """Waits for the red base (a fault of the background run surfaces here, as it did when the call was
+            synchronous), records it and reads its path. A dict ends the pass (green / environment / unknown base);
+            None goes on. Called once before the first coder call when the base is known already, else right after it."""
+            nonlocal verdict, base, bg, base_fresh, base_settled, on_mods, off_mods, off_short, path_focus
+            if base_settled:
+                return None
+            if bg is not None:
+                future, bg = bg, None
+                verdict, base = future.result()
+            if base_fresh:
+                base_fresh = False
+                keep_red = (key and verdict == 'red' and not base.env_reason and task.kind != 'unit_test')
+
+                def note_base(state, row):
+                    row.pop('base_red', None)
+                    if keep_red:
+                        kept = dataclasses.asdict(base)
+                        if 'path' in kept:      # <id>: the trace goes to traces/<tid>.json, the state keeps only its name
+                            try:
+                                kept['path_file'] = put_trace(checkpoint.parent, task.id, kept.pop('path'))
+                            except (OSError, ValueError, TypeError, IndexError):
+                                kept.pop('path_file', None)
+                                return          # no place for the trace: no record, the base is measured again next pass
+                        row['base_red'] = {'key': key, 'at': _now(), 'result': kept}
+                ck.commit(note_base)
+            ctx['counts'] = base
+            base_settled = True
+            if verdict == 'green':
+                return block('already_green', 'the task tests already pass on the base')
+            if verdict == 'unknown' and base.env_reason:
+                return env_release(base.env_reason, candidate=False)    # the machine, not the task: never a block
+            if verdict == 'unknown':
+                report['reason_detail'] = scrub(redact(base.diag))[:300]
+                return release_or_block('gate_unknown', INFRA_DEFER_S)
+
+            # the path of the failing tests: on it in the task's files (shown first) / outside them (named, checked)
+            on_mods, off_mods = gate.path_split(getattr(base, 'path', ()), task.touch_files) if task.kind == 'code' \
+                else ({}, {})
+            try:
+                off_short = gate.off_path_short(off_mods, root, task.tests, OFF_PATH_SHORT, base.failed_ids) \
+                    if off_mods else []
+                ranked_on = gate.rank_path(on_mods, root, task.tests, base.failed_ids) if on_mods else []
+            except Exception:  # noqa: BLE001 - an order of names only: without it the lists stay unsorted
+                off_short = ['%s.%s' % (m.rsplit('/', 1)[-1].rsplit('.', 1)[0], q)
+                             for m, qs in off_mods.items() for q in qs][:OFF_PATH_SHORT]
+                ranked_on = [(m, q) for m, qs in on_mods.items() for q in qs]
+            leaves = [q.rpartition('.')[2] for _, q in ranked_on]
+            path_focus = frozenset([n for n in dict.fromkeys(leaves)
+                                    if identifier_tokens(n) == {n} and not n.startswith('__')][:PATH_FOCUS_MAX])
+            return None
+
+        if bg is None:                              # known now (held / pending): settled before the coder, as before
+            early = settle_base()
+            if early is not None:
+                return early
         held_ne = row.get('no_effect')
         prior_ne = (held_ne['n'] if key and isinstance(held_ne, dict) and held_ne.get('key') == key
                     and type(held_ne.get('n')) is int else 0)
@@ -2915,28 +3052,8 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
             with the functions the failing test runs outside the task (more passes would only repeat it)."""
             if not off_short or no_effects() < NO_EFFECT_BLOCK_AFTER:
                 return None
-            wider = paid_widen()
-            if wider is not None:
-                return wider
             return block('off_path', 'the change had no effect %d times on the same base; the failing test runs '
                          'outside the task files: %s' % (no_effects(), ', '.join(off_short)))
-
-        def paid_widen():
-            """The paid tier (its file limit is above the task's size) takes the best-ranked traced module that may be
-            added instead of a block for Opus; None for the free tier, no room or nothing allowed."""
-            if paid_coder is None or not off_mods or task.kind != 'code':
-                return None
-            limit = paid_coder.files_limit(attempt, ((ck.read().get('tasks') or {}).get(tid) or {}).get('tier_floor'))
-            if limit <= LIGHT_MAX_FILES or len(task.touch_files) + 1 > limit:
-                return None       # the free tier (5 files) keeps the block; the paid tier (8) widens
-            try:
-                ranked = gate.rank_path(off_mods, root, task.tests, base.failed_ids)
-            except Exception:  # noqa: BLE001 - an order only
-                ranked = [(m, q) for m, qs in off_mods.items() for q in qs]
-            for module, qual in ranked:
-                if not qual.rpartition('.')[2].startswith('__') and not gate.is_forbidden(module, task.kind):
-                    return widen(module, qual)
-            return None
 
         def scope_signal():
             """(module, name) when the last coder answer named a function of the failing test's path outside the task:
@@ -2970,8 +3087,7 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
         def widen(module: str, name: str) -> dict:
             """The task's scope misses a module the failing test runs and the model named: the loop adds it to
             touch_files (report scope_add, no strike); over LIGHT_MAX_FILES or a forbidden path: BLOCKED for Opus."""
-            limit = (paid_coder.files_limit(attempt, ((ck.read().get('tasks') or {}).get(tid) or {}).get('tier_floor'))
-                     if paid_coder is not None else LIGHT_MAX_FILES)     # the paid tier takes up to 8 files, the free one 5
+            limit = LIGHT_MAX_FILES
             why = gate.is_forbidden(module, task.kind) or (
                 'more than %d files' % limit if len(task.touch_files) + 1 > limit else '')
             if why:
@@ -3009,10 +3125,27 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                     except (SyntaxError, ValueError) as error:
                         return reject('gate', 'gate: compile error in ' + name,
                                       'does not compile: %s' % error, changed)
+                elif name.endswith(('.json', '.toml')):      # the standard library reads them: a parse error is red
+                    try:
+                        json.loads(source) if name.endswith('.json') else tomllib.loads(source)
+                    except ValueError as error:
+                        return reject('gate', 'gate: parse error in ' + name, 'does not parse: %s' % error, changed)
             problems = gate.weakening_violations(root, cand_files, task.kind, task.touch_files)
             if problems:
                 text = '; '.join(problems)
                 return reject('gate', 'weakening: ' + text[:300], 'weakening of the checks: ' + text, changed)
+            if parts_now:       # the contract names every file and function the edit may touch (off_contract)
+                touched = {}
+                for name in changed:
+                    old_text = ctx['baseline'].get(name, b'').decode('utf-8', 'replace')
+                    names = K.changed_symbols(old_text, cand_files[name]) if name.endswith('.py') else set()
+                    if any(p['file'] == name and p.get('add_after') for p in parts_now):   # a new function is asked for
+                        names -= K.defined(cand_files[name]) - K.defined(old_text)
+                    touched[name] = names
+                off = K.contract_conformance(touched, K.contract_of(task))
+                if off:
+                    text = 'the edit is outside the contract: ' + ', '.join(off)
+                    return _GateRetry(('gate', 'gate: off_contract', text, changed), text, changed)
             if task.kind == 'unit_test':
                 if task.backlog_id:
                     first = next((n for n in changed if n in task.tests), task.tests[0])   # the first CHANGED test file
@@ -3030,6 +3163,11 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                 ctx['roots'].append(tree)
                 # the gate decides whether a missing module is the environment or the candidate's own import (live
                 # 19.11 18:06-18:08: written tests imported modules that do not exist and went round as 'environment')
+                if task.kind != 'unit_test':     # the neighbour tests ride in the candidate's cloud run (one list of ids)
+                    try:
+                        gate.offer_companions(tree, gate_order(root, neighbor_tests(root, task)[:MAX_NEIGHBORS], ctx.get('neighbour_red', ())))
+                    except Exception:       # noqa: BLE001 - the neighbours then get a run of their own, as before
+                        pass
                 red_ids = [i for _, ids in ctx.get('gate_red', ()) for i in ids]
                 cand = gate.candidate_import(timed('gate_s', lambda: staged_run(
                     lambda part: gate_run(tree, part, touched=changed), root, task.tests,
@@ -3088,7 +3226,9 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                         def neighbours():
                             skipped_count = 0
                             last_result = None
-                            settled = gate.cloud_each(tree, near)     # one cloud run for all of them; {} = not answered: local
+                            settled = gate.cloud_each(tree, near)     # one cloud run for all of them; {} = route off: local
+                            if isinstance(settled, str):          # the cloud gave no verdict (down / busy): nothing runs here
+                                return 'env', replace(gate._failure(-1, 'cloud: ' + settled), env_reason=settled)
                             for name in near:
                                 mine = settled[name] if name in settled else gate_run(tree, [name])
                                 last_result = mine
@@ -3148,27 +3288,47 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
             small_total = sum(len(v) for n, v in visible.items() if n not in large_names(task, visible))
             if small_total + REVIEW_DIFF_LIMIT + REVIEW_OVERHEAD > channels.PROMPT_LIMIT_CHARS:
                 raise PromptTooLarge('coder+review prompts cannot both fit')
-            failing = (', '.join(base.failed_ids) + '\n' + base.diag).strip() if task.kind == 'code' else ''
+            def failing_text() -> str:       # the red base may still be running when the first prompt is built
+                return (', '.join(base.failed_ids) + '\n' + base.diag).strip() if task.kind == 'code' and base_settled else ''
             # ``root`` is the loop's plain copy of the sources (no .git): an old commit is read from the repository itself
             reference = port_reference(port_repo or root, task)
             if reference:
                 events.append('port_reference:%d' % len(reference))
             elif task.port_from and task.kind != 'unit_test':
                 events.append('port_reference_missing')      # a lost example shows in the telemetry, never silently
-            focus = (port_focus(port_repo or root, task) if reference else frozenset()) | path_focus
+            ported = port_focus(port_repo or root, task) if reference else frozenset()
             remembered = frozenset(state['tasks'][tid].get('asked') or ()) & defined_names(task, ctx['workdir'])
 
-            def make_prompt(asked=frozenset(), paid=False):
-                trace = ''
-                if paid and task.kind == 'code':
-                    whole = set(visible) - paid_large_names(task, visible)
-                    trace = scrub(paid_trace_bodies(getattr(base, 'path', ()), root, whole, task.tests, base.failed_ids))
-                return build_coder_prompt(task, visible, feedback, prev_diff, failing=scrub(failing),
-                                          light=paid or engine_for(role, task) == 'light',   # the same rule call() applies
-                                          asked=frozenset(asked) | remembered, reference=reference, focus=focus, off_path=tuple(off_short),
-                                          paid=paid, trace=trace)
+            def contract_test_card() -> str:
+                """A test task whose contract names the test (given / when / then / why it is red now): the card is
+                written from the contract, and the code of its functions is shown read-only; '' for any other task."""
+                contract = K.contract_of(task)
+                new = (contract.get('test') or {}).get('new') if task.kind == 'unit_test' else None
+                if not isinstance(new, dict) or not new.get('path'):
+                    return ''
+                regions = {}
+                for part in contract.get('parts') or []:
+                    try:
+                        source = (root / part['file']).read_text(encoding='utf-8-sig')
+                        regions[part['file']] = K.part_region(source, part.get('symbols') or [], part.get('anchor') or '')
+                    except (OSError, ValueError, SyntaxError, KeyError, TypeError):
+                        continue            # the code is not shown: the model says CANNOT, the row is re-cut
+                card = K.test_prompt(task, contract, regions)
+                if task.backlog_id:
+                    card += "The FIRST line of the test file must be exactly: # factory-backlog-id: " + task.backlog_id + "\n"
+                card += UNIT_TEST_RULES + "\n"
+                if feedback:
+                    card += "The previous candidate was rejected. Feedback:\n" + redact(feedback) + "\n"
+                return card
+
+            def make_prompt(asked=frozenset()):
+                card = contract_test_card()
+                if card:
+                    return card
+                return build_coder_prompt(task, visible, feedback, prev_diff, failing=scrub(failing_text()),
+                                          light=engine_for(role, task) == 'light',   # the same rule call() applies
+                                          asked=frozenset(asked) | remembered, reference=reference, focus=ported | path_focus, off_path=tuple(off_short))
             prompt = make_prompt()
-            ctx['paid_prompt'] = lambda: make_prompt(paid=True)
             chosen = route(task, small_model=small_model, large_model=large_model, fallback=attempt > 1)
 
             def dir_for(retry: int) -> Path:
@@ -3233,15 +3393,116 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                         return now_out + older
                 return now_out or None
 
-            size = TOURNAMENT_SIZE if configured and engine_for(role, task) == 'light' else 1
-            tried, k_prompt, held, gate_failed, next_note = [], prompt, None, [], ''
+            gate_failed = []
+
+            def contract_flow():
+                """The card of a contract: one call per part (edit_parts), the parts of a stage at once. The first attempt
+                has ONE candidate; from the second, two candidates of different models at once (the tournament), which
+                go to the gates as they are ready: the first green one stands. The gates run once per candidate, over the
+                union of its parts, and there are no repair rounds inside the pass: a red gate ends the candidate."""
+                count = 1 if attempt <= 1 else 2
+                line = scrub(failing) if (attempt > 1 or feedback) else ''     # the exact failing line, shown on a repeat
+                models = [set() for _ in range(count)]
+                first_booked = threading.Event()
+                older = [m for m in failed_models_of(row) if isinstance(m, str)]
+
+                def part_call(k, part_task, directory, text):
+                    waited = 0.0
+                    while True:
+                        mine = set().union(*(models[j] for j in range(count) if j != k))
+                        out = sorted(mine | (set(older) - mine))
+                        skip = () if small_follow_up or not k else ('small',)
+                        extra = dict(skip_tiers=skip, later=bool(k), candidate=k, models_out=models[k],
+                                     on_booked=(lambda _m: first_booked.set()) if k == 0 else None)
+                        try:
+                            try:
+                                return call('edit', part_task, lambda _retry: directory, chosen, text,
+                                            exclude_model=out or None, **extra)
+                            except (channels.ChannelUnavailable, NoIndependentReviewer):
+                                if len(out) <= len(mine):
+                                    raise
+                                events.append('other_model_none_free')
+                                return call('edit', part_task, lambda _retry: directory, chosen, text,
+                                            exclude_model=sorted(mine) or None, **extra)
+                        except channels.ChannelUnavailable as error:
+                            if error.reason in INFRA_CHANNEL_REASONS:
+                                raise
+                            if waited >= PART_WAIT_S:      # no free channel in time: deferred, no strike
+                                raise ChannelFault({'kind': 'rate_minute'}, error.wait_s)
+                            step = min(max(1.0, error.wait_s), PART_WAIT_S - waited)
+                            time.sleep(step)
+                            waited += step
+
+                def run_candidate(k):
+                    where = ctx['workdir'] if k == 0 else staging / ('%s-cand-%d' % (prefix, k))
+                    try:
+                        if k:
+                            first_booked.wait(10)           # the second candidate knows the model of the first one
+                            shutil.rmtree(where, ignore_errors=True)
+                            base_k = prepare(root, task, where)
+                        else:
+                            base_k = ctx['baseline']
+                        code, text, note = edit_parts(task, parts_now, where,
+                                                      lambda pt, d, p: part_call(k, pt, d, p), failing=line)
+                    finally:
+                        if k == 0:
+                            first_booked.set()
+                    return {'k': k, 'workdir': where, 'baseline': base_k, 'rc': code, 'text': text, 'note': note}
+
+                fails, errors, retry, outcome = [], [], None, None
+                report['fanout'] = {'parts': len(parts_now), 'candidates': count}
+                try:
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=count) as pool:
+                        futures = [pool.submit(run_candidate, k) for k in range(count)]
+                        left = count
+                        for future in concurrent.futures.as_completed(futures):
+                            left -= 1
+                            try:
+                                cand = future.result()
+                            except (ChannelFault, channels.ChannelUnavailable, NoIndependentReviewer) as error:
+                                errors.append(error)
+                                continue
+                            used = sorted(models[cand['k']])
+                            ctx.update(workdir=cand['workdir'], baseline=cand['baseline'], light_note=cand['note'],
+                                       last_text=cand['text'], coder_model=used[0] if used else ctx['coder_model'])
+                            if cand['rc']:          # a part stayed unapplied after its re-asks: a red attempt
+                                fails.append(('gate', 'gate:part_failed', cand['note'], ()))
+                                continue
+                            why = unusable()
+                            if why and left:         # the other candidate may still be usable
+                                fails.append(('gate', 'gate:unusable', why, ()))
+                                continue
+                            found = run_gates()
+                            if isinstance(found, _GateRetry):
+                                gate_failed.append(ctx['coder_model'])
+                                red_on(ctx['coder_model'])
+                                retry = (found, dict(ctx))
+                                continue
+                            outcome = found
+                            break
+                finally:
+                    ctx['coder_models'] |= set().union(*models)
+                if outcome is not None:
+                    return outcome
+                if retry is not None:
+                    ctx.update(workdir=retry[1]['workdir'], baseline=retry[1]['baseline'],
+                               coder_model=retry[1]['coder_model'], counts=retry[1]['counts'])
+                    return retry[0]
+                if not fails:
+                    raise errors[0]
+                return reject(*fails[-1])
+
+            size = 0 if parts_now else (TOURNAMENT_SIZE if configured and engine_for(role, task) == 'light' else 1)
+            tried, k_prompt, held, next_note = [], prompt, None, ''
             ctx['tried'] = tried     # the models of this pass's earlier candidates: reject() remembers them as failed
+            if parts_now:
+                decision = contract_flow()
             asked = frozenset()      # code an earlier candidate of this pass asked for: every later one is shown it
             for k in range(size):
                 if k:
                     held = (ctx['workdir'], ctx['baseline'])
                     tried.append(ctx['coder_model'])
-                    view = make_prompt(asked) if asked else prompt
+                    view = make_prompt(asked)         # the first prompt may predate the base; later ones carry it
                     k_prompt = view + next_note
                     if channels.prompt_too_big(k_prompt):
                         k_prompt = view
@@ -3258,25 +3519,21 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                     except channels.ChannelUnavailable:
                         if len(excluded or ()) <= len(tried):
                             raise
-                        # live 21.11 13:23: <id> spent all 6 attempts on one flash-lite in 3 min while the fresh models
-                        # were busy for a minute. The first pass waits for a fresh model (this task only, a minute,
-                        # no attempt spent) up to FRESH_WAITS times; after that it takes any model (13:11: never a stop).
-                        if not k and defer_streak(ck.read(), tid, 'fresh_model_busy') < FRESH_WAITS:
-                            raise _FreshBusy()
                         events.append('other_model_none_free')
                         return call(role, task, dir_for, chosen, k_prompt, exclude_model=list(tried) or None,
                                     skip_tiers=skip, later=bool(k))
 
                 try:
                     rc, out, err = timed('code_s', coder_call)
-                except _FreshBusy:
-                    return release('fresh_model_busy', FRESH_WAIT_S)
                 except (ChannelFault, channels.ChannelUnavailable, NoIndependentReviewer):
                     if not k:
                         raise
                     ctx['workdir'], ctx['baseline'] = held      # no further model now: the last candidate stands
                     events.append('tournament_short')
                     break
+                early = settle_base()                # the red base measured meanwhile: both are in, the gates judge
+                if early is not None:
+                    return early
                 decision = None          # the earlier candidate's failure is history now; this one is judged afresh
                 ctx['coder_model'] = calls[-1]['model']
                 if event_summary(out)['finish_reason'] in ('length', 'max_tokens'):
@@ -3340,9 +3597,13 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
         critics = []      # the models that reviewed this candidate: the next critic is none of them, nor the coder
         told = rejected_for(ck.read(), tid)
 
+        def authors() -> list:
+            """Every model that wrote a part of this candidate: none of them judges it (nor the paid critic)."""
+            return sorted(ctx['coder_models'] | {m for m in [ctx.get('coder_model')] if m})
+
         def invoke(call_task, directory, preferred, **kwargs):
             return call('review', call_task, lambda _retry: directory, preferred,
-                        kwargs['prompt_override'], exclude_model=[ctx['coder_model']] + critics)
+                        kwargs['prompt_override'], exclude_model=authors() + critics)
         try:
             hollow, extra = tuple(ctx.get('hollow') or ()), tuple(ctx.get('extra_names') or ())
             exec_text = execution_report(base, hollow, extra)
@@ -3367,7 +3628,7 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                         paid_second = paid_critic.control(   # model is left (live 17:20-17:50: 19 chains cut short)
                             task, unified_diff(ctx['baseline'], ctx['workdir'], task.touch_files, paid_critic.DIFF_LIMIT)
                             if ctx['baseline'] is not None else '', (exec_text + '\n' + told)[-paid_critic.FAIL_LIMIT:],
-                            exclude_model=ctx.get('coder_model') or '')
+                            exclude_model=authors(), baseline=ctx['baseline'], workdir=ctx['workdir'])
                         if paid_second is not None:          # no key, no budget, a fault: the free wait below, as before
                             ctx['paid_done'] = paid_second
                             events.append('paid_second_critic')
@@ -3420,15 +3681,13 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
         paid = ctx.get('paid_done') or paid_critic.control(task, unified_diff(ctx['baseline'], ctx['workdir'], task.touch_files,
                                                       paid_critic.DIFF_LIMIT) if ctx['baseline'] is not None else '',
                                    (exec_text + '\n' + told)[-paid_critic.FAIL_LIMIT:],
-                                   exclude_model=ctx.get('coder_model') or '')    # the coder's model never judges its own work
+                                   exclude_model=authors(), baseline=ctx['baseline'], workdir=ctx['workdir'])    # no author of a part judges its own work
         if paid is not None:
             report['paid_critic'] = paid
             if paid['verdict'] == 'reject':
                 paid_critic.record_class(task, paid)
                 why = scrub(redact('paid critic [%s]: %s' % (paid['class'], paid['reason'] or paid['symptom'])))
                 return reject('review', 'review: ' + why, why, changed)
-        if ctx.get('paid_coder') and paid_coder is not None:     # a paid coder solved it: the free prompts learn the class
-            paid_coder.record_lesson(task, str(row.get('feedback') or '')[-200:])
         reviewed = staging / "for-review" / tid
         if reviewed.exists():
             shutil.rmtree(reviewed)  # left over from an earlier candidate of this task
@@ -3482,6 +3741,8 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
         report['error_type'] = type(error_obj).__name__
         return block(reason, text)
     finally:
+        if bg_pool is not None:
+            bg_pool.shutdown(wait=True)      # the background red base reads base_holder: it ends before the copy goes
         if base_holder:
             shutil.rmtree(base_holder, ignore_errors=True)
         if baseline_dir is not None and baseline_dir.name.endswith('-baseline') and ctx['workdir'] != baseline_dir:
@@ -3516,6 +3777,7 @@ def main(argv=None):
     p.add_argument("--ack-host-access-risk", action="store_true")
     p.add_argument("--max-tasks", type=int, default=1,
                    help="execute at most N sequential tasks; no implicit daemon")
+    p.add_argument("--reslice-after", type=int, default=0, help="red attempts before re-slicing (0 disables)")
     p.add_argument("--max-attempts", type=int, default=MAX_ATTEMPTS,
                    help="a task becomes FAILED after N failed attempts (each next one on another model where possible)")
     p.add_argument("--max-model-calls", type=int,
@@ -3526,9 +3788,21 @@ def main(argv=None):
     p.add_argument("--lease", help="the lease token of --task, claimed by the caller (without it the pass claims its own)")
     p.add_argument("--port-repo", type=Path,
                    help="git repository that holds the old-branch commits of port tasks (--root is a copy without .git)")
+    p.add_argument("--fast-local-s", type=float, default=None,
+                   help="tests known to last this long or less run locally (default gate.FAST_LOCAL_S); 0 sends every test to the cloud")
+    p.add_argument("--self-repo", action="store_true",
+                   help="the second loop instance (the repository is the factory's own code): the gate runs in the cloud only")
     args = p.parse_args(argv)
+    if args.self_repo:
+        gate.SELF_REPO = True
+    if args.fast_local_s is not None:
+        if args.fast_local_s < 0:
+            p.error("--fast-local-s must be nonnegative")
+        gate.FAST_LOCAL_S = args.fast_local_s
     if not 1 <= args.max_tasks <= 10:
         p.error("--max-tasks must be in 1..10")
+    if args.reslice_after < 0:
+        p.error("--reslice-after must be nonnegative")
     if not 1 <= args.max_attempts <= MAX_ATTEMPTS:
         p.error("--max-attempts must be in 1..%d" % MAX_ATTEMPTS)
     if args.max_model_calls is not None and not 1 <= args.max_model_calls <= MAX_MODEL_CALLS:
@@ -3548,7 +3822,7 @@ def main(argv=None):
                       staging=args.staging, small_model=args.small_model,
                       large_model=args.large_model, execute=args.execute,
                       acknowledge=args.ack_host_access_risk,
-                      max_attempts=args.max_attempts,
+                      max_attempts=args.max_attempts, reslice_after=args.reslice_after,
                       max_model_calls=args.max_model_calls, task_id=args.task, lease=args.lease, **options)
         outcomes.append(result)
         if result["status"] not in ("REVIEW", "READY"):

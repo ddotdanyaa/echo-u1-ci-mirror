@@ -25,6 +25,11 @@ def provider_of(key_name) -> str | None:
         return 'google'
     if re.fullmatch(r'OPENROUTER\w*KEY\w*', key_name):
         return 'openrouter'
+    for prefix in ('GROQ', 'CEREBRAS', 'COHERE'):
+        if re.fullmatch(prefix + r'\w*API_KEY\w*', key_name):
+            return prefix.lower()
+    if re.fullmatch(r'HF_TOKEN\w*|HUGGINGFACE\w*(?:API_KEY|TOKEN)\w*', key_name):
+        return 'huggingface'
     return None
 
 
@@ -88,6 +93,15 @@ GOOGLE_LIST = 'https://generativelanguage.googleapis.com/v1beta/models?pageSize=
 OPENROUTER_LIST = 'https://openrouter.ai/api/v1/models'
 
 
+PROVIDER_LISTS = {
+    'openrouter': OPENROUTER_LIST,
+    'groq': 'https://api.groq.com/openai/v1/models',
+    'cerebras': 'https://api.cerebras.ai/v1/models',
+    'cohere': 'https://api.cohere.com/v1/models',
+    'huggingface': 'https://router.huggingface.co/v1/models',
+}
+
+
 def key_names(env_text) -> list:
     """Names of the env file whose provider is known, in file order; the values are never read out."""
     names = []
@@ -107,7 +121,11 @@ def listing_request(provider, key) -> tuple:
     """(url, headers) of the provider's model listing: the key travels in a header, never in the URL."""
     if provider == 'google':
         return GOOGLE_LIST, {'x-goog-api-key': key}
-    return OPENROUTER_LIST, {'Authorization': 'Bearer ' + key}
+    if provider == 'openrouter':
+        return OPENROUTER_LIST, {'Authorization': 'Bearer ' + key}
+    if provider not in PROVIDER_LISTS:
+        raise ValueError('unsupported provider')
+    return PROVIDER_LISTS[provider], listing_request('openrouter', key)[1]   # the same header as OpenRouter's
 
 
 def models_of(provider, listing) -> list:
@@ -115,6 +133,14 @@ def models_of(provider, listing) -> list:
         return google_models(listing)
     if provider == 'openrouter':
         return openrouter_models(listing)
+    if provider == 'cohere':
+        return sorted({m['name'] for m in listing.get('models', [])
+                       if isinstance(m.get('name'), str) and m['name']
+                       and 'chat' in m.get('endpoints', []) and not m.get('is_deprecated', False)})
+    if provider in ('groq', 'cerebras', 'huggingface'):
+        # These catalogs do not establish free quotas; rows() still requires known limits.
+        return sorted({m['id'] for m in listing.get('data', [])
+                       if isinstance(m.get('id'), str) and m['id'] and m.get('active', True)})
     return []
 
 

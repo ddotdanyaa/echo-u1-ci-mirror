@@ -594,7 +594,8 @@ def test_already_green_blocks_without_a_call_or_a_strike(rig):
     result = rig.once()
     assert result['status'] == 'BLOCKED' and result['reason'] == 'already_green'
     assert result['blocked_reason'] == 'already_green' and result['infra'] is False
-    assert rig.models == [] and not rig.state().get('strikes')
+    # the red base runs beside the first coder call (3.2): that call may have been made, its answer is dropped, no review
+    assert not [m for m in rig.models if not m[0]] and not rig.state().get('strikes')
     assert rig.state()['tasks']['T1']['status'] == 'BLOCKED'
 
 
@@ -604,7 +605,7 @@ def test_unknown_base_is_infrastructure_postponed_five_minutes_no_strike(rig):
     result = rig.once()
     state = rig.state()
     assert result['status'] == 'READY' and result['reason'] == 'gate_unknown'
-    assert rig.models == [] and not state.get('strikes')
+    assert not [m for m in rig.models if not m[0]] and not state.get('strikes')     # the coder ran beside the base: no review
     assert 290 <= state['tasks']['T1']['not_before'] - before <= 320
 
 
@@ -906,7 +907,8 @@ def test_one_function_builds_the_coder_prompt(tmp_path, monkeypatch, rig):
     t = F.read_plan(json.loads(rig.plan.read_text()))['T1']
     visible = {'calc.py': (rig.root / 'calc.py').read_bytes(),
                'tests/test_calc.py': (rig.root / 'tests/test_calc.py').read_bytes()}
-    expected = W.build_coder_prompt(t, visible, failing='t::red\nassert add(2,3)==5 -> got -1')
+    # 3.2: the red base is measured beside the first coder call, so the first prompt is built without its failure text
+    expected = W.build_coder_prompt(t, visible)
     rig.once()
     assert rig.prompts[0] == expected
     monkeypatch.undo()   # from here on the REAL model_attempt: its default branch must use the same function
@@ -1342,8 +1344,12 @@ import inspect as _inspect
 
 
 def test_prompt_has_the_task_text_and_what_fails_on_the_base(rig):
-    rig.once()
-    prompt = rig.prompts[0]
+    rig.coder_script = ['bad', 'good']
+    rig.once(base_sha='c0ffee')
+    rig.ready_again()
+    rig.once(base_sha='c0ffee')
+    assert 'Failing on the base now' not in rig.prompts[0]     # 3.2: the base was still being measured
+    prompt = rig.prompts[1]                                      # the next pass has it (the base is held)
     assert 'Failing on the base now' in prompt and 'got -1' in prompt and 't::red' in prompt
     t = F.read_plan(json.loads(rig.plan.read_text()))['T1']
     vis = {'calc.py': b'def add(a,b): return a-b\n', 'tests/test_calc.py': b'def test_a(): pass\n'}
@@ -1569,8 +1575,11 @@ def test_a_secret_in_the_base_diagnostics_never_reaches_the_prompt(rig):
     secret = FAKE_KEY
     rig.run_tests_fn = lambda root, tests, timeout_s: gr('a+b' in (Path(root) / 'calc.py').read_text(),
                                                           diag='failure: leaked key ' + secret)
-    rig.once()
-    assert 'Failing on the base now' in rig.prompts[0] and secret not in rig.prompts[0]
+    rig.coder_script = ['bad', 'good']
+    rig.once(base_sha='c0ffee')
+    rig.ready_again()
+    rig.once(base_sha='c0ffee')
+    assert 'Failing on the base now' in rig.prompts[1] and all(secret not in p for p in rig.prompts)
     t = F.read_plan(json.loads(rig.plan.read_text()))['T1']
     text = W.build_coder_prompt(t, {'calc.py': b'x = 1\n'}, failing='ids\n' + secret)
     assert secret not in text
@@ -1613,8 +1622,9 @@ def test_local_paths_never_reach_the_coder_prompt(rig):
     rig.ready_again()
     rig.once()
     user = Path.home().name
-    for prompt in (rig.prompts[0], rig.prompts[1]):        # the base block, then the gate feedback of pass 1
-        assert user not in prompt and '<repo>/calc.py' in prompt, prompt[:600]
+    for prompt in (rig.prompts[0], rig.prompts[1]):        # pass 1 (no base block yet, 3.2), then the base block + gate feedback
+        assert user not in prompt, prompt[:600]
+    assert '<repo>/calc.py' in rig.prompts[1], rig.prompts[1][:600]
     assert user not in json.dumps(rig.state()['tasks']['T1']['feedback'])
 
 
@@ -2688,7 +2698,7 @@ def light_rig(rig, answers):
     def post(url, key, body, timeout):
         role = 'review' if body['messages'][0]['content'] == rig.w.LIGHT_REVIEW_RULES else 'code'
         sent.append(dict(url=url, key=key, role=role, prompt=body['messages'][1]['content'], model=body['model']))
-        status, content = answers[role]
+        status, content = answers(role, body['messages'][1]['content']) if callable(answers) else answers[role]
         reply = dict(choices=[dict(message=dict(content=content), finish_reason='stop')],
                      usage=dict(prompt_tokens=900, completion_tokens=40,
                                 prompt_tokens_details=dict(cached_tokens=100)))
@@ -2796,7 +2806,7 @@ def test_a_missing_module_on_the_base_too_stays_the_environment(rig):
                                                           diag="E ModuleNotFoundError: No module named 'numpy'")
     result = rig.once()
     assert result['status'] == 'READY' and result['reason'] != 'gate: import error'
-    assert rig.state()['tasks']['T1']['attempts'] == 0 and not rig.models     # never reached the coder, no strike
+    assert rig.state()['tasks']['T1']['attempts'] == 0 and not [m for m in rig.models if not m[0]]     # the coder ran beside the base, nothing judged, no strike
 
 
 def test_an_overloaded_coder_model_is_retried_on_another_channel_in_the_same_pass(rig):

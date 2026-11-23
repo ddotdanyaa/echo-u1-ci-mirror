@@ -7,7 +7,7 @@
 - rotate_tail: a log over max_bytes keeps its last lines (under keep_bytes) and the old body once as <name>.1.
 - IdleWatch / heal: READY > 0 and RUNNING = 0 for IDLE_LIMIT_S -> the caller writes one event and heals the stale
   global wait and the absurd task waits (no human). Channel cooldowns are NOT touched (they are real 429s).
-- supervise: restart the loop after a crash (not after STOP, the deadline, the brake, "already running").
+- supervise: restart after crashes, deadline exits and brakes; STOP and another live loop end supervision.
 """
 from __future__ import annotations
 
@@ -20,6 +20,7 @@ from pathlib import Path
 
 REAP_AGE_S = 3 * 3600          # a runner pass lives <= one lease; a pytest/kilo older than 3 h is an orphan
 REAP_EVERY_S = 300
+STALE_S = 300
 IDLE_LIMIT_S = 600
 STALE_TASK_WAIT_S = 2 * 3600   # a task wait further away than this is not a backoff (BACKOFF_MAX_S is 30 min)
 RESTART_MAX, RESTART_WINDOW_S = 5, 1800
@@ -123,6 +124,18 @@ def rotate_tail(path, *, max_bytes, keep_bytes) -> bool:
 class IdleWatch:
     def __init__(self, limit_s=IDLE_LIMIT_S):
         self.limit, self.since, self.fired_at = limit_s, None, None
+        self.telemetry_mark, self.telemetry_at = None, None
+
+    def stale(self, telemetry, *, now) -> bool:
+        try:
+            stat = Path(telemetry).stat()
+            mark = (stat.st_ino, stat.st_size, stat.st_mtime_ns)
+        except OSError:
+            mark = None
+        if self.telemetry_at is None or mark != self.telemetry_mark:
+            self.telemetry_mark, self.telemetry_at = mark, now
+            return False
+        return now - self.telemetry_at >= STALE_S
 
     def observe(self, *, ready, running, now) -> bool:
         if ready <= 0 or running > 0:
@@ -154,34 +167,74 @@ def heal(state: dict, ls: dict, *, now) -> dict:
 
 
 def should_restart(rc: int) -> bool:
-    """0 = STOP/deadline, 3 = brake, 4 = another loop runs, 5 = lock error: all deliberate. Anything else crashed."""
-    return rc not in (0, 3, 4, 5)
+    """Only another live loop (4) ends supervision independently of STOP."""
+    return rc != 4
 
 
 def supervise(cmd, *, run_fn, stop_exists, clock=time.time, sleep=time.sleep, note=print,
               max_restarts=RESTART_MAX, window_s=RESTART_WINDOW_S) -> int:
-    """Run cmd (via run_fn) until it ends on purpose. A crash restarts it, at most max_restarts in window_s
-    (a crash loop is left to the owner), never while a STOP file is there."""
+    """Keep the loop alive; a crash loop retries every two minutes instead of giving up."""
     starts: list = []
-    while True:
-        rc = run_fn(cmd)
+    cmd = list(cmd)
+    rc = 0
+    while not stop_exists():
+        error = None
+        try:
+            rc = run_fn(cmd)
+        except (OSError, subprocess.SubprocessError) as e:
+            rc, error = 1, type(e).__name__
         if not should_restart(rc) or stop_exists():
             return rc
+        if rc == 0:
+            # The absolute deadline belongs to the completed run. Keeping it would make every successor exit.
+            args, next_cmd = iter(cmd), []
+            for arg in args:
+                if arg == "--until":
+                    next(args, None)
+                elif not arg.startswith("--until="):
+                    next_cmd.append(arg)
+            cmd = next_cmd
         now = clock()
         starts = [t for t in starts if now - t < window_s] + [now]
-        if len(starts) > max_restarts:
-            note("crash loop: %d restarts in %d s, giving up (rc=%s)" % (len(starts), window_s, rc))
-            return rc
-        note("loop crashed rc=%s, restarting (%d in window)" % (rc, len(starts)))
-        sleep(10)
+        crash_loop = len(starts) >= max_restarts
+        note(json.dumps({"span": "survive", "status": "crash_loop" if crash_loop else "restart",
+                         "rc": rc, "error": error, "restarts": len(starts), "window_s": window_s}))
+        sleep(120 if crash_loop else 10)
+    return rc
+
+
+def run_watched(cmd, *, telemetry, clock=time.time, sleep=time.sleep, kill_fn=kill_tree):
+    """Watch the child's telemetry independently of its threads and terminate a silent process tree."""
+    proc = subprocess.Popen(cmd)
+    watch = IdleWatch()
+    while proc.poll() is None:
+        if watch.stale(telemetry, now=clock()):
+            try:
+                kill_fn(proc.pid)
+                return proc.wait(timeout=5)
+            except (OSError, subprocess.SubprocessError):
+                # Never launch a replacement until this tree has exited. A failed taskkill is retried.
+                pass
+        sleep(1)
+    return proc.wait()
 
 
 def main(argv=None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if len(argv) >= 4 and argv[0] == "supervise" and argv[2] == "--":
         stop = Path(argv[1])
-        return supervise(argv[3:], run_fn=lambda c: subprocess.call(c), stop_exists=stop.exists,
-                         note=lambda m: print(m, flush=True))
+        telemetry = stop.parent / "telemetry.jsonl"
+        def note(message):
+            print(message, flush=True)
+            try:
+                row = json.loads(message)
+                row["ts"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+                with telemetry.open("a", encoding="utf-8") as fh:
+                    fh.write(json.dumps(row) + "\n")
+            except (OSError, ValueError):
+                pass
+        return supervise(argv[3:], run_fn=lambda c: run_watched(c, telemetry=telemetry),
+                         stop_exists=stop.exists, note=note)
     print("usage: factory_survive supervise STOPFILE -- cmd...", file=sys.stderr)
     return 2
 

@@ -2,12 +2,19 @@
 worker keeps the gate's 2 GB floor; the triage takes up to 12 tasks per pass."""
 from types import SimpleNamespace
 
+import pytest
+
 from tools import factory_gate as G
 from tools import factory_loop as L
 
 MB = 2 ** 20
 LIGHT = {'touch_files': ['calc.py']}
-KILO = {'touch_files': ['a.py', 'b.py', 'c.py', 'd.py', 'e.py', 'f.py']}      # over LIGHT_MAX_FILES (5)
+KILO = {'touch_files': ['f%d.py' % i for i in range(11)]}      # over LIGHT_MAX_FILES (10)
+
+
+@pytest.fixture(autouse=True)
+def _no_reserves(tmp_path, monkeypatch):
+    monkeypatch.setattr(L, 'MEM_RESERVE_DIR', tmp_path / 'no_reserves')      # the build's real bookings never leak into a test
 
 
 def _loop(free, live=0, peaks=(), headroom=99):
