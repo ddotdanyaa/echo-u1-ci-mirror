@@ -727,7 +727,7 @@ class Loop:
     def __init__(self, cfg: Config, *, triage_fn=None, runner_cmd=None, clock=time.time,
                  sleep=time.sleep, power_fn=set_execution_state, free_ram_fn=free_ram_bytes,
                  extra_env=None, startup_notes=None, rng=None, wait_fn=None, cloud_fn=None, reap_fn=None, sweep_fn=None, release_fn=None,
-                 slice_fn=None, architect_fn=None, probe_fn=None):
+                 slice_fn=None, architect_fn=None, probe_fn=None, bisect_fn=None):
         if cfg.review_model in (cfg.small_model, cfg.large_model):
             raise ValueError("review model must differ from the code model: " + cfg.review_model)
         self.cfg = cfg
@@ -753,6 +753,8 @@ class Loop:
         self._rel_snap = None           # the snapshot the final build reads: _prune_snapshots keeps it
         self._rel_lock = threading.Lock()
         self._rel_note = None           # the info of the cloud run the build just made (its thread sets it, the loop's thread stores it)
+        self.bisect_fn = bisect_fn      # None: no history search (tests); main passes the cloud one (tools.factory_bisect.step)
+        self._bis = None                # the history search job in flight (Prefetch, its own slot, one at a time) or None
         self.runner_cmd = list(runner_cmd or [sys.executable, "-B", "-m",
                                               "tools.agent_factory_runner"])
         self.clock, self.sleep_fn = clock, sleep
@@ -1561,9 +1563,16 @@ class Loop:
         free = 1 if (self.pool.workers and not self._capacity(None)) else 0
         eligible = self._resliceable(tasks, state, ls, now) if self.slice_fn else {}
         waits = [until - now for until in ls.get("slice_wait", {}).values() if until > now]
-        return F.next_action(state, now, wait_s, self._has_more(ls, now), tasks, free=free,
-                             skip=self.pool.tids() | self._dry_blocked(tasks, state), resliceable=frozenset(eligible),
-                             slice_wait_s=min(waits) if waits else None)
+        skip = self.pool.tids() | self._dry_blocked(tasks, state)
+        later = self._bisect_later(tasks, state)        # W-bisect 4: never_green debt cards wait while there is other work
+
+        def ask(hold):
+            return F.next_action(state, now, wait_s, self._has_more(ls, now), tasks, free=free, skip=skip | hold,
+                                 resliceable=frozenset(eligible), slice_wait_s=min(waits) if waits else None)
+        act = ask(later)
+        if later and act["action"] in ("DONE", "HOLD"):  # the queue is otherwise empty: the way out of the deferral
+            act = ask(set())
+        return act
 
     def _step(self) -> Outcome:
         cfg, now = self.cfg, self.clock()
@@ -1581,6 +1590,7 @@ class Loop:
         self._sweep_tick(now)  # the red-guard supply follows the loop's own results and a periodic cloud sweep
         self._links_tick(now)  # the owner's words are linked to backlog rows in their own slot (4.2)
         self._release_tick(now)  # the final build: a full cloud sweep in its own slot, then the acceptance of merged rows
+        self._bisect_tick(now)  # W-bisect: the history search of the baseline debt (one cloud run at a time, behind the cards and the build)
         self._neighbors_tick(self.base_sha, None)  # the neighbour map of the base: built once per SHA in the background
         tasks, state = self.load()
         self._reslice_tick(tasks, state, self.ls(), now)
@@ -2740,6 +2750,129 @@ class Loop:
         except Exception as e:
             self.err("release", e)
 
+    def _bisect_tick(self, now) -> None:
+        """W-bisect: the history search of the baseline debt (tools.factory_bisect).  (1) a finished step is booked here; (2) READY
+        cards of a row whose regression is now proven, cut without the proof, go back to the slicer; (3) with no step in flight, no
+        final build and places over the cards' need, the next cloud run starts in its OWN slot (never two at once)."""
+        try:
+            from tools import factory_bisect as BIS
+        except ImportError:
+            return
+        try:
+            job = self._bis
+            if job is not None and job.done.is_set():
+                self._bis = None
+                self._bisect_done(job, now, BIS)
+            self._bisect_requeue(BIS)
+            if self.bisect_fn is None or self._bis is not None or self._rel is not None or self._ending() or not self.base_sha:
+                return
+            self._bisect_start(now, BIS)
+        except Exception as e:
+            self.err("bisect", e)
+
+    def _bisect_start(self, now, BIS) -> None:
+        from tools import factory_release as REL
+        ls = self.ls()
+        if now < float(ls.get("bisect_retry_at") or 0):
+            return
+        state_dir = self.cfg.state_dir
+        by_file = {f: [str(t) for t in r["tests"]] for f, r in REL.debt(state_dir).items() if not r.get("closed") and r.get("tests")}
+        if not by_file or not BIS.pending(state_dir, by_file):
+            return
+        shards = REL.shards_for(self._release_places())
+        if not shards and not BIS.has_run(state_dir):       # the cards come first: a run in flight holds its own places
+            return
+        commits = None
+        if not BIS.load(state_dir)["commits"]:
+            commits = BIS.history(lambda *a: git_run(self.cfg.repo, *a), self.base_sha)
+        shutil.rmtree(self.dir / "bisect_snap", ignore_errors=True)     # leftovers of a dead process: nothing reads them now
+        fn = self.bisect_fn
+        self._bis = Prefetch("bisect", lambda: fn(
+            state_dir=state_dir, tests_by_file=by_file, commits=commits, snapshot_fn=self._bisect_snapshot,
+            free_fn=lambda p: shutil.rmtree(p, ignore_errors=True), diff_fn=self._bisect_diff, shards=max(shards, 1)), {})
+        self._bis.thread.start()
+        self.event("bisect", status="started", base_sha=self.base_sha, reason="history search: %d debt file(s)" % len(by_file))
+
+    def _bisect_done(self, job, now, BIS) -> None:
+        ls = self.ls()
+        res = job.result if isinstance(job.result, dict) else {}
+        if job.error is not None:
+            ls["bisect_retry_at"] = now + BIS.RETRY_S
+            self.save_ls(ls)
+            self.event("bisect", status="failed", dur_s=round(job.dur_s, 3), reason=F.redact(str(job.error))[:200])
+            return
+        if ls.pop("bisect_retry_at", None) is not None:
+            self.save_ls(ls)
+        self.event("bisect", status=res.get("status") or "point", dur_s=round(job.dur_s, 3), sha=str(res.get("sha") or "")[:12] or None,
+                   phase=res.get("phase") or None, more=bool(res.get("more")), reason=str(res.get("reason") or "")[:200] or None,
+                   **{"bisect_" + k: v for k, v in BIS.counts(self.cfg.state_dir).items()})
+
+    def _bisect_snapshot(self, sha) -> Path:
+        """The tree of a commit of the working branch (git archive; the sweep's scanner reads it like any snapshot)."""
+        root = self.dir / "bisect_snap"
+        target = root / str(sha)[:12]
+        shutil.rmtree(target, ignore_errors=True)
+        target.mkdir(parents=True)
+        archive = root / (str(sha)[:12] + ".tar")
+        try:
+            with archive.open("wb") as fh:
+                subprocess.run(["git", "-C", str(self.cfg.repo), "archive", str(sha)], stdout=fh, stderr=subprocess.PIPE, check=True)
+            with tarfile.open(archive) as tar:
+                tar.extractall(target, filter="data")
+        finally:
+            archive.unlink(missing_ok=True)
+        return target
+
+    def _bisect_diff(self, green, red):
+        """(changed files, the diff) between two commits of the working branch."""
+        files = git_run(self.cfg.repo, "diff", "--name-only", str(green), str(red)).split("\n")
+        return [f.strip() for f in files if f.strip()], git_run(self.cfg.repo, "diff", "--no-color", str(green), str(red))
+
+    def _bisect_requeue(self, BIS) -> None:
+        """W-bisect 4: the READY cards of a debt row whose regression is proven and whose cards were cut without that proof go back
+        to the slicer (FAILED reslice:stale: no strike, the slicer's free retry); cards of a row with a worker on it stay."""
+        state_dir = self.cfg.state_dir
+        rows = {r for r, k in BIS.row_kinds(state_dir).items() if k == "regression"}
+        if not rows:
+            return
+        sliced = self.ls().get("bisect_sliced") or {}
+        want = {r for r in rows if (key := BIS.row_key(state_dir, r)) and sliced.get(r) != key}
+        if not want:
+            return
+        tasks, state = self.load()
+        rec = state["tasks"]
+        busy = {F.row_of(t.backlog_id or tid) for tid, t in tasks.items() if rec[tid]["status"] in ("RUNNING", "REVIEW")}
+        cards = [tid for tid, t in tasks.items() if F.row_of(t.backlog_id or tid) in want - busy and rec[tid]["status"] == "READY"
+                 and not F.is_terminal(rec[tid].get("reason"))]
+        if not cards:
+            return
+        with self.txn() as (_tasks, st):
+            for tid in cards:
+                if st["tasks"][tid]["status"] == "READY":
+                    st["tasks"][tid].update(status="FAILED", reason="reslice:stale")
+        self.event("bisect", status="requeued", reason="cards cut without the proof go back to the slicer: " + ",".join(sorted(
+            {F.row_of(tasks[t].backlog_id or t) for t in cards}))[:200], count=len(cards))
+
+    def _bisect_later(self, tasks, state) -> set:
+        """W-bisect 4: the READY cards of a never_green debt row (no green point in the whole history: nothing to restore) wait while
+        there is other work; not terminal: ``_act`` gives them out when the queue is otherwise empty."""
+        try:
+            from tools import factory_bisect as BIS
+            rows = {r for r, k in BIS.row_kinds(self.cfg.state_dir).items() if k == "never_green"}
+        except Exception:
+            return set()
+        if not rows:
+            return set()
+        return {tid for tid, t in tasks.items() if F.row_of(t.backlog_id or tid) in rows and state["tasks"][tid]["status"] == "READY"}
+
+    def _bisect_rank(self, bid) -> int:
+        """Order among the baseline debt rows: 0 a proven regression, 1 not classified, 2 never_green / moved (the tail)."""
+        try:
+            from tools import factory_bisect as BIS
+            return BIS.rank(self.cfg.state_dir, bid) if F.is_base_debt(bid) else 0
+        except Exception:
+            return 1
+
     def _release_note_run(self) -> None:
         """The cloud run the build made is written into loop_state (release_run.run) at once, so a restarted loop takes it up."""
         with self._rel_lock:                # the build's thread sets the note: read and clear it in one step
@@ -3605,6 +3738,18 @@ class Loop:
             except Exception as exc:                # an addition to the packet: without it the packet is as before
                 if hasattr(self, "err"):
                     self.err("row red evidence", exc)
+        bisect_clue, bisect_key = "", ""
+        if F.is_base_debt(row):
+            # W-bisect 4: the proof of what broke the test (the commit after which it turned red and its diff): in the packet of every step
+            try:
+                from tools import factory_bisect as BIS
+                found = BIS.clue(self.cfg.state_dir, BIS.row_tests(self.cfg.state_dir, row) or [str(entry.get("guard") or "")],
+                                 trace=[(t[0], t[1]) for t in (guard_trace or [])], contracts=[t.contract or "" for t in previous])
+                if found and (text := safe(found["text"])):
+                    bisect_clue, bisect_key = text, found["key"]
+            except Exception as exc:                # an addition to the packet: without it the packet is as before
+                if hasattr(self, "err"):
+                    self.err("row bisect clue", exc)
         row_trace = [t for t in (guard_trace or []) if not str(t[0]).startswith("tests/")]
         if red_given and row_trace and rung < 2:
             # W-free 4: the bodies of up to 4 functions of the trace nearest to the assert (rung >= 2 has the whole dossier)
@@ -3645,6 +3790,7 @@ class Loop:
         return dict(bid=row, title=safe(title), priority=entry.get("priority") or backlog.get("priority") or 9,
                     **dossier, **({"red_given": True} if red_given else {}),
                     **({"guard_test": str(entry["guard"])} if entry.get("guard") else {}),
+                    **({"bisect_clue": bisect_clue, "bisect_key": bisect_key} if bisect_clue else {}),
                     **({"trace_path": [[t[0], t[1]] for t in row_trace]} if red_given and row_trace else {}), quotes=[s for q in quotes if (s := safe(q))], hints=hints,
                     examples=[s for x in CL.contract_examples([f for f in files if isinstance(f, str)], k=2)
                               if (s := safe(x))], evidence="\n".join(s for x in clues if (s := safe(x))),
@@ -3768,6 +3914,8 @@ class Loop:
             fresh = self.ls()
             (fresh.get("slice_cache") or {}).pop(row, None)
             fresh.setdefault("contracts_by_engine", {}).setdefault(engine, {"made": 0, "merged": 0})["made"] += 1
+            if packet.get("bisect_key"):        # W-bisect 4: this row's cards were cut WITH the proof (its segment): no re-cut for it
+                fresh.setdefault("bisect_sliced", {})[row] = str(packet["bisect_key"])
             self.save_ls(fresh)
             return portion
         except SliceWait:
@@ -4238,7 +4386,7 @@ class Loop:
             if priority is None:
                 priority = min((t.priority for t in tasks.values() if F.row_of(t.backlog_id or t.id) == bid), default=9)
             tier = (2 if F.is_base_debt(bid) else 1 if bid.startswith("rel-") else 0) if eligible.get(bid) == "dry" else 0
-            return (tier, F.is_base_debt(bid), int(str(priority).removeprefix("P")), not bool(entry.get("guard")), bid)
+            return (tier, F.is_base_debt(bid), self._bisect_rank(bid), int(str(priority).removeprefix("P")), not bool(entry.get("guard")), bid)
         first_waits = any(c == "first" and b not in self._slicers for b, c in eligible.items())
         for bid in sorted(eligible, key=order)[:RESLICE_PER_STEP]:
             cause = eligible[bid]
@@ -6129,6 +6277,11 @@ class Loop:
                 stats["agent"]["usd_per_merged_by_engine"] = A.price_per_merged(ls.get("contracts_by_engine", {}))
             except Exception as e:      # statistics never stop the loop
                 self.err("agent stats", e)
+            try:
+                from tools import factory_bisect as BIS
+                stats["bisect"] = BIS.counts(self.cfg.state_dir)        # W-bisect 5: {done, regression, never_green, moved}
+            except Exception as e:      # statistics never stop the loop
+                stats["bisect"] = {"error": F.redact(type(e).__name__)}
             stats["queues"] = {"to_slice": len(ls.get("to_slice", {})),
                 "slicing": len(ls.get("slicing", {})),
                 "slice_wait": sum(until > self.clock() for until in ls.get("slice_wait", {}).values()),
@@ -6728,6 +6881,21 @@ def _release_fn(a):
     return build
 
 
+def _bisect_fn(a):
+    """The history search step (tools.factory_bisect.step over the cloud sweep), or None with --no-cloud-sweep / --self-repo / when a
+    module is absent."""
+    if getattr(a, "no_cloud_sweep", False) or getattr(a, "self_repo", False):
+        return None
+    try:
+        from tools import echo_cloud, factory_bisect
+    except Exception:
+        return None
+
+    def step(**kw):
+        return factory_bisect.step(sweep_fn=echo_cloud.sweep, drop_fn=lambda info: echo_cloud.delete_branch(info["branch"]), **kw)
+    return step
+
+
 def main(argv=None) -> int:
     argv = sys.argv[1:] if argv is None else list(argv)
     if argv and argv[0] == "answer":
@@ -6749,7 +6917,7 @@ def main(argv=None) -> int:
     cfg.architect_rungs = tuple(rungs)
     try:
         loop = Loop(cfg, extra_env=keys, startup_notes=["no key for channel env " + n for n in absent],
-                    cloud_fn=getattr(factory_cloud_gate, "available", None), sweep_fn=_cloud_sweep_fn(a), release_fn=_release_fn(a), reap_fn=lambda **kw: SV.reap(procs_fn=SV.list_processes, kill_fn=SV.kill_tree, **kw))
+                    cloud_fn=getattr(factory_cloud_gate, "available", None), sweep_fn=_cloud_sweep_fn(a), release_fn=_release_fn(a), bisect_fn=_bisect_fn(a), reap_fn=lambda **kw: SV.reap(procs_fn=SV.list_processes, kill_fn=SV.kill_tree, **kw))
     except ValueError as e:
         raise SystemExit(str(e))
     return loop.run()

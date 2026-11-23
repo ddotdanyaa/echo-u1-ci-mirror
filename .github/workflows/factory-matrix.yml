@@ -14,55 +14,55 @@ jobs:
       matrix:
         include:
           - shard: 1
-            files: 'tests/test_factory_ab.py tests/test_factory_channels_balance.py tests/test_factory_classes.py tests/test_factory_context.py'
+            files: 'tests/test_factory_ab.py tests/test_factory_bisect.py tests/test_factory_channels_balance.py tests/test_factory_classes.py'
           - shard: 2
-            files: 'tests/test_factory_context_budget.py tests/test_factory_context_constants.py tests/test_factory_context_fit_whole.py tests/test_factory_context_gaps.py'
+            files: 'tests/test_factory_context.py tests/test_factory_context_budget.py tests/test_factory_context_constants.py tests/test_factory_context_fit_whole.py'
           - shard: 3
-            files: 'tests/test_factory_context_imports.py tests/test_factory_context_scoring.py tests/test_factory_context_windows.py tests/test_factory_discover.py'
+            files: 'tests/test_factory_context_gaps.py tests/test_factory_context_imports.py tests/test_factory_context_scoring.py tests/test_factory_context_windows.py'
           - shard: 4
-            files: 'tests/test_factory_feedback_window.py tests/test_factory_fit_views.py tests/test_factory_gate.py tests/test_factory_gate_chunks.py'
+            files: 'tests/test_factory_discover.py tests/test_factory_feedback_window.py tests/test_factory_fit_views.py tests/test_factory_gate.py'
           - shard: 5
-            files: 'tests/test_factory_gate_failed.py tests/test_factory_gate_green_ids.py tests/test_factory_gate_hollow.py tests/test_factory_gate_marker.py'
+            files: 'tests/test_factory_gate_chunks.py tests/test_factory_gate_failed.py tests/test_factory_gate_green_ids.py tests/test_factory_gate_hollow.py'
           - shard: 6
-            files: 'tests/test_factory_gate_more.py tests/test_factory_gate_owner_data.py tests/test_factory_gate_slots.py tests/test_factory_gate_split.py'
+            files: 'tests/test_factory_gate_marker.py tests/test_factory_gate_more.py tests/test_factory_gate_owner_data.py tests/test_factory_gate_slots.py'
           - shard: 7
-            files: 'tests/test_factory_hold.py tests/test_factory_holds.py tests/test_factory_holds_candidates.py tests/test_factory_jam_lift.py'
+            files: 'tests/test_factory_gate_split.py tests/test_factory_hold.py tests/test_factory_holds.py tests/test_factory_holds_candidates.py'
           - shard: 8
-            files: 'tests/test_factory_light.py tests/test_factory_light_aim.py tests/test_factory_light_answers.py tests/test_factory_light_continuation.py'
+            files: 'tests/test_factory_jam_lift.py tests/test_factory_light.py tests/test_factory_light_aim.py tests/test_factory_light_answers.py'
           - shard: 9
-            files: 'tests/test_factory_light_floor.py tests/test_factory_light_function_edit.py tests/test_factory_light_indent.py tests/test_factory_light_key.py'
+            files: 'tests/test_factory_light_continuation.py tests/test_factory_light_floor.py tests/test_factory_light_function_edit.py tests/test_factory_light_indent.py'
           - shard: 10
-            files: 'tests/test_factory_light_note_block.py tests/test_factory_light_patterns.py tests/test_factory_light_reasoning.py tests/test_factory_light_telemetry.py'
+            files: 'tests/test_factory_light_key.py tests/test_factory_light_note_block.py tests/test_factory_light_patterns.py tests/test_factory_light_reasoning.py'
           - shard: 11
-            files: 'tests/test_factory_lock_owner.py tests/test_factory_loop.py tests/test_factory_loop_ab.py tests/test_factory_loop_budget.py'
+            files: 'tests/test_factory_light_telemetry.py tests/test_factory_lock_owner.py tests/test_factory_loop.py tests/test_factory_loop_ab.py'
           - shard: 12
-            files: 'tests/test_factory_loop_candidates.py tests/test_factory_loop_d8a.py tests/test_factory_loop_d8b.py tests/test_factory_loop_d8e.py'
+            files: 'tests/test_factory_loop_budget.py tests/test_factory_loop_candidates.py tests/test_factory_loop_d8a.py tests/test_factory_loop_d8b.py'
           - shard: 13
-            files: 'tests/test_factory_loop_discover.py tests/test_factory_loop_feed.py tests/test_factory_loop_git.py tests/test_factory_loop_git2.py'
+            files: 'tests/test_factory_loop_d8e.py tests/test_factory_loop_discover.py tests/test_factory_loop_feed.py tests/test_factory_loop_git.py'
           - shard: 14
-            files: 'tests/test_factory_loop_git3.py tests/test_factory_loop_git4.py tests/test_factory_loop_git5.py tests/test_factory_loop_holds.py'
+            files: 'tests/test_factory_loop_git2.py tests/test_factory_loop_git3.py tests/test_factory_loop_git4.py tests/test_factory_loop_git5.py'
           - shard: 15
-            files: 'tests/test_factory_loop_locate.py tests/test_factory_loop_parents.py tests/test_factory_loop_reconcile.py tests/test_factory_loop_report.py'
+            files: 'tests/test_factory_loop_holds.py tests/test_factory_loop_locate.py tests/test_factory_loop_parents.py tests/test_factory_loop_reconcile.py'
           - shard: 16
-            files: 'tests/test_factory_loop_report2.py tests/test_factory_loop_report3.py tests/test_factory_loop_report4.py tests/test_factory_loop_report5.py'
+            files: 'tests/test_factory_loop_report.py tests/test_factory_loop_report2.py tests/test_factory_loop_report3.py tests/test_factory_loop_report4.py'
           - shard: 17
-            files: 'tests/test_factory_loop_report6.py tests/test_factory_loop_report7.py tests/test_factory_loop_run.py tests/test_factory_metrics_span.py'
+            files: 'tests/test_factory_loop_report5.py tests/test_factory_loop_report6.py tests/test_factory_loop_report7.py tests/test_factory_loop_run.py'
           - shard: 18
-            files: 'tests/test_factory_near_merge.py tests/test_factory_new_file_search.py tests/test_factory_parse_cache.py tests/test_factory_patterns.py'
+            files: 'tests/test_factory_metrics_span.py tests/test_factory_near_merge.py tests/test_factory_new_file_search.py tests/test_factory_parse_cache.py'
           - shard: 19
-            files: 'tests/test_factory_pool_k1.py tests/test_factory_pool_loop.py tests/test_factory_pool_state.py tests/test_factory_port.py'
+            files: 'tests/test_factory_patterns.py tests/test_factory_pool_k1.py tests/test_factory_pool_loop.py tests/test_factory_pool_state.py'
           - shard: 20
-            files: 'tests/test_factory_port_triage.py tests/test_factory_profile.py tests/test_factory_promote_merge.py tests/test_factory_providers.py'
+            files: 'tests/test_factory_port.py tests/test_factory_port_triage.py tests/test_factory_profile.py tests/test_factory_promote_merge.py'
           - shard: 21
-            files: 'tests/test_factory_quota.py tests/test_factory_red_by_assert.py tests/test_factory_reject_cli.py tests/test_factory_reject_promote.py'
+            files: 'tests/test_factory_providers.py tests/test_factory_quota.py tests/test_factory_red_by_assert.py tests/test_factory_reject_cli.py'
           - shard: 22
-            files: 'tests/test_factory_requeue.py tests/test_factory_reslice.py tests/test_factory_revive.py tests/test_factory_route_d.py'
+            files: 'tests/test_factory_reject_promote.py tests/test_factory_requeue.py tests/test_factory_reslice.py tests/test_factory_revive.py'
           - shard: 23
-            files: 'tests/test_factory_router.py tests/test_factory_row_text.py tests/test_factory_selfgate_own_tests.py tests/test_factory_selfgate_sync.py'
+            files: 'tests/test_factory_route_d.py tests/test_factory_router.py tests/test_factory_row_text.py tests/test_factory_selfgate_own_tests.py'
           - shard: 24
-            files: 'tests/test_factory_test_card.py tests/test_factory_triage_candidates.py tests/test_factory_triage_state.py tests/test_factory_undefined_names.py'
+            files: 'tests/test_factory_selfgate_sync.py tests/test_factory_test_card.py tests/test_factory_triage_candidates.py tests/test_factory_triage_state.py'
           - shard: 25
-            files: 'tests/test_factory_unit_rules_async.py tests/test_factory_unit_test_rules.py tests/test_factory_view_fill.py'
+            files: 'tests/test_factory_undefined_names.py tests/test_factory_unit_rules_async.py tests/test_factory_unit_test_rules.py tests/test_factory_view_fill.py'
     name: shard ${{ matrix.shard }}
     runs-on: windows-latest
     timeout-minutes: 25
