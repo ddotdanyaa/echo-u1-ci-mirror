@@ -2367,6 +2367,9 @@ class Loop:
         try:
             from tools import backlog_register as B
             from tools import factory_intake as I
+        except ImportError:
+            return          # the mirror (cloud matrix) does not carry the product's modules: nothing to link there, not an error
+        try:
             job = self._lk
             if job is not None and job.done.is_set():
                 self._lk = None
@@ -2385,7 +2388,12 @@ class Loop:
             self._lk_at, size = now, words.stat().st_size
             md = Path(self.cfg.backlog).read_bytes().decode("utf-8-sig")
             from tools import agent_factory_import as imp
-            rows = {r["backlog_id"]: str(r.get("title") or "")[:200] for r in imp.parse_section4(md)}
+            try:
+                rows = {r["backlog_id"]: str(r.get("title") or "")[:200] for r in imp.parse_section4(md)}
+            except ValueError:
+                return      # a backlog without a bounded section 4 has no rows to link to: nothing to do, not an error
+            if not rows:
+                return
             out = words.parent / "owner_links.json"
 
             def ask(prompt):
