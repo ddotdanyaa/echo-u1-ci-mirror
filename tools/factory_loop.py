@@ -4939,6 +4939,8 @@ class Loop:
             rec = mem.get(bid) or {}
             if rec.get("rev") == rev and now - float(rec.get("at") or 0) < self.SUPPLY_RETURN_S:
                 continue
+            if "could not find a fix" in why and rec.get("rev") == rev:
+                continue                       # that hold expires only with a NEW CONTRACT_REV, not with the 24 h term
             seen_ids.add(bid)
             closed = (not is_open.get(bid, True)) or bid in (cur.get("closed") or {}) or bid in done_rows
             for key in ("holds", "hold_ver", "hold_hash", "hold_arch", "arch_decision", "not_code", "closed", "parents",
