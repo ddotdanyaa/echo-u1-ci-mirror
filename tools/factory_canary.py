@@ -21,7 +21,11 @@ from tools import agent_factory as F
 from tools import agent_factory_import as IMP
 
 ROW = "B9"
-SEED = Path(__file__).resolve().parent / "factory_canary_seed"
+SEED_FILES = {      # the seed lives in this module: the mirror publishes modules, not a data directory
+    "echo_sync/canary_mod.py": "def add(a, b):\n    return a - b\n",
+    "tests/test_canary.py": "from echo_sync.canary_mod import add\n\n\ndef test_add():\n    assert add(2, 3) == 5\n",
+    "tests/data/factory_durations.json": '{"tests/test_canary.py": 0.1}\n',
+}
 WAITS = ("channel_cooldown", "architect_wait", F.REASON_CLOUD_DOWN)
 GREEN, INCONCLUSIVE, RED = "green", "inconclusive", "red"
 EXIT = {GREEN: 0, INCONCLUSIVE: 3, RED: 4}
@@ -38,7 +42,7 @@ def backlog_text() -> str:
     return text
 
 
-def verdict(state: dict, events=()) -> tuple[str, str]:
+def verdict(state: dict, events=(), ls=None) -> tuple[str, str]:
     rows = [r for r in ((state or {}).get("tasks") or {}).values()
             if isinstance(r, dict) and F.row_of(str(r.get("backlog_id") or "")) == ROW]
     if any(r.get("status") == "PROMOTED" for r in rows):
@@ -49,6 +53,9 @@ def verdict(state: dict, events=()) -> tuple[str, str]:
     waits = sorted({str(e.get("reason")) for e in events if isinstance(e, dict) and e.get("reason") in WAITS})
     if waits:
         return INCONCLUSIVE, "the channel or the cloud was not there: " + ", ".join(waits)
+    held = ((ls or {}).get("quarantine") or {}).get(ROW)    # a row cut off before it had any task: the loop's own quarantine
+    if not rows and isinstance(held, dict):
+        return RED, "quarantine: " + str(held.get("why") or "the row was quarantined")
     return RED, "the row did not finish in time" if rows else "row was never sliced"
 
 
@@ -115,12 +122,24 @@ def main(argv=None, run_loop=None, usable=None) -> int:
                                      "at": dt.datetime.now().astimezone().isoformat(timespec="seconds")}), encoding="utf-8")
         return EXIT[status]
 
+    try:
+        return _run_canary(a, write, run_loop, usable)
+    except Exception as e:      # noqa: BLE001  whatever breaks, the verdict file is written and the code is 4 (red cancels the restart)
+        try:
+            return write(RED, "the canary itself failed: " + type(e).__name__ + ": " + str(e)[:200])
+        except Exception:       # noqa: BLE001  not even the file can be written: still the red code
+            return EXIT[RED]
+
+
+def _run_canary(a, write, run_loop, usable) -> int:
     if usable(a.env_file, a.channels) <= 0:
         return write(RED, "no keys: the version sees no channel key")
     base = a.work / a.sha
     repo, state, backlog, none_env = base / "repo", base / "state", base / "BACKLOG.md", base / "no_paid_key.txt"
     shutil.rmtree(base, ignore_errors=True)
-    shutil.copytree(SEED, repo)
+    for rel, text in SEED_FILES.items():
+        (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+        (repo / rel).write_text(text, encoding="utf-8", newline="\n")
     state.mkdir(parents=True)
     _git(repo, "init", "-q", "-b", "canary/" + a.sha)
     _git(repo, "add", "-A")
@@ -136,7 +155,7 @@ def main(argv=None, run_loop=None, usable=None) -> int:
         run_loop(args, env)
     except Exception as e:                              # a loop that cannot even run proves nothing good
         return write(RED, "the loop failed to run: " + type(e).__name__)
-    status, why = verdict(_read_json(state / "state.json", {}), _events(state))
+    status, why = verdict(_read_json(state / "state.json", {}), _events(state), _read_json(state / "loop_state.json", {}))
     return write(status, why)
 
 

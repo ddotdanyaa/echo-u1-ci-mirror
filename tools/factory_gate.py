@@ -668,6 +668,7 @@ def cloud_each(root, names):
         if cases is None:
             from . import factory_cloud_gate
             if SELF_REPO:                         # the neighbours too go to the factory's own mirror branch, not the product route
+                # `touched` here is the neighbours' own test files, not modules: they are only overlaid onto the mirror tree
                 got = factory_cloud_gate.attempt(root, list(names), sorted({_node(n).split('::', 1)[0] for n in names}), self_repo=True)
             else:
                 got = factory_cloud_gate.run_product(root, list(names))
