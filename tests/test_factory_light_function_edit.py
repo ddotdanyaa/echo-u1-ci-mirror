@@ -120,6 +120,39 @@ def test_a_missing_name_is_not_applied_and_the_note_names_it(tmp_path):
     assert 'nope' in note and 'not found' in note
 
 
+NESTED = ('def outer(x):\n    def noun_phrase(w):\n        return w\n    return noun_phrase(x)\n\n\n'
+          'class Box:\n    def get(self):\n        def _ready_verdict(r):\n            return r\n        return _ready_verdict(1)\n')
+
+
+def test_a_function_nested_once_is_replaced_in_place_keeping_the_indent(tmp_path):
+    setup(tmp_path, NESTED)
+    _, _, applied, failed = run(tmp_path, fn_block('calc.py', 'noun_phrase', 'def noun_phrase(w):\n    return w.strip()'))
+    assert applied == ['calc.py'] and failed == {}
+    assert (tmp_path / 'calc.py').read_text() == NESTED.replace('        return w\n', '        return w.strip()\n')
+    _, _, applied, failed = run(tmp_path, fn_block('calc.py', '_ready_verdict',
+                                                   'def _ready_verdict(r):\n    return r + 1'))
+    assert applied == ['calc.py'] and failed == {}
+    assert '        def _ready_verdict(r):\n            return r + 1\n        return _ready_verdict(1)\n' in (
+        tmp_path / 'calc.py').read_text()
+
+
+def test_a_name_nested_more_than_once_is_refused_with_qualified_names_and_lines(tmp_path):
+    text = 'def a():\n    def helper():\n        return 1\n    return helper\n\n\ndef b():\n    def helper():\n        return 2\n    return helper\n'
+    setup(tmp_path, text)
+    _, _, applied, failed = run(tmp_path, fn_block('calc.py', 'helper', 'def helper():\n    return 3'))
+    why = next(iter(failed))
+    assert applied == [] and 'a.helper (line 2)' in why and 'b.helper (line 8)' in why
+    assert (tmp_path / 'calc.py').read_text() == text
+
+
+def test_an_absent_name_gets_the_similar_real_names_and_the_search_replace_advice(tmp_path):
+    setup(tmp_path, NESTED)
+    _, _, applied, failed = run(tmp_path, fn_block('calc.py', 'noun_phrases', 'def noun_phrases(w):\n    return w'))
+    why = next(iter(failed))
+    assert applied == [] and 'noun_phrase' in why and 'SEARCH/REPLACE' in why and 'similar' in why
+    assert (tmp_path / 'calc.py').read_text() == NESTED
+
+
 def test_a_duplicate_name_is_not_applied(tmp_path):
     setup(tmp_path, SRC + '\n\ndef add(a, b):\n    return 0\n')
     _, _, applied, failed = run(tmp_path, fn_block('calc.py', 'add', 'def add(a, b):\n    return a + b'))

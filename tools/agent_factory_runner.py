@@ -2021,6 +2021,32 @@ def _function_nodes(tree, target: str) -> list:
             if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == leaf]
 
 
+def _all_defs(tree) -> list:
+    """``[(qualified name, node, nested)]`` for every def of the file; ``nested`` is False for a top-level function and a
+    method of a top-level class (those `_function_nodes` finds)."""
+    import ast
+    out = []
+
+    def walk(body, path, kinds, direct):
+        # kinds: what encloses this body ('class' / 'func'); direct: the body is the module's or a top-level class's own
+        for n in body:
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                top = direct and kinds in ((), ('class',))
+                out.append(('.'.join(path + [n.name]), n, not top))
+                walk(n.body, path + [n.name], kinds + ('func',), False)
+            elif isinstance(n, ast.ClassDef):
+                walk(n.body, path + [n.name], kinds + ('class',), direct)
+            else:
+                inner = [getattr(n, f, None) for f in ('body', 'orelse', 'finalbody')]
+                inner += [h.body for h in (getattr(n, 'handlers', None) or [])]
+                for block in inner:
+                    if isinstance(block, list) and block and isinstance(block[0], ast.stmt):
+                        walk(block, path, kinds, False)
+
+    walk(tree.body, [], (), True)
+    return out
+
+
 def _replace_function(text: str, target: str, new: str, shown: str | None = None) -> tuple[str | None, str]:
     """``(text with the one top-level function or Class.method replaced, '')`` or ``(None, reason)``. The new
     definition is re-indented to the old one and must parse as exactly one function of the same name. ``shown``:
@@ -2035,8 +2061,22 @@ def _replace_function(text: str, target: str, new: str, shown: str | None = None
         return None, "function '%s': the file does not parse" % target
     leaf = target.rpartition('.')[2]
     found = _function_nodes(tree, target)
+    nested = False
     if not found:
-        return None, "function '%s' not found (only a top-level function or a method of a top-level class)" % target
+        every = _all_defs(tree)
+        same_name = [(q, n) for q, n, deep in every if deep and (q == target or q.rpartition('.')[2] == leaf
+                                                                  and (q.endswith('.' + target) or '.' not in target))]
+        if len(same_name) == 1:
+            found, nested = [same_name[0][1]], True
+        elif same_name:
+            return None, ("function '%s' is nested and named %d times: %s; use SEARCH/REPLACE on the shown lines"
+                          % (target, len(same_name), ', '.join('%s (line %d)' % (q, n.lineno) for q, n in same_name)))
+        else:
+            import difflib
+            names = sorted({q for q, _, _ in every} | {q.rpartition('.')[2] for q, _, _ in every})
+            close = difflib.get_close_matches(target, names, n=5, cutoff=0.4)
+            return None, ("function '%s' not found in the file%s; use SEARCH/REPLACE on the shown lines"
+                          % (target, ' (similar real names: %s)' % ', '.join(close) if close else ''))
     if len(found) > 1:
         return None, "function '%s' is defined more than once" % target
     node = found[0]
@@ -2075,7 +2115,11 @@ def _replace_function(text: str, target: str, new: str, shown: str | None = None
         again = ast.parse(done)
     except _PARSE_ERRORS:
         return None, "function '%s': the file does not parse after the replacement" % target
-    placed = _function_nodes(again, target)
+    if nested:
+        placed = [n for q, n, deep in _all_defs(again) if deep and q.rpartition('.')[2] == leaf
+                  and (q == target or q.endswith('.' + target) or '.' not in target)]
+    else:
+        placed = _function_nodes(again, target)
     same = lambda n: (ast.dump(n.args), [ast.dump(x) for x in n.body], ast.dump(n.returns) if n.returns else '')
     if len(placed) != 1 or same(placed[0]) != same(fresh_node):
         return None, "function '%s': the file does not parse after the replacement" % target
@@ -2511,7 +2555,11 @@ def part_off_contract(parts: list, file: str, old_text: str, new_text: str) -> s
     return OFF_CONTRACT_NOTE % (', '.join(o.partition(': ')[2] or o for o in off), ', '.join(allowed))
 
 
-UNDEF_RETRIES = 1       # re-asks of one part for a new undefined name that cost no PART_RETRIES try (W-see 4)
+STALE_MARK = 'reslice:stale'
+_CANNOT_NOT_THERE = re.compile(r'CANNOT:.*does not contain', re.S | re.I)
+
+
+UNDEF_RETRIES = 1      # re-asks of one part for a new undefined name that cost no PART_RETRIES try (W-see 4)
 
 
 def part_undefined(file: str, old_text: str, new_text: str) -> str:
@@ -2524,7 +2572,8 @@ def part_undefined(file: str, old_text: str, new_text: str) -> str:
 
 
 def edit_parts(task: Task, parts: list, workdir: Path, call, failing: str = '', use_code: bool = False,
-               gemma_first=None, on_cut=None, trace=(), fail_ids=(), info=None, on_event=None) -> tuple[int, str, str]:
+               gemma_first=None, on_cut=None, trace=(), fail_ids=(), info=None, on_event=None,
+               who=None) -> tuple[int, str, str]:
     """Edit the parts of the contract in ``workdir``: one call per part (``call(part_task, directory, prompt)`` ->
     ``(rc, stdout, stderr)``), the parts of one stage at once (one thread and one HTTP call per part), the next stage
     when all parts of the previous one are applied. Each part works in its own copy ``<workdir>-p<i>-<try>``; its
@@ -2675,10 +2724,17 @@ def edit_parts(task: Task, parts: list, workdir: Path, call, failing: str = '', 
         if use_code and isinstance(part.get('code'), str) and part['code'].strip():
             why_not = apply_code(index, part)
             if not why_not:
+                if info is not None:
+                    with lock:
+                        info['code_applied'] = info.get('code_applied', 0) + 1
                 return ''
             more = ('\nThe architect wrote code for this part; it could not be applied (%s). Make the change the '
                     'instruction asks for.\n' % why_not[:300])
         tries, spin, free_asks = 0, 0, UNDEF_RETRIES
+        cannots: list = []      # the models that answered "CANNOT: the provided function ... does not contain" for this part
+        if info is not None:
+            with lock:
+                info['model_asked'] = info.get('model_asked', 0) + 1
         while tries <= PART_RETRIES:
             attempt_no, spin = spin, spin + 1
             folder = workdir.parent / ('%s-p%d-%d' % (workdir.name, index, attempt_no))
@@ -2714,6 +2770,14 @@ def edit_parts(task: Task, parts: list, workdir: Path, call, failing: str = '', 
                         shutil.copyfile(target, before)
                     return ''
                 reason = reason or 'the call failed'
+                if _CANNOT_NOT_THERE.search(reason):
+                    # the same CANNOT ("the provided function X does not contain ...") from a SECOND model: the contract
+                    # names the wrong place, a third try would only repeat it; the card goes back to the slicer
+                    said_by = who(file) if who is not None else None
+                    if any(m != said_by for m in cannots):
+                        return '%s: %s: the contract describes another place than the code (two models answered CANNOT: %s)' % (
+                            file, STALE_MARK, reason[:150])
+                    cannots.append(said_by)
                 if undefined and free_asks > 0:
                     free_asks -= 1
                     notify('undefined_name_reask')
@@ -4239,10 +4303,12 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                 older = [m for m in failed_models_of(row) if isinstance(m, str)]
 
                 part_tried: dict = {}       # (candidate, file) -> the models that already answered that part
+                last_model: dict = {}       # (candidate, file) -> the model of the newest call for that part
 
                 def part_call(k, part_task, directory, text):
                     waited = 0.0
-                    own = part_tried.setdefault((k, part_task.touch_files[0] if part_task.touch_files else ''), set())
+                    part_key = part_task.touch_files[0] if part_task.touch_files else ''
+                    own = part_tried.setdefault((k, part_key), set())
                     while True:
                         mine = set().union(*(models[j] for j in range(count) if j != k))
                         # a part asked again goes to ANOTHER model than the ones that already gave it an unusable
@@ -4250,8 +4316,9 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                         out = sorted(mine | own | (set(older) - mine))
                         skip = skip_for(k, attempt, feedback, small_follow_up)
 
-                        def booked(model, k=k, own=own):
+                        def booked(model, k=k, own=own, part_key=part_key):
                             own.add(model)
+                            last_model[(k, part_key)] = model
                             if k == 0:
                                 first_booked.set()
                         extra = dict(skip_tiers=skip, later=bool(k), candidate=k, models_out=models[k], on_booked=booked)
@@ -4288,7 +4355,8 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                                                       use_code=attempt <= 1 and not feedback and not k,
                                                       gemma_first=gemma_first_now, on_cut=events.append,
                                                       trace=part_trace, fail_ids=part_fail_ids, info=see,
-                                                      on_event=events.append)
+                                                      on_event=events.append,
+                                                      who=lambda f, k=k: last_model.get((k, f)))
                     finally:
                         if k == 0:
                             first_booked.set()
@@ -4310,6 +4378,12 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                             used = sorted(models[cand['k']])
                             ctx.update(workdir=cand['workdir'], baseline=cand['baseline'], light_note=cand['note'],
                                        last_text=cand['text'], coder_model=used[0] if used else ctx['coder_model'])
+                            if cand['rc'] and STALE_MARK in str(cand['note']):
+                                # two models said the named place is not there: back to the slicer, no strike
+                                outcome = end(lambda s, r: (fail_row(s, tid, token, 'reslice:stale'), None),
+                                              reason='reslice:stale',
+                                              reason_detail=scrub(redact(str(cand['note'])))[:300])
+                                break
                             if cand['rc']:          # a part stayed unapplied after its re-asks: a red attempt
                                 fails.append(('gate', 'gate:part_failed', cand['note'], ()))
                                 continue
@@ -4333,6 +4407,8 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                     ctx['coder_models'] |= set().union(*models)
                     report['context_chars'] = see.get('context_chars', 0)
                     report['context_sections'] = see.get('context_sections', [])
+                    if see.get('code_applied') and not see.get('model_asked'):
+                        report['edit_by'] = 'code'      # every part was the architect's code, applied without a model
                 if outcome is not None:
                     return outcome
                 if retry is not None:

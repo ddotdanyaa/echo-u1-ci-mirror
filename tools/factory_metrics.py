@@ -172,6 +172,23 @@ def is_slice_call(row) -> bool:
     return row.get("span") == "slice" and bool(row.get("engine")) and row.get("status") != "barred"
 
 
+RED_FIRST_TRY = ("gate", "part_failed", "off_path", "no_changes", "neighbors_regression")
+NOT_A_PASS = ("rate_minute", "rate_day", "transient", "channel_wait", "cloud_", "network", "timeout", "region")
+
+
+def first_try_verdict(row):
+    """False (red) / True (green) for a code run row that is the card's pass with an edit; None for a deferral or a row that
+    says nothing about the edit (the next row of the card is looked at)."""
+    reason = str(row.get("reason") or "")
+    if row.get("status") == "WAITING_CHANNEL" or reason.startswith(NOT_A_PASS):
+        return None
+    if reason.startswith(RED_FIRST_TRY) or any(x in reason for x in RED_FIRST_TRY[1:]):
+        return False
+    if row.get("status") in GREEN_STATUSES:
+        return True
+    return None
+
+
 GREEN_STATUSES = ("REVIEW", "PROMOTED", "DONE", "accepted", "promoted")
 
 
@@ -191,15 +208,23 @@ def money_report(state_dir, now=None, spend=None, until="2026-11-30") -> dict:
             continue
         if span == "accept" and row.get("status") == "accepted" and (tid not in accepted or t < accepted[tid]):
             accepted[tid] = t
-        if span == "run" and not row.get("role") and row.get("kind") == "code" and row.get("changed") \
-                and isinstance(row.get("attempt"), int) and not isinstance(row.get("attempt"), bool):
-            if tid not in passes or row["attempt"] < passes[tid][0]:
-                passes[tid] = (row["attempt"], t, row.get("status") in GREEN_STATUSES)
+        if span == "run" and not row.get("role") and row.get("kind") == "code":
+            verdict = first_try_verdict(row)
+            if verdict is not None and (tid not in passes or t < passes[tid][0]):
+                passes[tid] = (t, verdict, row.get("edit_by") == "code")
     for tid, r in (_json(Path(state_dir) / "loop_state.json").get("accepted") or {}).items():
         if isinstance(r, dict) and isinstance(tid, str) and tid not in accepted:
             accepted[tid] = _t(r.get("at")) or now_t
     day_accepted = sum(1 for t in accepted.values() if t >= day_ago)
-    recent = [green for _, t, green in passes.values() if t >= day_ago]
+    recent = {"model": [], "code": []}
+    for t, green, by_code in passes.values():
+        if t >= day_ago:
+            recent["code" if by_code else "model"].append(green)
+
+    def share(rows):
+        return {"pct": round(100 * sum(rows) / len(rows), 1) if rows else None, "n": len(rows), "green": sum(rows)}
+
+    explicit = spend is not None
     if spend is None:
         try:
             from tools import factory_paid_critic as P
@@ -210,7 +235,13 @@ def money_report(state_dir, now=None, spend=None, until="2026-11-30") -> dict:
     try:
         from tools import factory_paid_critic as P
         for d in P.allowance_left_by_day(spent=spend or 0.0, until=until, since=now_t.date().isoformat()):
-            left.append(dict(d, left=d["left"] if spend is not None else None))
+            if spend is None:
+                value = None
+            elif explicit:         # a given total (tests): the same PK formula over the row with that total
+                value = round(P._left(d["day"], dict(P._spend_row(), total_usd=float(spend))), 2)
+            else:                  # the real number: PK.left
+                value = round(P.left(d["day"]), 2)
+            left.append(dict(d, left=value))
     except Exception:
         pass
     return {"accepted_hour": sum(1 for t in accepted.values() if t >= hour_ago),
@@ -219,8 +250,8 @@ def money_report(state_dir, now=None, spend=None, until="2026-11-30") -> dict:
                 "day_calls": calls_day,
                 "total": round(1000 * len(accepted) / calls_all, 2) if calls_all else None,
                 "total_accepted": len(accepted), "total_calls": calls_all},
-            "edit_first_try_pct": {"pct": round(100 * sum(recent) / len(recent), 1) if recent else None,
-                                   "n": len(recent), "green": sum(recent)},
+            "edit_first_try_pct": share(recent["model"]),       # the model's edit (kept under the old name)
+            "first_try_model": share(recent["model"]), "first_try_code": share(recent["code"]),
             "allowance_left": left}
 
 
@@ -242,8 +273,9 @@ def render(report) -> str:
     m = report.get("money")
     if m:
         k, e = m["accepted_per_1000_calls"], m["edit_first_try_pct"]
-        out.append("money: accepted_hour %s, accepted per 1000 calls day %s total %s, edit first try %s%% (n=%s)" % (
-            m["accepted_hour"], k["day"], k["total"], e["pct"], e["n"]))
+        out.append("money: accepted_hour %s, accepted per 1000 calls day %s total %s, edit first try %s%% (n=%s), by code %s%% (n=%s)" % (
+            m["accepted_hour"], k["day"], k["total"], e["pct"], e["n"],
+            m["first_try_code"]["pct"], m["first_try_code"]["n"]))
         out.append("allowance left: " + ", ".join("%s %s" % (d["day"][5:], d["left"]) for d in m["allowance_left"]))
     return "\n".join(out)
 

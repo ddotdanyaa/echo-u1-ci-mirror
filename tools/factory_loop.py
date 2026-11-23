@@ -5158,6 +5158,10 @@ class Loop:
                    error_type=self.rs(res.get("error_type") or res.get("cloud_error_type")),
                    cloud_stage=self.rs(res.get("cloud_stage"), 40),
                    channel_reason=self.rs(res.get("channel_reason")),
+                   edit_by=self.rs(res.get("edit_by"), 12),
+                   context_chars=res.get("context_chars") if isinstance(res.get("context_chars"), int) else None,
+                   context_sections=[self.rs(x, 40) for x in res["context_sections"][:12]]
+                   if isinstance(res.get("context_sections"), list) and res.get("context_sections") else None,
                    worker=w.slot, pid=getattr(w.owned, "pid", None), lease=(w.token or "")[:8] or None, k=w.k,
                    free_ram_mb=int(w.free_ram / 2 ** 20) or None,
                    peak_mb=round(w.peak / 2 ** 20, 1) if w.peak else None,
@@ -6154,6 +6158,8 @@ class Loop:
                 stats["accepted_hour"] = money["accepted_hour"]
                 stats["accepted_per_1000_calls"] = money["accepted_per_1000_calls"]
                 stats["edit_first_try_pct"] = money["edit_first_try_pct"]
+                stats["first_try_model"] = money["first_try_model"]
+                stats["first_try_code"] = money["first_try_code"]
                 stats["allowance_left"] = money["allowance_left"]
             except Exception as exc:
                 stats["money"] = {"error": F.redact(type(exc).__name__)}
