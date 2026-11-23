@@ -2453,7 +2453,7 @@ def edit_parts(task: Task, parts: list, workdir: Path, call, failing: str = '', 
     test_ids = [t for t in test_ids if t]
     notify = on_event or (lambda name: None)
 
-    def with_context(file, part, header, region, source, sigs, base):
+    def with_context(file, part, header, region, sigs, base):
         """``base`` (the card with no pack) and the card with the pack of this part: the pack fills what is left up to
         SMALL_PROMPT_TOKENS for a card that fits it (a short card stays a Gemma card), else up to 6000 characters, always
         inside the prompt limit."""
@@ -2569,7 +2569,7 @@ def edit_parts(task: Task, parts: list, workdir: Path, call, failing: str = '', 
                     if on_cut is not None:
                         on_cut('part_region_cut_for_gemma')
         try:
-            base, pack = with_context(file, part, header, region, source, sigs, base)
+            base, pack = with_context(file, part, header, region, sigs, base)
         except Exception:       # noqa: BLE001 - an addition to the card: without it the card is as before
             pack = ''
         if pack and pack.split('\n', 1)[0] not in base:
@@ -3928,7 +3928,7 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
             if not has_contract and small_total + REVIEW_DIFF_LIMIT + REVIEW_OVERHEAD > channels.PROMPT_LIMIT_CHARS:
                 raise PromptTooLarge('coder+review prompts cannot both fit')
             def failing_text() -> str:       # the red base may still be running when the first prompt is built
-                return (', '.join(base.failed_ids) + '\n' + base.diag).strip() if task.kind == 'code' and base_settled and base is not None else ''
+                return K.failure_block(base.failed_ids, base.diag) if task.kind == 'code' and base_settled and base is not None else ''
             def off_bodies_text() -> str:    # the code the failing test runs outside the task files, once the red base is in
                 if task.kind != 'code' or not base_settled or base is None or not off_mods:
                     return ''
@@ -4130,8 +4130,7 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                         return early
                 # the failing block (ids and the last 12 lines of the failure: assert with its values) from the first
                 # attempt on (empty while the red base runs); the same text on every repeat of a part
-                line = scrub(K.failure_block(base.failed_ids, base.diag)
-                             if task.kind == 'code' and base_settled and base is not None else '')
+                line = scrub(failing_text())
                 part_trace = tuple(getattr(base, 'path', ()) or ()) if base_settled and base is not None else ()
                 part_fail_ids = tuple(getattr(base, 'failed_ids', ()) or ()) if base_settled and base is not None else ()
                 see = {}        # the context pack of the parts: context_chars, context_sections (telemetry)

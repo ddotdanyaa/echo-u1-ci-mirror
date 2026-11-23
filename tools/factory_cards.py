@@ -810,7 +810,9 @@ def _ruff_names(text: str, runner) -> set | None:
 
 
 def _ruff_run(text: str):
-    """ruff's JSON for ``text`` (the undefined-name rules only), None when ruff is not there or does not answer in time."""
+    """ruff's JSON for ``text`` (the undefined-name rules only), None when ruff is not there or does not answer in 0.5 s.
+    No ready ruff call exists in tools/ (checked with git grep -i ruff: factory_mirror and the chain do not run it; the
+    pyflakes check lives only in tests/test_factory_undefined_names.py), so this is the one call."""
     import shutil
     import subprocess
     import sys
@@ -827,7 +829,7 @@ def _ruff_run(text: str):
     try:
         done = subprocess.run(argv + ["check", "--select", ",".join(UNDEF_CODES), "--isolated", "--no-cache",
                                       "--output-format", "json", "--stdin-filename", "part.py", "-"],
-                              input=text, capture_output=True, text=True, timeout=2, encoding="utf-8")
+                              input=text, capture_output=True, text=True, timeout=0.5, encoding="utf-8")
     except (OSError, subprocess.SubprocessError, ValueError):
         return None
     return done.stdout if done.returncode in (0, 1) and done.stdout.strip() else None
