@@ -164,6 +164,17 @@ RED_OTHER_RULE = 'Any answer other than fix or need is refused from you and the 
 _TEST_PATH = re.compile(r'(?:^|/)(?:tests?/|test_[^/]*\.py$)|_test\.py$')
 
 
+def codes_ok(packet) -> bool:
+    """parts[].code may be asked from paid/agent: from rung 2 (W-hard 3), and at any rung while the edit channels are
+    dry (W-dry 1: the card with ready code needs no edit channel at all)."""
+    return bool(isinstance(packet, dict) and ((packet.get('rung') or 0) >= 2 or packet.get('edit_dry')))
+
+
+DRY_RULE = ('The free edit channels are out for the day, so the editor cannot write the change: give EVERY part of the fix '
+            'its "code" (the whole new text of each named function, or a SEARCH/REPLACE block for a non-Python file). A '
+            'part without code waits for a channel that is not coming.')
+
+
 def is_red(packet, red_given=None):
     """True for a row that comes with a ready red test (guard or a rel-... regression/debt row)."""
     if red_given is not None:
@@ -191,6 +202,7 @@ def build_prompt(packet, engine=''):
                          'instruction': 'specific change', 'keep': 'invariants', 'stage': 1}], 'more': 'later work'}
     if engine in ('paid', 'agent') and (packet.get('rung') or 0) >= 2:
         schema['decision'] += '|hold'
+    if engine in ('paid', 'agent') and codes_ok(packet):
         schema['parts'][0]['code'] = 'whole new text of each named function (up to %d characters)' % K.PART_CODE_MAX
     system = ('You are the architect; an editor implements your checked contract. Return one JSON object. '
               'Choose exactly one of test.use or test.new. Request source with {"need":[{"file":"path",'
@@ -204,10 +216,12 @@ def build_prompt(packet, engine=''):
               + ((RED_RULE + '\n' + (RED_AGENT_RULE if engine == 'agent' else RED_OTHER_RULE) + '\n') if is_red(packet)
                  else NOT_CODE_RULE + '\n') + (PUBLISHED_ONLY_RULE + '\n' if packet.get('publishable') else '') +
               (TEST_CODE_RULE + '\n' if engine in ('paid', 'agent') else '') +
-              (PART_CODE_RULE + '\n' + HOLD_RULE + '\n' if engine in ('paid', 'agent') and (packet.get('rung') or 0) >= 2 else '') +
+              (PART_CODE_RULE + '\n' if engine in ('paid', 'agent') and codes_ok(packet) else '') +
+              (HOLD_RULE + '\n' if engine in ('paid', 'agent') and (packet.get('rung') or 0) >= 2 else '') +
+              (DRY_RULE + '\n' if engine in ('paid', 'agent') and packet.get('edit_dry') else '') +
               'Schema: ' + json.dumps(schema, ensure_ascii=False) + '\nExamples:\n' +
               '\n'.join(str(e) for e in packet.get('examples', [])))
-    user = '\n'.join(f'{k}: {v}' for k, v in packet.items() if k not in ('examples', 'known_ids', 'rung', 'red_given'))
+    user = '\n'.join(f'{k}: {v}' for k, v in packet.items() if k not in ('examples', 'known_ids', 'rung', 'red_given', 'edit_dry'))
     return system, user
 
 
@@ -343,8 +357,10 @@ def author_model(engine):
 def to_tasks(contract, *, bid, base_id, gen, priority, title, author=''):
     if contract.get('decision') != 'fix':
         return []
-    if author and isinstance(contract.get('test'), dict) and (contract['test'].get('new') or {}).get('code'):
-        contract = dict(contract, author=author)        # who wrote test.new.code (the review excludes that model)
+    wrote_code = bool(isinstance(contract.get('test'), dict) and (contract['test'].get('new') or {}).get('code')) or any(
+        isinstance(p, dict) and p.get('code') for p in contract.get('parts') or [])
+    if author and wrote_code:
+        contract = dict(contract, author=author)        # who wrote test.new.code or parts[].code (the review excludes that model)
     serialized = json.dumps(contract, ensure_ascii=False)
     title = clip_title(title, bid)
     spec = contract['test']
@@ -548,8 +564,10 @@ def validate(contract, root, *, bid='', title='', known_ids=None, named_ok=False
     return faults
 
 
-def ladder(rung, *, rungs, red=False):
-    if red:             # W-pay 2: a row with a ready red test: the agent reads the code itself and mends a flaw in one re-ask
+def ladder(rung, *, rungs, red=False, dry=False):
+    if dry and not red:      # W-dry 1: the edit channels are dry: agent, then paid give the finished code; the free steps last
+        order = ('agent', 'paid', 'free', 'free_main')
+    elif red:           # W-pay 2: a row with a ready red test: the agent reads the code itself and mends a flaw in one re-ask
         order = ('agent', 'paid', 'free', 'free_main')
     elif rung == 0:
         order = ('free', 'free_main', 'paid', 'agent')
@@ -748,8 +766,10 @@ def contract_for(packet, *, rung, root, asks, named_ok=False, red_given=None, sk
     faults, answered, votes = [], set(), {}
     skip = {e: v for e, v in (skip or {}).items() if e in asks and isinstance(v, dict)}
     cache = dict(skip)
-    for engine in [e for e in ladder(rung, rungs=tuple(asks), red=red) if e not in skip]:
+    dry = bool(packet.get('edit_dry'))
+    for engine in [e for e in ladder(rung, rungs=tuple(asks), red=red, dry=dry) if e not in skip]:
         user, rounds, shrunk, fixed, idle = initial, 0, False, False, 0
+        dry_asked = False
         replied, raw = False, ''
         code_asked = False
         system = build_prompt(dict(packet, rung=rung), engine)[0]
@@ -776,8 +796,9 @@ def contract_for(packet, *, rung, root, asks, named_ok=False, red_given=None, sk
                         user += '\n' + LAST_NEED
                     rounds += 1
                     continue
+                if not (codes_ok(dict(packet, rung=rung)) and engine in ('paid', 'agent')):
+                    _drop_part_codes(contract)      # parts[].code is the escalation of rung >= 2 (or of the dry state), by paid or agent only
                 if rung < 2 or engine not in ('paid', 'agent'):
-                    _drop_part_codes(contract)      # parts[].code is the escalation of rung >= 2, by paid or agent only
                     if contract.get('decision') == 'hold':
                         raise ContractFault('hold is the answer of paid/agent at rung >= 2 only')
                 if contract.get('decision') == 'hold' and len(str(contract.get('why', '')).strip()) < HOLD_WHY_MIN:
@@ -809,6 +830,11 @@ def contract_for(packet, *, rung, root, asks, named_ok=False, red_given=None, sk
                     continue
                 if errors:
                     raise ContractFault('; '.join(errors))
+                if (dry and not dry_asked and contract['decision'] == 'fix' and engine in ('paid', 'agent')
+                        and not all(isinstance(p, dict) and p.get('code') for p in contract.get('parts') or [])):
+                    dry_asked = True        # W-dry 1: one re-ask for the code of every part; then the card stands as it is
+                    user += '\nThe edit channels are dry: ' + DRY_RULE + '\nReturn the full contract again, every part with its code.'
+                    continue
                 if contract['decision'] == 'fix':
                     _stamp_part_codes(contract, root)
                 if contract['decision'] != 'fix' and engine in ('free', 'free_main'):

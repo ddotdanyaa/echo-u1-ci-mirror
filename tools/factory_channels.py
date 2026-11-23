@@ -700,6 +700,67 @@ def reconcile(state, channel, at, reserved, actual, *, requests=1, actual_reques
             group['requests'] = max(0, group.get('requests', 0) + fact - booked)
 
 
+def note_sent(state, channel, *, now=None, count=1) -> float:
+    """W-dry 3: a request that went out WITHOUT a booking (the watchdog's probe, any call outside reserve()) is counted
+    the same: today's day window and the minute window of the channel's quota group. Returns the stamp used."""
+    now = time.time() if now is None else now
+    group = state.setdefault(channel['group'], {})
+    times = [t for t in _numbers(group.get('request_times')) if now - t < 86400]
+    minute_times = [t for t in _numbers(group.get('rpm_times')) if now - t < 60]
+    while now in times or now in minute_times:
+        now += 1e-6
+    n = max(0, int(count))
+    group['request_times'] = times + [now] * n
+    group['rpm_times'] = minute_times + [now] * n
+    group['requests'] = group.get('requests', 0) + n
+    return now
+
+
+def day_left_share(state, channel, *, now=None) -> float:
+    """The share of the channel's daily allowance not yet used today (its quota group's count over the provider's day)."""
+    now = time.time() if now is None else now
+    group = state.get(channel['group']) if isinstance(state.get(channel['group']), dict) else {}
+    start, _ = quota_day(channel['model'], now)
+    calls = sum(1 for t in _numbers(group.get('request_times')) if t >= start)
+    return max(0.0, (channel['rpd'] - calls) / channel['rpd'])
+
+
+def align_day(state, channel, quota_value, *, now=None) -> int:
+    """W-dry 3: a 429 that names the day's limit (quotaValue) says the provider counted that many requests today: our
+    calls_day of the channel's group is raised to it (never lowered). Returns the number of requests added."""
+    now = time.time() if now is None else now
+    if type(quota_value) is not int or quota_value <= 0:
+        return 0
+    group = state.setdefault(channel['group'], {})
+    start, _ = quota_day(channel['model'], now)
+    times = _numbers(group.get('request_times'))
+    have = sum(1 for t in times if t >= start)
+    missing = quota_value - have
+    if missing <= 0:
+        return 0
+    group['request_times'] = times + [now - 1e-3 * (i + 1) for i in range(missing)]
+    group['requests'] = group.get('requests', 0) + missing
+    return missing
+
+
+def edit_dry(channels, state, env, *, now=None) -> bool:
+    """W-dry 1, the one definition: True when every channel that can take an edit call (the edit route of the main and
+    escalation tiers: a card's prompt is over the small tier's limit; a channel with no key or a dead key is no channel)
+    is closed by the day's mark (``daily_quota`` / ``rpd``) -- the free edit is out for the rest of the provider's day."""
+    now = time.time() if now is None else now
+    edit = {}
+    for attempt in (1, 2):
+        for channel in route_order(channels, 'edit', attempt, SMALL_PROMPT_TOKENS + 1):
+            edit[channel['id']] = channel
+    live = usable(list(edit.values()), state, env, now=now)
+    if not live:
+        return False
+    return all(row['closed_by'] in DAILY_CLOSED for row in channel_report(live, state, env, now=now))
+
+
+DAILY_CLOSED = ('daily_quota', 'rpd')
+
+
 def cool(state, channel, *, now=None, seconds=DEFAULT_COOL_S):
     """Cool the whole quota group; never shortens a longer cooling."""
     now = time.time() if now is None else now
@@ -798,6 +859,21 @@ def _walk_details(body):
     return quota, retry
 
 
+def _quota_value(body) -> int:
+    """The daily limit the provider names in a PerDay violation (Google: quotaValue "500"), else 0."""
+    error = body.get('error') if isinstance(body, dict) else None
+    for item in (error or {}).get('details', []) or []:
+        for violation in (item.get('violations', []) or []) if isinstance(item, dict) else ():
+            if isinstance(violation, dict) and _PERDAY_ID.search(str(violation.get('quotaId') or '')):
+                try:
+                    value = int(float(str(violation.get('quotaValue'))))
+                except (TypeError, ValueError):
+                    continue
+                if 0 < value <= 10 ** 7:
+                    return value
+    return 0
+
+
 _TOKEN_LIMIT_TEXT = re.compile(r'token.{0,60}(exceed|limit|too (many|large|long)|maximum)|(exceed|too (many|large|long)).{0,40}token|context.{0,10}(length|window)', re.I | re.S)
 
 
@@ -877,6 +953,8 @@ def _classify_error_event(error: dict):
                          math.ceil(at - now) if at else seconds_to_daily_reset(now), quota_text)
             if at:
                 info['reset_at'] = at
+            if value := _quota_value(body):
+                info['quota_value'] = value      # W-dry 3: the provider's own count of today (align_day)
             if _PERMODEL.search(quota_text):      # a per-model-per-project daily quota: only this model on this key
                 info['scope'] = 'channel'
             return info
@@ -994,6 +1072,8 @@ def apply_failure(state, channel, info, *, env=None, now=None) -> dict:
         return {'action': 'cool', 'cool_s': REGION_COOL_S}
     if kind in ('rate_minute', 'rate_day'):
         if kind == 'rate_day':
+            if info.get('quota_value'):
+                align_day(state, channel, info['quota_value'], now=now)
             whole = not (info.get('scope') in ('model', 'channel'))
             seconds = _day_cool(channel, info, now, state, whole=whole, model=info.get('scope') == 'model')
         else:

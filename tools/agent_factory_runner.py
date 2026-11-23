@@ -127,6 +127,9 @@ INFRA_DEFERS = frozenset(("key_invalid", "balance", "model_missing"))  # real in
 ESCALATE = frozenset(("gate_unknown", "provider_error", "no_independent_reviewer", "reviewer_failed",
                       "review_chain_short"))
 ESCALATE_AFTER = 3          # the same postponement this many times in a row becomes BLOCKED
+DRY_REVIEW_TRIES = 6        # W-dry 2: attempts of one review call while the edit channels are dry ...
+DRY_REVIEW_PAUSE_S = 10     # ... after 10, 20, 30 ... s
+DRY_REVIEW_RETRY_KINDS = frozenset(('transient', 'rate_minute', 'rate_day', 'network', 'timeout'))
 INFRA_CHANNEL_REASONS = frozenset(("dead", "no_key", "no_channels", "reservation_exceeds_tpm"))
 REVIEW_HINT = ("The file is large: read the places you need with the read tool by line numbers from the "
                "outline. Do not edit anything: you only judge the diff.")
@@ -2791,6 +2794,18 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
         pend['chain_short'] = (prior if type(prior) is int and prior > 0 else 0) + 1
         return pend['chain_short']
 
+    def dry_now() -> bool:
+        """W-dry 2: every channel of the edit role is closed by the day's mark (factory_channels.edit_dry): the review
+        goes by Gemma with repeats and the paid Haiku gives the missing voice. Not dry (the normal mode) on any doubt."""
+        if not configured:
+            return False
+        try:
+            quota = ck.read().get('channel_quotas') or {}
+            seen = quota_ledger.view(quota, quota_ledger.others(ledger, str(checkpoint))) if ledger is not None else quota
+            return bool(channels.edit_dry(configured, seen, os.environ))
+        except Exception:       # noqa: BLE001 - a view that cannot be read is the normal mode
+            return False
+
     def timed(name: str, fn):
         t0 = time.monotonic()
         try:
@@ -2988,19 +3003,21 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
             # a review or a code call of Gemma waited the full 180 s, live 23.11: 180 and 87 s)
             small_quick = bool(selected and channels.tier_of(selected) == 'small' and (role == 'edit' or light))
             began = time.monotonic()
+            sent = False
             try:
                 directory = directory_for(retry)
                 engine = light_attempt if light else model_attempt
                 if light:
                     kwargs['temperature'] = candidate_temperature(candidate)
                 timeout = channels.SMALL_FIRST_TIMEOUT_S if small_quick else 240
+                sent = True        # W-dry 3: from here the request may be out; an interrupted call still counts
                 code, stdout, stderr = engine(call_task, directory, chosen, timeout=timeout,
                                               prompt_override=prompt, steps=steps, **kwargs)
             except BaseException:
                 if selected is not None:    # booked, never accounted: the reservation goes back (the call did not finish)
                     def unbook(state, row):
                         channels.reconcile(state['channel_quotas'], selected, at, tokens, 0,
-                                           requests=booked, actual_requests=0)
+                                           requests=booked, actual_requests=booked if sent else 0)   # W-dry 3: a sent request counts
                         if ledger is not None:
                             quota_ledger.publish(ledger, str(checkpoint), state['channel_quotas'])
                     try:
@@ -3047,8 +3064,9 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                     unknown = summary['steps'] == 0 and actual_input is None
                     failed = code != 0 or info['kind'] != 'ok' or summary['provider_error']
                     fact = max(booked, summary['steps']) if (failed or unknown) else max(1, summary['steps'])
-                    if info['kind'] == 'network':
-                        fact = 0         # no HTTP answer: the request never reached the provider's quota
+                    if info['kind'] == 'network' and 'timeout' not in str(info.get('message') or '').lower():
+                        fact = 0         # no HTTP answer (refused, no route): the request never reached the provider's quota;
+                        # a TIMEOUT did reach it (W-dry 3: Google counted 500, we 177-234) and stays counted
                     channels.reconcile(state['channel_quotas'], selected, at, tokens, charged,
                                        requests=booked, actual_requests=fact)
                     # the series of failed calls of this channel: 'ok' with the whole output limit spent and no word
@@ -3926,7 +3944,10 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                 go to the gates as they are ready: the first green one stands. The gates run once per candidate, over the
                 union of its parts, and there are no repair rounds inside the pass: a red gate ends the candidate."""
                 count = 1 if attempt <= 1 else 2
-                if attempt > 1 or feedback:      # a repeat shows the exact failing line: the red base must be in (a first pass overlaps it)
+                part_author = str(K.contract_of(task).get('author') or '')
+                if part_author and any(isinstance(p, dict) and p.get('code') for p in parts_now):
+                    ctx['coder_models'].add(part_author)     # W-dry 2: the model that wrote parts[].code never reviews it alone
+                if attempt > 1 or feedback:    # a repeat shows the exact failing line: the red base must be in (a first pass overlaps it)
                     early = settle_base()
                     if early is not None:        # green / environment / unknown base ends the pass before any model call
                         return early
@@ -4201,6 +4222,8 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                 report['review_votes'] = [dict(model=v['model'], ok=v['ok']) for v in short_chain]
                 report['critics'] = [v['model'] for v in short_chain]
                 report['pending_review'] = True
+                if dry_now():          # W-dry 2: a short chain is no failure of the card while the edit channels are dry
+                    return release('review_chain_short', INFRA_DEFER_S)
                 if ck.commit(chain_short) >= ESCALATE_AFTER:
                     return block('review_chain_short', 'review chain cut short %d times' % ESCALATE_AFTER)
                 return release_or_block('review_chain_short', INFRA_DEFER_S)
@@ -4237,8 +4260,18 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
         told = rejected_for(ck.read(), tid)
 
         def invoke(call_task, directory, preferred, **kwargs):
-            return call('review', call_task, lambda _retry: directory, preferred,
-                        kwargs['prompt_override'], exclude_model=authors() + critics)
+            tries = DRY_REVIEW_TRIES if dry_now() else 1     # W-dry 2: Gemma again and again while the edit channels are dry
+            for number in range(1, tries + 1):
+                try:
+                    return call('review', call_task, lambda _retry: directory, preferred,
+                                kwargs['prompt_override'], exclude_model=authors() + critics)
+                except (channels.ChannelUnavailable, ChannelFault) as error:
+                    kind = error.info.get('kind') if isinstance(error, ChannelFault) else None
+                    if number >= tries or (kind is not None and kind not in DRY_REVIEW_RETRY_KINDS) or (
+                            isinstance(error, channels.ChannelUnavailable) and error.reason in INFRA_CHANNEL_REASONS):
+                        raise
+                    events.append('dry_review_retry_%d' % number)
+                    time.sleep(DRY_REVIEW_PAUSE_S * number)        # 10, 20, 30 ... s, every channel is asked again
         try:
             hollow, extra = tuple(ctx.get('hollow') or ()), tuple(ctx.get('extra_names') or ())
             exec_text = execution_report(base, hollow, extra, ctx.get('red_evidence') or '')
@@ -4262,8 +4295,10 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                         task, ctx['workdir'], review_model, invoke, baseline=ctx['baseline'], scratch=staging,
                         lens=REVIEW_LENSES[n], prior=tuple(said), rejected=told, rubric=True, execution=exec_text))
                 except (NoIndependentReviewer, channels.ChannelUnavailable, ReviewFault, ChannelFault):
-                    if not votes:
+                    dry = dry_now()
+                    if not votes and not dry:
                         raise                      # the first critic failed: the handlers below decide
+                    # W-dry 2: with no free voice (Gemma stayed silent after its repeats) the paid Haiku below is the missing voice
                     approved = panel_verdict(votes, True, mech_ok)   # no further model: a split goes to the ranking
                     if approved is not None:
                         break
@@ -4274,9 +4309,11 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                         paid_second = paid_critic.control(   # model is left (live 17:20-17:50: 19 chains cut short)
                             task, unified_diff(ctx['baseline'], ctx['workdir'], task.touch_files, paid_critic.DIFF_LIMIT)
                             if ctx['baseline'] is not None else '', (exec_text + '\n' + told)[-paid_critic.FAIL_LIMIT:],
-                            exclude_model=authors(), baseline=ctx['baseline'], workdir=ctx['workdir'])
+                            exclude_model=authors() + ([paid_critic.MODELS[0]] if dry else []),   # W-dry 2: the second voice is Haiku, the control voice stays Sonnet
+                            baseline=ctx['baseline'], workdir=ctx['workdir'])
                         if paid_second is not None:          # no key, no budget, a fault: the free wait below, as before
-                            ctx['paid_done'] = paid_second
+                            if not dry or paid_critic.MODELS[0] in authors():
+                                ctx['paid_done'] = paid_second      # (dry: the control Sonnet still judges, unless it is the author)
                             events.append('paid_second_critic')
                             approved = paid_second['verdict'] != 'reject' and (all(votes) or mech_ok)
                             kept_log.append(dict(model=str(paid_second.get('model') or 'paid'),   # W-review fix 6: the paid voice is a voice
@@ -4295,6 +4332,8 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                     report['review_votes'] = [dict(model=v['model'], ok=v['ok']) for v in kept_log]
                     report['critiques'] = [scrub(redact(s))[:300] for s in said]
                     report['pending_review'] = True
+                    if dry:                        # W-dry 2: no failure of the card while the edit channels are dry
+                        return release('review_chain_short', INFRA_DEFER_S)
                     if ck.commit(chain_short) >= ESCALATE_AFTER:   # the term of the candidate, whatever came between
                         return block('review_chain_short', 'review chain cut short %d times' % ESCALATE_AFTER)
                     return release_or_block('review_chain_short', INFRA_DEFER_S)

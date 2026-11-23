@@ -600,6 +600,9 @@ RESLICE_SLEEP_S = 5
 SLICE_WAIT_S = 60
 SLICE_PAUSES = (60, 120, 300, 600)        # W-pay 2: the pause of a row's repeated wait grows
 QUARANTINE_TTL_S = 21600
+DRY_SLICE_MAX = 8           # W-dry 1: rows of cards without code that go to the slicer for code at the same time
+DRY_CACHE_S = 5             # the edit_dry reading is kept this long
+KW_DAY_LEFT_MIN = 0.2       # W-dry 3: links/keywords go to a main-tier channel only while this share of its day is left
 HARD_FAILED_GENS = 6        # W-hard 1: generations that reached a red fix: from here the row sits until CONTRACT_REV changes
 HARD_REOPEN_S = 86400       # ... and opens by a new CONTRACT_REV no more than once a day
 RED_EDITS_BAR = 2           # W-hard 1: a rung whose contract gave this many red fixes is not called for the row again
@@ -656,7 +659,8 @@ class Loop:
         self._sw_refresh_at = 0.0
         self._lk = None                 # the owner-links job in flight (Prefetch) or None (4.2)
         self._lk_at, self._lk_size, self._lk_unlinked = 0.0, -1, None
-        self._lk_quotas = {}            # the links job's own quota ledger, one for the life of the loop (only that job's thread uses it)
+        self._kw_quotas = {}            # the keywords' own quota ledger (a fresh {} per call overwrote the section: one request counted)
+        self._lk_quotas = {}          # the links job's own quota ledger, one for the life of the loop (only that job's thread uses it)
         self.release_fn = release_fn    # None: no final build (tests); main passes the cloud one (tools.factory_release)
         self._rel = None                # the final build in flight (Prefetch, its own slot) or None
         self._rel_snap = None           # the snapshot the final build reads: _prune_snapshots keeps it
@@ -1468,7 +1472,7 @@ class Loop:
         eligible = self._resliceable(tasks, state, ls, now) if self.slice_fn else {}
         waits = [until - now for until in ls.get("slice_wait", {}).values() if until > now]
         return F.next_action(state, now, wait_s, self._has_more(ls, now), tasks, free=free,
-                             skip=self.pool.tids(), resliceable=frozenset(eligible),
+                             skip=self.pool.tids() | self._dry_blocked(tasks, state), resliceable=frozenset(eligible),
                              slice_wait_s=min(waits) if waits else None)
 
     def _step(self) -> Outcome:
@@ -1729,7 +1733,32 @@ class Loop:
             out.status = "ok"
         return out
 
-    def _light_ask(self, text: str, *, attempt: int, section: str, quotas: dict, max_tokens: int, role: str = "code"):
+    def _seed_section(self, folder, section, quotas) -> None:
+        """W-dry 3: the requests this section already published today (an earlier run of the loop, a call whose state
+        was never saved) are in ``quotas`` before the next booking: a publish never writes a smaller count over a larger
+        one. Joined by value, never sorted."""
+        from tools import factory_quota as Q
+        try:
+            data = json.loads(Q.section_file(folder, section).read_text(encoding="utf-8"))
+            saved = data["quotas"] if isinstance(data, dict) and isinstance(data.get("quotas"), dict) else {}
+        except (OSError, ValueError):
+            return
+        for key, group in saved.items():
+            if not (isinstance(group, dict) and isinstance(group.get("request_times"), list)):
+                continue
+            mine = quotas.setdefault(key, {})
+            if not isinstance(mine, dict):
+                continue
+            for name in ("request_times", "rpm_times"):
+                have = list(mine.get(name) or [])
+                known = set(have)
+                extra = [t for t in (group.get(name) or []) if isinstance(t, (int, float)) and t not in known]
+                if extra:
+                    mine[name] = have + extra
+            mine["requests"] = max(int(mine.get("requests") or 0), int(group.get("requests") or 0))
+
+    def _light_ask(self, text: str, *, attempt: int, section: str, quotas: dict, max_tokens: int, role: str = "code",
+                   thrifty: bool = False):
         """One free model call outside the runner (the <id> self-fix head): a registry channel in
         route_order (attempt 1: main first; 2: escalation first), booked in the shared quota ledger under `section`
         and cooled there on 429/5xx. Returns (status, model, answer, tokens): status 'ok', 'no_channel' or
@@ -1742,6 +1771,7 @@ class Loop:
         channels = json.loads(Path(self.cfg.channels).read_text(encoding="utf-8"))["channels"]
         env = {**os.environ, **self.extra_env}
         folder = Path(self.cfg.channels).resolve().parent / "quota"
+        section = "%s@%s" % (section, self.ckpt)     # W-dry 3: one writer per section: a second instance never overwrites this file
 
         def publish():
             try:
@@ -1749,9 +1779,14 @@ class Loop:
             except OSError as e:
                 self.err(section + " ledger", e)
         with self._ask_lock:
+            self._seed_section(folder, section, quotas)
+            seen = Q.view(quotas, Q.others(folder, section))
             try:
-                channel = C.choose(C.route_order(channels, role, attempt, tokens),
-                                   Q.view(quotas, Q.others(folder, section)), tokens, env, now=self.clock())
+                order = C.route_order(channels, role, attempt, tokens)
+                if thrifty:       # links / keywords: with under KW_DAY_LEFT_MIN of the day left a main-tier channel is kept for the cards
+                    order = [c for c in order if C.tier_of(c) == "small"
+                             or C.day_left_share(seen, c, now=self.clock()) >= KW_DAY_LEFT_MIN]
+                channel = C.choose(order, seen, tokens, env, now=self.clock())
             except C.ChannelUnavailable:
                 return "no_channel", None, "", tokens
             model = channel["model"]
@@ -1764,7 +1799,16 @@ class Loop:
         if code_http != 200:
             if code_http in (429, 500, 503):      # the next call takes another channel for a while
                 with self._ask_lock:
-                    C.cool_channel(quotas, channel, now=self.clock())
+                    info = None
+                    if code_http in (429, 503):     # W-dry 3: a daily 429 names its limit (quotaValue): calls_day is aligned to it
+                        try:
+                            info = C.classify(R._light_error(code_http, raw), b"", 1)
+                        except Exception as e:      # an aid: the plain cooling below stands
+                            self.err("light failure class", e)
+                    if info is not None and info.get("kind") in ("rate_day", "rate_minute"):
+                        C.apply_failure(quotas, channel, info, env=env, now=self.clock())
+                    else:
+                        C.cool_channel(quotas, channel, now=self.clock())
                     publish()
             return "http_%s" % code_http, model, "", tokens
         try:
@@ -2484,7 +2528,7 @@ class Loop:
             out = words.parent / "owner_links.json"
 
             def ask(prompt):
-                status, _, answer, _ = self._light_ask(prompt, attempt=1, section="loop-links", quotas=self._lk_quotas, max_tokens=300, role="review")
+                status, _, answer, _ = self._light_ask(prompt, attempt=1, section="loop-links", quotas=self._lk_quotas, max_tokens=300, role="review", thrifty=True)
                 if status != "ok":
                     raise RuntimeError("links: no answer (%s)" % status)    # run_links stops here and resumes from this entry
                 return answer
@@ -2492,7 +2536,7 @@ class Loop:
             def work():
                 data = I.run_links(words, rows, out, ask=ask, scrub=I.scrub)
                 done = all(e["line"] <= int(data.get("upto_line") or 0) for e in I._entries(words)[0]); self._lk_size = size if done else self._lk_size; data = {**data, "partial": not done}
-                I.audit_closed_rows(self.cfg.backlog, out, lambda p, n: self._light_ask(p, attempt=n, section="loop-links", quotas=self._lk_quotas, max_tokens=300, role="review")[:3], I.scrub)
+                I.audit_closed_rows(self.cfg.backlog, out, lambda p, n: self._light_ask(p, attempt=n, section="loop-links", quotas=self._lk_quotas, max_tokens=300, role="review", thrifty=True)[:3], I.scrub)
                 return data
             self._lk = Prefetch("links", work, {})
             self._lk.thread.start()
@@ -3065,6 +3109,55 @@ class Loop:
 
     ESC_FAILS = 2                   # <id> rule 3: failures of one signature AFTER the tier was raised that end a task's attempts
 
+    def _edit_dry(self, state=None) -> bool:
+        """W-dry 1, the one reading of the state: every channel of the edit role is closed by the day's mark
+        (factory_channels.edit_dry). Kept DRY_CACHE_S; an unreadable registry or state is 'not dry' (the normal mode)."""
+        now = self.clock()
+        cached = getattr(self, "_dry_cache", None)
+        if cached and 0 <= now - cached[0] < DRY_CACHE_S:
+            return cached[1]
+        dry = False
+        try:
+            path = Path(self.cfg.channels)
+            if path.is_file():
+                configured = CH.validate(json.loads(path.read_text(encoding="utf-8"))["channels"], warn=False)
+                env = {**os.environ, **self.extra_env}
+                if state is None:
+                    state = self.load()[1]
+                quota = state.get("channel_quotas") if isinstance(state.get("channel_quotas"), dict) else {}
+                seen = quota_ledger.view(quota, quota_ledger.others(path.resolve().parent / "quota", str(self.ckpt)),
+                                         now=now)
+                dry = bool(CH.edit_dry(configured, seen, env, now=now))
+        except Exception as e:      # an aid: the normal mode stands
+            self.err("edit dry", e)
+        self._dry_cache = (now, dry)
+        return dry
+
+    @staticmethod
+    def _has_code(task) -> bool:
+        """W-dry 1: the card carries finished code and needs no edit channel: a code card whose every part has
+        parts[].code, a test card with test.new.code."""
+        contract = Loop._contract(task)
+        if getattr(task, "kind", "") == "unit_test":
+            new = (contract.get("test") or {}).get("new") if isinstance(contract.get("test"), dict) else None
+            return bool(isinstance(new, dict) and isinstance(new.get("code"), str) and new["code"].strip())
+        parts = contract.get("parts")
+        return bool(isinstance(parts, list) and parts and all(
+            isinstance(p, dict) and isinstance(p.get("code"), str) and p["code"].strip() for p in parts))
+
+    def _dry_blocked(self, tasks, state, state_for_dry=None) -> set:
+        """W-dry 1: the READY cards without code while the edit channels are dry: the pool does not start them and they hold
+        no place (an empty set in the normal mode)."""
+        if not self._edit_dry(state_for_dry if state_for_dry is not None else state):
+            return set()
+        return {tid for tid, task in tasks.items()
+                if state["tasks"].get(tid, {}).get("status") == "READY" and not self._has_code(task)}
+
+    def _startable(self, tasks, state, now) -> list:
+        """F.ready() without the cards the pool will not start now (W-dry 1)."""
+        blocked = self._dry_blocked(tasks, state)
+        return [t for t in F.ready(tasks, state, now=now) if t not in blocked]
+
     def _ready_topup(self, state, tasks, ls, now) -> bool:
         """<id>: READY below cfg.ready_target and the backlog may give more: the next portion is prefetched at once, without
         the empty-portion term (triage_retry_s) and without READY having to be empty. A portion that gave nothing doubles
@@ -3076,7 +3169,7 @@ class Loop:
                 return False
             # W-feed 4: what counts is what ready() can START now (not READY rows held back by a clash, a term or a
             # dependency), and the bar is the pool ceiling, not the old queue target
-            ready = len(F.ready(tasks, state, now=now))
+            ready = len(self._startable(tasks, state, now))
             ceiling = max(cfg.ready_target, getattr(factory_cloud_gate, "MAX_LIVE", 30))
             if ready >= ceiling:
                 return False
@@ -3342,7 +3435,7 @@ class Loop:
                     self.err("row red evidence", exc)
         def keywords(system, user):
             status, _, answer, _ = self._light_ask(system + "\n" + user, attempt=1,
-                section="loop-keywords", quotas={}, max_tokens=800, role="review")
+                section="loop-keywords", quotas=getattr(self, "_kw_quotas", {}), max_tokens=800, role="review", thrifty=True)
             return answer if status == "ok" else ""
         words = A.keywords_en(title, keywords, cache=self.dir / "keywords")
         hints = [safe(x) for x in entry.get("hints", [])]
@@ -3375,7 +3468,7 @@ class Loop:
         if job is None:
             if len(self._slicers) >= SLICE_PARALLEL:
                 return None
-            if len(F.ready(tasks, state, now=now)) >= 2 * self._slice_pool_cap():
+            if len(self._startable(tasks, state, now)) >= 2 * self._slice_pool_cap():
                 return None
             if self._arch_quotas is None:
                 self._arch_quotas = copy.deepcopy(ls.get("architect_quotas") or {})
@@ -3392,9 +3485,12 @@ class Loop:
             cached = dict(self._wait_record(ls, row).get("engines") or {})
             ctx = dict(root=root, gen=gen, rung=rung, cause=cause, ladder=",".join(asks))
             task_copy, state_copy, ls_copy = copy.deepcopy((tasks, state, ls))
+            dry_now = self._edit_dry(state)       # W-dry 1: with the edit channels dry the contract asks for finished code
             def work():
                 packet = self._row_packet(row, cause, evidence, tasks=task_copy, state=state_copy, ls=ls_copy, root=root,
                                          rung=rung)
+                if dry_now:
+                    packet["edit_dry"] = True
                 if self.cfg.self_repo:      # the second instance: a new test imports only the modules the mirror publishes
                     packet["publishable"] = ", ".join(A.publishable_modules())
                 extra = {"named_ok": True} if self.cfg.self_repo else {}      # 8.1: the factory's own files are the contract's subject
@@ -3800,7 +3896,8 @@ class Loop:
             by_row.setdefault(row_id, []).append(t)
             if state["tasks"][tid]["status"] in ("RUNNING", "REVIEW"):
                 running.add(row_id)
-        for bid in sorted(set(stuck) | set(ls.get("to_slice", {}))):
+        dry_rows = {F.row_of(tasks[t].backlog_id or t) for t in self._dry_blocked(tasks, state)}   # W-dry 1: code, not a channel
+        for bid in sorted(set(stuck) | set(ls.get("to_slice", {})) | dry_rows):
             related = by_row.get(bid, [])
             if any(t.only_opus or not t.privacy_safe or F.is_private_text(t.title + " " + (t.goal or "")) for t in related):
                 continue
@@ -3810,6 +3907,12 @@ class Loop:
             if bid in ls.get("quarantine", {}) or ls.get("slice_wait", {}).get(bid, 0) > now:
                 continue
             if bid in running:
+                continue
+            if bid in dry_rows and bid not in stuck and bid not in ls.get("to_slice", {}):
+                # W-dry 1: the row of a READY card without code goes to the slicer for the code: no penalty, no spent
+                # reslice (cause "dry"); asked once per base sha (a card that comes back without code waits for the next)
+                if bid in self._slicers or ls.get("dry_tried", {}).get(bid) != self.base_sha:
+                    out[bid] = "dry"
                 continue
             rec = ls.get("reslices", {}).get(bid, {})
             if rec.get("version") != F.slicer_version():
@@ -3928,10 +4031,14 @@ class Loop:
             priority = entry.get("priority")
             if priority is None:
                 priority = min((t.priority for t in tasks.values() if F.row_of(t.backlog_id or t.id) == bid), default=9)
-            return (bid.startswith("rel-base-"), int(str(priority).removeprefix("P")), not bool(entry.get("guard")), bid)
+            tier = (2 if bid.startswith("rel-base-") else 1 if bid.startswith("rel-") else 0) if eligible.get(bid) == "dry" else 0
+            return (tier, bid.startswith("rel-base-"), int(str(priority).removeprefix("P")), not bool(entry.get("guard")), bid)
         first_waits = any(c == "first" and b not in self._slicers for b, c in eligible.items())
         for bid in sorted(eligible, key=order)[:RESLICE_PER_STEP]:
             cause = eligible[bid]
+            if cause == "dry" and bid not in self._slicers and sum(
+                    j.ctx["cause"] == "dry" for j in self._slicers.values()) >= DRY_SLICE_MAX:
+                continue                # W-dry 1: at most DRY_SLICE_MAX rows at once go to the slicer for code
             if first_waits and cause != "first" and bid not in self._slicers and sum(
                     j.ctx["cause"] != "first" for j in self._slicers.values()) >= SLICE_PARALLEL // 3:
                 continue
@@ -3951,6 +4058,12 @@ class Loop:
                         rung = 0 if free_ok else hard_rung
                     if cause == "first" and hist.get("failed_gens"):
                         rung = max(rung, rec.get("rung", 0))               # W-hard 1: the history goes on, not from the start
+                if cause == "dry":
+                    rung = 0                   # W-dry 1: no step of the ladder is spent
+                    if bid not in self._slicers:
+                        mark = self.ls()
+                        mark.setdefault("dry_tried", {})[bid] = self.base_sha
+                        self.save_ls(mark)
                 evidence = "\n".join(tid + ": " + str(state["tasks"][tid].get("reason") or "")
                     for tid in F.stuck_rows(state, tasks).get(bid, []))
                 portion = self.slice_fn(bid, cause, rung, evidence, gen=rec.get("n", 0) + 1,
@@ -4549,6 +4662,8 @@ class Loop:
             pending += max(0, est - seen)        # the memory a live worker has not used yet is not free
         if free - pending - _reserved_bytes() < floor + est:
             return "low_ram"
+        if task is not None and Loop._has_code(task) and self._edit_dry():
+            return ""                            # W-dry 1: a card with the code of all its parts needs no edit channel: no headroom
         try:
             state = self.load()[1]
             unbooked = sum(1 for w in live if not (state["tasks"].get(w.tid, {}).get("began") or {}).get("booked"))
@@ -5744,6 +5859,7 @@ class Loop:
 
                 def apply(st, channel=channel, info=info):
                     quotas = st.setdefault("channel_quotas", {})
+                    CH.note_sent(quotas, channel, now=now)         # W-dry 3: the probe is a real request: counted
                     done.update(CH.probe_outcome(quotas, channel, info, env=env, now=now, channels=configured))
                     quota_ledger.publish(ledger, str(self.ckpt), quotas)
                 self._tx(apply)
@@ -5798,6 +5914,13 @@ class Loop:
                     F.row_of(r.get("backlog_id") or tid) for tid, r in state["tasks"].items()
                     if r.get("reason") == "quarantine"})}
             stats["edit_by_tier"] = (state.get("channel_quotas") or {}).get("edit_by_tier", {})
+            try:        # W-dry 1: the day's refusal of the edit channels, and what waits for code because of it
+                dry = self._edit_dry(state)
+                waiting = self._dry_blocked(tasks, state) if dry else set()
+                stats["edit_dry"] = {"on": dry, "ready_without_code": len(waiting),
+                                     "rows_for_code": sum(1 for j in self._slicers.values() if j.ctx.get("cause") == "dry")}
+            except Exception as exc:
+                stats["edit_dry"] = {"error": F.redact(type(exc).__name__)}
             counts: dict = {}
             for at, kind in ls.get("slice_faults", []):
                 if self.clock() - at < 3600:
