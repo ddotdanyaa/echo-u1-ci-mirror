@@ -611,6 +611,7 @@ class Loop:
         self.release_fn = release_fn    # None: no final build (tests); main passes the cloud one (tools.factory_release)
         self._rel = None                # the final build in flight (Prefetch, its own slot) or None
         self._rel_snap = None           # the snapshot the final build reads: _prune_snapshots keeps it
+        self._rel_lock = threading.Lock()
         self._rel_note = None           # the info of the cloud run the build just made (its thread sets it, the loop's thread stores it)
         self.runner_cmd = list(runner_cmd or [sys.executable, "-B", "-m",
                                               "tools.agent_factory_runner"])
@@ -2392,6 +2393,7 @@ class Loop:
             job = self._rel
             self._release_note_run()
             if job is not None and job.done.is_set():
+                self._release_note_run()    # a note set after the first look (the job may have failed right after it)
                 self._rel, self._rel_snap = None, None
                 self._release_done(job, now, REL)
             if self.release_fn is None or self._rel is not None or self._ending() or not self.base_sha:
@@ -2404,15 +2406,15 @@ class Loop:
 
     def _release_note_run(self) -> None:
         """The cloud run the build made is written into loop_state (release_run.run) at once, so a restarted loop takes it up."""
-        info, self._rel_note = self._rel_note, None
-        if not info:
+        with self._rel_lock:                # the build's thread sets the note: read and clear it in one step
+            info, self._rel_note = self._rel_note, None
+        if not info or self._rel is None:   # a late note of a build that is over would write a run with no task
             return
         ls = self.ls()
         rr = ls.setdefault("release_run", {})
         if (rr.get("run") or {}).get("run_id") == info.get("run_id"):
             return
         rr["run"] = info
-        rr.pop("run_fails", None)
         self.save_ls(ls)
         sizes = [len(p) for p in info.get("parts") or ()]
         pred = [x for x in info.get("predicted") or () if isinstance(x, (int, float))]
@@ -2466,8 +2468,7 @@ class Loop:
             if not REL.worth_a_run(ls, sha, tree, len(tids)):       # nothing to accept, this tree was judged already
                 if ls.get("release_skip") != sha:
                     ls["release_skip"] = sha
-                    if isinstance(ls.get("release"), dict):
-                        ls["release"]["promoted_total"] = int(ls.get("promoted_total") or 0)
+                    ls["release_skip_total"] = int(ls.get("promoted_total") or 0)     # REL.due counts it; the verdict record stays true
                     self.save_ls(ls)
                     self.event("release", status="skipped", base_sha=sha, reason="no row to accept, the tree of this SHA was judged")
                 return
@@ -2481,10 +2482,12 @@ class Loop:
             self.save_ls(ls)
         fn, state_dir = self.release_fn, self.cfg.state_dir
         self._rel_snap = snap
-        self._rel_note = None
+        with self._rel_lock:
+            self._rel_note = None
 
         def note(info):
-            self._rel_note = info           # the loop's thread writes it into loop_state
+            with self._rel_lock:
+                self._rel_note = info       # the loop's thread writes it into loop_state
         self._rel = Prefetch("release", lambda: fn(sha=sha, snapshot=snap, state_dir=state_dir, open_ids=open_ids,
                                                     open_tests=set(open_tests), shards=shards, on_run=note, resume=resume), {})
         self._rel.thread.start()
@@ -2520,12 +2523,9 @@ class Loop:
         if job.error is not None or status not in ("baseline", "green", "new_red"):
             ls["release_retry_at"] = now + REL.RETRY_S              # no verdict: the record stays, the sweep repeats
             rr = ls.get("release_run")
-            if isinstance(rr, dict) and rr.get("run"):
-                rr["run_fails"] = int(rr.get("run_fails") or 0) + (1 if job.error is not None else 99)
-                if rr["run_fails"] >= REL.RESUME_FAILS + 1:         # the run cannot be read (or it was read and is short): a new one next time
-                    rr.pop("run", None)
-                    rr.pop("run_fails", None)
-            self.save_ls(ls)
+            if isinstance(rr, dict) and job.error is None:
+                rr.pop("run", None)     # run() gave the run up, or read it and it was short: it is spent, a new one next time
+            self.save_ls(ls)            # (a failed wait keeps the run: REL.run counts the failures, in run.json, and says gave_up)
             why = F.redact(str(job.error))[:200] if job.error is not None else (res.get("reason") or status or "no result")
             self.event("release", status="failed" if job.error is not None else (status or "failed"), dur_s=round(job.dur_s, 3),
                        reason=str(why)[:200], base_sha=run.get("sha"), release_run=(res.get("sweep") or {}).get("run_id"),
@@ -5555,7 +5555,8 @@ def _release_fn(a):
             if any(isinstance(r, dict) and r.get("missing") for r in res.values()):
                 return list(names)
             return [n for r in res.values() for n in (r.get("failed_ids") or ())]
-        return factory_release.run(sweep_fn=echo_cloud.sweep, recheck_fn=recheck, **kw)
+        return factory_release.run(sweep_fn=echo_cloud.sweep, recheck_fn=recheck,
+                                   drop_fn=lambda info: echo_cloud.delete_branch(info["branch"]), **kw)
     return build
 
 

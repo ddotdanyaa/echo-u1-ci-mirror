@@ -1,9 +1,10 @@
 # Factory status (generated, structured data only)
 
-Generated: 2026-11-23T06:59:55Z
-Source commit: shaecee8d1eda65
+Generated: 2026-11-23T07:08:42Z
+Source commit: shaaad4aa319aec
 
 ## Commits (sha, time)
+- shaaad4aa31 2026-11-23T10:07:06+03:00
 - shaecee8d1e 2026-11-23T09:58:58+03:00
 - shafca13d11 2026-11-23T09:56:45+03:00
 - sha20e14e17 2026-11-23T09:42:37+03:00
@@ -23,7 +24,6 @@ Source commit: shaecee8d1eda65
 - sha0c5c001a 2026-11-23T07:58:24+03:00
 - shacda47361 2026-11-23T07:57:41+03:00
 - sha4559b8fa 2026-11-23T07:55:09+03:00
-- shafe5abaa1 2026-11-23T07:53:57+03:00
 
 ## Funnel
 | step | count |
@@ -35,16 +35,16 @@ Source commit: shaecee8d1eda65
 | gate_pass | 32 |
 | known_to_loop | 300 |
 | promoted | 30 |
-| ready | 125 |
+| ready | 132 |
 | reviewed | 89 |
 | triaged | 179 |
 
-Side counters: blocked=9, parked=0, requeued=2
-Tasks now: BLOCKED=9, DONE=68, FAILED=203, PROMOTED=6, READY=125
+Side counters: blocked=0, parked=0, requeued=2
+Tasks now: DONE=68, FAILED=203, PROMOTED=6, READY=132, RUNNING=2
 Accepted: 5
 Promoted: 30
-Free RAM, GB: 4.26
-Telemetry rows: 27737 recognised, 0 unrecognised
+Free RAM, GB: 2.79
+Telemetry rows: 27768 recognised, 0 unrecognised
 
 ## Spend per model
 | model | calls | tokens_in | tokens_out | usage_unknown | http_429 | errors |
@@ -71,11 +71,11 @@ Telemetry rows: 27737 recognised, 0 unrecognised
 | answer | 536 | 0 |
 | gate | 4164 | 0 |
 | infra | 796 | 0 |
-| loop | 5113 | 0 |
-| other | 5500 | 0 |
+| loop | 5125 | 0 |
+| other | 5518 | 0 |
 | promote | 41 | 0 |
 | review | 1676 | 887 |
-| run | 9586 | 2964 |
+| run | 9587 | 2964 |
 | triage | 325 | 0 |
 
 ## Channels (model ids)

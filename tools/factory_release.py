@@ -19,7 +19,7 @@ SWEEP_SHARDS = (4, 10)      # a sweep takes 4..10 shards: only the places the ta
 RETRY_S = 120               # an unfinished sweep (a shard did not end) is repeated after this long
 RUN_FILE = "run.json"       # the build in flight (run id, shards, results read so far): the loop may be restarted, the run is picked up
 FILL_ROUNDS = 2             # files with no result are run again alone at most this many times
-RESUME_FAILS = 2            # a run that cannot be waited for this many times is given up
+RESUME_FAILS = 2            # a run that cannot be waited for this many times is given up (counted only here, in run.json; run() reports "gave_up")
 GUARD = re.compile(r"(?:^|/)test_v_([A-Za-z0-9]+)(?:_[^/]*)?\.py(?:::|$)")
 
 
@@ -37,7 +37,8 @@ def due(loop_state, now) -> bool:
     last = (loop_state or {}).get("release")
     if not isinstance(last, dict) or not last:
         return True
-    return int(loop_state.get("promoted_total") or 0) > int(last.get("promoted_total") or 0)
+    seen = max(int(last.get("promoted_total") or 0), int(loop_state.get("release_skip_total") or 0))     # a skipped tick counts as seen
+    return int(loop_state.get("promoted_total") or 0) > seen
 
 
 def resumable(loop_state):
@@ -154,16 +155,19 @@ def next_label(state_dir, sha, prefix="rel") -> str:
     return "%s-%d-%s" % (key, n, uuid.uuid4().hex[:6])
 
 
-def _load_run(rel, sha, resume) -> dict:
+def _load_run(rel, sha, resume, drop=None) -> dict:
     """The record of the build of ``sha`` in flight (``release/run.json``): the run's info (``info``: run_id, branch, shards, ...), the
     results already read (``good``), the files still without a result (``missing``), the fill-in runs spent (``fills``) and the
-    failed waits (``fails``).  A record of another SHA is dropped; ``resume`` (the loop state's copy of the run info) stands in for a
-    lost file."""
+    failed waits (``fails``).  A record of another SHA is dropped (its run info is handed to ``drop`` so the branch goes); ``resume``
+    (the loop state's copy of the run info) stands in for a lost file, but not for a run whose results were already read."""
     rec = _read_json(rel / RUN_FILE, {})
     if rec.get("sha") != sha:
+        if drop and isinstance(rec.get("info"), dict):
+            _drop(drop, rec["info"])
         rec = {}
-    if not rec.get("info") and isinstance(resume, dict) and resume.get("run_id"):
-        rec = {**rec, "info": dict(resume)}
+    if (not rec.get("info") and not rec.get("good") and not rec.get("missing") and not rec.get("fills")
+            and isinstance(resume, dict) and resume.get("run_id")):
+        rec = {**rec, "info": dict(resume), "runs": [dict(resume)]}     # its shards are then reported too
     rec["sha"] = sha
     for key, default in (("good", {}), ("missing", []), ("fills", 0), ("fails", 0), ("runs", [])):
         if not isinstance(rec.get(key), type(default)):
@@ -171,8 +175,18 @@ def _load_run(rel, sha, resume) -> dict:
     return rec
 
 
+def _drop(drop, info) -> None:
+    """Remove the mirror branch of a run that is given up (a run that did not end keeps its branch); a refusal is harmless."""
+    try:
+        if info.get("branch"):
+            drop(info)
+    except Exception:       # noqa: BLE001  a stale branch is harmless
+        pass
+
+
 def _shard_report(rec, results) -> dict:
-    """{"shards": [files per shard], "longest_s": measured seconds of the slowest shard, "longest_shard": its number} of the first run."""
+    """{"shards": [files per shard], "longest_s": measured seconds of the slowest shard, "longest_shard": its number} of the first run
+    (a run taken up from the loop state alone is entered into ``runs`` by ``_load_run``; with no run at all the lists are empty)."""
     runs = [r for r in rec.get("runs") or () if isinstance(r, dict) and r.get("parts")]
     if not runs:
         return {"shards": [], "longest_s": None, "longest_shard": None}
@@ -184,19 +198,21 @@ def _shard_report(rec, results) -> dict:
 
 
 def run(*, sha, snapshot, state_dir, sweep_fn, known=(), open_ids=(), open_tests=(), recheck_fn=None, shards=SWEEP_SHARDS[1],
-        known_path=red_ratchet.DEFAULT_KNOWN, env_path=red_ratchet.DEFAULT_ENV, resume=None, on_run=None) -> dict:
+        known_path=red_ratchet.DEFAULT_KNOWN, env_path=red_ratchet.DEFAULT_ENV, resume=None, on_run=None, drop_fn=None) -> dict:
     """One full sweep of ``snapshot`` and its verdict.
     -> {"sha", "sweep": {"red", "new_red", "flaky", "run_id"}, "status", "reason", "debt_rows": [], "shards", "longest_s", "runs"}.
     status: baseline (first sweep: the reds are written as the baseline), green, new_red, sweep_incomplete (a shard did not end:
     no verdict, no acceptance, no baseline).  ``known`` = extra known names (the lists of tools/data and the baseline are read here).
     The run is kept in ``release/run.json`` (and handed to ``on_run``) the moment it exists: a call that finds a record of the same
     SHA (or gets ``resume``) takes that run up instead of starting another.  Files with no result (a shard that did not end) are
-    run again alone, up to FILL_ROUNDS times, and added to the results already read."""
+    run again alone, up to FILL_ROUNDS times, and added to the results already read.
+    A run that could not be waited for RESUME_FAILS times is given up HERE (the only counter): run.json goes, ``drop_fn(info)`` removes
+    its mirror branch, and the result is sweep_incomplete with ``gave_up`` true (the loop forgets the run)."""
     rel = release_dir(state_dir)
     rel.mkdir(parents=True, exist_ok=True)
     shards = max(SWEEP_SHARDS[0], min(SWEEP_SHARDS[1], int(shards)))
     dpath = str(rel / "durations.json")
-    rec = _load_run(rel, sha, resume)
+    rec = _load_run(rel, sha, resume, drop_fn)
 
     def note(info):
         rec["info"] = dict(info)
@@ -225,8 +241,12 @@ def run(*, sha, snapshot, state_dir, sweep_fn, known=(), open_ids=(), open_tests
             rec["fails"] += 1
             if rec["fails"] >= RESUME_FAILS:                    # the run is gone (deleted, expired): the next call builds a new one
                 (rel / RUN_FILE).unlink(missing_ok=True)
-            else:
-                _write_json(rel / RUN_FILE, rec)
+                _drop(drop_fn, rec["info"])
+                return {"sha": sha, "sweep": {"red": 0, "new_red": [], "flaky": [], "run_id": run_id}, "status": "sweep_incomplete",
+                        "reason": "run %s could not be waited for %d times: given up" % (run_id, rec["fails"]), "debt_rows": [],
+                        "gave_up": True, "runs": [r.get("run_id") for r in rec["runs"] if r.get("run_id")],
+                        **_shard_report(rec, {})}
+            _write_json(rel / RUN_FILE, rec)
             raise
         absorb(res)
         run_id = rid or run_id
