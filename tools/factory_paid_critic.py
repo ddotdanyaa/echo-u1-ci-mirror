@@ -531,6 +531,9 @@ def control(task, diff: str, failure: str = '', exclude_model: str = '', *, base
     candidate (a paid coder's Sonnet is judged by Haiku or not at all)."""
     if os.environ.get('PYTEST_CURRENT_TEST') and not os.environ.get('FACTORY_PAID_ENV'):
         return None                                     # a test never spends the real key
+    from tools import agent_factory as F
+    if F.is_base_debt(task):
+        return None                                     # W-base0: the old baseline debt never spends the paid money (the free panel stays)
     try:
         key = load_env(env_path()).get('ANTHROPIC_API_KEY', '')
         if not key or credit_dead():

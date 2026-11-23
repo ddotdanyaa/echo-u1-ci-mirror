@@ -55,6 +55,7 @@ from . import factory_cards as K
 from . import factory_tree
 from . import factory_quota as quota_ledger
 from . import factory_paid_critic as paid_critic
+from . import factory_ensemble as ENS
 _log = logging.getLogger(__name__)
 ENV_ALLOW = ("PATH", "PATHEXT", "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC", "LANG")
 POLICY_FILE = "kilo.jsonc"
@@ -1483,7 +1484,8 @@ LIGHT_ENDPOINTS = {'google': 'https://generativelanguage.googleapis.com/v1beta/o
 # the loop passes the registry's capacity (factory_loop.Loop._call_budget), each channel's rpd stays its limit.
 MAX_MODEL_CALLS = 100_000
 # ERROR_PATTERNS 'inline-thought' (live 20.11): Gemma 4 writes its reasoning into the answer (<thought>...), cannot be
-# told so by the API ('Thinking budget is not supported for this model', 400) and ran to the 8192 cap in ~175 s on
+# told so by reasoning_effort 'none' ('Thinking budget is not supported for this model', 400; 'minimal' IS accepted,
+# see factory_channels.MODEL_BODY) and ran to the 8192 cap in ~175 s on
 # coder calls; with this line its answers came without the section (probe 2 of 2, 3 of 3 with it before). Every light
 # call starts with it; a leading block that still comes is stripped (_LIGHT_THOUGHT).
 NO_THOUGHT = "Answer at once: do not think aloud, write no <thought> or <think> section. "
@@ -2426,7 +2428,8 @@ def light_attempt(task: Task, workdir: Path, model: str, timeout: int = LIGHT_TI
                          {'role': 'user', 'content': prompt}]}
     if provider == 'openrouter' and channels.supports_reasoning(model):    # D #24: only where the model takes it
         body['reasoning'] = {'max_tokens': LIGHT_REASONING_TOKENS}
-    status, raw = (post or _light_post)(url, key, body, max(10, min(int(timeout), LIGHT_TIMEOUT_S)))
+    status, raw, sent = channels.post_with_extra(post or _light_post, url, key, body,
+                                                 max(10, min(int(timeout), LIGHT_TIMEOUT_S)), model)
     if status is None and raw == b'TimeoutError':
         # the request reached the provider, the answer did not come in time: Kilo's timeout contract (the idle
         # series, then the ceiling: reviewer_failed / worker_timeout), never an endless 'transient' (critic 19.11)
@@ -2453,7 +2456,8 @@ def light_attempt(task: Task, workdir: Path, model: str, timeout: int = LIGHT_TI
         return 1, _light_error(None, b'the answer was cut by the output limit', 'TruncatedAnswer'), b''
     if not text and choice.get('finish_reason') in ('length', 'max_tokens'):
         # the whole output limit went into reasoning (Gemma 4, live 20.11: 13 of 16 coder calls since midnight, ~100 s
-        # each; the API refuses a thinking budget or level for it): no answer from this model now, another one is asked
+        # each; reasoning_effort 'none' is refused (400), 'minimal' is accepted: MODEL_BODY sends it): no answer from
+        # this model now, another one is asked
         return 1, _light_error(None, b'the model used its whole output limit and gave no answer', 'EmptyAnswer'), b''
     usage = data.get('usage') if isinstance(data.get('usage'), dict) else {}
     given = usage.get('prompt_tokens_details') if isinstance(usage.get('prompt_tokens_details'), dict) else {}
@@ -2491,7 +2495,10 @@ def light_attempt(task: Task, workdir: Path, model: str, timeout: int = LIGHT_TI
         if not applied:
             _keep_answer(Path(workdir), text)
     events.append({'type': 'text', 'part': {'text': text}})
-    events.append({'type': 'step_finish', 'part': {'reason': choice.get('finish_reason') or 'stop', 'tokens': tokens}})
+    finish = {'reason': choice.get('finish_reason') or 'stop', 'tokens': tokens}
+    if sent.get('reasoning_effort'):
+        finish['reasoning'] = sent['reasoning_effort']      # telemetry: the effort field went with the call
+    events.append({'type': 'step_finish', 'part': finish})
     return 0, ''.join(json.dumps(e, ensure_ascii=False) + '\n' for e in events).encode('utf-8'), note.encode('utf-8')
 
 
@@ -2571,9 +2578,81 @@ def part_undefined(file: str, old_text: str, new_text: str) -> str:
     return K.UNDEFINED_NOTE % (file, ', '.join(names[:8])) if names else ''
 
 
+VGS_ON = True         # W-vgs: the ensemble of the small tier (tests of other features switch it off)
+VGS_K_MAX = 6
+VGS_ALTS = 2          # the unions after the first one that may still go to the gates in a pass (3 gates in all)
+
+
+def vgs_k(free: int) -> int:
+    """W-vgs 3: the ensemble size on the small tier: min(6, free small channels x 2), at least 3 with two channels;
+    0 (the old path) when no small channel is free now."""
+    if free <= 0:
+        return 0
+    k = min(VGS_K_MAX, free * 2)
+    return max(k, 3) if free >= 2 else k
+
+
+class VgsPlan:
+    """W-vgs 3: what edit_parts needs for the ensemble: ``k``, the channel names, ``ask(part_task, folder, text, n,
+    temperature, channel)`` -> ``(rc, out, err)`` (raises ENS.ChannelRefused for a refused channel), and the pass's
+    telemetry (``stats``) with the alternates for the gates (``alts``: (file, bytes) pairs, best first)."""
+
+    def __init__(self, k: int, ask, channel_names=None):
+        self.k, self.ask, self.channels = int(k), ask, list(channel_names or [])
+        self.stats = dict(k=0, asked=0, answered=0, valid=0, unique=0, votes_top=0)
+        self.alts: list = []          # (file, bytes, model) of the next unions, best first
+        self.winners: set = set()     # the models that wrote the standing candidate's parts
+        self.lock = threading.Lock()
+
+    def record(self, stats: dict) -> None:
+        with self.lock:
+            for name in ('asked', 'answered', 'valid', 'unique'):
+                self.stats[name] += int(stats.get(name) or 0)
+            self.stats['k'] = max(self.stats['k'], int(stats.get('k') or 0))
+            self.stats['votes_top'] = max(self.stats['votes_top'], int(stats.get('votes_top') or 0))
+
+
+def part_verifier(parts: list, file: str):
+    """W-vgs 2: the code plugin of the ensemble: ``verify(answer)`` -> ``(ok, why, key)`` over the answer of one call
+    (``rc``, ``note``, ``raw``/``new`` = the file after the blocks, ``old_raw``/``old`` = before). The blocks were parsed
+    for the allowed file only and applied by the light engine; here: the part is applied, compiles, brings no new
+    undefined name, stays inside the contract and changes something. The key is the fingerprint of the new file."""
+    def verify(answer: dict):
+        if answer.get('rc'):
+            return False, 'the call failed', ''
+        new, old = answer.get('new'), answer.get('old') or ''
+        changed = new is not None and answer.get('raw') != answer.get('old_raw')
+        why = part_failure(answer.get('note') or '', changed)
+        if not why and file.endswith('.py'):
+            try:
+                compile(new, file, 'exec')
+            except (SyntaxError, ValueError) as error:
+                why = 'its edit of %s does not compile (%s)' % (file, error)
+        if not why:
+            try:
+                why = part_off_contract(parts, file, old, new) or part_undefined(file, old, new)
+            except (OSError, ValueError, SyntaxError):
+                why = ''
+        return (False, why, '') if why else (True, '', ENS.fingerprint(new, file))
+    return verify
+
+
+def vgs_alternates(per_part: dict) -> list:
+    """W-vgs 3: the unions after the first one: the part with the fewest votes takes its next valid candidate, then the
+    next one. ``per_part``: file -> candidates (best first), only for files of exactly one part. Up to VGS_ALTS (file, bytes)."""
+    order = sorted((f for f, c in per_part.items() if len(c) > 1), key=lambda f: (per_part[f][0].votes, f))
+    out: list = []
+    for f in order:
+        for cand in per_part[f][1:]:
+            out.append((f, cand.payload['raw'], cand.payload.get('model')))
+            if len(out) >= VGS_ALTS:
+                return out
+    return out
+
+
 def edit_parts(task: Task, parts: list, workdir: Path, call, failing: str = '', use_code: bool = False,
                gemma_first=None, on_cut=None, trace=(), fail_ids=(), info=None, on_event=None,
-               who=None) -> tuple[int, str, str]:
+               who=None, vgs: VgsPlan | None = None) -> tuple[int, str, str]:
     """Edit the parts of the contract in ``workdir``: one call per part (``call(part_task, directory, prompt)`` ->
     ``(rc, stdout, stderr)``), the parts of one stage at once (one thread and one HTTP call per part), the next stage
     when all parts of the previous one are applied. Each part works in its own copy ``<workdir>-p<i>-<try>``; its
@@ -2679,6 +2758,51 @@ def edit_parts(task: Task, parts: list, workdir: Path, call, failing: str = '', 
             return {p['file']: (workdir / p['file']).read_text(encoding='utf-8-sig', errors='replace')
                     for p in parts if (workdir / p['file']).is_file()}
 
+    per_part: dict = {}      # file -> the valid candidates of its ensemble (best first)
+
+    def ensemble_part(index: int, part: dict, part_task, text: str) -> str:
+        """W-vgs 3: k independent asks of one part at once, each checked by the code plugin before anything else; the
+        best candidate is written into ``workdir``. '' when one stands, else the commonest reason the answers failed."""
+        file = part['file']
+        target_now = workdir / file
+        with lock:
+            old_raw = target_now.read_bytes() if target_now.is_file() else None
+        old = old_raw.decode('utf-8-sig', 'replace') if old_raw is not None else ''
+
+        def ask(n: int, temperature: float, channel):
+            folder = workdir.parent / ('%s-p%d-e%d' % (workdir.name, index, n))
+            shutil.rmtree(folder, ignore_errors=True)
+            with lock:
+                shutil.copytree(workdir, folder)
+            try:
+                rc, out, err, *rest = vgs.ask(part_task, folder, text, n, temperature, channel)
+                made = folder / file
+                raw = made.read_bytes() if made.is_file() else None
+                with lock:
+                    answers.append(event_summary(out)['text'] if rc == 0 and out else '')
+                return dict(rc=rc, note=err.decode('utf-8', 'replace') if isinstance(err, bytes) else str(err or ''),
+                            raw=raw, new=raw.decode('utf-8-sig', 'replace') if raw is not None else None,
+                            old_raw=old_raw, old=old, model=rest[0] if rest else None)
+            finally:
+                shutil.rmtree(folder, ignore_errors=True)
+
+        ens = ENS.Ensemble(vgs.k, ask, part_verifier(parts, file), channels=vgs.channels)
+        found = ens.run()
+        vgs.record(ens.stats)
+        if not found:
+            seen: dict = {}
+            for why in ens.rejected:
+                seen[why] = seen.get(why, 0) + 1
+            return max(seen, key=seen.get) if seen else 'no answer'
+        with lock:       # the payload of a candidate is its answer: ``raw`` = the bytes of the new file
+            target_now.parent.mkdir(parents=True, exist_ok=True)
+            target_now.write_bytes(found[0].payload['raw'])
+            if found[0].payload.get('model'):
+                vgs.winners.add(found[0].payload['model'])
+            if sum(1 for p in parts if p.get('file') == file) == 1:
+                per_part[file] = found
+        return ''
+
     def one(index: int, part: dict):
         file = part['file']
         texts = current_texts()
@@ -2730,6 +2854,10 @@ def edit_parts(task: Task, parts: list, workdir: Path, call, failing: str = '', 
                 return ''
             more = ('\nThe architect wrote code for this part; it could not be applied (%s). Make the change the '
                     'instruction asks for.\n' % why_not[:300])
+        if vgs is not None and vgs.k:
+            reason = ensemble_part(index, part, part_task, base + more)
+            # an empty ensemble is the answer: its reason, no second round of calls beyond k (the old path is only for k == 0)
+            return '%s: %s' % (file, reason) if reason else ''
         tries, spin, free_asks = 0, 0, UNDEF_RETRIES
         cannots: list = []      # the models that answered "CANNOT: the provided function ... does not contain" for this part
         if info is not None:
@@ -2815,6 +2943,8 @@ def edit_parts(task: Task, parts: list, workdir: Path, call, failing: str = '', 
             failed.extend(f.result() for f in futures if f.result())
         if failed:
             break
+    if vgs is not None:
+        vgs.alts = vgs_alternates(per_part) if not failed else []
     return (1, '\n'.join(answers), '; '.join(failed)) if failed else (0, '\n'.join(answers), '')
 
 
@@ -3199,7 +3329,8 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
 
     def call(role: str, call_task: Task, directory_for, preferred: str, prompt: str,
              *, exclude_model: str | None = None, skip_tiers: tuple = (), later: bool = False,
-             candidate: int | None = None, models_out: set | None = None, on_booked=None) -> tuple[int, bytes, bytes]:
+             candidate: int | None = None, models_out: set | None = None, on_booked=None,
+             temperature: float | None = None) -> tuple[int, bytes, bytes]:
         """One real model call with reservation, charging, classification, one transient retry. ``skip_tiers``:
         channel tiers this call may not use (factory_channels.route_order). ``candidate``: the number of the candidate
         the call belongs to (parts of one card run in threads, so it is not read from ``ctx``); ``models_out``: the set
@@ -3312,7 +3443,7 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                 directory = directory_for(retry)
                 engine = light_attempt if light else model_attempt
                 if light:
-                    kwargs['temperature'] = candidate_temperature(candidate)
+                    kwargs['temperature'] = candidate_temperature(candidate) if temperature is None else temperature   # W-vgs: the ensemble's own row
                 # W-gemma 2: 90 s for Gemma when no main channel is free (it is the only voice), else the quick 30 s
                 timeout = (channels.small_timeout(configured, live_state, base_tokens, os.environ)
                            if small_quick else 240)
@@ -4284,7 +4415,23 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                 has ONE candidate; from the second, two candidates of different models at once (the tournament), which
                 go to the gates as they are ready: the first green one stands. The gates run once per candidate, over the
                 union of its parts, and there are no repair rounds inside the pass: a red gate ends the candidate."""
-                count = 1 if attempt <= 1 else 2
+                plan_k = 0
+                if configured and VGS_ON and not os.environ.get('FACTORY_NO_VGS'):
+                    try:    # W-vgs 3/6: the small tier leads and has free channels now; else the old path
+                        if 'small' not in skip_for(0, attempt, feedback, small_follow_up):
+                            live_small = live_quotas()
+                            small_all = [c for c in configured if channels.tier_of(c) == 'small' and not channels.is_reserve(c)]
+                            free_n = 0
+                            for c in channels.usable(small_all, live_small, os.environ):
+                                try:
+                                    channels.choose([c], live_small, 1, os.environ, grace=channels.OPEN_SOON_S)
+                                    free_n += 1
+                                except channels.ChannelUnavailable:
+                                    pass
+                            plan_k = vgs_k(free_n)
+                    except Exception:       # noqa: BLE001 - a view that cannot be read is the old path
+                        plan_k = 0
+                count = 1 if (attempt <= 1 or plan_k) else 2
                 part_author = str(K.contract_of(task).get('author') or '')
                 if part_author and any(isinstance(p, dict) and p.get('code') for p in parts_now):
                     ctx['coder_models'].add(part_author)     # W-dry 2: the model that wrote parts[].code never reviews it alone
@@ -4341,6 +4488,56 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                             time.sleep(step)
                             waited += step
 
+                small_models = sorted({c['model'] for c in configured if channels.tier_of(c) == 'small'
+                                       and not channels.is_reserve(c)})
+                vgs_state = {'gates': 0, 'green_at': None}
+
+                def vgs_ask(part_task, directory, text, n, temperature, channel):
+                    """One ensemble call: small tier only, on ``channel`` (a model name) when there is a choice; a refused or
+                    busy channel is no answer (ENS.ChannelRefused). Returns (rc, out, err, model)."""
+                    got: list = []
+                    others = [m for m in small_models if m != channel] if channel else []
+                    try:
+                        rc, out, err = call('edit', part_task, lambda _retry: directory, chosen, text,
+                                            exclude_model=others or None, skip_tiers=('main', 'escalation'),
+                                            candidate=0, on_booked=got.append, temperature=temperature)
+                    except (channels.ChannelUnavailable, ChannelFault, NoIndependentReviewer, PromptTooLarge) as error:
+                        raise ENS.ChannelRefused(str(error)) from error
+                    return rc, out, err, (got[-1] if got else None)
+
+                vgs = VgsPlan(plan_k, vgs_ask, small_models if len(small_models) > 1 else None) if plan_k else None
+
+                def vgs_gates(found):
+                    """W-vgs 4: the first union was red: the next ready unions go to the gates in turn (no new model call),
+                    at most VGS_ALTS more. The first green stands. The reds are one strike for the pass (the caller counts
+                    it once, after the last candidate); the diff and the evidence stay those of the last one."""
+                    home, base_home = ctx['workdir'], ctx['baseline']
+                    last = dict(ctx)
+                    for number, (file, raw, model) in enumerate(vgs.alts, 2):
+                        where = staging / ('%s-vgs-%d' % (prefix, number))
+                        shutil.rmtree(where, ignore_errors=True)
+                        shutil.copytree(home, where)
+                        target = where / file
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        target.write_bytes(raw)
+                        ctx.update(workdir=where, baseline=base_home)
+                        if model:
+                            models[0] = {model}
+                        events.append('vgs_union_%d' % number)
+                        if unusable():           # the mechanical checks again: not a gate try
+                            continue
+                        vgs_state['gates'] += 1
+                        found = run_gates()
+                        if not isinstance(found, _GateRetry):
+                            if isinstance(found, tuple):
+                                vgs_state['green_at'] = vgs_state['gates']
+                            return found
+                        if last.get('workdir') != home and last.get('workdir') != where:
+                            shutil.rmtree(last['workdir'], ignore_errors=True)    # an older union: its evidence is superseded
+                        last = dict(ctx)
+                    ctx.update(last)            # the evidence and the diff belong to the last union that really ran
+                    return found
+
                 def run_candidate(k):
                     where = ctx['workdir'] if k == 0 else staging / ('%s-cand-%d' % (prefix, k))
                     try:
@@ -4356,7 +4553,10 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                                                       gemma_first=gemma_first_now, on_cut=events.append,
                                                       trace=part_trace, fail_ids=part_fail_ids, info=see,
                                                       on_event=events.append,
-                                                      who=lambda f, k=k: last_model.get((k, f)))
+                                                      who=lambda f, k=k: last_model.get((k, f)),
+                                                      vgs=vgs if not k else None)
+                        if vgs is not None and vgs.winners and not k:
+                            models[0] = set(vgs.winners)    # only the models whose text stands are the authors
                     finally:
                         if k == 0:
                             first_booked.set()
@@ -4396,6 +4596,15 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                                 outcome = early
                                 break
                             found = run_gates()
+                            if vgs is not None:
+                                vgs_state['gates'] = 1
+                                if isinstance(found, tuple):
+                                    vgs_state['green_at'] = 1
+                                elif isinstance(found, _GateRetry) and vgs.alts and cand['k'] == 0:
+                                    found = vgs_gates(found)
+                                    used = sorted(models[0])
+                                    if used:
+                                        ctx['coder_model'] = used[0]
                             if isinstance(found, _GateRetry):
                                 gate_failed.append(ctx['coder_model'])
                                 red_on(ctx['coder_model'])
@@ -4405,6 +4614,9 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                             break
                 finally:
                     ctx['coder_models'] |= set().union(*models)
+                    if vgs is not None:
+                        report['vgs'] = dict(vgs.stats, k=vgs.stats['k'] or vgs.k, gates=vgs_state['gates'],
+                                             green_at=vgs_state['green_at'])
                     report['context_chars'] = see.get('context_chars', 0)
                     report['context_sections'] = see.get('context_sections', [])
                     if see.get('code_applied') and not see.get('model_asked'):

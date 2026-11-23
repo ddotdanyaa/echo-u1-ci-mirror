@@ -149,6 +149,44 @@ def max_output_for(model, default: int) -> int:
     return default
 
 
+# Body fields added to EVERY HTTP call of a model (live 23-24.11: Gemma 4 without it spends the whole output limit on
+# reasoning, 87 s, no answer; 'minimal' on the same /v1beta/openai address answers in ~24 s). 'none' is refused (400
+# "Thinking budget is not supported"), 'minimal' is accepted.
+MODEL_BODY = (('google/gemma-4', {'reasoning_effort': 'minimal'}),)
+_BODY_OFF: set = set()      # model prefixes whose field the API refused: off until the process ends
+
+
+def body_extra(model) -> dict:
+    """A copy of the extra body fields of ``model`` (empty for a model without a row or with the field switched off)."""
+    for prefix, extra in MODEL_BODY:
+        if str(model or '').startswith(prefix):
+            return {} if prefix in _BODY_OFF else copy.deepcopy(extra)
+    return {}
+
+
+def _refused_field(status, raw) -> bool:
+    text = raw.decode('utf-8', 'replace') if isinstance(raw, (bytes, bytearray)) else str(raw or '')
+    return status == 400 and ('reasoning_effort' in text or 'Thinking' in text)
+
+
+def post_with_extra(post, url, key, body, timeout, model):
+    """``post(url, key, body, timeout)`` with the model's extra fields in the body. A 400 naming the field is
+    retried once without it and the field is off for this model until the process ends. ``body`` is not changed.
+    Returns ``(status, raw, sent)``: ``sent`` is the extra dict actually sent in the answered call."""
+    extra = body_extra(model)
+    if not extra:
+        status, raw = post(url, key, body, timeout)
+        return status, raw, {}
+    status, raw = post(url, key, {**body, **extra}, timeout)
+    if _refused_field(status, raw):
+        for prefix, _ in MODEL_BODY:
+            if str(model or '').startswith(prefix):
+                _BODY_OFF.add(prefix)
+        status, raw = post(url, key, body, timeout)
+        return status, raw, {}
+    return status, raw, extra
+
+
 def cyrillic_share(text) -> float:
     """Share of the letters of ``text`` that are Cyrillic (0.0 for no letters)."""
     letters = [c for c in str(text or '') if c.isalpha()]

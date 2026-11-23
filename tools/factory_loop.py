@@ -99,7 +99,8 @@ def _probe(row: dict, key: str):
     provider, _, model_id = row["model"].partition("/")
     body = {"model": model_id, "temperature": 0, "max_tokens": 5,
             "messages": [{"role": "user", "content": "Say OK"}]}
-    status, _ = _light_post(LIGHT_ENDPOINTS[provider], key, body, 60)
+    from tools import factory_channels as C
+    status, _, _sent = C.post_with_extra(_light_post, LIGHT_ENDPOINTS[provider], key, body, 60, row["model"])
     return status
 
 
@@ -712,8 +713,9 @@ def _probe_channel(channel, key):
     url = R.LIGHT_ENDPOINTS.get(provider)
     if not url or not name:
         return None
-    status, raw = R._light_post(url, key, {"model": name, "max_tokens": 8,
-                                           "messages": [{"role": "user", "content": "ping"}]}, PROBE_TIMEOUT_S)
+    status, raw, _sent = CH.post_with_extra(R._light_post, url, key, {"model": name, "max_tokens": 8,
+                                            "messages": [{"role": "user", "content": "ping"}]}, PROBE_TIMEOUT_S,
+                                            channel["model"])
     if status == 200:
         return {"kind": "ok", "status": 200}
     name_ = "NetworkError" if status is None else "APIError"
@@ -1600,6 +1602,7 @@ class Loop:
             self.event("infra", status="released", reason="lease_expired:" + ",".join(freed))
         tasks, state = self.load()
         ls = self.ls()
+        ls = self._reconcile_tick(tasks, state, ls, now)
         ls = self._close_parents(tasks, state, ls)
         if now - float(ls.get("tmp_clean_at", 0)) > 86400 and not any(
                 r["status"] == "RUNNING" for r in state["tasks"].values()):
@@ -1919,7 +1922,8 @@ class Loop:
         provider, _, model_id = model.partition("/")
         body = {"model": model_id, "temperature": 0, "max_tokens": max_tokens,       # ERROR_PATTERNS inline-thought
                 "messages": [{"role": "user", "content": R.NO_THOUGHT + "\n\n" + text}]}
-        code_http, raw = _light_post(R.LIGHT_ENDPOINTS[provider], env[channel["key_env"]], body, 120)
+        code_http, raw, _sent = C.post_with_extra(_light_post, R.LIGHT_ENDPOINTS[provider], env[channel["key_env"]],
+                                                  body, 120, model)
         if code_http != 200:
             if code_http in (429, 500, 503):      # the next call takes another channel for a while
                 with self._ask_lock:
@@ -3796,10 +3800,6 @@ class Loop:
                               if (s := safe(x))], evidence="\n".join(s for x in clues if (s := safe(x))),
                     known_ids=list(ls.get("to_slice", {})) + list({t.backlog_id for t in tasks.values()}))
 
-    def _fresh_waiting(self, ls) -> bool:
-        """W-money 2: the slicer's queue holds an ECHO row or a fresh regression rel-<sha8>-<n> without an active slicing."""
-        return any(F.is_fresh_row(bid) and bid not in self._slicers for bid in (ls.get("to_slice") or {}))
-
     def _slice(self, row, cause, rung, evidence, *, gen, tasks, state, ls, now):
         from tools import factory_architect as A
         job = self._slicers.get(row)
@@ -3821,8 +3821,7 @@ class Loop:
                     raise SliceWait()
                 asks = left
             base_debt = F.is_base_debt(row)
-            fresh_waiting = base_debt and self._fresh_waiting(ls)
-            if fresh_waiting:                  # W-money 2: no paid step for the old debt while a fresh row waits for its slicing
+            if base_debt:                      # W-base0: the old debt is sliced by the free steps only, whatever waits in the queue
                 left = {k: v for k, v in asks.items() if k in ("free", "free_main")}
                 if not left:
                     self.event("slice", backlog_id=row, status="barred", engine="paid,agent", rung=rung, ladder="")
@@ -3839,8 +3838,6 @@ class Loop:
                     packet["edit_dry"] = True
                 if base_debt:
                     packet["base_debt"] = True
-                    if fresh_waiting:
-                        packet["fresh_waiting"] = True
                 if self.cfg.self_repo:      # the second instance: a new test imports only the modules the mirror publishes
                     packet["publishable"] = ", ".join(A.publishable_modules())
                 extra = {"named_ok": True} if self.cfg.self_repo else {}      # 8.1: the factory's own files are the contract's subject
@@ -3907,6 +3904,13 @@ class Loop:
                 priority = int(str(priority).removeprefix("P"))
                 portion["tasks"] = A.to_tasks(contract, bid=row, base_id=base, gen=job.ctx["gen"],
                                               priority=priority, title=packet["title"], author=A.author_model(engine))
+            elif outcome == "split" and (self.ls().get("split") or {}).get(row):
+                # W-supply 3: a row is split once; the second split answer is an ordinary hold with the reason
+                portion["holds"] = [dict(backlog_id=row, question="split already made once: " + str(contract.get("why", ""))[:150],
+                                         decision="hold")]
+            elif outcome == "split":
+                portion["priority"] = packet["priority"]
+                portion["split"] = self._split_children(row, contract)
             elif outcome == "not_code":
                 portion["not_code"] = [dict(backlog_id=row, reason=contract.get("why", ""))]
             else:
@@ -3926,6 +3930,20 @@ class Loop:
         finally:
             self.event("slice", backlog_id=row, engine=engine, status=outcome, rung=job.ctx["rung"],
                        ladder=job.ctx.get("ladder", ""), **extra)
+
+    SPLIT_MAX = 3
+
+    def _split_children(self, row, contract) -> list:
+        """W-supply 3: the children of a decision split as queue rows <ID>.s1.. with their own text (defect, place, acceptance)."""
+        out = []
+        for n, child in enumerate((contract.get("children") or [])[:self.SPLIT_MAX], 1):
+            place = " ".join(str(child.get(k)) for k in ("file", "symbol") if child.get(k))
+            if not place:
+                place = "сценарий: " + str(child.get("phrase") or child.get("scenario") or "")
+            text = "%s (%s). Приёмка: %s" % (str(child.get("text", "")).strip(), place, str(child.get("acceptance", "")).strip())
+            out.append({"id": "%s.s%d" % (row, n), "text": self._scrub(F.redact(text))[:1500],
+                        "hints": [str(child["file"])] if child.get("file") else []})
+        return out
 
     def _wait_record(self, ls, bid, create=False):
         """The row's wait record: the cached answers/refusals of the steps and the count of waits, valid for one slicer
@@ -4240,6 +4258,9 @@ class Loop:
         for bid in list(ls.get("arch_decision") or {}):        # the answer lives as long as the hold / not_code record it explains
             if bid not in ls["holds"] and bid not in (ls.get("not_code") or {}):
                 ls["arch_decision"].pop(bid, None)
+        for bid in list(ls.get("split") or {}):                # a split parent closed in the backlog leaves reconcile.json
+            if bid in (ls.get("closed") or {}):
+                ls["split"].pop(bid, None)
 
     def _resliceable(self, tasks, state, ls, now) -> dict:
         stuck = F.stuck_rows(state, tasks)
@@ -4298,6 +4319,7 @@ class Loop:
         # supersede the row's tasks below and leave the row with no task and no decision (the lost row)
         decided = any(F.row_of(str(x.get("backlog_id", row))) == row
                       for x in list(portion.get("holds") or []) + list(portion.get("not_code") or []))
+        decided = decided or bool(portion.get("split"))
         valid = bool(items or decided)
         added = []
         if valid:
@@ -4337,6 +4359,16 @@ class Loop:
                 ls.setdefault("rel_entry", {})[row] = {k: kept[k] for k in ("text", "guard", "priority", "hints", "at") if k in kept}
         for key in ("to_slice", "slice_wait", "parents", "slice_cache"):
             ls.get(key, {}).pop(row, None)
+        if portion.get("split"):                   # W-supply 3: the parent is in the state split, the children are rows of the queue
+            children = portion["split"][:self.SPLIT_MAX]
+            ls.setdefault("split", {})[row] = {"children": [c["id"] for c in children], "at": now, "slicer": F.slicer_version(),
+                                               "engine": str(portion.get("engine") or "")}
+            for c in children:
+                entry = {"at": now, "hints": list(c.get("hints") or []), "guard": "", "text": c["text"]}
+                if portion.get("priority") is not None:
+                    entry["priority"] = portion["priority"]
+                ls.setdefault("to_slice", {})[c["id"]] = entry
+                ls.get("reslices", {}).pop(c["id"], None)
         for hold in portion.get("holds") or []:
             bid = hold.get("backlog_id", row)
             ls["holds"][bid] = self._scrub(str(hold.get("question", "")))
@@ -4500,7 +4532,7 @@ class Loop:
         known |= self._not_code_known(ls, now)              # <id>: survives edits until the row's own text changes
         known |= {b for b, rec in (ls.get("parents") or {}).items()
                   if rec.get("children") and all(c in known for c in rec["children"])}   # all parts exist: no re-import
-        known |= set(ls.get("to_slice", {})) | set(ls.get("quarantine", {}))
+        known |= set(ls.get("to_slice", {})) | set(ls.get("quarantine", {})) | set(ls.get("split") or {})
         # invariant "no lost row": a row whose tasks are all terminal (_task_rows leaves it out) is known only through a
         # live decision above (parents, to_slice, quarantine); an expired not_code/hold makes it unknown and the triage
         # hands it to the slicer. The source of the loss is closed in _apply_portion (a decision for another id).
@@ -4738,15 +4770,95 @@ class Loop:
     # the task state that speaks for a backlog row with several tasks: the least finished one
     RECONCILE_ORDER = ("RUNNING", "REVIEW", "READY", "BLOCKED", "FAILED", "DONE", "PROMOTED")
 
-    def _write_reconcile(self, tasks, state, ls, now) -> None:
+    def _iso_safe(self, value, default) -> str | None:
+        """A term of a ledger record as a time; a broken one (text, None) never stops the report of the other rows."""
+        try:
+            return self._iso(float(value or default))
+        except (TypeError, ValueError, OverflowError, OSError):
+            return None
+
+    RECONCILE_TICK_S = 300.0
+    SUPPLY_RETURN_S = 86400.0
+
+    def _supply_invariant(self, tasks, state, ls, now):
+        """W-supply 1: every OPEN backlog row is in exactly one state. A row with tasks that are all terminal (superseded / closed /
+        not_code / sliced / quarantine) and with no full-closure PROMOTED task, hold, not_code, closed, quarantine, to_slice,
+        parts, split or running slicer has lost its place (live 23.11: 61 ECHO rows 'FAILED' nowhere): it returns to to_slice,
+        once per CONTRACT_REV and not oftener than every 24 h, with the event supply status=returned. Returns the saved ls or None."""
+        from tools import agent_factory_import as imp, factory_architect as A
+        rev = str(A.CONTRACT_REV)
+        md = Path(self.cfg.backlog).read_bytes().decode("utf-8-sig")
+        try:
+            rows4 = imp.parse_section4(md)
+        except ValueError:                           # no bounded section 4 (a bare backlog): no rows to keep, no event
+            return None
+        open_rows = {r["backlog_id"]: r for r in rows4 if r.get("open", True)}
+        if not open_rows:
+            return None
+        by_row = {}
+        for tid, row in state["tasks"].items():
+            t = tasks.get(tid)
+            bid = F.row_of(row.get("backlog_id") or (t.backlog_id if t else "") or "")
+            if bid in open_rows:
+                by_row.setdefault(bid, []).append(row)
+        if not by_row:
+            return None
+        cur = self.ls()
+        placed = set()
+        for key in ("holds", "not_code", "closed", "quarantine", "to_slice", "parents", "split"):
+            placed |= set(cur.get(key) or {})
+        placed |= set(getattr(self, "_slicers", {}) or {})
+        disp = self._dispositions(now)
+        mem = cur.setdefault("supply_returned", {})
+        returned = []
+        for bid, rows in sorted(by_row.items()):
+            if bid in placed or bid in disp:
+                continue
+            if any(r.get("status") == "PROMOTED" for r in rows):
+                continue
+            if not all(r.get("status") == "FAILED" and F.is_terminal(r.get("reason")) for r in rows):
+                continue
+            rec = mem.get(bid) or {}
+            if rec and (rec.get("rev") == rev or now - float(rec.get("at") or 0) < self.SUPPLY_RETURN_S):
+                continue
+            entry = {"at": now, "hints": [], "guard": ""}
+            if open_rows[bid].get("priority"):
+                entry["priority"] = open_rows[bid]["priority"]
+            cur.setdefault("to_slice", {})[bid] = entry
+            cur.get("slice_wait", {}).pop(bid, None)
+            cur.get("reslices", {}).pop(bid, None)      # a fresh first pass, not a spent budget
+            mem[bid] = {"rev": rev, "at": now}
+            returned.append(bid)
+        if not returned:
+            return None
+        self.save_ls(cur)
+        for bid in returned:
+            self.event("supply", status="returned", backlog_id=bid, reason="all tasks terminal, no record: back to the slicer")
+        return cur
+
+    def _reconcile_tick(self, tasks, state, ls, now) -> dict:
+        """W-supply 4: reconcile.json was written only on HOLD and after a triage, so a loop that kept working never
+        refreshed it (live 23.11: not written since 16:53). Now also every RECONCILE_TICK_S of any step.
+        Returns the ls the caller must go on with (the invariant may have saved a newer one: never save the old dict over it)."""
+        if now - float(getattr(self, "_reconcile_at", 0.0)) < self.RECONCILE_TICK_S:
+            return ls
+        self._reconcile_at = now
+        return self._write_reconcile(tasks, state, ls, now)
+
+    def _write_reconcile(self, tasks, state, ls, now) -> dict:
         """<id> («Утром сверка с бэклогом: ни одной забытой задачи»): <state>/reconcile.json maps EVERY backlog row
         to where the loop holds it, with a reason and a term: the queue (the task state wins), a triage hold, the
         closed book, a cut parent, a stale or skipped row (seen, with its term), a deferred row, a row whose state
         wording is not recognised, or a row the triage has not reached yet. Ids and the loop's own words only."""
         try:
+            try:
+                ls = self._supply_invariant(tasks, state, ls, now) or ls
+            except Exception as e:                   # W-supply 1: the return of lost rows never stops the report
+                self.err("supply invariant", e)
             self._write_reconcile_now(tasks, state, ls, now)
         except Exception as e:                       # the report never stops the loop
             self.err("reconcile", e)
+        return ls
 
     def _dispositions(self, now) -> dict:
         """imp.row_dispositions of the live backlog, kept for 10 minutes per backlog edit (it reads git); {} on a failure."""
@@ -4759,6 +4871,8 @@ class Loop:
             disp = imp.row_dispositions(self.cfg.backlog, self.cfg.worktree, self_repo=bool(self.cfg.self_repo))
             self._disp_cache = (mtime, now, disp)
             return disp
+        except ValueError:                           # a backlog with no bounded section 4: no dispositions, not an error
+            return {}
         except Exception as e:
             self.err("reconcile: dispositions", e)
             return {}
@@ -4770,6 +4884,8 @@ class Loop:
             from tools import agent_factory_import as imp
             md = Path(self.cfg.backlog).read_bytes().decode("utf-8-sig")
             backlog = [(r["backlog_id"], bool(r.get("open", True))) for r in imp.parse_section4(md)]
+        except ValueError:                           # a backlog with no bounded section 4 has no rows: the report is empty, not an error
+            backlog = []
         except Exception as e:
             self.err("reconcile: backlog unreadable", e)
             backlog = []
@@ -4780,12 +4896,15 @@ class Loop:
         order = {s: i for i, s in enumerate(self.RECONCILE_ORDER)}
         # what speaks for a row: the answer of the architect or the slicer's queue beat tasks that were superseded; a PROMOTED code task
         # of the row's LAST generation (..._r<n>) is the row, whatever the older generations ended as
-        spoken = {b for b, r in (ls.get("arch_decision") or {}).items() if isinstance(r, dict)} | set(ls.get("to_slice") or {})
+        spoken = {b for b, r in (ls.get("arch_decision") or {}).items() if isinstance(r, dict)} | set(ls.get("to_slice") or {}) | set(ls.get("split") or {})
         live, last_gen = set(), {}
         for tid, row in state["tasks"].items():
             t = tasks.get(tid)
             b = row.get("backlog_id") or (t.backlog_id if t else "")
             if not b:
+                continue
+            if not isinstance(row.get("status"), str):       # W-supply 4: a task without a status is skipped, not fatal
+                self.err("reconcile: task " + str(tid)[:60], KeyError("status"))
                 continue
             if not (row["status"] == "FAILED" and str(row.get("reason") or "").startswith("superseded")):
                 live.add(b)
@@ -4793,18 +4912,18 @@ class Loop:
             if m and (t is None or t.kind == "code") and int(m.group(1)) >= last_gen.get(b, (-1, ""))[0]:
                 last_gen[b] = (int(m.group(1)), row["status"])
         promoted = {b for b, (_, st) in last_gen.items() if st == "PROMOTED"}
-        for tid, row in sorted(state["tasks"].items()):
+        def task_row(tid, row):
             t = tasks.get(tid)
             bid = row.get("backlog_id") or (t.backlog_id if t else "")
             if not bid:
-                continue
+                return
             if row["status"] == "FAILED" and str(row.get("reason") or "").startswith("superseded") and (bid in spoken or bid in live):
-                continue
+                return
             if bid in promoted and row["status"] != "PROMOTED":
-                continue
+                return
             old = rows.get(bid)
             if old and order.get(old["state"], 99) <= order.get(row["status"], 99):
-                continue
+                return
             rec = {"state": row["status"], "task_id": tid,
                    "reason": self.rs(row.get("blocked_reason") or row.get("reason") or row["status"].lower(), 200),
                    "until": self._iso(float(row["block_until"])) if type(row.get("block_until")) in (int, float)
@@ -4817,6 +4936,11 @@ class Loop:
                 elif used < 3 and rec["until"] is None:
                     rec["until"] = self._iso(max(now, factory_requeue.last_try(ledger, tid) + self.cfg.requeue_term_s))
             rows[bid] = rec
+        for tid, row in sorted(state["tasks"].items()):
+            try:
+                task_row(tid, row)
+            except Exception as e:                   # W-supply 4: one broken row never costs the report of the others
+                self.err("reconcile: task " + str(tid)[:60], e)
 
         def put(bid, state_name, reason, until=None):
             if bid and bid not in rows:
@@ -4831,7 +4955,11 @@ class Loop:
         for bid in ls.get("closed") or {}:
             put(bid, "closed", "закрыта в книге петли")
         for bid, rec in (ls.get("parents") or {}).items():
-            put(bid, "parts", "разрезана на %s частей: %s" % (rec.get("parts"), ",".join(rec.get("children") or [])))
+            if isinstance(rec, dict):
+                put(bid, "parts", "разрезана на %s частей: %s" % (rec.get("parts"), ",".join(str(c) for c in (rec.get("children") or []))))
+        for bid, rec in (ls.get("split") or {}).items():
+            if isinstance(rec, dict):
+                put(bid, "split", "разбита на дочерние дефекты: %s" % ",".join(str(c) for c in (rec.get("children") or [])))
         for bid, rec in (ls.get("not_code") or {}).items():
             if isinstance(rec, dict):
                 try:
@@ -4846,7 +4974,7 @@ class Loop:
         for bid, rec in (ls.get("seen") or {}).items():
             if isinstance(rec, dict):
                 put(bid, "stale" if rec.get("kind") == "stale" else "seen", rec.get("reason"),
-                    self._iso(float(rec.get("until") or now)))
+                    self._iso_safe(rec.get("until"), now))
             else:
                 put(bid, "stale" if rec == "stale" else "seen", "пропущена триажем (без срока, старая запись)", None)
         for bid, why in (ls.get("deferred") or {}).items():
@@ -5307,6 +5435,7 @@ class Loop:
                    cloud_stage=self.rs(res.get("cloud_stage"), 40),
                    channel_reason=self.rs(res.get("channel_reason")),
                    edit_by=self.rs(res.get("edit_by"), 12),
+                   vgs={k: v for k, v in res["vgs"].items() if type(v) is int} if isinstance(res.get("vgs"), dict) else None,
                    context_chars=res.get("context_chars") if isinstance(res.get("context_chars"), int) else None,
                    context_sections=[self.rs(x, 40) for x in res["context_sections"][:12]]
                    if isinstance(res.get("context_sections"), list) and res.get("context_sections") else None,
@@ -6282,6 +6411,10 @@ class Loop:
                 stats["bisect"] = BIS.counts(self.cfg.state_dir)        # W-bisect 5: {done, regression, never_green, moved}
             except Exception as e:      # statistics never stop the loop
                 stats["bisect"] = {"error": F.redact(type(e).__name__)}
+            try:        # W-vgs 5: the ensemble of the small tier over 24 h
+                stats["vgs"] = factory_metrics.vgs_report(self.dir, now=self.ts())
+            except Exception as e:      # statistics never stop the loop
+                stats["vgs"] = {"error": F.redact(type(e).__name__)}
             stats["queues"] = {"to_slice": len(ls.get("to_slice", {})),
                 "slicing": len(ls.get("slicing", {})),
                 "slice_wait": sum(until > self.clock() for until in ls.get("slice_wait", {}).values()),

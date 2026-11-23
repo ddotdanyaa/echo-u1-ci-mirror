@@ -146,6 +146,19 @@ def _a_machine_without_sapi_gets_the_synthetic_voice(request):
 
 
 @pytest.fixture(autouse=True)
+def _factory_vgs_off(request, monkeypatch):
+    """W-vgs: the ensemble of the small tier (k asks per part) is off in the scripted scenarios of other tests (their replies are
+    counted per call); a module that tests it sets ``VGS = True``."""
+    if getattr(request.module, "VGS", False):
+        return
+    try:
+        from tools import agent_factory_runner
+    except Exception:
+        return
+    monkeypatch.setattr(agent_factory_runner, "VGS_ON", False, raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _factory_pytest_slots_off(request, monkeypatch):
     """The factory's own pytest slots (night_pytest.lock*) are held by the OUTER runner; an in-process test must never
     take the real ones: pytest_slot is replaced by a no-op that always lets the run start.  A module that tests the slots

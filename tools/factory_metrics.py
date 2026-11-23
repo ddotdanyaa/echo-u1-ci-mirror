@@ -192,6 +192,27 @@ def first_try_verdict(row):
 GREEN_STATUSES = ("REVIEW", "PROMOTED", "DONE", "accepted", "promoted")
 
 
+def vgs_report(state_dir, now=None) -> dict:
+    """W-vgs 5: the ensemble of the small tier over the last 24 h, from the ``vgs`` of the run rows: ``cards`` (passes with
+    an ensemble), ``valid_pct`` (valid answers among the answered), ``green_pct`` (passes with a green union), ``p_hat``
+    (green unions among the unions that reached the gates)."""
+    now_t = _t(now) or dt.datetime.now().astimezone()
+    day_ago = now_t - dt.timedelta(hours=24)
+    cards = green = gates = answered = valid = 0
+    for row in _rows(state_dir):
+        vgs = row.get("vgs")
+        if row["span"] != "run" or not isinstance(vgs, dict) or _t(row["ts"]) < day_ago:
+            continue
+        number = lambda name: vgs.get(name) if type(vgs.get(name)) is int else 0
+        cards += 1
+        answered += number("answered")
+        valid += number("valid")
+        gates += number("gates")
+        green += type(vgs.get("green_at")) is int
+    pct = lambda a, b: round(100.0 * a / b, 1) if b else None
+    return {"cards": cards, "valid_pct": pct(valid, answered), "green_pct": pct(green, cards), "p_hat": pct(green, gates)}
+
+
 def money_report(state_dir, now=None, spend=None, until="2026-11-30") -> dict:
     """W-money 4: accepted in the last hour, accepted per 1000 model calls (24 h and cumulative), the share of code cards whose
     FIRST pass with an edit passed the gates (24 h, with n), the paid allowance still free for each day up to ``until``.

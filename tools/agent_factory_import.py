@@ -665,6 +665,19 @@ def _bare_names(row_text: str) -> list[tuple]:
     return seen
 
 
+REMAINDER_WORDS = re.compile(r"остаются|часть|частично", re.I)
+
+
+def remainder_hint(note, row_text="") -> str:
+    """W-supply 1: what a closures-table record says is still left («остаются …», «часть», «частично»); '' when it closes the
+    whole row. The note of the table decides first, the backlog row's own words only count when they carry the same words."""
+    for source in (str(note or ""), str(row_text or "")):
+        m = REMAINDER_WORDS.search(source)
+        if m:
+            return re.sub(r"\s+", " ", source[max(0, m.start() - 20):m.start() + 160]).strip()
+    return ""
+
+
 class OpenRows(list):
     """list of open rows plus ``.skipped_unknown``: [{backlog_id, state[:60]}] rows whose state wording
     is neither open, closed nor waiting (they are reported, not dropped silently)."""
@@ -692,6 +705,7 @@ def parse_open_rows(backlog_path, repo_root, include_closed: bool = False) -> li
     markdown = Path(backlog_path).read_bytes().decode("utf-8-sig")
     out = OpenRows()
     tabled = FC.table_ids(backlog_path) if FC is not None else {}      # the closures table of the backlog: a commit-backed record
+    notes = FC.table_evidence(backlog_path) if FC is not None and tabled else {}
     for r in parse_section4(markdown):
         if r["unknown"]:
             out.skipped_unknown.append({"backlog_id": r["backlog_id"],
@@ -699,6 +713,10 @@ def parse_open_rows(backlog_path, repo_root, include_closed: bool = False) -> li
         if not r["open"]:
             continue
         closed = r["backlog_id"] in tabled or is_closed_at_head(r["backlog_id"], repo_root)
+        remainder = remainder_hint(notes.get(r["backlog_id"]), r["text"]) if r["backlog_id"] in tabled and not r["private"] else ""
+        if remainder:                       # W-supply 1: a closure that names what is left does not close the row
+            closed = False
+            r = dict(r, text=(r["text"] + " [остаток по таблице закрытий: " + remainder + "]")[:MAX_TEXT])
         if closed and not include_closed:
             continue
         row = r["row"].replace("\\", "/")
