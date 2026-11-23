@@ -1,9 +1,10 @@
 # Factory status (generated, structured data only)
 
-Generated: 2026-11-23T19:31:00Z
-Source commit: sha4dbd7c25a449
+Generated: 2026-11-23T19:36:11Z
+Source commit: sha580dbad67c92
 
 ## Commits (sha, time)
+- sha580dbad6 2026-11-23T22:34:14+03:00
 - sha4dbd7c25 2026-11-23T22:30:20+03:00
 - sha91719ddf 2026-11-23T22:25:38+03:00
 - sha7f4dfe04 2026-11-23T22:18:48+03:00
@@ -23,28 +24,27 @@ Source commit: sha4dbd7c25a449
 - sha9229583b 2026-11-23T19:41:57+03:00
 - shab67b4763 2026-11-23T19:32:38+03:00
 - shaf470fec8 2026-11-23T19:22:11+03:00
-- sha7084e94b 2026-11-23T18:54:37+03:00
 
 ## Funnel
 | step | count |
 |---|---|
 | accepted | 17 |
-| claimed | 428 |
+| claimed | 431 |
 | coded | 183 |
 | found_in_backlog | unknown |
 | gate_pass | 67 |
 | known_to_loop | 486 |
 | promoted | 63 |
-| ready | 129 |
-| reviewed | 169 |
+| ready | 122 |
+| reviewed | 170 |
 | triaged | 327 |
 
 Side counters: blocked=0, parked=0, requeued=7
-Tasks now: DONE=68, FAILED=483, PROMOTED=39, READY=129, RUNNING=2
+Tasks now: DONE=68, FAILED=483, PROMOTED=39, READY=122, RUNNING=9
 Accepted: 17
 Promoted: 63
-Free RAM, GB: 4.65
-Telemetry rows: 39125 recognised, 0 unrecognised
+Free RAM, GB: 3.69
+Telemetry rows: 39181 recognised, 0 unrecognised
 
 ## Spend per model
 | model | calls | tokens_in | tokens_out | usage_unknown | http_429 | errors |
@@ -60,8 +60,8 @@ Telemetry rows: 39125 recognised, 0 unrecognised
 | google/gemini-3.6-flash | 135 | 414079 | 20196 | 57 | 12 | 57 |
 | google/gemini-3.7-flash | 26 | 9121 | 14 | 25 | 14 | 25 |
 | google/gemini-3.8-flash | 28 | 21237 | 15 | 25 | 13 | 25 |
-| google/gemma-4-26b-a4b-it | 513 | 466449 | 43032 | 395 | 0 | 395 |
-| google/gemma-4-31b-it | 474 | 259232 | 10952 | 398 | 0 | 398 |
+| google/gemma-4-26b-a4b-it | 524 | 475974 | 43895 | 404 | 0 | 404 |
+| google/gemma-4-31b-it | 489 | 262887 | 12266 | 410 | 0 | 410 |
 | openrouter/nvidia/nemotron-3-ultra-550b-a55b:free | 115 | 663252 | 151232 | 2 | 2 | 2 |
 | other | 65 | 1154192 | 66710 | 6 | 0 | 7 |
 
@@ -69,13 +69,13 @@ Telemetry rows: 39125 recognised, 0 unrecognised
 | span | rows | calls |
 |---|---|---|
 | answer | 536 | 0 |
-| gate | 5759 | 0 |
-| infra | 974 | 0 |
-| loop | 6516 | 0 |
-| other | 10326 | 0 |
+| gate | 5768 | 0 |
+| infra | 975 | 0 |
+| loop | 6523 | 0 |
+| other | 10333 | 0 |
 | promote | 79 | 0 |
-| review | 2303 | 1270 |
-| run | 12255 | 4111 |
+| review | 2307 | 1273 |
+| run | 12283 | 4134 |
 | triage | 377 | 0 |
 
 ## Channels (model ids)
