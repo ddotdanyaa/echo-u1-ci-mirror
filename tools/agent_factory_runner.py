@@ -2850,8 +2850,8 @@ def edit_parts(task: Task, parts: list, workdir: Path, call, failing: str = '', 
                     'instruction asks for.\n' % why_not[:300])
         if vgs is not None and vgs.k:
             reason = ensemble_part(index, part, part_task, base + more)
-            if not reason:
-                return ''
+            # an empty ensemble is the answer: its reason, no second round of calls beyond k (the old path is only for k == 0)
+            return '%s: %s' % (file, reason) if reason else ''
         tries, spin, free_asks = 0, 0, UNDEF_RETRIES
         cannots: list = []      # the models that answered "CANNOT: the provided function ... does not contain" for this part
         if info is not None:
@@ -4426,7 +4426,7 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                     except Exception:       # noqa: BLE001 - a view that cannot be read is the old path
                         plan_k = 0
                 count = 1 if (attempt <= 1 or plan_k) else 2
-                part_author =str(K.contract_of(task).get('author') or '')
+                part_author = str(K.contract_of(task).get('author') or '')
                 if part_author and any(isinstance(p, dict) and p.get('code') for p in parts_now):
                     ctx['coder_models'].add(part_author)     # W-dry 2: the model that wrote parts[].code never reviews it alone
                 if attempt > 1 or feedback:    # a repeat shows the exact failing line: the red base must be in (a first pass overlaps it)
@@ -4526,8 +4526,10 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                             if isinstance(found, tuple):
                                 vgs_state['green_at'] = vgs_state['gates']
                             return found
+                        if last.get('workdir') != home and last.get('workdir') != where:
+                            shutil.rmtree(last['workdir'], ignore_errors=True)    # an older union: its evidence is superseded
                         last = dict(ctx)
-                    ctx.update(last)             # the evidence and the diff belong to the last union that really ran
+                    ctx.update(last)            # the evidence and the diff belong to the last union that really ran
                     return found
 
                 def run_candidate(k):
