@@ -4903,6 +4903,8 @@ class Loop:
             if not any(r["status"] == "READY" for r in rows):
                 self._dry_since = None
                 return
+            if not Path(self.cfg.channels).is_file():   # no registry: nothing to probe, and the pass already reported it
+                return
             if self._headroom(None, state) > 0:
                 self._dry_since = None
                 return

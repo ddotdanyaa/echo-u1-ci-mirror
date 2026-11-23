@@ -485,8 +485,9 @@ def test_rate_limit_per_day_cools_until_the_daily_reset(rig):
     now = time.time()
     left = rig.state()['channel_quotas']['p']['cool_until'] - now
     first_hour = now - C.quota_day('google/x', now)[0] < C.DAY_GRACE_S       # the provider's counter may lag
-    expected = C.DAY_GRACE_COOL_S if first_hour else C.seconds_to_daily_reset(now, 'google/x')
-    assert abs(left - expected) < 10  # exactly until the Pacific midnight, not a fixed hour
+    # W-cool 1: a daily mark lasts until the first probe (DAY_PROBE_S), never past the reset
+    expected = min(C.DAY_PROBE_S, C.DAY_GRACE_COOL_S) if first_hour else min(C.DAY_PROBE_S, C.seconds_to_daily_reset(now, 'google/x'))
+    assert abs(left - expected) < 10
 
 
 def test_invalid_key_kills_that_channel_and_the_task_is_not_failed(rig):
