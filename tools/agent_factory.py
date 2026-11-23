@@ -26,18 +26,30 @@ REFEED_SUFFIX = "_g"   # id suffix of the guard-backed re-feed of a failed row (
 MAX_RESLICES = 2
 RESLICE_AFTER = 2
 RESLICE_ID = re.compile(r"_r\d+(?:_test)?$")
-CONTRACT_MAX = 24000
+CONTRACT_MAX = 48000     # room for test.new.code (up to 8000 characters) and parts[].code (W-hard 3)
 REASON_CLOUD_DOWN = "cloud_down"
 REASON_CLOUD_BUSY = "cloud_busy"
-SLICER_FILES: tuple[str, ...] = ("factory_architect.py", "factory_cards.py", "agent_factory_import.py")
+SLICER_FILES: tuple[str, ...] = ("factory_cards.py",)   # the cards; the architect's prompt and schema come from its code
 _slicer_version: str | None = None
 
 
+def _contract_text() -> tuple[str, bytes]:
+    """A.CONTRACT_REV and the text that shapes a contract: the prompt (both engines) with the schema, validate, to_tasks."""
+    import inspect
+    from tools import factory_architect as A
+    parts = [A.build_prompt({}, engine)[0] for engine in ("", "paid")]
+    parts += [inspect.getsource(A.validate), inspect.getsource(A.to_tasks)]
+    return str(A.CONTRACT_REV), "\n".join(parts).replace("\r\n", "\n").encode("utf-8")
+
+
 def slicer_version() -> str:
-    """Fingerprint the slicer's source once per process."""
+    """Fingerprint of what shapes a contract (A.CONTRACT_REV + sha1 of prompt/schema + cards), once per process.
+    An edit elsewhere in the slicer's files does not change it."""
     global _slicer_version
     if _slicer_version is None:
-        digest = sha1()
+        rev, text = _contract_text()
+        digest = sha1(rev.encode("ascii"))     # a new revision opens every quarantine
+        digest.update(sha1(text).digest())
         for name in SLICER_FILES:
             path = Path(name)
             if not path.is_absolute():
@@ -206,6 +218,20 @@ def _parse_priority(value: object) -> int:
     raise InvalidPlan("invalid priority")
 
 
+OWN_TEST_PATH = re.compile(r"tests/(?:test_agent_factory\.py|test_factory_[a-z0-9_]+\.py)")
+
+
+def _own_test_contract(row: dict) -> bool:
+    """True when the row's contract says it edits an existing test of the factory itself (``own_test_edit``, written only by the
+    second instance's architect): the one case a code task's touch_files may meet its own tests (gate.is_forbidden and the
+    no-weakening check still decide per process)."""
+    try:
+        contract = json.loads(row.get("contract") or "")
+    except (ValueError, TypeError):
+        return False
+    return isinstance(contract, dict) and contract.get("own_test_edit") is True
+
+
 def read_plan(plan: object) -> dict[str, Task]:
     """Tasks require explicit scope, dependencies and privacy classification.
 
@@ -249,8 +275,9 @@ def read_plan(plan: object) -> dict[str, Task]:
             if set(files["touch_files"]) != set(files["tests"]):
                 raise InvalidPlan("unit_test task must touch exactly its tests")
         elif work_kind == "code":
-            if ({p.casefold() for p in files["touch_files"]} &
-                    {p.casefold() for p in files["tests"]}):
+            overlap = ({p.casefold() for p in files["touch_files"]} &
+                       {p.casefold() for p in files["tests"]})
+            if overlap and not (_own_test_contract(row) and all(OWN_TEST_PATH.fullmatch(p) for p in overlap)):
                 raise InvalidPlan("code task must not edit its own tests")
         else:
             raise InvalidPlan("invalid kind")
@@ -753,6 +780,7 @@ DEFER_REASONS = frozenset((REASON_CLOUD_DOWN, REASON_CLOUD_BUSY, "rate_minute", 
                            "channel_wait", "reviewer_failed", "budget_exhausted", "os_error",
                            "review_chain_short",   # one critic approved, no other model now: the candidate waits
                            "env_shortage",    # no slot / RAM: never a strike, never a block
+                           "scan_excluded",   # the second instance: the scanner kept the test out of the cloud run; asked again with the cause
                            "off_path"))      # the failing test runs a module outside the task: the loop widens it
 
 
@@ -1003,13 +1031,17 @@ def next_action(state: dict, now: float, channel_wait_s: float,
     if review:
         return {"action": "PROMOTE", "task_id": min(review)[1], "reason": "review_pending"}
     runnable = [t for t in ready(tasks, state, google=google, now=now) if t not in skip]
-    if runnable:
-        if channel_wait_s > 0:
-            return {"action": "WAIT", "wait_s": channel_wait_s, "reason": "channel_cooldown"}
-        return {"action": "RUN", "task_id": runnable[0], "task_ids": runnable, "reason": "ready"}
     expired = sorted((float(row["block_until"]), tid) for tid, row in rows.items()
                      if row["status"] == "BLOCKED" and tid not in skip
                      and type(row.get("block_until")) in (int, float) and row["block_until"] <= now)
+    if runnable:
+        if channel_wait_s > 0:
+            if expired:      # W-sha: a channel cooldown does not hold a lift whose term is over (it costs no model call)
+                tid = expired[0][1]
+                return {"action": "UNBLOCK", "task_id": tid, "reason": rows[tid].get("blocked_reason") or "unknown",
+                        "block_until": expired[0][0]}
+            return {"action": "WAIT", "wait_s": channel_wait_s, "reason": "channel_cooldown"}
+        return {"action": "RUN", "task_id": runnable[0], "task_ids": runnable, "reason": "ready"}
     if expired:      # <id>: nothing runnable and a block's term is over: the loop lifts it itself (earliest first)
         tid = expired[0][1]
         return {"action": "UNBLOCK", "task_id": tid, "reason": rows[tid].get("blocked_reason") or "unknown",

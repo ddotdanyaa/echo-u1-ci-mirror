@@ -180,6 +180,15 @@ def _write_answer(box, payload, label) -> Path:
             target = box / ('%s-%d.json' % (name, n))
 
 
+# after AUDIT_AFTER requeues of a code task that still fails its gate, the factory-written test of its row goes back to
+# its test task instead (the two constants were dropped by the <id> migration while run()/_audit_due still read them)
+AUDIT_AFTER = 2
+AUDIT_NOTE = ('Retry on factory version %s. The code task of this row failed its gate on this test after %d returns. '
+              'Check that the test calls the real function with the kind of arguments its signature takes, does not '
+              'replace the function the behaviour happens in, and pins a behaviour the row really asks for; else '
+              'rewrite it, or answer not testable when the row is no code defect.')
+
+
 AUDIT_MODELS = 2      # this many different models red on one factory test in ONE pass of its code task: audit at once
 AUDIT_PASS_NOTE = ('Retry on factory version %s. In one pass of the code task of this row, %d different models wrote '
                    'fixes and each failed its gate on this test. Check that the test calls the real function with the '

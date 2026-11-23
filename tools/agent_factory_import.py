@@ -569,7 +569,8 @@ def parse_section4(markdown: str) -> list[dict]:
                        "state": state, "text": text, "row": row_text, "section": section,
                        "acceptance": acceptance, "owner_cell": owner_cell, "doc_marks": len(DOC_MARK.findall(row_text)),
                        "line": line_no, "locations": [{"line": line_no, "section": section}],
-                       "open": cls == "open", "unknown": cls == "unknown", "port_from": port_from,
+                       # an unrecognised state wording is an OPEN row (flagged "unknown", its words are reported)
+                       "open": cls in ("open", "unknown"), "unknown": cls == "unknown", "port_from": port_from,
                        # only the formulation and the state decide: a service cell such as "как сказал владелец"
                        # never reaches a goal, so it must not make the row private
                        "private": bool(PRIVATE.search(_cut(text)[0]) or PRIVATE.search(_cut(state)[0]))}
@@ -712,6 +713,59 @@ def parse_open_rows(backlog_path, repo_root, include_closed: bool = False) -> li
                     "doc_marks": r["doc_marks"]})
     out.sort(key=_sort_key)
     return out
+
+
+def row_dispositions(backlog_path, repo_root, self_repo=False) -> dict:
+    """{backlog_id: (state, reason)} for the OPEN rows the triage leaves out for a LEGAL reason, so the reconciliation
+    names them instead of calling them «untriaged»: closed at HEAD / in the closures table, private (only_opus), a
+    coordinator's or another owner's row, a documentation-only row. The rest (no file named, few data, old file
+    limits) is NOT a reason to skip: such a row goes to the slicer, it is absent here. No model is asked."""
+    out = {}
+    rows = parse_open_rows(backlog_path, repo_root, include_closed=True)
+    try:
+        guards = AF.guard_map(AF.load_sweep(Path(repo_root), None), [r["backlog_id"] for r in rows])
+    except Exception:
+        guards = {}
+    for row in rows:
+        bid = row["backlog_id"]
+        owner = _row_owner(bid)                 # the same order as triage_portion: owner, closed, then the content
+        if owner == "cl":
+            out[bid] = ("coordinator_row", "строка координатора, не задача фабрики")
+        elif (owner == "fac") != bool(self_repo):
+            out[bid] = ("other_owner_row", "строка другой очереди (%s)" % owner)
+        elif row["closed_at_head"]:
+            out[bid] = ("closed_at_head", "закрыта коммитом «%s: …» или таблицей закрытий" % bid)
+        else:
+            red = AF.red_paths(guards.get(bid)) if AF.verdict(guards.get(bid)) == "red" else []
+            skip = _content_skip(row, Path(repo_root), red)
+            if skip:
+                out[bid] = skip
+    return out
+
+
+def _content_skip(row, root, red):
+    """The one decision for a row of an own, open queue that needs no slicing: ('private', why), ('doc_only', why) or
+    None. Used by triage_portion and row_dispositions, so the reconciliation never names a row the triage slices."""
+    if row["private"]:
+        return ("private", "приватная строка: только Opus")
+    if row.get("doc_marks") and not red:
+        try:
+            why = _doc_only_row(row, candidate_files(root, row["backlog_id"], row["text"]))
+        except Exception:
+            why = ""
+        if why:
+            return ("doc_only", why)
+    return None
+
+
+def skip_reason_table(dispositions: dict, untriaged=()) -> dict:
+    """{reason state: count} over row_dispositions plus the rows with no legal reason (key 'to_slice')."""
+    table = {}
+    for state, _why in dispositions.values():
+        table[state] = table.get(state, 0) + 1
+    if untriaged:
+        table["to_slice"] = len(list(untriaged))
+    return dict(sorted(table.items()))
 
 
 _CYR = dict(zip("АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ", "A B V G D E E ZH Z I Y K L M N O P R S T U F KH TS CH SH SCH _ Y _ E YU YA".split()))
@@ -1380,15 +1434,14 @@ def triage_portion(backlog_path, head_root, known_backlog_ids, limit, profile_at
             out["deferred"].append({"backlog_id": bid, "reason": "portion limit"})
             continue
         accepted += 1
-        if row["private"]:
+        red = AF.red_paths(guards.get(bid)) if AF.verdict(guards.get(bid)) == "red" else []
+        skip = _content_skip(row, root, red)
+        if skip and skip[0] == "private":
             out["holds"].append({"backlog_id": bid, "question": "private (only_opus)"})
             continue
-        red = AF.red_paths(guards.get(bid)) if AF.verdict(guards.get(bid)) == "red" else []
-        if row.get("doc_marks") and not red:
-            why = _doc_only_row(row, candidate_files(root, bid, row["text"]))
-            if why:
-                out["not_code"].append({"backlog_id": bid, "reason": why})
-                continue
+        if skip:
+            out["not_code"].append({"backlog_id": bid, "reason": skip[1]})
+            continue
         hints = list(row["mentioned_files"]) + list(row["mentioned_tests"])
         for name, ticked, near in row["bare_names"]:
             if not ticked or near:
@@ -1407,7 +1460,7 @@ def active_backlog_review(markdown: str) -> dict:
     plan tasks their own id (agent_factory.TASK_ID forbids Cyrillic and dots) and keep backlog_id."""
     allrows = parse_section4(markdown)
     unknown = [r for r in allrows if r["unknown"]]
-    rows = [r for r in allrows if r["open"]]
+    rows = [r for r in allrows if r["open"] and not r["unknown"]]     # unknown wording is listed once, in skipped_unknown
     rows.sort(key=_sort_key)
     tasks = [{
         "id": r["backlog_id"], "title": _safe_title(r),

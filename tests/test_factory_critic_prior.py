@@ -123,3 +123,92 @@ def test_short_chains_of_one_candidate_are_counted_even_with_other_waits_between
         rig.edit_state(lambda s: s['tasks']['T1'].update(defer_streak={'reason': 'channel_wait', 'n': 1}))
     assert seen[-1] == ('BLOCKED', 'review_chain_short')
     assert not rig.state()['tasks']['T1'].get('pending_review')
+
+
+def _three_models(tmp_path):
+    third = dict(id='c3', group='p3', model='google/z', key_env='KEY', tpm=100000, rpd=100, verified=True)
+    cfg = tmp_path / 'three.json'
+    cfg.write_text(json.dumps(dict(channels=TWO_CHANNELS + [third])))
+    return cfg
+
+
+def _later_pass(rig):
+    rig.edit_state(lambda s: s['tasks']['T1'].update(not_before=0))      # the quota state stays as it is
+
+
+def test_first_critic_vote_survives_a_short_chain(tmp_path, monkeypatch):
+    """W-review 2: pass 1 has one critic only; its voice stays on the candidate, pass 2 asks one new critic."""
+    rig = Rig(tmp_path, monkeypatch)
+    _wire(rig, monkeypatch, lambda model: FIX_BLOCK, lambda model, n: approval_json(['looks right']))
+    first = rig.once(channel_config=_two_models(tmp_path))
+    assert first['reason'] == 'review_chain_short'
+    votes = rig.state()['tasks']['T1']['pending_review']['votes']
+    assert [(v['model'], v['ok']) for v in votes] == [('google/y', True)]
+    _later_pass(rig)
+    sent = _wire(rig, monkeypatch, lambda model: FIX_BLOCK, lambda model, n: approval_json())
+    second = rig.once(channel_config=_three_models(tmp_path))
+    assert [s['model'] for s in sent if s['review']] == ['z']             # y is not asked a second time
+    assert second['status'] == 'REVIEW' and second['review_verdict'] == 'approve'
+    assert second['critiques'] == ['critic 1 approved: looks right', 'critic 2 approved: no remarks']
+    assert second['review_votes'] == [dict(model='google/y', ok=True), dict(model='google/z', ok=True)]
+
+
+def test_same_model_vote_is_not_counted_twice(tmp_path, monkeypatch):
+    rig = Rig(tmp_path, monkeypatch)
+    _wire(rig, monkeypatch, lambda model: FIX_BLOCK, lambda model, n: approval_json())
+    two = _two_models(tmp_path)
+    rig.once(channel_config=two)
+    _later_pass(rig)
+    sent = _wire(rig, monkeypatch, lambda model: FIX_BLOCK, lambda model, n: approval_json())
+    second = rig.once(channel_config=two)                                  # the same two models: still one voice
+    assert not [s for s in sent if s['review']]
+    assert second['reason'] == 'review_chain_short' and second.get('cross_review') is not True
+    assert len(rig.state()['tasks']['T1']['pending_review']['votes']) == 1
+    # W-review fix 2: the precheck excludes the critic who voted, finds nobody and does not pay the gates again
+    assert 'review_deferred_before_gates' in second['events'] and not second['stages'].get('gate_s')
+    assert second['review_verdict'] == 'unavailable' and second['review_votes'] == [dict(model='google/y', ok=True)]
+
+
+def test_vote_reset_when_baseline_moves(tmp_path, monkeypatch):
+    rig = Rig(tmp_path, monkeypatch)
+    _wire(rig, monkeypatch, lambda model: FIX_BLOCK, lambda model, n: approval_json())
+    rig.once(channel_config=_two_models(tmp_path))
+    assert rig.state()['tasks']['T1']['pending_review']['votes']
+    rig.edit_state(lambda s: s['tasks']['T1']['pending_review'].update(baseline_digest='moved'))
+    _later_pass(rig)
+    sent = _wire(rig, monkeypatch, lambda model: FIX_BLOCK, lambda model, n: approval_json())
+    second = rig.once(channel_config=_three_models(tmp_path))
+    assert 'pending_dropped' in second['events']
+    assert [s['model'] for s in sent if s['review']] == ['y', 'z']          # a new candidate: y speaks again
+
+
+def test_reject_vote_kept_and_second_approve_split_goes_to_mechanical_ranking(tmp_path, monkeypatch):
+    rig = Rig(tmp_path, monkeypatch)
+    rejection = '{"approved": false, "reasons": ["the test pins nothing"]}'
+    _wire(rig, monkeypatch, lambda model: FIX_BLOCK, lambda model, n: rejection)
+    first = rig.once(channel_config=_two_models(tmp_path))
+    assert first['reason'] == 'review_chain_short' and first['review_verdict'] == 'unavailable'
+    assert [v['ok'] for v in rig.state()['tasks']['T1']['pending_review']['votes']] == [False]
+    _later_pass(rig)
+    sent = _wire(rig, monkeypatch, lambda model: FIX_BLOCK, lambda model, n: approval_json())
+    second = rig.once(channel_config=_three_models(tmp_path))
+    assert [s['model'] for s in sent if s['review']] == ['z']
+    assert 'review_chain_short' not in second['events'] and second['review_verdict'] in ('approve', 'reject')
+    assert second['review_votes'] == [dict(model='google/y', ok=False), dict(model='google/z', ok=True)]
+
+
+def test_a_standing_candidate_skips_the_gates_while_no_reviewer_is_free(tmp_path, monkeypatch):
+    """W-review 1: no reviewer for longer than 30 s: a wait without a strike, the cloud gates are not paid again."""
+    import time
+    rig = Rig(tmp_path, monkeypatch)
+    _wire(rig, monkeypatch, lambda model: FIX_BLOCK, lambda model, n: approval_json())
+    two = _two_models(tmp_path)
+    rig.once(channel_config=two)
+    rig.edit_state(lambda s: (s['tasks']['T1'].update(not_before=0),
+                              s.setdefault('channel_quotas', {}).update(channel_cool={'c3': time.time() + 900})))
+    sent = _wire(rig, monkeypatch, lambda model: FIX_BLOCK, lambda model, n: approval_json())
+    second = rig.once(channel_config=_three_models(tmp_path))     # y has voted; the only other reviewer, z, is cooling
+    assert second['status'] == 'WAITING_CHANNEL' and second['reason'] == 'channel_wait'
+    assert 'review_deferred_before_gates' in second['events'] and second['wait_s'] > 30
+    assert not sent and not second['stages'].get('gate_s')
+    assert rig.state()['tasks']['T1']['pending_review']['votes']          # the candidate and its voice are kept

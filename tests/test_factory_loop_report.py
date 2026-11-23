@@ -176,6 +176,19 @@ def test_runner_events_and_stage_spans(env):
                      "review_s": "review", "code_s": "run"}
 
 
+def test_review_span_carries_verdict_models_and_votes(env):
+    """W-review 3: the review stage span names the verdict, the number of voices, their models and their votes."""
+    env.runner_says({"status": "READY", "task": "T1", "reason": "review_chain_short", "calls": [],
+                     "review_verdict": "unavailable", "stages": {"review_s": 4.0, "gate_s": 1.0},
+                     "review_votes": [{"model": "google/y", "ok": True}, {"model": "google/z", "ok": False}, "junk"]})
+    env.loop().step()
+    span = [x for x in env.events() if x.get("stage") == "review_s"][0]
+    assert span["span"] == "review" and span["verdict"] == "unavailable" and span["n_votes"] == 2
+    assert span["models"] == ["google/y", "google/z"] and span["votes"] == [True, False]
+    gate = [x for x in env.events() if x.get("stage") == "gate_s"][0]
+    assert not gate.get("verdict") and not gate.get("models")
+
+
 def test_stats_separate_blocked_from_quarantine(env):
     env.set_row("T1", status="BLOCKED", blocked_reason="context_too_large")
     env.loop(once=True).run()

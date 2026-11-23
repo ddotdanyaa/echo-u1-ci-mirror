@@ -19,6 +19,42 @@ def test_the_slicer_version_follows_the_slicer_files(tmp_path, monkeypatch):
     f.write_text("PROMPT = 'b'\n", encoding="utf-8"); monkeypatch.setattr(F, "_slicer_version", None)
     assert F.slicer_version() != v1 and v1.startswith("s") and len(v1) == 11
 
+def _fresh(monkeypatch):
+    monkeypatch.setattr(F, "_slicer_version", None)
+    return F.slicer_version()
+
+
+def test_K2_the_slicer_version_ignores_files_outside_the_contract(monkeypatch):
+    from tools import factory_architect as A
+    assert "agent_factory_import.py" not in F.SLICER_FILES and "factory_architect.py" not in F.SLICER_FILES
+    v = _fresh(monkeypatch)
+    assert v == _fresh(monkeypatch)
+    with monkeypatch.context() as m:
+        m.setattr(A, "CONTRACT_REV", A.CONTRACT_REV + "x")        # the revision constant is part of it
+        assert _fresh(m) != v
+    assert _fresh(monkeypatch) == v
+
+
+def test_K2_the_slicer_version_follows_the_prompt_and_the_schema(monkeypatch):
+    from tools import factory_architect as A
+    v = _fresh(monkeypatch)
+    with monkeypatch.context() as m:
+        m.setattr(A, "NOT_CODE_RULE", A.NOT_CODE_RULE + " changed")
+        assert _fresh(m) != v
+    assert _fresh(monkeypatch) == v
+
+
+def test_K2_a_changed_validate_changes_the_version(monkeypatch):
+    from tools import factory_architect as A
+    v = _fresh(monkeypatch)
+    def validate(contract, root, **kw):       # another text of the function
+        return None
+    with monkeypatch.context() as m:
+        m.setattr(A, "validate", validate)
+        assert _fresh(m) != v
+    assert _fresh(monkeypatch) == v
+
+
 def test_terminal_reasons_rows_and_the_call_cap():
     assert all(F.is_terminal(r) for r in ("quarantine", "superseded:reslice1", "superseded_by_guard", "closed:dup", "not_code", "sliced:gate:#1"))
     assert not any(F.is_terminal(r) for r in (None, "reslice", "reenter", "escalated:weak_test"))

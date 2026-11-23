@@ -71,6 +71,7 @@ WEAKENING = re.compile(
     r'|\bskipIf\b|\bskipUnless\b|\bSkipTest\b|\bskipTest\b|\bexpectedFailure\b|PYTEST_CURRENT_TEST'
     r'|from\s+pytest\s+import[^\n]*\b(?:skip|xfail|importorskip|exit)\b')
 DIAG_LIMIT = 1500
+TRACEBACK_LIMIT = 1100   # of an import fault's traceback kept in the note of the second instance (the tail: the exact line is last)
 WEAK_NAMES = frozenset(('skip', 'xfail', 'importorskip', 'exit'))
 # A red caused by the environment (missing module/data) cannot be fixed by a candidate.
 ENV_ERROR = re.compile(r'(ModuleNotFoundError|ImportError|FileNotFoundError)\b')
@@ -549,32 +550,51 @@ def _known_fast(root, tests) -> bool:
 
 
 SELF_REPO = False   # set by the runner of the second loop instance (--self-repo): the gate is the cloud only, never a local run
-CLOUD_SIGNS = ('cloud_down', 'cloud_busy', 'bad_tests', 'private_edit')   # env_reason of a run the cloud gave no verdict for
+CLOUD_SIGNS = ('cloud_down', 'cloud_busy', 'bad_tests', 'private_edit', 'scan_excluded')   # env_reason of a run the cloud gave no verdict for
 
 
 def _cloud_sign(cg, got):
     """The env_reason string of a distinct answer of the cloud gate (CLOUD_DOWN, CLOUD_BUSY, BAD_TESTS, PRIVATE_EDIT), else ''."""
-    for special, sign in zip((cg.CLOUD_DOWN, cg.CLOUD_BUSY, cg.BAD_TESTS, cg.PRIVATE_EDIT), CLOUD_SIGNS):
+    for special, sign in zip((cg.CLOUD_DOWN, cg.CLOUD_BUSY, cg.BAD_TESTS, cg.PRIVATE_EDIT, cg.SCAN_EXCLUDED), CLOUD_SIGNS):
         if got is special:
             return sign
     return ''
 
 
-_companion = {'offer': (), 'root': None, 'xml': None, 'names': ()}   # the neighbour tests that ride in the candidate's cloud run
+_companion = {'offer': (), 'root': None, 'xml': None, 'names': ()}   # the LAST slot offered (tests look at it)
+_companions: dict = {}     # W-base 2: one slot per candidate tree; the cards run in parallel and ONE shared slot was
+                           # overwritten by the next card, so the neighbours of the first got a cloud run of their own
+_companions_lock = threading.Lock()
+COMPANION_SLOTS = 64
+
+
+def _slot(root, create=False):
+    key = str(root)
+    with _companions_lock:
+        slot = _companions.get(key)
+        if slot is None and create:
+            while len(_companions) >= COMPANION_SLOTS:
+                _companions.pop(next(iter(_companions)))
+            slot = _companions[key] = {'offer': (), 'root': key, 'xml': None, 'names': ()}
+        return slot
 
 
 def offer_companions(root, names):
     """The neighbour tests ``names`` of the candidate tree ``root`` go to the cloud in the SAME run as the candidate's own
     tests (one list of ids, one run) instead of a second run after it; ``cloud_each`` then finds their cases already there."""
-    _companion.update(offer=tuple(_node(n) for n in names), root=str(root), xml=None, names=())
+    global _companion
+    slot = _slot(root, create=True)
+    slot.update(offer=tuple(_node(n) for n in names), root=str(root), xml=None, names=())
+    _companion = slot
 
 
 def _take_companions(root, tests):
-    if _companion['root'] != str(root) or not _companion['offer']:
+    slot = _slot(root)
+    if slot is None or not slot['offer']:
         return []
     mine = {_node(t) for t in tests}
-    extra = [n for n in _companion['offer'] if n not in mine]
-    _companion['offer'] = ()                      # once: the first cloud call of the candidate carries them
+    extra = [n for n in slot['offer'] if n not in mine]
+    slot['offer'] = ()                            # once: the first cloud call of the candidate carries them
     return extra
 
 
@@ -590,7 +610,8 @@ def _split_companions(root, xml_text, rc, tests, extra):
             return any(_covered([c], n) for n in extra)
         own = [c for c in cases if mine(c) or not theirs(c)]
         if all(_covered(cases, n) for n in extra):
-            _companion.update(root=str(root), xml=xml_text, names=tuple(extra))
+            slot = _slot(root, create=True)
+            slot.update(root=str(root), xml=xml_text, names=tuple(extra))
         only = ET.Element('testsuites')
         for child in top:
             if child.tag == 'properties':
@@ -605,15 +626,16 @@ def _split_companions(root, xml_text, rc, tests, extra):
 
 def _held_companions(root, names):
     """The testcases of the neighbour tests ``names`` from the candidate's own cloud run, or None (they did not ride in it)."""
-    if _companion['root'] != str(root) or not _companion['xml']:
+    slot = _slot(root)
+    if slot is None or not slot['xml']:
         return None
     try:
-        cases = list(ET.fromstring(_companion['xml']).iter('testcase'))
+        cases = list(ET.fromstring(slot['xml']).iter('testcase'))
     except (ET.ParseError, ValueError, TypeError):
         return None
     if not all(_covered(cases, _node(n)) for n in names):
         return None
-    _companion.update(xml=None, offer=(), names=())     # once
+    slot.update(xml=None, offer=(), names=())           # once
     return cases
 
 
@@ -637,12 +659,19 @@ def _cloud_attempt(root, tests, touched, trace=()):
         xml_text, rc, trusted = got
         if extra:
             xml_text, rc = _split_companions(root, xml_text, rc, tests, extra)
-        result = parse_junit(xml_text, tests, rc, root)
-    except Exception:           # noqa: BLE001  a fault while reading the cloud's answer
+        if (SELF_REPO or trusted) and _file_not_found(xml_text, root, tests):
+            # the cloud could not open a test file that the candidate commit carries (the checkout's line endings, a stale
+            # workflow): a fault of the environment, not of the card - no strike, no "junit not ok"
+            return replace(_failure(-1, NOT_STARTED + 'cloud: cloud_down'), env_reason='cloud_down')
+        result = parse_junit(xml_text, tests, rc, root, tail=_NO_TESTS_TAIL if _no_testcase(xml_text) else '')
+        if (SELF_REPO or trusted) and _no_testcase(xml_text):
+            return result       # the run finished and no test ran there (file missing, collection stopped): the cloud's answer, not its absence
+    except Exception as error:  # noqa: BLE001  a fault while reading the cloud's answer
         # with the product route on there is no local fallback run: the pass waits for the cloud (cloud_down); None (the local
         # gate decides) stays for a process whose product route is off
         try:
             from . import factory_cloud_gate as _cg
+            _cg.note_error('cloud_attempt', error)
             on = bool(_cg._product['on']) or SELF_REPO
         except Exception:       # noqa: BLE001
             on = SELF_REPO
@@ -656,6 +685,39 @@ def _cloud_attempt(root, tests, touched, trace=()):
     clean = (result.collected and result.rc == 0 and not result.failed and not result.errors
              and not result.missing and not result.crashed)
     return result if clean else None
+
+
+_NO_TESTS_TAIL = ('the cloud run finished and ran no test (pytest "no tests ran", exit 4/5): a test file named in the '
+                  'task is missing there or its collection stopped; this is the cloud\'s answer, not its absence')
+
+
+_NOT_FOUND = re.compile(r'file or directory not found:\s*([^\s"\'<>]+)', re.I)
+
+
+def _file_not_found(xml_text, root=None, tests=()) -> bool:
+    """True when a collection <error> of the cloud's JUnit says pytest could not find a test file AND that file is in the
+    candidate's commit (``root / file`` exists): then the cloud's checkout is at fault. A file the card never created, or the
+    same words inside an ordinary failed test, is not this."""
+    if root is None:
+        return False
+    try:
+        errors = [e for e in ET.fromstring(xml_text).iter('error')]
+    except (ET.ParseError, ValueError, TypeError):
+        return False
+    for e in errors:
+        for m in _NOT_FOUND.finditer((e.get('message') or '') + '\n' + (e.text or '')):
+            name = m.group(1).split('::', 1)[0].replace('\\', '/').strip('.,:;')
+            if name and (Path(root) / name).is_file():
+                return True
+    return False
+
+
+def _no_testcase(xml_text) -> bool:
+    """True for a readable JUnit with no testcase at all (a finished run that ran nothing)."""
+    try:
+        return not list(ET.fromstring(xml_text).iter('testcase'))
+    except (ET.ParseError, ValueError, TypeError):
+        return False
 
 
 def _conclusive(result: GateResult) -> bool:
@@ -726,7 +788,18 @@ def _judge(cases, tests, rc, tail, root, path=()) -> GateResult:
             notes.append('failure %s::%s: %s' % (case.get('classname', ''), case.get('name', ''), msg[:300]))
         err = case.find('error')
         if err is not None:
-            notes.append('error %s::%s: %s' % (case.get('classname', ''), case.get('name', ''), (err.get('message') or '')[:300]))
+            line = 'error %s::%s: %s' % (case.get('classname', ''), case.get('name', ''), (err.get('message') or '')[:300])
+            if (err.get('message') or '').startswith('collection failure'):
+                # the real cause (``E   ModuleNotFoundError: ...``) first, so the note limit never cuts it off
+                real = [text[:200] for text in COLLECTION_LINE.findall(err.text or '')][-3:]
+                if SELF_REPO and (err.text or '').strip():
+                    # the second instance's coder has no local run to see the import fault in: it gets the traceback itself
+                    notes.insert(0, line + ' | traceback: ' + (err.text or '').strip()[-TRACEBACK_LIMIT:])
+                    continue
+                if real:
+                    notes.insert(0, line + ': ' + ' | '.join(real))
+                    continue
+            notes.append(line)
     missing = [t for t in tests if not _covered(cases, t)]
     if missing:
         notes.append('no testcase for: ' + ', '.join(missing))
@@ -1435,10 +1508,25 @@ def hollow_test_reasons(base_root, path, old: str, new: str, extra_names=()) -> 
     return out
 
 
-def is_forbidden(path: str, kind=None, named=()):
+OWN_TEST_RE = re.compile(r'tests/(?:test_agent_factory\.py|test_factory_[a-z0-9_]+\.py)')   # the factory's own tests (the mirror's whitelist)
+
+
+def own_test_edit(path: str, kind=None, named=(), own_tests=None) -> bool:
+    """True for the second instance's edit of an existing factory test file of a code task that NAMES it (tests/test_factory_*.py).
+    ``own_tests``: the caller's say (the loop, the architect); None takes the process flag SELF_REPO (the runner of the second
+    instance). The product instance never gets it: tests/** stays closed to a code task there."""
+    canon = _canon(path)
+    if canon is None or kind == 'unit_test' or not (SELF_REPO if own_tests is None else own_tests):
+        return False
+    return bool(OWN_TEST_RE.fullmatch(canon)) and canon in {_canon(n) for n in named}
+
+
+def is_forbidden(path: str, kind=None, named=(), own_tests=None):
     """The ONE rule of which paths a candidate may not write: the reason, or None when allowed.
 
-    ``named``: the touch_files of the candidate's own task - only they open the factory's own code (OWNER_*).
+    ``named``: the touch_files of the candidate's own task - only they open the factory's own code (OWNER_*), and, for the second
+    instance (``own_tests`` / SELF_REPO, see own_test_edit), a factory test file of a code task. Weakening of that test is
+    still refused by weakening_check (the number of test_* and of asserts never goes down).
     Canonicalised like everything else here (_canon: casefold, '//' and '.' collapsed, backslashes).
     weakening_violations and the triage (agent_factory_import) both call this."""
     canon = _canon(path)
@@ -1452,7 +1540,7 @@ def is_forbidden(path: str, kind=None, named=()):
     if ((canon in OWNER_PATHS or any(fnmatch.fnmatchcase(canon, g) for g in OWNER_GLOBS))
             and canon not in {_canon(n) for n in named}):
         return "forbidden file (the factory's own code: only a task that names it)"
-    if kind != 'unit_test' and parts[0] == 'tests':
+    if kind != 'unit_test' and parts[0] == 'tests' and not own_test_edit(path, kind, named, own_tests):
         return 'tests/** may be changed only by a unit_test task'
     return None
 
@@ -1485,12 +1573,12 @@ def candidate_findings(base_root, cand_files: dict, kind) -> tuple:
     return tuple(hollow), tuple(sorted(extra))
 
 
-def weakening_violations(base_root, cand_files: dict, kind, named=()) -> list[str]:
+def weakening_violations(base_root, cand_files: dict, kind, named=(), own_tests=None) -> list[str]:
     """Deterministic list of reasons a candidate weakens the checks (empty = clean); ``named`` as in is_forbidden."""
-    return weakening_check(base_root, cand_files, kind, named)[0]
+    return weakening_check(base_root, cand_files, kind, named, own_tests)[0]
 
 
-def weakening_check(base_root, cand_files: dict, kind, named=()):
+def weakening_check(base_root, cand_files: dict, kind, named=(), own_tests=None):
     """``(violations, notes)``: notes are neutral remarks (a check that had to be skipped), not violations."""
     out, notes = [], []
     root = Path(base_root)
@@ -1501,10 +1589,11 @@ def weakening_check(base_root, cand_files: dict, kind, named=()):
                 extra |= _defined_names(text or '')
     for raw, text in sorted(cand_files.items()):
         path = _canon(raw)
-        reason = is_forbidden(raw, kind, named)
+        reason = is_forbidden(raw, kind, named, own_tests)
         if reason is not None:
             out.append(f'{raw if path is None else path}: {reason}')
             continue
+        own_edit = own_test_edit(raw, kind, named, own_tests)
         old, base_exists = '', False
         base_file = root / raw.replace('\\', '/')
         try:
@@ -1525,7 +1614,10 @@ def weakening_check(base_root, cand_files: dict, kind, named=()):
             out.extend(f'{path}: {why}' for why in loosened_checks(old, new))
         if kind == 'unit_test' and is_py and _is_test_file(path):    # new files too: they had no content check
             out.extend(f'{path}: {why}' for why in hollow_test_reasons(root, path, old, new, extra))
-        if kind == 'unit_test' and base_exists and _is_test_file(path) and path.endswith('.py'):
+        if own_edit and not base_exists:
+            out.append(f'{path}: a code task edits an existing factory test, it does not create one')
+            continue
+        if (kind == 'unit_test' or own_edit) and base_exists and _is_test_file(path) and path.endswith('.py'):
             try:
                 old_checks, old_names = _shape(old)
             except (SyntaxError, ValueError, RecursionError):
@@ -2022,6 +2114,34 @@ def rank_path(funcs: dict, base_root, test_files, failed=()) -> list:
         for q in quals:
             scored.append((-len(want & _words(sources.get(q, '') or q)), rel, q))
     return [(rel, q) for _, rel, q in sorted(scored)]
+
+
+OFF_BODIES_CHARS = 4000
+
+
+def off_path_bodies(off: dict, base_root, test_files, failed=(), limit: int = OFF_BODIES_CHARS, k: int = 4) -> str:
+    """The bodies of the first ``k`` off-path functions (rank_path order, dunders out), one per block headed by
+    ``module.qualname``, at most ``limit`` characters in all: the code the failing test runs outside the task's files,
+    so a model that cannot see it is not left to guess (live 23.11: off_path / no_effect on <id>, <id>, <id>)."""
+    out, used = [], 0
+    for rel, q in rank_path(off, base_root, test_files, failed):
+        if q.rpartition('.')[2].startswith('__') or len(out) >= k:
+            continue
+        try:
+            body = _def_sources(Path(base_root).joinpath(*rel.split('/')).read_text(encoding='utf-8',
+                                                                                  errors='replace')).get(q, '')
+        except OSError:
+            continue
+        if not body:
+            continue
+        block = '# %s.%s (%s)\n%s\n' % (_stem(rel), q, rel, body)
+        if used + len(block) > limit:
+            if out:
+                break
+            block = block[:limit]
+        out.append(block)
+        used += len(block)
+    return '\n'.join(out)
 
 
 def off_path_short(off: dict, base_root, test_files, k: int = 8, failed=()) -> list:

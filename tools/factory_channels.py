@@ -82,6 +82,19 @@ UTC_DAY_PROVIDERS = frozenset(('openrouter',))
 DAY_RESET_MAX_S = 26 * 3600    # a reset time the provider names further away than this is not believed
 DAY_GRACE_S = 3600             # a daily 429 in the first hour of the provider's day with no reset time named:
 DAY_GRACE_COOL_S = 900         # the provider's counter may lag its clock, so cool 15 minutes, not the whole day
+# A daily 429 is a mark until the next PROBE, not until the reset (live 23.11 08:50: 18 channels stood cooled until
+# 11:00 while three of the models answered 200 on both keys): 10 minutes, then 20, 40, at most 60 and never past the
+# reset. The expired mark lets ONE call through (the probe); the others wait for its outcome; 200 clears the mark and
+# the series, a daily 429 sets the next, longer mark.
+DAY_PROBE_S = 600
+DAY_PROBE_MAX_S = 3600
+DAY_PROBE_HOLD_S = 300         # how long the others wait for a probe that has not answered
+DAY_PROBE_FORGET_S = 4 * 3600  # a series whose last mark ended this long ago starts again
+# A channel with a big daily allowance is never parked for long by a series of failures or a 503: its cooling is at
+# most HIGH_RPD_COOL_MAX_S and the series does not count higher than that (live 23.11: Gemma, 14400 a day, made
+# 10 calls in 80 minutes).
+HIGH_RPD = 1000
+HIGH_RPD_COOL_MAX_S = 300
 
 
 class ChannelUnavailable(InvalidPlan):
@@ -401,7 +414,25 @@ def cooled_until(state, channel) -> float:
     group = state.get(channel['group'])
     until = group.get('cool_until', 0) if isinstance(group, dict) else 0
     until = until if isinstance(until, (int, float)) and not isinstance(until, bool) else 0
-    return max(until, _model_cool(state, channel), _channel_cool(state, channel))
+    return max(until, _model_cool(state, channel), _channel_cool(state, channel), _probe_flight(state, channel))
+
+
+def _probe_keys(channel) -> tuple:
+    return (channel['id'], 'group:' + str(channel['group']), 'model:' + str(channel['model']))
+
+
+def _probe_flight(state, channel) -> float:
+    """Until when a probe of this channel (or of its whole key) is out: nobody else is let through meanwhile."""
+    table = state.get('day_probe')
+    if not isinstance(table, dict):
+        return 0.0
+    best = 0.0
+    for key in _probe_keys(channel):
+        row = table.get(key)
+        value = row.get('flight') if isinstance(row, dict) else None
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            best = max(best, float(value))
+    return best
 
 
 def _affinity_names(affinity):
@@ -541,7 +572,19 @@ def reserve(state, channel, tokens, *, now=None, requests=1, affinity=None):
     group['rpm_times'] = minute_times + [now] * per_minute
     group['minute'] = [(t, n) for t, n in group.get('minute', []) if now - t < 60] + [(now, tokens)]
     _remember(state, channel, affinity, now)
+    _send_probe(state, channel, now)
     return now
+
+
+def _send_probe(state, channel, now) -> None:
+    """The call booked on a channel whose daily mark has expired IS the probe: the others wait for its outcome."""
+    table = state.get('day_probe')
+    if not isinstance(table, dict):
+        return
+    for key in _probe_keys(channel):
+        row = table.get(key)
+        if isinstance(row, dict) and not (isinstance(row.get('flight'), (int, float)) and row['flight'] > now):
+            row['flight'] = now + DAY_PROBE_HOLD_S
 
 
 def _remember(state, channel, affinity, now) -> None:
@@ -630,6 +673,7 @@ def cool_channel(state, channel, *, now=None, seconds=DEFAULT_COOL_S) -> dict:
 _KEY_TEXT = re.compile(r'api[_ ]?key[_ ]?(?:is )?(?:not )?invalid|api key not valid|invalid api key', re.I)
 _REGION_TEXT = re.compile(r'location is not supported|not available in your (?:country|region)', re.I)
 _PERDAY = re.compile(r'PerDay|per[ -]day|daily', re.I)
+_PERDAY_ID = re.compile(r'PerDay', re.I)      # the quotaId that confirms a daily refusal
 _PERMODEL = re.compile(r'PerModel', re.I)     # Google quotaId ...PerDayPerProjectPerModel-FreeTier: one model of the key
 _PERMIN = re.compile(r'PerMinute|per minute', re.I)
 _RETRY = re.compile(r'retryDelay"?\s*[:=]\s*"?(\d+(?:\.\d+)?)s', re.I)
@@ -770,9 +814,13 @@ def _classify_error_event(error: dict):
     if status == 408:
         return _info('transient', status, name, message)
     if status == 429:
-        if _PERDAY.search(quota_text):
-            now = time.time()
-            at = _reset_at(body, now)
+        now = time.time()
+        at = _reset_at(body, now)
+        # a real daily refusal is confirmed by a quotaId with PerDay; the word "daily" in the text without a quotaId
+        # is a per-minute refusal -- unless the provider names a reset time (OpenRouter's free models)
+        is_day = (any(_PERDAY_ID.search(q) for q in quota) if quota
+                  else bool(at) and bool(_PERDAY.search(text)))
+        if is_day:
             info = _info('rate_day', status, name, message,
                          math.ceil(at - now) if at else seconds_to_daily_reset(now), quota_text)
             if at:
@@ -851,8 +899,7 @@ def classify(stdout: bytes, stderr: bytes, rc: int, idle: bool = False) -> dict:
     m = _STATUS_TEXT.search(text)
     status = int(m.group(1)) if m else None
     if status == 429 or re.search(r'rate.?limit|resource[_ ]exhausted', text, re.I):
-        return _info('rate_day' if _PERDAY.search(text) else 'rate_minute', 429, message=text,
-                     retry=seconds_to_daily_reset() if _PERDAY.search(text) else DEFAULT_COOL_S)
+        return _info('rate_minute', 429, message=text, retry=DEFAULT_COOL_S)   # no quotaId in stderr text: never daily
     if status in (401, 403):
         return _info('region' if status == 403 else 'key_invalid', status, message=text)
     if status == 402:
@@ -894,7 +941,11 @@ def apply_failure(state, channel, info, *, env=None, now=None) -> dict:
         cool(state, channel, now=now, seconds=REGION_COOL_S)
         return {'action': 'cool', 'cool_s': REGION_COOL_S}
     if kind in ('rate_minute', 'rate_day'):
-        seconds = _day_cool(channel, info, now) if kind == 'rate_day' else int(info.get('retry_after_s') or DEFAULT_COOL_S)
+        if kind == 'rate_day':
+            whole = not (info.get('scope') in ('model', 'channel'))
+            seconds = _day_cool(channel, info, now, state, whole=whole, model=info.get('scope') == 'model')
+        else:
+            seconds = int(info.get('retry_after_s') or DEFAULT_COOL_S)
         if info.get('scope') == 'model':     # an upstream provider of ONE model: the rest of the account is fine
             return _cool_model(state, channel, now, seconds)
         if info.get('scope') == 'channel' or (kind == 'rate_minute' and info.get('status') != 402):
@@ -910,32 +961,69 @@ def apply_failure(state, channel, info, *, env=None, now=None) -> dict:
         # "This model is currently experiencing high demand" (503): the MODEL is overloaded, not the account. Cooled,
         # the retry and the next pass take another channel (live 19.11 18:18-18:20: two passes were deferred on a
         # 503 of gemini-3.5-flash-lite while three other channels idled).
-        return _cool_model(state, channel, now, _overload_seconds(state, channel['model'], now))
+        return _cool_model(state, channel, now, _overload_seconds(state, channel['model'], now, _big_daily(channel)))
     return {'action': 'none', 'cool_s': 0}
 
 
-def _day_cool(channel, info, now) -> int:
-    """Cooling of a daily 429: until the reset time the provider named, else until the midnight of the channel's
-    provider; in the first DAY_GRACE_S of the provider's day without a named reset only DAY_GRACE_COOL_S."""
+def _day_cool(channel, info, now, state=None, *, whole=False, model=False) -> int:
+    """Cooling of a daily 429: not until the reset but until the next PROBE -- DAY_PROBE_S, doubled for every
+    further daily 429 of the same series, at most DAY_PROBE_MAX_S and never past the reset (the time the provider
+    named, else the midnight of the channel's provider); in the first DAY_GRACE_S of the provider's day without a
+    named reset at most DAY_GRACE_COOL_S. ``state`` keeps the series (state['day_probe']), and the expired mark
+    lets one call through (reserve()); without ``state`` the first step is given."""
     at = info.get('reset_at')
     if isinstance(at, (int, float)) and not isinstance(at, bool) and 0 < at - now <= DAY_RESET_MAX_S:
-        return int(math.ceil(at - now))
-    start, end = quota_day(channel['model'], now)
-    if now - start < DAY_GRACE_S:
-        return DAY_GRACE_COOL_S
-    return max(60, int(end - now))
+        to_reset = int(math.ceil(at - now))
+        named = True
+    else:
+        start, end = quota_day(channel['model'], now)
+        to_reset = max(60, int(end - now))
+        named = False
+    n = 1
+    # the series and the probe flight belong to what the mark is on: the key, the model (a per-model quota of a
+    # provider: every channel of the model waits for one probe) or the channel
+    key = 'group:' + str(channel['group']) if whole else 'model:' + str(channel['model']) if model else channel['id']
+    if isinstance(state, dict):
+        table = state.get('day_probe')
+        if not isinstance(table, dict):
+            table = state['day_probe'] = {}
+        prior = table.get(key)
+        if (isinstance(prior, dict) and type(prior.get('n')) is int and prior['n'] > 0
+                and isinstance(prior.get('end'), (int, float)) and now - prior['end'] < DAY_PROBE_FORGET_S):
+            n = prior['n'] + 1
+    seconds = min(DAY_PROBE_MAX_S, DAY_PROBE_S * 2 ** min(n - 1, 8), to_reset)
+    if not named and now - quota_day(channel['model'], now)[0] < DAY_GRACE_S:
+        seconds = min(seconds, DAY_GRACE_COOL_S)
+    seconds = max(60, seconds) if to_reset >= 60 else seconds
+    if isinstance(state, dict):
+        table[key] = {'n': n, 'end': now + seconds, 'flight': 0}
+        for other in [k for k, v in table.items()
+                      if not (isinstance(v, dict) and isinstance(v.get('end'), (int, float))
+                              and now - v['end'] < DAY_PROBE_FORGET_S)]:
+            del table[other]
+    return seconds
 
 
-def _overload_seconds(state, model, now) -> int:
+def _big_daily(channel) -> bool:
+    """A channel with a big daily allowance (rpd >= HIGH_RPD): parked for minutes at most, never for long."""
+    rpd = channel.get('rpd')
+    return type(rpd) is int and rpd >= HIGH_RPD
+
+
+def _overload_seconds(state, model, now, big=False) -> int:
     """OVERLOAD_COOL_S, doubled for every further overload of the same model within OVERLOAD_FORGET_S of the
-    previous one, at most OVERLOAD_COOL_MAX_S."""
+    previous one, at most OVERLOAD_COOL_MAX_S -- for a ``big`` (rpd >= HIGH_RPD) channel at most HIGH_RPD_COOL_MAX_S,
+    and the series stops counting where that limit is reached."""
     if not isinstance(state.get('model_overload'), dict):
         state['model_overload'] = {}
     table = state['model_overload']
     last = _numbers(table.get(model))
     series = int(last[0]) + 1 if len(last) == 2 and 0 <= now - last[1] < OVERLOAD_FORGET_S else 1
+    limit = HIGH_RPD_COOL_MAX_S if big else OVERLOAD_COOL_MAX_S
+    while big and series > 1 and OVERLOAD_COOL_S * 2 ** min(series - 2, 8) >= limit:
+        series -= 1                    # the series does not count higher than the cooling it can still grow
     table[model] = [series, now]
-    return min(OVERLOAD_COOL_MAX_S, OVERLOAD_COOL_S * 2 ** min(series - 1, 8))
+    return min(limit, OVERLOAD_COOL_S * 2 ** min(series - 1, 8))
 
 
 def note_outcome(state, channel, ok, *, now=None, channels=()) -> dict:
@@ -951,15 +1039,30 @@ def note_outcome(state, channel, ok, *, now=None, channels=()) -> dict:
     if ok:
         row['missing'] = 0
         table.pop(channel['id'], None)
+        probes = state.get('day_probe')
+        if isinstance(probes, dict):             # a 200 is the end of the daily mark: the probe worked
+            if probes.pop(channel['id'], None) is not None and isinstance(state.get('channel_cool'), dict):
+                state['channel_cool'].pop(channel['id'], None)
+            if (probes.pop('group:' + str(channel['group']), None) is not None
+                    and isinstance(group.get('cool_until'), (int, float)) and group['cool_until'] > now):
+                group['cool_until'] = now
+            if (probes.pop('model:' + str(channel['model']), None) is not None
+                    and isinstance(state.get('model_cool'), dict)):
+                state['model_cool'].pop(channel['model'], None)
         return {'action': 'none', 'cool_s': 0}
     prior = table.get(channel['id'])
     n = (prior if type(prior) is int and prior > 0 else 0) + 1
+    big = _big_daily(channel)
+    if big:
+        n = min(n, STREAK_FAILS)       # the series does not count higher than its cooling can grow
     table[channel['id']] = n
     if n < STREAK_FAILS:
         return {'action': 'none', 'cool_s': 0}
     seconds = min(STREAK_COOL_MAX_S, STREAK_COOL_S * 2 ** min(n - STREAK_FAILS, 8))
     if channels and not _other_route(state, channel, channels, now):
         seconds = STREAK_COOL_S     # no other model is free now: never park the whole factory for hours on a series
+    if big:
+        seconds = min(seconds, HIGH_RPD_COOL_MAX_S)
     if any(c.get('group') == channel['group'] and c.get('model') != channel['model'] for c in channels):
         out = _cool_model(state, channel, now, seconds)
     else:
@@ -983,6 +1086,97 @@ def _other_route(state, channel, channels, now) -> bool:
         if cooled_until(state, other) <= now:
             return True
     return False
+
+
+def probe_targets(channels, state, env, *, now=None) -> list:
+    """The watchdog's pick: of the channels that are cooled now (and neither dead nor without a key) the one whose
+    cooling ends EARLIEST, for every tier -- one per tier, in the order of TIERS."""
+    now = time.time() if now is None else now
+    dead = state.get('dead') if isinstance(state.get('dead'), dict) else {}
+    best = {}
+    for channel in channels:
+        if not env.get(channel['key_env']):
+            continue
+        mark = dead.get(channel['id'])
+        if isinstance(mark, dict) and _dead_applies(mark, env, channel):
+            until = _dead_until(mark)
+            if until is None or until > now:
+                continue
+        until = cooled_until(state, channel)
+        if until <= now:
+            continue
+        tier = tier_of(channel)
+        if tier not in best or until < best[tier][0]:
+            best[tier] = (until, channel)
+    return [best[t][1] for t in TIERS if t in best] + [best[t][1] for t in best if t not in TIERS]
+
+
+def probe_outcome(state, channel, info, *, env=None, now=None, channels=()) -> dict:
+    """Account one probe call made by the watchdog (the answer already classified): 200 lifts every cooling mark of
+    the channel (its daily mark and series, its own mark, its model's mark, its series of failures); anything else is
+    a failure like any other (apply_failure). Returns {'result': kind, 'cool_s': ..., 'lifted': bool}."""
+    now = time.time() if now is None else now
+    if info.get('kind') != 'ok':
+        done = apply_failure(state, channel, info, env=env, now=now)
+        return {'result': info.get('kind') or 'unknown', 'cool_s': done.get('cool_s', 0), 'lifted': False}
+    note_outcome(state, channel, True, now=now, channels=channels)
+    for key in _probe_keys(channel):
+        if isinstance(state.get('day_probe'), dict):
+            state['day_probe'].pop(key, None)
+    if isinstance(state.get('channel_cool'), dict):
+        state['channel_cool'].pop(channel['id'], None)
+    if isinstance(state.get('model_cool'), dict):
+        state['model_cool'].pop(channel['model'], None)
+    if isinstance(state.get('model_overload'), dict):
+        state['model_overload'].pop(channel['model'], None)
+    group = state.get(channel['group'])
+    if isinstance(group, dict) and isinstance(group.get('cool_until'), (int, float)) and group['cool_until'] > now:
+        group['cool_until'] = now       # the key answered: the whole key's mark ends too
+    return {'result': 'ok', 'cool_s': 0, 'lifted': True}
+
+
+def channel_report(channels, state, env, *, now=None) -> list:
+    """stats.json, one row per channel: calls today on its quota group (a group shares one count over its models),
+    what closes it now ('' when open) and until when (epoch seconds, None when open)."""
+    now = time.time() if now is None else now
+    dead = state.get('dead') if isinstance(state.get('dead'), dict) else {}
+    rows = []
+    for channel in channels:
+        group = state.get(channel['group']) if isinstance(state.get(channel['group']), dict) else {}
+        start, end = quota_day(channel['model'], now)
+        calls = sum(1 for t in _numbers(group.get('request_times')) if t >= start)
+        closed, until = '', None
+        mark = dead.get(channel['id'])
+        probes = state.get('day_probe') if isinstance(state.get('day_probe'), dict) else {}
+        probe = next((probes[k] for k in _probe_keys(channel) if isinstance(probes.get(k), dict)), None)
+        gcool = group.get('cool_until') if isinstance(group.get('cool_until'), (int, float)) else 0
+        candidates = []
+        if isinstance(mark, dict) and _dead_applies(mark, env, channel):
+            when = _dead_until(mark)
+            if when is None or when > now:
+                candidates.append(('dead', when))
+        if not env.get(channel['key_env']):
+            candidates.append(('no_key', None))
+        if calls >= channel['rpd']:
+            candidates.append(('rpd', end))
+        for kind, when in (('model', _model_cool(state, channel)), ('channel', _channel_cool(state, channel)),
+                           ('group', gcool)):
+            if when > now:
+                label = kind
+                if isinstance(probe, dict) and probe.get('end', 0) > now - 1 and kind in ('channel', 'group'):
+                    label = 'daily_quota'
+                elif kind == 'model':
+                    label = 'model_overload_or_series'
+                candidates.append((label, when))
+        flight = _probe_flight(state, channel)
+        if flight > now:
+            candidates.append(('probe_out', flight))
+        if candidates:
+            closed, until = max(candidates, key=lambda c: (c[1] is None, c[1] or 0))
+        rows.append({'id': channel['id'], 'model': channel['model'], 'group': channel['group'],
+                     'calls_day': calls, 'rpd': channel['rpd'], 'closed_by': closed or None,
+                     'until': int(until) if until is not None else None})
+    return rows
 
 
 def _cool_model(state, channel, now, seconds) -> dict:

@@ -94,7 +94,7 @@ def _spend_file() -> Path:
 
 def _spend_row() -> dict:
     try:
-        row = json.loads(_spend_file().read_text(encoding='utf-8'))
+        row = json.loads(_retry_perm(lambda: _spend_file().read_text(encoding='utf-8')))
     except FileNotFoundError:
         row = {}
     if not isinstance(row, dict):
@@ -102,7 +102,7 @@ def _spend_row() -> dict:
     if row and 'total_usd' not in row:
         row['total_usd'] = float(row.get('usd', 0)) + UNKNOWN_RESERVE_USD
     if row.get('date') != _today():
-        row.update(date=_today(), usd=0.0, coder_usd=0.0)
+        row.update(date=_today(), usd=0.0, coder_usd=0.0, day_roles={})
     return row
 
 
@@ -127,7 +127,7 @@ def _external(path_name, fields):
     if not path:
         return 0.0
     try:
-        row = json.loads(Path(path).read_text(encoding='utf-8-sig'))
+        row = json.loads(_retry_perm(lambda: Path(path).read_text(encoding='utf-8-sig')))
     except FileNotFoundError:
         return 0.0
     amount = sum(float(row.get(f, 0)) for f in fields)
@@ -155,12 +155,15 @@ def _spend_lock():
         try:
             lock.mkdir()
             break
-        except FileExistsError:
+        except (FileExistsError, PermissionError):     # Windows: PermissionError while the old lock folder is being removed
             try:
                 if time.time() - lock.stat().st_mtime > 30:
                     lock.rmdir()
                     continue
-            except FileNotFoundError:
+            except (FileNotFoundError, PermissionError):
+                if time.monotonic() >= deadline:
+                    raise TimeoutError('paid spend lock busy')
+                time.sleep(0.005)
                 continue
             if time.monotonic() >= deadline:
                 raise TimeoutError('paid spend lock busy')
@@ -168,15 +171,27 @@ def _spend_lock():
     try:
         yield
     finally:
-        lock.rmdir()
+        _retry_perm(lock.rmdir)
+
+
+def _retry_perm(action, tries=8, pause=0.05):
+    """Windows answers PermissionError while another process holds the file for a moment (a read racing a replace,
+    a lock folder being removed): the operation is repeated after a short pause, the last error is raised."""
+    for attempt in range(tries):
+        try:
+            return action()
+        except PermissionError:
+            if attempt == tries - 1:
+                raise
+            time.sleep(pause)
 
 
 def _write_spend(row):
     path = _spend_file()
     tmp = path.with_name(path.name + '.' + uuid.uuid4().hex + '.tmp')
     try:
-        tmp.write_text(json.dumps(row), encoding='utf-8')
-        os.replace(tmp, path)
+        _retry_perm(lambda: tmp.write_text(json.dumps(row), encoding='utf-8'))
+        _retry_perm(lambda: os.replace(tmp, path))
     finally:
         tmp.unlink(missing_ok=True)
 
@@ -195,6 +210,11 @@ def _add(row, usd, *, coder=False, architect=False, agent=False, critic=False):
             row[name] = round(float(row.get(name, 0)) + usd, 9)
     for name in ('total_usd', 'architect_total_usd', 'agent_total_usd', 'critic_total_usd', 'credit_dead_until'):
         row.setdefault(name, 0.0)
+    role = 'agent' if agent else 'critic' if critic else 'architect' if architect else 'coder' if coder else ''
+    if role and usd:
+        roles = row.get('day_roles') if isinstance(row.get('day_roles'), dict) else {}
+        roles[role] = round(float(roles.get(role, 0)) + usd, 9)
+        row['day_roles'] = roles
 
 
 def add_spend(usd, architect=False, agent=False, critic=False):
@@ -243,6 +263,45 @@ def credit_dead(now=None) -> bool:
     return float(_spend_row().get('credit_dead_until', 0)) > (time.time() if now is None else now)
 
 
+AGENT_PAUSE_S = 3600
+
+
+def key_available() -> bool:
+    """The one answer to "is there a paid key we may use now": the key sits in the file of env_path() (the key is
+    never printed or returned) and the API credit is not marked dead. Read on every call, so a revived key counts."""
+    if os.environ.get('PYTEST_CURRENT_TEST') and not os.environ.get('FACTORY_PAID_ENV'):
+        return False                                    # a test never looks at the real key
+    try:
+        return bool(load_env(env_path()).get('ANTHROPIC_API_KEY', '')) and not credit_dead()
+    except (ValueError, TypeError, OSError):
+        return False
+
+
+def mark_agent_credit_dead(now=None):
+    """Claude Code (stage "agent") was refused for lack of credit: only that stage waits an hour. The API key's own
+    credit_dead_until stays untouched: paid and the critic go on."""
+    with _spend_lock():
+        row = _spend_row()
+        row['agent_dead_until'] = (time.time() if now is None else now) + AGENT_PAUSE_S
+        _write_spend(row)
+
+
+def agent_credit_dead(now=None) -> bool:
+    try:
+        return float(_spend_row().get('agent_dead_until', 0)) > (time.time() if now is None else now)
+    except (ValueError, TypeError, OSError):
+        return False
+
+
+def day_report() -> dict:
+    """Today's spend by role and what is still allowed (for stats.json). No key, no secrets."""
+    row = _spend_row()
+    roles = {name: round(float(value), 6) for name, value in (row.get('day_roles') or {}).items()}
+    return dict(day=_today(), usd=round(float(row.get('usd', 0)), 6), by_role=roles,
+                left=round(_left(_today(), row), 6), credit_dead=float(row.get('credit_dead_until', 0)) > time.time(),
+                agent_paused=float(row.get('agent_dead_until', 0)) > time.time())
+
+
 def check_credit(status, raw):
     try:
         error = json.loads(raw).get('error', {})
@@ -281,6 +340,16 @@ ASK = ('You are the control critic of an automated code factory. Free critics al
        'wrong fix of the real cause. The task tests are the specification: never dispute what a test expects. Answer '
        'ONLY with JSON {"verdict":"approve"|"reject","reason":"the concrete defect or empty","class":"short-kebab-slug '
        'naming the class of the defect or empty","symptom":"one sentence a weaker reviewer could check for"}.\n')
+
+
+ASK_TEST = ('You are the control critic of an automated code factory. This card writes ONLY a test: the fix is a later '
+            'card, so the code under test stays unchanged and the new test is expected to FAIL now. A missing source fix '
+            'is never a defect. Free critics already approved it. Check: (1) the change holds only the test (no source '
+            'edit); (2) the test checks the behaviour of the contract below (given/when/then), calling the real code; '
+            '(3) it fails now for the reason named in red_now_because; (4) it is not empty, not a stub, not a bare '
+            'name check; (5) it does not pin down the present defective behaviour. Answer ONLY with JSON '
+            '{"verdict":"approve"|"reject","reason":"the concrete defect or empty","class":"short-kebab-slug naming the '
+            'class of the defect or empty","symptom":"one sentence a weaker reviewer could check for"}.\n')
 
 
 def _parse(raw: bytes):
@@ -345,6 +414,17 @@ def _review_source(task, baseline, workdir):
     return '\n'.join(chunks)
 
 
+def available() -> bool:
+    """Whether ``control`` could spend now (a key, live credit, budget left): the same guards, no call, nothing booked.
+    The review precheck uses it to keep the paid second voice reachable (W-review fix 2)."""
+    if os.environ.get('PYTEST_CURRENT_TEST') and not os.environ.get('FACTORY_PAID_ENV'):
+        return False
+    try:
+        return bool(load_env(env_path()).get('ANTHROPIC_API_KEY', '')) and not credit_dead() and left(_today()) > 0
+    except (ValueError, TypeError, OSError, TimeoutError):
+        return False
+
+
 def control(task, diff: str, failure: str = '', exclude_model: str = '', *, baseline=None, workdir=None) -> dict | None:
     """One paid judgement of a candidate, or None (no key, no budget, a refused model, any fault). The free verdict
     stands when None. The dict never holds the key. ``exclude_model``: the coder's model never judges its own
@@ -361,9 +441,13 @@ def control(task, diff: str, failure: str = '', exclude_model: str = '', *, base
 
 
 def _control(task, diff, failure, exclude_model, baseline, workdir, key):
-    prompt = (ASK + 'Task: %s\nTask text:\n%s\nGuard test failure text (what the tests failed on before the fix):\n%s\n'
+    from tools import factory_cards as K
+    spec = K.test_spec(task)
+    prompt = (((ASK_TEST if spec or getattr(task, 'kind', '') == 'unit_test' else ASK)) + 'Task: %s\nTask text:\n%s\nGuard test failure text (what the tests failed on before the fix):\n%s\n'
               'Candidate diff:\n%s\n') % (getattr(task, 'title', ''), str(getattr(task, 'goal', '') or '')[:GOAL_LIMIT],
                                           failure[-FAIL_LIMIT:], diff[:DIFF_LIMIT])
+    if spec:
+        prompt += '\nContract of the new test:\n' + spec + '\n'
     prompt += '\nTests and source regions:\n' + _review_source(task, baseline, workdir)
     try:
         multifile = len(json.loads(getattr(task, 'contract', '') or '{}').get('parts', [])) > 1

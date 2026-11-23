@@ -216,6 +216,15 @@ def entry(cls, base=None):
     return dict(_slot(_load(base), cls))
 
 
+_TEST_ONLY = re.compile(r'(?:^|-)test-only|no-source-fix')
+
+
+def is_test_only(cls) -> bool:
+    """A class born of the paid critic's blindness to test cards (test-only-no-fix, no-source-fix-test-only, ...):
+    a test card adds only a test by design and a code card follows it, so these never go into a prompt (W-critic 1)."""
+    return bool(_TEST_ONLY.search(str(cls).lower()))
+
+
 def match(reason, detail='', base=None):
     """The class of a failure, mechanically: the built-in regex table first, then the paid classes whose slug words
     all occur in the text; 'unknown' otherwise."""
@@ -302,7 +311,7 @@ def lesson(cls, task_id, files, *, base=None, clean=None, examples=None):
     pending until the task's next outcome (record_failure / record_pass) says whether it helped."""
     data = _load(base)
     e = _slot(data, cls)
-    if e.get('weak'):
+    if e.get('weak') or is_test_only(cls):
         return ''
     if examples is None:
         mine = set(_names(files))
@@ -333,13 +342,13 @@ def critic_lesson(task, failure='', *, base=None):
     data = _load(base)
     parts = []
     cls = match('review: ' + str(failure), str(failure), base) if failure else 'unknown'
-    if cls != 'unknown' and not (data['classes'].get(cls) or {}).get('weak'):
+    if cls != 'unknown' and not is_test_only(cls) and not (data['classes'].get(cls) or {}).get('weak'):
         b = _builtin(cls)
         parts.append(f"{cls}: {b[0]}; look for it" if b else f"{cls}: {(data['classes'][cls].get('lock') or '')[:120]}")
     mine = set(_names(getattr(task, 'touch_files', ())))
     paid = []
     for cid, e in data['classes'].items():
-        if e.get('paid') and cid != cls and e.get('last_cases') and mine & {n for c in e['last_cases'] for n in c.get('files') or ()}:
+        if e.get('paid') and cid != cls and not is_test_only(cid) and e.get('last_cases') and mine & {n for c in e['last_cases'] for n in c.get('files') or ()}:
             paid.append(f"{cid}: {(e['lock'] or '')[:100]}")
     parts += paid[:LESSON_CASES]
     if not parts:

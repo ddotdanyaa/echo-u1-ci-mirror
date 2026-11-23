@@ -252,3 +252,30 @@ def test_a_lone_free_reject_is_decided_by_the_paid_voice_not_left_waiting(env, m
     result = rig.once(channel_config=two)
     assert 'paid_second_critic' in result['events'] and len(net.calls) == 1, result
     assert result['reason'] != 'review_chain_short' and result['reason'].startswith('review'), result
+
+
+def test_a_standing_candidate_with_a_kept_voice_still_reaches_the_paid_second_voice(env, monkeypatch):
+    """W-review fix 2: pass 1 has no key: one free voice is kept, the chain is short. Pass 2 has the key and the same two
+    models: the precheck must not end in review_chain_short, the paid critic is the second voice (rule 4 of 21.11)."""
+    key = (env / 'anthropic.cfg').read_text()
+    (env / 'anthropic.cfg').write_text('')
+    rig, two = _short_chain(env, monkeypatch)
+    first = rig.once(channel_config=two)
+    assert first['reason'] == 'review_chain_short' and rig.state()['tasks']['T1']['pending_review']['votes']
+    (env / 'anthropic.cfg').write_text(key)
+    rig.edit_state(lambda s: s['tasks']['T1'].update(not_before=0))
+    net = Net(answer('approve', 'fine', '', ''))
+    monkeypatch.setattr(P, '_post', net)
+    second = rig.once(channel_config=two)
+    assert 'review_deferred_before_gates' not in second['events'], second
+    assert 'paid_second_critic' in second['events'] and second['status'] == 'REVIEW', second
+    assert len(net.calls) == 1
+
+
+def test_a_standing_candidate_without_the_paid_key_is_still_cut_before_the_gates(env, monkeypatch):
+    (env / 'anthropic.cfg').write_text('')
+    rig, two = _short_chain(env, monkeypatch)
+    rig.once(channel_config=two)
+    rig.edit_state(lambda s: s['tasks']['T1'].update(not_before=0))
+    second = rig.once(channel_config=two)
+    assert 'review_deferred_before_gates' in second['events'] and second['reason'] == 'review_chain_short'

@@ -87,7 +87,9 @@ def test_the_loop_writes_a_reconciliation_of_every_backlog_row(tmp_path, monkeyp
     assert rows["B5"]["state"] == "seen" and NO_SCOPE in rows["B5"]["reason"] and rows["B5"]["until"]
     assert rows["B6"]["state"] == "stale"
     assert rows["B7"]["state"] == "hold" and rows["B7"]["reason"]
-    assert rows["B8"]["state"] == "unknown_state"
+    body = json.loads(path.read_text(encoding="utf-8"))
+    assert "unknown_state" not in body["counts"]                         # W-feed 3: open, words reported
+    assert body["unknown_words"] == {"непонятно": 1}
     assert all(r.get("reason") for r in rows.values()), "every row has a reason"
 
 

@@ -66,7 +66,8 @@ TRANSIENT_HOPS = 4   # an overloaded (503) model: up to this many other models a
 ENV_HOLD_AFTER = 10          # consecutive environment shortages before the long hold (the candidate is kept)
 ENV_HOLD_S = 1800
 ENV_OTHER_CEILING = 3         # a persistent non-slot environment failure (a missing package...) is parked after this many
-RED_BEFORE_WAIT_S = 120      # the base run before the coder call waits for a slot at most this long (its own ceiling)
+SCAN_REASK_CEILING = 3       # a card whose test the scanner keeps out of the cloud run is asked again this many times (no strike), then it is a red attempt
+RED_BEFORE_WAIT_S = 120     # the base run before the coder call waits for a slot at most this long (its own ceiling)
 SLOT_BUDGET_S = 300         # ONE wait for a pytest slot / free RAM per runner pass, shared by every gate run
 IDLE_SUSPECTS_ALLOWED = 4   # 21.11 (was 2) idle timeouts treated as a rate limit; the next one is a worker fault (infra)
 
@@ -77,7 +78,7 @@ def factory_env(state: dict) -> dict:
     table = state.get('factory_env')
     if not isinstance(table, dict):
         table = state['factory_env'] = {}
-    for name in ('idle', 'shortages', 'other'):
+    for name in ('idle', 'shortages', 'other', 'cloud_down', 'scan_excluded'):
         if not isinstance(table.get(name), dict):
             table[name] = {}
     return table
@@ -114,6 +115,7 @@ def requests_for(steps: int) -> int:
 GATE_TIMEOUT_S = 30                   # owner rule: pytest never longer than 30 s
 MAX_NEIGHBORS = 6
 INFRA_DEFER_S = 300
+REVIEWER_WAIT_S = 30    # W-review 1: a standing candidate whose reviewers are all busy longer than this skips the gates
 DIFF_LIMIT = 3000
 REVIEW_DIFF_LIMIT = 6000
 # infra=True (counts toward the loop brake) ONLY for a dead channel or no result from the process;
@@ -135,7 +137,9 @@ UNIT_TEST_RULES = ("The test must import the real functions or classes from the 
                    "write assert False, a test that only checks that a name exists, or a hard-coded count of "
                    "files or markers in the repository. The project has no pytest-asyncio plugin: never write "
                    "async def test functions or @pytest.mark.asyncio; drive async code with asyncio.run(...) inside "
-                   "a plain def test function." "\n" + gate.UNIT_TEST_RULES)   # one source: the gate's own rules
+                   "a plain def test function. A test file that does not exist yet is created with an EMPTY SEARCH "
+                   "part; the marker line # factory-backlog-id: <ID> goes only into the REPLACE part (its first "
+                   "line), never into SEARCH." "\n" + gate.UNIT_TEST_RULES)   # one source: the gate's own rules
 MARKER_PROBE = gate.GateResult(1, 1, 0, 1, 0, 0, True, '')   # a red result: only the marker can fail it
 REVIEW_NOTE_LIMIT = 400     # <id>: what the task's earlier candidates were rejected for, shown to its critics
 REVIEW_OVERHEAD = 1500 + REVIEW_NOTE_LIMIT      # reviewer instructions + verdict format on top of the files
@@ -399,6 +403,85 @@ def _base_key(base_sha, task: Task, baseline: dict) -> str | None:
     return h.hexdigest()
 
 
+def votes_of_diff(pend, diff_hash):
+    """W-base 3: the critics' voices kept on a pending review count only for the very diff they judged (its hash);
+    another diff (the merge changed the card's files) drops them."""
+    if isinstance(pend, dict) and diff_hash and pend.get('votes_diff') == diff_hash:
+        return pend.get('votes')
+    return None
+
+
+_SHARED_BASE: dict = {}          # W-base 2: the red bases of this process, one per (tree, kind, tests, file bytes)
+_SHARED_BASE_LOCK = threading.Lock()
+SHARED_BASE_MAX = 256
+
+
+def _base_core(root, task: Task, baseline: dict) -> str:
+    """The identity of a base measurement WITHOUT the commit: the tree, the kind, the tests and the bytes of the staged
+    files. The commit is checked apart (same, or moved over files the red base does not depend on)."""
+    h = sha256(('%s\n%s\n%s' % (Path(root).resolve(), task.kind, '\n'.join(sorted(task.tests)))).encode('utf-8'))
+    for name, data in sorted(baseline.items()):
+        if name != POLICY_FILE:
+            h.update(name.encode('utf-8') + b'\0' + sha256(data).digest())
+    return h.hexdigest()
+
+
+def _base_deps(task: Task, result) -> set:
+    """The files a red base depends on: the tests' files, the task's files and the files of the failing tests' path."""
+    deps = {str(t).split('::', 1)[0] for t in task.tests} | set(task.touch_files) | set(task.read_files)
+    for entry in getattr(result, 'path', ()) or ():
+        try:
+            name = str(entry[0]).replace('\\', '/')
+        except (IndexError, TypeError):
+            continue
+        deps.add(name)
+        if not name.endswith('.py'):
+            deps.add(name.replace('.', '/') + '.py')
+    return deps
+
+
+def _changed_between(root, old: str, new: str):
+    """The files that differ between two commits of the repo at ``root``, or None (a commit unknown here, git fails)."""
+    try:
+        done = subprocess.run(['git', '-C', str(root), 'diff', '--name-only', old, new], capture_output=True,
+                              text=True, timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if done.returncode != 0:
+        return None
+    return {line.strip() for line in done.stdout.splitlines() if line.strip()}
+
+
+def _shared_base_get(core: str, base_sha: str | None, root):
+    """A red base measured earlier in this process (by this card or another with the same tests and file bytes): on the
+    same commit as it is; on a moved commit when the move did not touch a file the base depends on. Else None."""
+    if not core or not base_sha:
+        return None
+    with _SHARED_BASE_LOCK:
+        rec = _SHARED_BASE.get(core)
+    if rec is None or not 0 <= _now() - rec['at'] < BASE_CACHE_S:
+        return None
+    if rec['sha'] != base_sha:
+        if not rec['carry']:
+            return None
+        changed = _changed_between(root, rec['sha'], base_sha)
+        if changed is None or changed & rec['deps']:
+            return None
+        with _SHARED_BASE_LOCK:
+            _SHARED_BASE[core] = dict(rec, sha=base_sha)
+    return rec['result']
+
+
+def _shared_base_put(core: str, base_sha: str | None, task: Task, result) -> None:
+    if not core or not base_sha:
+        return
+    with _SHARED_BASE_LOCK:
+        while len(_SHARED_BASE) >= SHARED_BASE_MAX:
+            _SHARED_BASE.pop(next(iter(_SHARED_BASE)))
+        _SHARED_BASE[core] = {'sha': base_sha, 'at': _now(), 'result': result, 'deps': _base_deps(task, result),
+                              'carry': bool(getattr(result, 'path', ()))}
+
+
 def _held_base(row: dict, key: str | None, kind: str | None = None, state_dir: Path | None = None):
     """The red base kept on the row for this key while it is fresh; None when absent, stale, foreign or unreadable
     (a damaged record only costs a new measurement). A code task's record must carry the path of its failing tests
@@ -466,8 +549,12 @@ def prepare(root: Path, task: Task, workdir: Path) -> dict[str, bytes]:
     # Big files reach the model as outline + fragments (and are read by line numbers): not counted here.
     # The task's budget (default 8 000) never caps below the prompt itself: render() checks the exact room
     # (live 19.11 21:24: <id>_test, 11 662 bytes against a 28 000-character prompt, was refused here).
-    packet({n: v for n, v in staged.items() if n not in big}, targets,
-           max_tokens=max(task.context_budget, channels.PROMPT_LIMIT_CHARS))
+    contract = K.contract_of(task)
+    if not (contract.get('parts') or (contract.get('test') or {}).get('new')):
+        # a card of a contract is written from the contract (its regions are squeezed to the limit by factory_cards), not
+        # from the whole files: their size is no reason to refuse it here (W-ctx 1)
+        packet({n: v for n, v in staged.items() if n not in big}, targets,
+               max_tokens=max(task.context_budget, channels.PROMPT_LIMIT_CHARS))
     # The model may not create/replace its own permissions. The file is also
     # compared byte-for-byte after coding and after pytest.
     conf = (json.dumps(worker_policy(task, readable=sorted(big & set(task.read_files))), sort_keys=True, ensure_ascii=False,
@@ -770,6 +857,7 @@ TOURNAMENT_DIFF_NOTE = '\nIts diff (do not repeat it):\n%s\n'
 # live 20.11 03:18, one task: three candidates in a row answered CANNOT: _last_clause_question to the same view
 TOURNAMENT_ASKED_NOTE = 'The code it asked for (%s) is shown above now: edit it.\n'
 TOURNAMENT_OUTPUT_LIMIT = 1500
+GATE_NOTE_ROOM = 5000    # a contract test card: the note of an earlier candidate (failing output, real signatures, diff) up to this
 # live 21.11 (replay of 36 CANNOT runs): 27 asked for a function defined in the task's own files, 17 repeated the same
 # CANNOT on the next attempt. What a model asked for is kept on the task row, so every later attempt shows it first.
 ASKED_KEEP = 12
@@ -823,6 +911,21 @@ OFF_PATH_NOTE = ('\nThe failing test also runs, outside the files you may change
                  'decided there, answer CANNOT: <that name>.')
 PATH_FOCUS_MAX = 12
 OFF_PATH_SHORT = 8
+FAILING_CHARS = 3000      # the red base's failure text a code card carries (was 1500: the failing line was cut off)
+OFF_BODIES_NOTE = ('\nCode the failing test runs outside the files you may change (read-only, as it is now): the '
+                   'asserted behaviour may be decided there; then answer CANNOT: <name> instead of editing around it.\n%s')
+GATE_RED = '(0 required)'     # the gate's "rc=1 (0 required)": the candidate ran and the tests stayed red
+
+
+def skip_small(k: int, attempt: int, feedback, small_follow_up: bool = False) -> tuple:
+    """Tiers a coder call skips. A second candidate never uses the small tier (<id>). The repeat of a card that came
+    back red from the gate (rc=1) is led by the main/strong tier from candidate 0: the small model already wrote the
+    candidate that did not turn the test green (live 23.11: 'gate: rc=1 (0 required)', the biggest red outcome)."""
+    if small_follow_up:
+        return ()
+    if k or (attempt > 1 and GATE_RED in str(feedback or '')):
+        return ('small',)
+    return ()
 OFF_PATH_WAIT_S = 30
 NO_EFFECT_BLOCK_AFTER = 4   # 21.11 (was 2)
 _ADDRESS = re.compile(r'0x[0-9A-Fa-f]{4,}')
@@ -957,6 +1060,8 @@ def review_candidate(task: Task, workdir: Path, model: str, invoke, *,
         lessons = paid_critic.lessons_for(task, rejected or '')   # owner: catches of the paid critic that free critics missed
         goal = getattr(task, 'goal', '') or ''
         said_goal = ('Task text (what the coder was asked):\n' + redact(scrub_paths(goal))[:1500] + '\n') if goal else ''
+        spec = K.test_spec(task)      # W-critic 1: a test card's critics get the contract the test must meet
+        said_goal += ('Contract of the new test:\n' + redact(spec)[:1500] + '\n') if spec else ''
         head = ('Review this patch task: ' + redact(task.title) + '.\n' + said_goal + checks + GATE_PASSED + '\n' + told +
                 (lessons + '\n' if lessons else '') +
                 (' The task files are below: small files whole, a large file as its outline and the parts that '
@@ -1080,7 +1185,8 @@ def port_focus(repo: Path, task: Task) -> frozenset:
 def build_coder_prompt(task: Task, visible: dict[str, bytes], feedback: str | None = None,
                        prev_diff: str = '', *, goal: str | None = None, failing: str = '',
                        light: bool = False, asked: frozenset = frozenset(), reference: str = '',
-                       focus: frozenset = frozenset(), off_path=()) -> str:
+                       focus: frozenset = frozenset(), off_path=(), off_bodies: str = '',
+                       failing_chars: int = 1500) -> str:
     """The ONE builder of the coder prompt (used by the pass and by model_attempt's default). ``light``: the
     prompt of the light engine, which has no tools: no read/grep instructions (live 19.11 17:48-17:50:
     with them the model answered "CANNOT: requires access outside the provided files"). ``asked``: definitions
@@ -1114,7 +1220,7 @@ def build_coder_prompt(task: Task, visible: dict[str, bytes], feedback: str | No
         core += "\nTask text:\n" + redact(scrub_paths(goal))[:1500]
     if failing and task.kind != 'unit_test':
         core += ("\nFailing on the base now (must pass after your change):\n"
-                 + redact(failing)[:1500])
+                 + redact(failing)[:failing_chars])
     if off_path and task.kind != 'unit_test':
         core += OFF_PATH_NOTE % ', '.join(off_path)
     if reference and task.kind != 'unit_test':
@@ -1129,7 +1235,8 @@ def build_coder_prompt(task: Task, visible: dict[str, bytes], feedback: str | No
         core += (" Write the test so that it FAILS on the current code because of the described "
                  "defect and would pass once the defect is fixed.")
         if task.backlog_id:
-            core += " The FIRST line of the test file must be exactly: # factory-backlog-id: " + task.backlog_id
+            core += (" The FIRST line of the test file must be exactly: # factory-backlog-id: " + task.backlog_id +
+                     " (in a new file: an EMPTY SEARCH part and the marker as the first line of REPLACE only)")
     if feedback:
         core += "\nThe previous candidate was rejected. Feedback:\n" + redact(feedback)
     tests_text = ' '.join(visible[n].decode('utf-8', 'replace') for n in task.tests if n in visible)
@@ -1145,6 +1252,13 @@ def build_coder_prompt(task: Task, visible: dict[str, bytes], feedback: str | No
                           **({'hint': LIGHT_HINT, 'tools': False} if light else {}))
     limit = channels.PROMPT_LIMIT_CHARS
     room = limit - len(core) - 200
+    if off_bodies and task.kind != 'unit_test':
+        # after the task's own files (they come first and whole): only what the card has room for, half of it at most
+        # when a rejected diff is to follow
+        share = room // 2 if prev_diff else room
+        if share > 600:
+            core += (OFF_BODIES_NOTE % redact(off_bodies))[:share]
+            room = limit - len(core) - 200
     if prev_diff and room > 300:
         core += "\nDiff of the rejected candidate (do not repeat its mistake):\n" + prev_diff[:room]
     return core
@@ -1231,6 +1345,7 @@ def model_attempt(task: Task, workdir: Path, model: str, timeout: int,
 # 3-file row burned its three passes on 'steps exhausted'); the triage's MAX_TOUCH is 3, so no triaged task goes to Kilo
 LIGHT_MAX_FILES = 10   # 23.11: a contract of up to 10 parts (one stage) is edited by the light engine, one card per file
 PART_RETRIES = 2      # a part whose answer cannot be applied is asked again this many times (no strike)
+FEEDBACK_CARD_CHARS = 3000   # the feedback a contract test card carries (its newest end)
 PART_WAIT_S = 30      # a call waits for the nearest free channel at most this long, then the pass is deferred
 PART_RETRY_NOTE = ('\nYour previous answer for this file could not be used: %s\nAnswer again for this file only, '
                    'copying the SEARCH lines exactly from the code shown above.\n')
@@ -1847,6 +1962,52 @@ def _replace_function(text: str, target: str, new: str, shown: str | None = None
     return done, ''
 
 
+_MARKER_LINE = re.compile(r'#\s*factory-backlog-id:\s*\S.*')
+
+
+def _marker_only(search: str, replace_text: str) -> bool:
+    """SEARCH is exactly one ``# factory-backlog-id: ...`` line and the first line of REPLACE is the same line."""
+    lines = [ln.strip() for ln in search.strip().splitlines()]
+    if len(lines) != 1 or not _MARKER_LINE.fullmatch(lines[0]):
+        return False
+    first = replace_text.lstrip('\r\n').splitlines()[:1]
+    return bool(first) and first[0].strip() == lines[0]
+
+
+def ensure_test_marker(task, workdir: Path, changed) -> list[str]:
+    """The model forgot the first line of a new test: the runner writes ``# factory-backlog-id: <ID>`` itself (after
+    a shebang, in the file's own line ending). Another row's marker is never replaced (the gate refuses it). Only
+    the first changed test file of the task is touched; returns the names written."""
+    if getattr(task, 'kind', '') != 'unit_test' or not getattr(task, 'backlog_id', ''):
+        return []
+    name = next((n for n in changed if n in task.tests), '')
+    if not name:
+        return []
+    path = Path(workdir).joinpath(*name.split('/'))
+    try:
+        raw = path.read_bytes().decode('utf-8')
+    except (OSError, UnicodeDecodeError):
+        return []
+    bom, body = ('﻿', raw[1:]) if raw.startswith('﻿') else ('', raw)
+    mark = '# factory-backlog-id: ' + task.backlog_id
+    lines = [ln.strip() for ln in body.splitlines() if ln.strip()]
+    if lines and lines[0].startswith('#!'):
+        lines = lines[1:]
+    if lines and lines[0].startswith('# factory-backlog-id:'):
+        return []                       # right already, or another row's marker: the gate decides
+    eol = '\r\n' if '\r\n' in body else '\n'
+    parts = body.splitlines(keepends=True)
+    at = 1 if parts and parts[0].startswith('#!') else 0
+    if at and not parts[0].endswith('\n'):
+        parts[0] += eol
+    parts.insert(at, mark + eol)
+    try:
+        path.write_bytes((bom + ''.join(parts)).encode('utf-8'))
+    except OSError:
+        return []
+    return [name]
+
+
 def apply_edit_blocks(workdir: Path, blocks, shown: str | None = None) -> tuple[list[str], dict]:
     """Apply the blocks inside ``workdir`` (the file names come from the task, never from the model):
     ``(changed files, {failure: count})``. All or nothing: when one block fails no file is written (half a
@@ -1877,6 +2038,9 @@ def apply_edit_blocks(workdir: Path, blocks, shown: str | None = None) -> tuple[
             if text.strip():
                 fail('empty SEARCH on a file that is not empty')
                 continue
+            new = replace_text if replace_text.endswith('\n') else replace_text + '\n'
+        elif not text.strip() and _marker_only(search, replace_text):
+            # the file does not exist yet and the model repeated the marker line as SEARCH: that is a creation
             new = replace_text if replace_text.endswith('\n') else replace_text + '\n'
         else:
             new, matcher = _replace_once_how(text, search, replace_text)
@@ -2018,12 +2182,18 @@ def _missing_blocks_note(workdir: Path, blocks, shown: str | None = None) -> str
     return ''.join('; ' + p for p in ["function '%s' was not shown whole" % a for a in asks[:3]] + parts)
 
 
+_NO_FILE_ANSWER = re.compile(r"^\W*(?:cannot|can't|could not|unable to)\s+find\s+the\s+file\b|"
+                             r"^\W*(?:the\s+)?file\b[^\n]{0,80}\b(?:not provided|was not provided|is not provided)\b", re.I)
+
+
 def _light_note(total: int, applied: list, failed: dict, outside: int, text: str) -> str:
     """One line for the next attempt's feedback: what happened to the edit blocks (no file text)."""
     if not total:
         answer = text.strip()
         if answer[:7].upper() == 'CANNOT:':
             return 'the model answered CANNOT: ' + redact(answer[7:].strip())[:150]   # reject() scrubs paths
+        if _NO_FILE_ANSWER.match(answer):      # "Cannot find the file ..." / "file not provided" with no block: a CANNOT
+            return 'the model answered CANNOT: ' + redact(answer.splitlines()[0].strip())[:150]
         return 'the answer had no SEARCH/REPLACE edit block (nor a REPLACE FUNCTION block)'
     parts = ['edit blocks %d, changed files %d' % (total, len(applied))]
     if outside:
@@ -2172,26 +2342,103 @@ class _SerialLease:
 _PART_FAILED = re.compile(r'; \d+: |block\(s\) for a file outside')
 
 
+NO_CHANGE_NOTE = 'your edit did not change the file'
+_APPLIED_NOTE = re.compile(r'changed files [1-9]')
+
+
 def part_failure(note: str, changed: bool) -> str:
-    """Why the answer for one part cannot be used ('' when it can): nothing changed, or a block of it did not apply."""
+    """Why the answer for one part cannot be used ('' when it can): nothing changed, or a block of it did not apply.
+    An answer that changed nothing always says so first (W-ctx 2): blocks that 'applied' with a REPLACE equal to the
+    SEARCH (live 23.11: 'edit blocks 1, changed files 1' and an unchanged file) are the same code returned."""
     if not changed:
-        return note or 'the answer changed nothing'
+        if _APPLIED_NOTE.search(note or ''):
+            return NO_CHANGE_NOTE + ': the REPLACE lines are the same as the SEARCH lines. Make the change the instruction asks for'
+        return NO_CHANGE_NOTE + ((' (' + note + ')') if note else '')
     if _PART_FAILED.search(note or ''):
         return note
     return ''
 
 
-def edit_parts(task: Task, parts: list, workdir: Path, call, failing: str = '') -> tuple[int, str, str]:
+OFF_CONTRACT_NOTE = ('your edit changed code the contract does not name: %s. For this file the contract allows only: %s. '
+                     'Change only those and keep every other line as it is')
+
+
+def part_off_contract(parts: list, file: str, old_text: str, new_text: str) -> str:
+    """W-ctx 4: '' when the edit of ``file`` stays inside the contract (the functions of its parts; a new function where
+    the contract says 'add after'), else the note for the part's next ask: what went outside and what is allowed."""
+    if not file.endswith('.py'):
+        return ''
+    mine = [p for p in parts if p.get('file') == file]
+    names = K.changed_symbols(old_text, new_text)
+    if any(p.get('add_after') for p in mine):
+        names -= K.defined(new_text) - K.defined(old_text)
+    off = K.contract_conformance({file: names}, {'parts': mine})
+    if not off:
+        return ''
+    allowed = sorted({s for p in mine for s in p.get('symbols') or []}) or ['(the whole file)']
+    return OFF_CONTRACT_NOTE % (', '.join(o.partition(': ')[2] or o for o in off), ', '.join(allowed))
+
+
+def edit_parts(task: Task, parts: list, workdir: Path, call, failing: str = '', use_code: bool = False) -> tuple[int, str, str]:
     """Edit the parts of the contract in ``workdir``: one call per part (``call(part_task, directory, prompt)`` ->
     ``(rc, stdout, stderr)``), the parts of one stage at once (one thread and one HTTP call per part), the next stage
     when all parts of the previous one are applied. Each part works in its own copy ``<workdir>-p<i>-<try>``; its
     file goes into ``workdir`` when the answer applied. A part whose answer cannot be applied (no block, SEARCH not
     found, CANNOT) is asked again, only that part, up to PART_RETRIES times with the reason; the other parts of the
     stage neither wait nor repeat. ``(0, answers, '')`` when every part applied, else ``(1, answers, evidence)``:
-    the CANNOT text or the SEARCH miss of the part that stayed unapplied."""
+    the CANNOT text or the SEARCH miss of the part that stayed unapplied. ``use_code`` (the first attempt of the
+    executor, W-hard 3): a part that carries ``code`` (the whole new text of each named function, or a SEARCH/REPLACE
+    block for a file that is not .py) is applied from it WITHOUT a model, under the same checks as a model's answer
+    (it changes something, only what the contract names); a part whose code cannot be applied goes to the model with
+    the exact reason."""
     workdir = Path(workdir)
     answers: list[str] = []
     lock = threading.Lock()
+
+    def apply_code(index: int, part: dict) -> str:
+        """'' when ``part['code']`` was applied to the file in ``workdir``; else the exact reason it was not."""
+        file = part['file']
+        folder = workdir.parent / ('%s-c%d' % (workdir.name, index))
+        shutil.rmtree(folder, ignore_errors=True)
+        with lock:
+            shutil.copytree(workdir, folder)
+        try:
+            try:
+                if file.endswith('.py'):
+                    now_sha = K.region_sha((workdir / file).read_text(encoding='utf-8-sig', errors='replace')
+                                           if (workdir / file).is_file() else '', part.get('symbols') or [])
+                    if part.get('code_of') and part['code_of'] != now_sha:
+                        return 'the named functions changed since the architect read them (the code is not applied)'
+                    blocks = [(file, _FuncTarget(symbol), text)
+                              for symbol, text in K.split_part_code(part['code'], part.get('symbols') or [])]
+                else:
+                    blocks, outside = parse_edit_blocks(part['code'], (file,))
+                    if outside or not blocks or getattr(blocks, 'problems', None):
+                        return 'the code block is not a SEARCH/REPLACE block of ' + file
+            except (ValueError, OSError) as error:
+                return str(error)
+            applied, failed = apply_edit_blocks(folder, blocks)
+            if failed:
+                return '; '.join(sorted(failed))
+            target, before = folder / file, workdir / file
+            with lock:
+                changed = target.is_file() and (not before.is_file() or target.read_bytes() != before.read_bytes())
+            reason = part_failure('', changed)
+            if not reason:
+                try:
+                    reason = part_off_contract(parts, file, before.read_text(encoding='utf-8-sig', errors='replace')
+                                               if before.is_file() else '',
+                                               target.read_text(encoding='utf-8-sig', errors='replace'))
+                except (OSError, ValueError):
+                    reason = ''
+            if reason:
+                return reason
+            with lock:
+                before.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(target, before)
+            return ''
+        finally:
+            shutil.rmtree(folder, ignore_errors=True)
 
     def current_texts() -> dict:
         """The files of the parts as they are in ``workdir`` NOW: the parts of an earlier stage are already applied."""
@@ -2212,15 +2459,22 @@ def edit_parts(task: Task, parts: list, workdir: Path, call, failing: str = '') 
         sigs = K.signatures({f: t for f, t in texts.items() if f != file}, names)
         part_task = replace(task, touch_files=(file,), read_files=tuple(
             n for n in task.read_files if n != file) + tuple(n for n in task.touch_files if n != file))
-        base = K.part_prompt(file, part, header, region, failing=failing, signatures=sigs)
-        reason = ''
+        base = K.part_prompt(file, part, header, region, failing=failing, signatures=sigs,
+                             limit=channels.PROMPT_LIMIT_CHARS - len(PART_RETRY_NOTE % ('x' * 300)))
+        reason, more = '', ''
+        if use_code and isinstance(part.get('code'), str) and part['code'].strip():
+            why_not = apply_code(index, part)
+            if not why_not:
+                return ''
+            more = ('\nThe architect wrote code for this part; it could not be applied (%s). Make the change the '
+                    'instruction asks for.\n' % why_not[:300])
         for attempt_no in range(PART_RETRIES + 1):
             folder = workdir.parent / ('%s-p%d-%d' % (workdir.name, index, attempt_no))
             shutil.rmtree(folder, ignore_errors=True)
             with lock:          # a copy of the work directory is never read while another part writes its file into it
                 shutil.copytree(workdir, folder)
             try:
-                rc, out, err = call(part_task, folder, base + (PART_RETRY_NOTE % reason if reason else ''))
+                rc, out, err = call(part_task, folder, base + (PART_RETRY_NOTE % reason if reason else '') + more)
                 note = err.decode('utf-8', 'replace') if isinstance(err, bytes) else str(err or '')
                 target, before = folder / file, workdir / file
                 with lock:
@@ -2228,11 +2482,28 @@ def edit_parts(task: Task, parts: list, workdir: Path, call, failing: str = '') 
                     answers.append(event_summary(out)['text'] if rc == 0 and out else '')
                 reason = part_failure(note, changed)
                 if rc == 0 and not reason:
+                    try:      # an edit outside the contract is asked again with the allowed functions (never a block)
+                        reason = part_off_contract(parts, file, before.read_text(encoding='utf-8-sig', errors='replace')
+                                                   if before.is_file() else '',
+                                                   target.read_text(encoding='utf-8-sig', errors='replace'))
+                    except (OSError, ValueError):
+                        reason = ''
+                if rc == 0 and not reason:
                     with lock:
                         before.parent.mkdir(parents=True, exist_ok=True)
                         shutil.copyfile(target, before)
                     return ''
                 reason = reason or 'the call failed'
+                if 'CANNOT' in reason and not more:
+                    # "the code is not shown" (live 23.11: 6 of 24 part_failed): the next ask shows what the file holds
+                    # (names and signatures, read only), so the model can say where the code it misses is
+                    room = channels.PROMPT_LIMIT_CHARS - len(base) - len(PART_RETRY_NOTE % reason) - 200
+                    try:
+                        table = K.outline(source, min(3000, room)) if room > 300 else ''
+                    except (ValueError, SyntaxError):
+                        table = ''
+                    more = ('\nOutline of %s (names and signatures, read only; edit only what is shown above):\n%s\n'
+                            % (file, table)) if table else ''
             finally:
                 shutil.rmtree(folder, ignore_errors=True)
         return '%s: %s' % (file, reason)
@@ -2465,6 +2736,15 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
         short = old.get('chain_short')
         if old.get('workdir') == str(ctx['workdir']) and type(short) is int and short > 0:
             row['pending_review']['chain_short'] = short     # the same candidate: its short chains keep counting
+        if old.get('workdir') == str(ctx['workdir']) and isinstance(old.get('votes'), list) and old.get('votes_diff'):
+            row['pending_review']['votes'] = old['votes']    # W-review 2: the critics' voices of this very diff stay
+            row['pending_review']['votes_diff'] = old['votes_diff']
+
+    def keep_votes(row, log, diff_hash) -> None:
+        """W-review 2: the critics' voices on the candidate (its diff hash is the key); dropped with pending_review."""
+        pend = row.get('pending_review')
+        if isinstance(pend, dict):
+            pend['votes'], pend['votes_diff'] = log, diff_hash
 
     def chain_short(state, row) -> int:
         """One more chain of this candidate cut short; counted on the candidate itself, so a channel_wait between two
@@ -2545,6 +2825,41 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
             return status, None
         return end(apply, reason=reason, reason_detail=redact(text)[:400])
 
+    def call_size(role, call_task, prompt_len, cyr) -> tuple:
+        """(light, tokens, steps, requests) of a call: shared by call() and the review precheck (W-review fix 1)."""
+        light = engine_for(role, call_task) == 'light'
+        base_tokens = channels.estimate_tokens(prompt_len, 0 if light else ctx['read_chars'],
+                                               overhead=LIGHT_OVERHEAD_TOKENS if light else None, cyrillic=cyr)
+        steps = 1 if light else (REVIEW_STEPS if role == 'review' else PROVIDER_STEPS)
+        return light, base_tokens, steps, (1 if light else requests_for(steps))
+
+    def call_order(role, preferred, base_tokens, exclude_model, hopped, skip_tiers, later, live_state, light, steps,
+                   sink=None) -> list:
+        """The route a call walks (excluded models, tiers, the code fallback, Kilo rpm): shared with the precheck
+        (which passes its own ``sink`` for the events, so it writes none of them)."""
+        route = 'code' if role == 'repair' else role
+        excl = sorted(channels.excluded_models(exclude_model) | set(hopped)) or None
+        order = channels.route_order(configured, route, attempt, base_tokens, preferred=preferred,
+                                     exclude_model=excl, skip_tiers=skip_tiers, state=live_state, later=later)
+        if not order and route in ('code', 'edit'):     # no escalation/main channel at all: any channel is better than none
+            order = channels.route_order(configured, 'code', 1, 0, preferred=preferred,
+                                         exclude_model=excl,   # never a model the tournament tried
+                                         skip_tiers=skip_tiers, state=live_state, later=later)
+        return _kilo_fits(order, steps, events if sink is None else sink) if order and not light else order
+
+    def call_affinity(role) -> list:
+        """The channel affinity of a call of this role (a reviewer must not move the coder's remembered channel):
+        shared by call() and the review precheck (W-review fix 1, round 1 finding 1)."""
+        family = os.path.splitext(task.touch_files[0].replace('\\', '/'))[0] if task.touch_files else ''
+        suffix = ':review' if role == 'review' else ''
+        return ['task:' + tid + suffix] + (['family:' + family + suffix] if family else [])
+
+    def call_pick(order, seen, base_tokens, requests, affinity) -> tuple:
+        """(channel, tokens): the choice on a quota view, nothing booked; raises ChannelUnavailable. Shared with the precheck."""
+        live = channels.usable(order, seen, os.environ) or order   # a dead or keyless channel sets no ceiling
+        tokens = min(base_tokens, max(c['tpm'] for c in live))     # a huge file may not make every channel "too small"
+        return channels.choose(order, seen, tokens, os.environ, requests=requests, affinity=affinity), tokens
+
     def call(role: str, call_task: Task, directory_for, preferred: str, prompt: str,
              *, exclude_model: str | None = None, skip_tiers: tuple = (), later: bool = False,
              candidate: int | None = None, models_out: set | None = None, on_booked=None) -> tuple[int, bytes, bytes]:
@@ -2556,22 +2871,16 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
             candidate = ctx.get('candidate') or 0
         if channels.prompt_too_big(prompt):
             raise PromptTooLarge(str(len(prompt)))
-        light = engine_for(role, call_task) == 'light'
+        light, base_tokens, steps, booked = call_size(role, call_task, len(prompt), channels.cyrillic_share(prompt))
         with ctx['lock']:
             ctx['role'], ctx['light'] = role, light
-        base_tokens = channels.estimate_tokens(len(prompt), 0 if light else ctx['read_chars'],
-                                               overhead=LIGHT_OVERHEAD_TOKENS if light else None,
-                                               cyrillic=channels.cyrillic_share(prompt))
-        steps = 1 if light else (REVIEW_STEPS if role == 'review' else PROVIDER_STEPS)
-        booked = 1 if light else requests_for(steps)   # the whole run: what choose() checks and reserve() books; reconcile() writes the fact
+        # booked: the whole run, what choose() checks and reserve() books; reconcile() writes the fact
         def booked_one(row) -> None:
             began = row.get('began')
             if isinstance(began, dict):
                 began['booked'] = int(began.get('booked') or 0) + 1      # the pool's admission counts workers that did not book yet
 
-        family = os.path.splitext(task.touch_files[0].replace('\\', '/'))[0] if task.touch_files else ''
-        suffix = ':review' if role == 'review' else ''      # a reviewer must not move the coder's remembered channel
-        affinity = ['task:' + tid + suffix] + (['family:' + family + suffix] if family else [])
+        affinity = call_affinity(role)
 
         hopped, last_info = [], None     # models that answered "overloaded" in THIS call: the next hop skips them
         for retry in range(1 + TRANSIENT_HOPS):
@@ -2580,20 +2889,12 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                 route = 'code' if role == 'repair' else role
                 whole = ck.read()
                 live_state = whole.get('channel_quotas') or {}    # a fresh private copy: ratings, parked 404s, cooling
-                excl = sorted(channels.excluded_models(exclude_model) | set(hopped)) or None
-                order = channels.route_order(configured, route, attempt, base_tokens, preferred=preferred,
-                                             exclude_model=excl, skip_tiers=skip_tiers, state=live_state,
-                                             later=later)
-                if not order and route in ('code', 'edit'):     # no escalation/main channel at all: any channel is better than none
-                    order = channels.route_order(configured, 'code', 1, 0, preferred=preferred,
-                                                 exclude_model=excl,   # never a model the tournament tried
-                                                 skip_tiers=skip_tiers, state=live_state, later=later)
+                order = call_order(role, preferred, base_tokens, exclude_model, hopped, skip_tiers, later, live_state,
+                                   light, steps)
                 if not order and hopped:              # every other model is overloaded too: the old transient path
                     raise ChannelFault(last_info or {'kind': 'transient'})
                 if not order:
                     raise NoIndependentReviewer()
-                if not light:
-                    order = _kilo_fits(order, steps, events)
 
                 def book(state, row):
                     """View + usable + choose + charge + reserve + publish: ONE commit on the fresh state, so two workers
@@ -2601,10 +2902,7 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                     quota = state.setdefault('channel_quotas', {})
                     seen = (quota_ledger.view(quota, quota_ledger.others(ledger, str(checkpoint)))
                             if ledger is not None else quota)    # <id>: the other states' bookings of the same keys
-                    live = channels.usable(order, seen, os.environ) or order   # a dead or keyless channel sets no ceiling
-                    tokens = min(base_tokens, max(c['tpm'] for c in live))  # a huge file may not make every channel "too small"
-                    pick = channels.choose(order, seen, tokens, os.environ,
-                                           requests=booked, affinity=affinity)   # a multi-step call needs room
+                    pick, tokens = call_pick(order, seen, base_tokens, booked, affinity)   # a multi-step call needs room
                     charge_call(state, tid)   # BEFORE booking: an exhausted budget must leave no reservation behind
                     when = channels.reserve(quota, pick, tokens, requests=booked,
                                            affinity=affinity)   # exactly what choose() checked
@@ -2848,12 +3146,66 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
             # the scanner found private text in the files this candidate changed: an ordinary bad edit (a strike)
             return reject('gate', 'private_text', 'the edit carries private text; remove it and do not copy it from elsewhere',
                           [])
+        if reason == 'scan_excluded':
+            # the second instance: the scanner (or an import the mirror lacks) kept the candidate's test out of the cloud run. The SAME card
+            # is asked again with the named cause (class of the hit and line), not charged as a red attempt; after SCAN_REASK_CEILING
+            # asks in a row it is an ordinary red attempt, so a card that cannot fix it still ends.
+            events.append('scan_excluded')
+            try:
+                from . import factory_cloud_gate as cloud_gate
+                cause = cloud_gate.last_error().get('text') or ''
+            except Exception:       # noqa: BLE001
+                cause = ''
+            cause = scrub(redact(cause))[:300] or 'the scanner excluded the test from the cloud run'
+            report['reason_detail'] = cause
+            note = ('your test was kept out of the cloud run, it never ran: %s. Fix exactly this (rename, remove or rewrite the text '
+                    'the scanner names; import only modules the mirror publishes) and keep the asserts.' % cause)
+
+            def ask_again(state, row):
+                table = factory_env(state)['scan_excluded']
+                seen = (table.get(tid) if type(table.get(tid)) is int else 0) + 1
+                table[tid] = seen
+                if seen > SCAN_REASK_CEILING:
+                    table.pop(tid, None)
+                    return 'strike'
+                add_feedback(state, tid, 'gate', '[attempt %d, no strike] %s' % (attempt, note))
+                return 'again'
+            if ck.commit(ask_again) == 'strike':
+                return reject('gate', 'scan_excluded', note, [])
+            return release('scan_excluded', 5)
         if reason in ('cloud_down', 'cloud_busy'):
             # the cloud gave no verdict (down, or no free place): the first thing handled. Not a strike, not counted toward
             # ENV_OTHER_CEILING, never parks the task; the finished candidate waits, the pass is released for a minute.
             events.append(reason)
+            try:        # the cause is read before a later answer of the cloud forgets it: stage, error type, 200 characters
+                from . import factory_cloud_gate as cloud_gate
+                cause = cloud_gate.last_error()
+            except Exception:       # noqa: BLE001
+                cause = {}
+            if cause:
+                report['cloud_stage'] = cause['stage']
+                report['cloud_error_type'] = cause['type'] or None
+                report['cloud_error'] = scrub(redact(cause['text']))[:200]
+                report['reason_detail'] = scrub(redact('%s: %s%s' % (cause['stage'], cause['type'] + ': ' if cause['type'] else '',
+                                                                     cause['text'])))[:300]
             if candidate:
                 report['pending_review'] = bool(ck.commit(lambda state, row: (set_pending(state, row), bool(row.get('pending_review')))[1]))
+            if reason == 'cloud_down':
+                def count_down(state, row):
+                    table = factory_env(state)['cloud_down']
+                    table[tid] = (table.get(tid) if type(table.get(tid)) is int else 0) + 1
+                    return table[tid]
+                try:        # a streak of cloud_down for ONE task while other runs answer is the task's own fault, not the cloud's
+                    streak = ck.commit(count_down)
+                    from . import factory_cloud_gate as cloud_gate
+                    over = streak - cloud_gate.CLOUD_DOWN_STREAK - 1       # 0 at the first alarming pass; one alarm per 5 passes (~5 min) after
+                    if over >= 0 and over % 5 == 0 and cloud_gate.alive():
+                        events.append('cloud_down_streak')
+                        report['cloud_down_streak'] = streak
+                        cloud_gate.alarm('cloud_down_streak', task=tid, count=streak, stage=report.get('cloud_stage') or '',
+                                         error_type=report.get('cloud_error_type') or '', error=report.get('cloud_error') or '')
+                except Exception:       # noqa: BLE001  the alarm never changes the release
+                    pass
             return release(reason, 60)
         events.append('env_shortage')
 
@@ -2963,9 +3315,16 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                            reason_detail=detail)
         key = _base_key(base_sha, task, ctx['baseline'])
         held = _held_base(row, key, task.kind, checkpoint.parent)
+        core, shared = None, None
+        if key and task.kind != 'unit_test':
+            core = _base_core(root, task, ctx['baseline'])
+            if held is None:      # W-base 2: another card's measure, or this one's on the commit before a base_moved
+                shared = _shared_base_get(core, base_sha, root)
+                held = shared
+        verdict, base = None, None        # the red base may still be running in the background: closures read None, never an unbound name
         if held is not None:
             verdict, base = 'red', held
-            events.append('base_reused')
+            events.append('base_shared' if shared is not None else 'base_reused')
         else:
             red_args = (base_root() if task.kind != 'unit_test' else root, task.tests, GATE_TIMEOUT_S, task.kind)
             red_kwargs = dict(wait_s=(min(RED_BEFORE_WAIT_S, max(0.0, slot['left'])) if slot['armed'] else RED_BEFORE_WAIT_S),
@@ -2980,7 +3339,7 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                 # gates wait for both (settle_base below, right after the first coder call)
                 bg_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix='red-base')
                 bg = bg_pool.submit(measure_base)
-        base_fresh = held is None
+        base_fresh = held is None or shared is not None      # a shared base is written on the row too
         base_settled = False
         on_mods, off_mods, off_short, path_focus = {}, {}, [], frozenset()
 
@@ -2997,6 +3356,8 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
             if base_fresh:
                 base_fresh = False
                 keep_red = (key and verdict == 'red' and not base.env_reason and task.kind != 'unit_test')
+                if keep_red and shared is None:
+                    _shared_base_put(core, base_sha, task, base)
 
                 def note_base(state, row):
                     row.pop('base_red', None)
@@ -3047,13 +3408,22 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
         def no_effects() -> int:
             return prior_ne + events.count('no_effect')
 
+        def off_path_end(detail: str) -> dict:
+            """BLOCKED off_path for a task with no contract; for a card of a contract NEVER a block (W-ctx 4): the row goes
+            back to the slicer (reslice) with the functions the failing test runs outside the contract in its reason."""
+            if K.contract_of(task):         # any contract: parts, a decision, a test to use or to write
+                events.append('off_path_reslice')
+                text = scrub(redact(detail))[:300]
+                return end(lambda s, r: (fail_row(s, tid, token, 'reslice'), None), reason='reslice', reason_detail=text)
+            return block('off_path', detail)
+
         def no_effect_block() -> dict | None:
             """The NO_EFFECT_BLOCK_AFTER-th change without effect on one base, with a path to show: BLOCKED for Opus
             with the functions the failing test runs outside the task (more passes would only repeat it)."""
             if not off_short or no_effects() < NO_EFFECT_BLOCK_AFTER:
                 return None
-            return block('off_path', 'the change had no effect %d times on the same base; the failing test runs '
-                         'outside the task files: %s' % (no_effects(), ', '.join(off_short)))
+            return off_path_end('the change had no effect %d times on the same base; the failing test runs '
+                                'outside the task files: %s' % (no_effects(), ', '.join(off_short)))
 
         def scope_signal():
             """(module, name) when the last coder answer named a function of the failing test's path outside the task:
@@ -3091,8 +3461,8 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
             why = gate.is_forbidden(module, task.kind) or (
                 'more than %d files' % limit if len(task.touch_files) + 1 > limit else '')
             if why:
-                return block('off_path', '%s (%s) runs in the failing test outside the task; it cannot be added: %s'
-                             % (module, name, why))
+                return off_path_end('%s (%s) runs in the failing test outside the task; it cannot be added: %s'
+                                    % (module, name, why))
             events.append('scope_add:' + module)
             report['scope_add'] = [module]
             report['reason_detail'] = scrub(redact('%s (%s) runs in the failing test outside the task' % (module, name)))
@@ -3116,6 +3486,8 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                 note = ctx.get('light_note') or ''
                 return reject('gate', 'gate:no_changes', 'the model produced no change to the approved files'
                               + (' (' + note + ')' if note else ''), ())
+            # the agent path (the model writes the files itself) keeps the gate's rejection with the exact marker line;
+            # the runner writes a forgotten marker only for the edit-block answer of the contract card (see below)
             cand_files = {n: ctx['workdir'].joinpath(*n.split('/')).read_text(encoding='utf-8', errors='replace')
                           for n in changed}
             for name, source in cand_files.items():
@@ -3178,6 +3550,7 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                 def measured(state, row):       # measured: both environment series are over
                     factory_env(state)['shortages'].pop(tid, None)
                     factory_env(state)['other'].pop(tid, None)
+                    factory_env(state)['cloud_down'].pop(tid, None)
                 ck.commit(measured)
                 # pytest executes untrusted code: it may not rewrite the frozen tests or inputs.
                 for name in sorted((set(task.tests) | set(task.read_files)) - set(changed)):
@@ -3286,10 +3659,18 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                        if (ctx['workdir'] / name).exists()}
             # the reviewer sees the small files whole plus its instructions and a diff: refuse BEFORE the coder is paid for
             small_total = sum(len(v) for n, v in visible.items() if n not in large_names(task, visible))
-            if small_total + REVIEW_DIFF_LIMIT + REVIEW_OVERHEAD > channels.PROMPT_LIMIT_CHARS:
+            has_contract = bool(parts_now) or bool((K.contract_of(task).get('test') or {}).get('new'))
+            if not has_contract and small_total + REVIEW_DIFF_LIMIT + REVIEW_OVERHEAD > channels.PROMPT_LIMIT_CHARS:
                 raise PromptTooLarge('coder+review prompts cannot both fit')
             def failing_text() -> str:       # the red base may still be running when the first prompt is built
-                return (', '.join(base.failed_ids) + '\n' + base.diag).strip() if task.kind == 'code' and base_settled else ''
+                return (', '.join(base.failed_ids) + '\n' + base.diag).strip() if task.kind == 'code' and base_settled and base is not None else ''
+            def off_bodies_text() -> str:    # the code the failing test runs outside the task files, once the red base is in
+                if task.kind != 'code' or not base_settled or base is None or not off_mods:
+                    return ''
+                try:
+                    return gate.off_path_bodies(off_mods, root, task.tests, base.failed_ids)
+                except Exception:       # noqa: BLE001 - an addition to the card: without it the card is as before
+                    return ''
             # ``root`` is the loop's plain copy of the sources (no .git): an old commit is read from the repository itself
             reference = port_reference(port_repo or root, task)
             if reference:
@@ -3299,35 +3680,87 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
             ported = port_focus(port_repo or root, task) if reference else frozenset()
             remembered = frozenset(state['tasks'][tid].get('asked') or ()) & defined_names(task, ctx['workdir'])
 
-            def contract_test_card() -> str:
+            test_new = task.kind == 'unit_test' and bool(((K.contract_of(task).get('test') or {}).get('new') or {}).get('path'))
+            # the architect's own test text (test.new.code): the first attempt applies it as the candidate, no model call
+            architect_new = ((K.contract_of(task).get('test') or {}).get('new') or {}) if test_new else {}
+            architect_code = architect_new.get('code') if isinstance(architect_new.get('code'), str) else ''
+            architect_code = architect_code if architect_code.strip() and architect_new.get('path') in task.tests else ''
+            architect_author = str(K.contract_of(task).get('author') or 'architect')
+
+            def apply_architect_code() -> bool:
+                """Writes test.new.code as the candidate (the marker line included); False when it cannot be written."""
+                name = architect_new['path']
+                target = ctx['workdir'].joinpath(*name.split('/'))
+                try:
+                    if target.exists():
+                        return False
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_bytes(architect_code.replace('\r\n', '\n').encode('utf-8'))
+                    ensure_test_marker(task, ctx['workdir'], [name])
+                except OSError:
+                    return False
+                ctx['light_note'] = ctx['last_text'] = ''
+                events.append('architect_test_applied')
+                return True
+
+            def contract_test_card(note: str = '') -> str:
                 """A test task whose contract names the test (given / when / then / why it is red now): the card is
                 written from the contract, and the code of its functions is shown read-only; '' for any other task."""
                 contract = K.contract_of(task)
                 new = (contract.get('test') or {}).get('new') if task.kind == 'unit_test' else None
                 if not isinstance(new, dict) or not new.get('path'):
                     return ''
-                regions = {}
+                regions, problems, sigs, symbols = {}, [], [], []
                 for part in contract.get('parts') or []:
                     try:
                         source = (root / part['file']).read_text(encoding='utf-8-sig')
                         regions[part['file']] = K.part_region(source, part.get('symbols') or [], part.get('anchor') or '')
-                    except (OSError, ValueError, SyntaxError, KeyError, TypeError):
-                        continue            # the code is not shown: the model says CANNOT, the row is re-cut
-                card = K.test_prompt(task, contract, regions)
+                    except (OSError, ValueError, SyntaxError, KeyError, TypeError) as error:
+                        # the code is not shown: the card says so (never silently), the model may answer CANNOT
+                        problems.append('%s: %s: %s' % (part.get('file', '?') if isinstance(part, dict) else '?',
+                                                        type(error).__name__, str(error)[:200]))
+                        continue
+                    symbols.extend(part.get('symbols') or [])
+                    sigs.extend(K.signature_lines(source, part.get('symbols') or [], part['file']))
+                try:
+                    example = K.example_test(root, symbols)
+                except Exception:       # noqa: BLE001 - a missing example never stops the card
+                    example = ''
+                extra = ''
                 if task.backlog_id:
-                    card += "The FIRST line of the test file must be exactly: # factory-backlog-id: " + task.backlog_id + "\n"
-                card += UNIT_TEST_RULES + "\n"
-                if feedback:
-                    card += "The previous candidate was rejected. Feedback:\n" + redact(feedback) + "\n"
-                return card
+                    extra += ("The test file does not exist yet: use an EMPTY SEARCH part. The FIRST line of the REPLACE "
+                              "part must be exactly: # factory-backlog-id: " + task.backlog_id +
+                              " . Never put the marker into SEARCH.\n")
+                extra += UNIT_TEST_RULES + "\n"
+                if architect_code and (feedback or attempt > 1 or note):
+                    extra += ("The architect wrote this test text; it was applied and rejected (the exact reason is below). "
+                              "Correct THIS code, do not write another test from nothing:\n" + redact(architect_code) + "\n")
+                if feedback:       # the feedback shrinks first (the oldest lines go), the card keeps its fixed blocks
+                    extra += "The previous candidate was rejected. Feedback:\n" + redact(feedback)[-FEEDBACK_CARD_CHARS:] + "\n"
+                # the read-only code and the example are squeezed to what the rest leaves (task W-ctx 1): a card over the
+                # limit is no BLOCKED context_too_large that comes round, it is a reslice (CardTooLarge below). The note
+                # of an earlier candidate (its failing line and the real shape of the code) rides inside the limit too.
+                for tail in ((note + extra) if note else extra, extra):
+                    try:
+                        card = K.test_prompt(task, contract, regions, signatures='\n'.join(sigs), example=example,
+                                             problems=problems, limit=channels.PROMPT_LIMIT_CHARS, reserve=len(tail) + 1)
+                    except K.CardTooLarge:
+                        if tail is extra:
+                            raise
+                        continue
+                    return card + tail
+                return ''
 
-            def make_prompt(asked=frozenset()):
-                card = contract_test_card()
+            def make_prompt(asked=frozenset(), note=''):
+                if parts_now:       # contract_flow writes the card of each part itself; the whole-file prompt is not used
+                    return ''
+                card = contract_test_card(note)
                 if card:
                     return card
                 return build_coder_prompt(task, visible, feedback, prev_diff, failing=scrub(failing_text()),
                                           light=engine_for(role, task) == 'light',   # the same rule call() applies
-                                          asked=frozenset(asked) | remembered, reference=reference, focus=ported | path_focus, off_path=tuple(off_short))
+                                          asked=frozenset(asked) | remembered, reference=reference, focus=ported | path_focus, off_path=tuple(off_short),
+                                          off_bodies=off_bodies_text(), failing_chars=FAILING_CHARS)
             prompt = make_prompt()
             chosen = route(task, small_model=small_model, large_model=large_model, fallback=attempt > 1)
 
@@ -3342,7 +3775,10 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                 can). A candidate that fails them makes room for the tournament's next model."""
                 now = inspect_changes(task, ctx['workdir'], ctx['baseline'])
                 if not now:
-                    return ctx.get('light_note') or 'its answer changed no file'
+                    # the next model hears it in the words of a part (W-ctx 2): the edit changed nothing, and why
+                    return part_failure(ctx.get('light_note') or '', False)
+                if ensure_test_marker(task, ctx['workdir'], now):
+                    events.append('marker_autofixed')
                 texts = {n: ctx['workdir'].joinpath(*n.split('/')).read_text(encoding='utf-8', errors='replace')
                          for n in now}
                 for name, source in texts.items():
@@ -3359,16 +3795,31 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                     return '' if ok else why
                 return ''
 
+            def test_error_hint(diag: str) -> str:
+                """W-ctx 3: a test that does not collect or crashes before its assertion is asked again with the exact
+                error line AND the real shape of the object it fell on (class, __init__, fields, exported names: the
+                AST of the snapshot), never only 'it failed'."""
+                if not any(m in (diag or '') for m in ('Error', 'collection', 'не собирается', 'crashes before')):
+                    return ''
+                contract = K.contract_of(task)
+                files = [p['file'] for p in contract.get('parts') or [] if isinstance(p, dict) and p.get('file')]
+                symbols = [s for p in contract.get('parts') or [] if isinstance(p, dict) for s in p.get('symbols') or []]
+                try:
+                    return K.signature_hint(root, scrub(redact(diag)), files, symbols)
+                except Exception:       # noqa: BLE001 - a missing hint never stops the repeat
+                    return ''
+
             def gate_note(failure) -> str:
                 """The note for the next coder after a real test failure: the failing output (scrubbed, redacted) and the
                 diff of the candidate. Over PROMPT_LIMIT_CHARS the diff goes first, then the output is shortened."""
                 output = scrub(redact(failure.diag))[:TOURNAMENT_OUTPUT_LIMIT]
                 diff = unified_diff(ctx['baseline'], ctx['workdir'], failure.changed, DIFF_LIMIT)
-                room = channels.PROMPT_LIMIT_CHARS - len(prompt)
+                room = channels.PROMPT_LIMIT_CHARS - len(prompt) if not test_new else GATE_NOTE_ROOM   # the contract card squeezes its code
                 lead = (NO_EFFECT_NOTE + (OFF_PATH_NOTE % ', '.join(off_short) if off_short else '')
                         if getattr(failure, 'no_effect', False) else '')
+                hint = test_error_hint(failure.diag) if task.kind == 'unit_test' else ''
                 for part in (TOURNAMENT_DIFF_NOTE % diff if diff else '', ''):
-                    note = lead + TOURNAMENT_GATE_NOTE % output + part
+                    note = lead + TOURNAMENT_GATE_NOTE % output + hint + part
                     if len(note) <= room:
                         return note
                 fixed = len(TOURNAMENT_GATE_NOTE % '')
@@ -3401,19 +3852,32 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                 go to the gates as they are ready: the first green one stands. The gates run once per candidate, over the
                 union of its parts, and there are no repair rounds inside the pass: a red gate ends the candidate."""
                 count = 1 if attempt <= 1 else 2
-                line = scrub(failing) if (attempt > 1 or feedback) else ''     # the exact failing line, shown on a repeat
+                if attempt > 1 or feedback:      # a repeat shows the exact failing line: the red base must be in (a first pass overlaps it)
+                    early = settle_base()
+                    if early is not None:        # green / environment / unknown base ends the pass before any model call
+                        return early
+                line = scrub(failing_text())     # the exact failing line from the first attempt on (empty while the red base runs)
                 models = [set() for _ in range(count)]
                 first_booked = threading.Event()
                 older = [m for m in failed_models_of(row) if isinstance(m, str)]
 
+                part_tried: dict = {}       # (candidate, file) -> the models that already answered that part
+
                 def part_call(k, part_task, directory, text):
                     waited = 0.0
+                    own = part_tried.setdefault((k, part_task.touch_files[0] if part_task.touch_files else ''), set())
                     while True:
                         mine = set().union(*(models[j] for j in range(count) if j != k))
-                        out = sorted(mine | (set(older) - mine))
-                        skip = () if small_follow_up or not k else ('small',)
-                        extra = dict(skip_tiers=skip, later=bool(k), candidate=k, models_out=models[k],
-                                     on_booked=(lambda _m: first_booked.set()) if k == 0 else None)
+                        # a part asked again goes to ANOTHER model than the ones that already gave it an unusable
+                        # answer (a preference: with no other model free the call takes any, below)
+                        out = sorted(mine | own | (set(older) - mine))
+                        skip = skip_small(k, attempt, feedback, small_follow_up)
+
+                        def booked(model, k=k, own=own):
+                            own.add(model)
+                            if k == 0:
+                                first_booked.set()
+                        extra = dict(skip_tiers=skip, later=bool(k), candidate=k, models_out=models[k], on_booked=booked)
                         try:
                             try:
                                 return call('edit', part_task, lambda _retry: directory, chosen, text,
@@ -3443,7 +3907,8 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                         else:
                             base_k = ctx['baseline']
                         code, text, note = edit_parts(task, parts_now, where,
-                                                      lambda pt, d, p: part_call(k, pt, d, p), failing=line)
+                                                      lambda pt, d, p: part_call(k, pt, d, p), failing=line,
+                                                      use_code=attempt <= 1 and not feedback and not k)
                     finally:
                         if k == 0:
                             first_booked.set()
@@ -3472,6 +3937,10 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                             if why and left:         # the other candidate may still be usable
                                 fails.append(('gate', 'gate:unusable', why, ()))
                                 continue
+                            early = settle_base()    # the red base runs in the background: the gates judge against it, so wait for it here
+                            if early is not None:    # green / environment / unknown base ends the pass
+                                outcome = early
+                                break
                             found = run_gates()
                             if isinstance(found, _GateRetry):
                                 gate_failed.append(ctx['coder_model'])
@@ -3502,8 +3971,8 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                 if k:
                     held = (ctx['workdir'], ctx['baseline'])
                     tried.append(ctx['coder_model'])
-                    view = make_prompt(asked)         # the first prompt may predate the base; later ones carry it
-                    k_prompt = view + next_note
+                    view = make_prompt(asked, next_note if test_new else '')   # the first prompt may predate the base; later ones carry it
+                    k_prompt = view if test_new else view + next_note        # a contract test card holds the note inside its limit
                     if channels.prompt_too_big(k_prompt):
                         k_prompt = view
                     ctx['workdir'] = staging / ('%s-cand-%d' % (prefix, k))
@@ -3512,7 +3981,7 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                     events.append('tournament_candidate_%d' % (k + 1))
                 ctx['candidate'] = k
                 def coder_call(tried=tried, k=k, k_prompt=k_prompt):
-                    skip = () if small_follow_up or not k else ('small',)        # <id> small_follow_up
+                    skip = skip_small(k, attempt, feedback, small_follow_up)        # <id> small_follow_up; gate-red repeat
                     excluded = coder_exclusions(tried)
                     try:
                         return call(role, task, dir_for, chosen, k_prompt, exclude_model=excluded, skip_tiers=skip, later=bool(k))
@@ -3523,8 +3992,13 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                         return call(role, task, dir_for, chosen, k_prompt, exclude_model=list(tried) or None,
                                     skip_tiers=skip, later=bool(k))
 
+                architect_made = False
                 try:
-                    rc, out, err = timed('code_s', coder_call)
+                    if architect_code and not k and not feedback and attempt <= 1 and apply_architect_code():
+                        architect_made = True
+                        rc, out, err = 0, b'', b''
+                    else:
+                        rc, out, err = timed('code_s', coder_call)
                 except (ChannelFault, channels.ChannelUnavailable, NoIndependentReviewer):
                     if not k:
                         raise
@@ -3535,7 +4009,7 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                 if early is not None:
                     return early
                 decision = None          # the earlier candidate's failure is history now; this one is judged afresh
-                ctx['coder_model'] = calls[-1]['model']
+                ctx['coder_model'] = architect_author if architect_made else calls[-1]['model']
                 if event_summary(out)['finish_reason'] in ('length', 'max_tokens'):
                     events.append('output_truncated')
                 signal = scope_signal()
@@ -3570,6 +4044,95 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                                             models=tried + [ctx['coder_model']])
                 if gate_failed:
                     report['tournament']['gate_failed'] = list(gate_failed)
+        def authors() -> list:
+            """Every model that wrote a part of this candidate: none of them judges it (nor the paid critic)."""
+            return sorted(ctx['coder_models'] | {m for m in [ctx.get('coder_model')] if m})
+
+        def diff_of(changed) -> str:
+            return unified_diff(ctx['baseline'], ctx['workdir'], changed, 10 ** 7) if ctx['baseline'] is not None else ''
+
+        def kept_votes(diff_hash, banned=()) -> list:
+            """W-review 2: the valid voices already given on THIS diff (key: its hash); an author or a repeated model never votes."""
+            pend = ck.read()['tasks'][tid].get('pending_review') or {}
+            kept = votes_of_diff(pend, diff_hash)
+            fresh, seen_models = [], set(banned)
+            for old_vote in (kept if isinstance(kept, list) else []):
+                if not (isinstance(old_vote, dict) and isinstance(old_vote.get('model'), str) and type(old_vote.get('ok')) is bool
+                        and old_vote['model'] not in seen_models and old_vote['model'] not in authors()):
+                    continue
+                seen_models.add(old_vote['model'])
+                fresh.append(old_vote)
+            return fresh
+
+        def said_line(number, ok, why) -> str:
+            """What the next critic is told of an earlier voice (the loop below and the precheck's prompt use it)."""
+            return 'critic %d %s: %s' % (number, 'approved' if ok else 'rejected', '; '.join(list(why or [])[:5]) or 'no remarks')
+
+        def reviewers_wait() -> tuple:
+            """W-review 1: (wait_s, reason, short, kept) of the review route right now, by the very helpers call() uses
+            (call_size, call_order with the same exclusions: the authors AND the critics who already voted on this diff,
+            call_pick on the ledger view, nothing booked). ``short``: a voice is kept and no other reviewer exists, so the
+            chain would end cut short whatever the gates say. The prompt is the one review_candidate builds (its invoke
+            only captures it), so the size is the call's own."""
+            if not configured:
+                return 0.0, '', [], []
+            try:
+                changed = inspect_changes(task, ctx['workdir'], ctx['baseline']) if ctx['baseline'] is not None else ()
+            except Exception:                        # the gates will name it
+                return 0.0, '', [], []
+            text = diff_of(changed)
+            diff_hash = sha256(text.encode('utf-8', 'replace')).hexdigest() if ctx['baseline'] is not None else ''
+            kept = kept_votes(diff_hash)
+            voted = [v['model'] for v in kept]
+            class _PromptSeen(Exception):            # the real builder's prompt, caught before any model is asked
+                pass
+
+            def capture(call_task, directory, preferred, **kwargs):
+                raise _PromptSeen(call_task, kwargs['prompt_override'])
+            try:
+                review_candidate(task, ctx['workdir'], review_model, capture, baseline=ctx['baseline'], scratch=staging,
+                                 lens=REVIEW_LENSES[min(len(kept), len(REVIEW_LENSES) - 1)],
+                                 prior=tuple(said_line(n + 1, v['ok'], v.get('why')) for n, v in enumerate(kept)),
+                                 rejected=rejected_for(ck.read(), tid), rubric=True,
+                                 execution=execution_report(base, tuple(ctx.get('hollow') or ()), tuple(ctx.get('extra_names') or ())))
+                return 0.0, '', [], kept             # the builder asked no model: nothing to wait for
+            except _PromptSeen as seen_prompt:
+                call_task, prompt = seen_prompt.args
+            except Exception:                        # the gates / the call will name it
+                return 0.0, '', [], []
+            light, base_tokens, steps, booked = call_size('review', call_task, len(prompt), channels.cyrillic_share(prompt))
+            live_state = ck.read().get('channel_quotas') or {}
+            scratch_events = list(events)            # _kilo_fits writes into it: the precheck leaves no event behind
+            order = call_order('review', review_model, base_tokens, authors() + voted, (), (), False, live_state, light, steps,
+                               scratch_events)
+            if not order:
+                return 0.0, '', kept, kept           # without a voice the call's own NoIndependentReviewer path decides
+            seen = quota_ledger.view(live_state, quota_ledger.others(ledger, str(checkpoint))) if ledger is not None else live_state
+            try:
+                call_pick(order, seen, base_tokens, booked, call_affinity('review'))
+            except channels.ChannelUnavailable as error:
+                return float(error.wait_s or 0), str(error.reason or ''), [], kept
+            return 0.0, '', [], kept
+        if decision is None and pending:             # a standing candidate: no cloud gates while no reviewer is free
+            hold, why_hold, short_chain, kept_now = reviewers_wait()
+            # rule 4 of 21.11: with a kept voice the paid critic is the insurance second voice, so while it can be asked
+            # the chain is not cut short here: the gates run and the chain's own handler calls it (W-review fix 2)
+            if kept_now and paid_critic.available():
+                short_chain, hold = [], 0.0
+            if short_chain:                          # a voice is kept, no other model exists: the gates would end in this
+                events.append('review_deferred_before_gates')
+                events.append('review_chain_short')
+                report['review_verdict'] = 'unavailable'
+                report['review_votes'] = [dict(model=v['model'], ok=v['ok']) for v in short_chain]
+                report['critics'] = [v['model'] for v in short_chain]
+                report['pending_review'] = True
+                if ck.commit(chain_short) >= ESCALATE_AFTER:
+                    return block('review_chain_short', 'review chain cut short %d times' % ESCALATE_AFTER)
+                return release_or_block('review_chain_short', INFRA_DEFER_S)
+            if hold > REVIEWER_WAIT_S:
+                events.append('review_deferred_before_gates')
+                report['pending_review'] = True
+                return _wait(release, report, 'channel_wait', hold, status='WAITING_CHANNEL', channel_reason=why_hold or None)
         if decision is None:
             decision = run_gates()                   # the standing candidate (or the kept one of a pending review)
             if isinstance(decision, _GateRetry):
@@ -3594,12 +4157,9 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
         # 4. Independent reviewer: another model, reasons go back as feedback.
         ck.commit(lambda s, r: set_pending(s, r))
 
+        kept_log = []     # the voices of this candidate (the telemetry reads it on every exit)
         critics = []      # the models that reviewed this candidate: the next critic is none of them, nor the coder
         told = rejected_for(ck.read(), tid)
-
-        def authors() -> list:
-            """Every model that wrote a part of this candidate: none of them judges it (nor the paid critic)."""
-            return sorted(ctx['coder_models'] | {m for m in [ctx.get('coder_model')] if m})
 
         def invoke(call_task, directory, preferred, **kwargs):
             return call('review', call_task, lambda _retry: directory, preferred,
@@ -3610,7 +4170,18 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
             mech_ok = mechanically_ok(base, hollow, extra)
             votes, said, rejections = [], [], []
             approved = None
-            for n in range(REVIEW_PANEL):
+            # W-review 2: the voices already given on THIS diff (key: its hash) are not asked again after a postponement
+            diff_hash = sha256(diff_of(changed).encode('utf-8', 'replace')).hexdigest() if ctx['baseline'] is not None else ''
+            for old_vote in kept_votes(diff_hash):      # a model never votes twice, and an author never judges its own work
+                critics.append(old_vote['model'])
+                votes.append(old_vote['ok'])
+                kept_log.append(dict(model=old_vote['model'], ok=old_vote['ok'], why=list(old_vote.get('why') or [])[:5]))
+                said.append(said_line(len(votes), old_vote['ok'], kept_log[-1]['why']))
+                if not old_vote['ok']:
+                    rejections.extend(kept_log[-1]['why'] or ['rejected without a stated reason'])
+            if kept_log:
+                events.append('review_votes_kept_%d' % len(kept_log))
+            for n in range(len(votes), REVIEW_PANEL):
                 try:     # up to REVIEW_PANEL critics of different models, each with its own lens; the majority decides
                     ok, why = timed('review_s', lambda: review_candidate(
                         task, ctx['workdir'], review_model, invoke, baseline=ctx['baseline'], scratch=staging,
@@ -3633,6 +4204,8 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                             ctx['paid_done'] = paid_second
                             events.append('paid_second_critic')
                             approved = paid_second['verdict'] != 'reject' and (all(votes) or mech_ok)
+                            kept_log.append(dict(model=str(paid_second.get('model') or 'paid'),   # W-review fix 6: the paid voice is a voice
+                                                 ok=paid_second['verdict'] != 'reject', why=[]))
                             if not approved:
                                 paid_critic.record_class(task, paid_second)
                                 rejections.append(scrub(redact('paid critic [%s]: %s' % (
@@ -3643,6 +4216,8 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                     # on a later pass; the same postponement ESCALATE_AFTER times in a row is BLOCKED (the term).
                     events.append('review_chain_short')
                     report['critics'] = list(critics)
+                    report['review_verdict'] = 'unavailable'     # W-review 3: no verdict yet, only the voices so far
+                    report['review_votes'] = [dict(model=v['model'], ok=v['ok']) for v in kept_log]
                     report['critiques'] = [scrub(redact(s))[:300] for s in said]
                     report['pending_review'] = True
                     if ck.commit(chain_short) >= ESCALATE_AFTER:   # the term of the candidate, whatever came between
@@ -3655,23 +4230,33 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                 said.append('critic %d %s: %s' % (n + 1, 'approved' if ok else 'rejected', '; '.join(why) or 'no remarks'))
                 if not ok:
                     rejections.extend(why or ['rejected without a stated reason'])
+                kept_log.append(dict(model=critics[-1], ok=bool(ok), why=[scrub(redact(str(w)))[:300] for w in (why or [])][:5]))
+                if diff_hash:                    # at once, not at the end: a chain cut short keeps this voice
+                    ck.commit(lambda s, r, log=list(kept_log): keep_votes(r, log, diff_hash))
                 approved = panel_verdict(votes, n + 1 == REVIEW_PANEL, mech_ok)
                 if approved is not None:
                     break
             reasons = [] if approved else (rejections or ['the critics are split and the mechanical ranking is against'])
             report['critics'] = list(critics)
+            report['review_verdict'] = 'approve' if approved else 'reject'     # W-review 3
+            report['review_votes'] = [dict(model=v['model'], ok=v['ok']) for v in kept_log]
             # redacted like reason_detail: a critic may quote a key it saw (test_reason_and_feedback_are_redacted_...,
             # red since the chain landed; that test never reaches the public cloud run, its fake key blocks it)
             report['critiques'] = [scrub(redact(s))[:300] for s in said]
         except NoIndependentReviewer:
             report['pending_review'] = True
+            report['review_verdict'] = 'unavailable'
+            report['review_votes'] = [dict(model=v['model'], ok=v['ok']) for v in kept_log]
             return _wait(release_or_block, report, 'no_independent_reviewer', status='WAITING_CHANNEL')
         except channels.ChannelUnavailable as error:
             report['pending_review'] = True
+            report['review_verdict'] = 'unavailable'
+            report['review_votes'] = [dict(model=v['model'], ok=v['ok']) for v in kept_log]
             return _wait(release, report, 'channel_wait', error.wait_s, status='WAITING_CHANNEL',
                          channel_reason=error.reason)
         except ReviewFault as error:
             report['pending_review'] = True
+            report['review_verdict'] = 'fault'
             report['reason_detail'] = scrub(redact(str(error)))[:300]
             return release_or_block('reviewer_failed', INFRA_DEFER_S)
         if not approved:
@@ -3718,7 +4303,14 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
     except NoIndependentReviewer:
         report['pending_review'] = has_pending()
         return _wait(release_or_block, report, 'no_independent_reviewer', status='WAITING_CHANNEL')
-    except PromptTooLarge as error:
+    except (PromptTooLarge, K.CardTooLarge) as error:
+        if K.contract_of(task).get('parts') or isinstance(error, K.CardTooLarge) or (
+                K.contract_of(task).get('test') or {}).get('new'):
+            # a card of a contract that does not fit even squeezed (W-ctx 1): back to the slicer for smaller parts,
+            # no strike and no BLOCKED that is lifted and comes round again
+            events.append('card_too_large')
+            detail = scrub(redact('the card does not fit %d characters: %s' % (channels.PROMPT_LIMIT_CHARS, error)))[:300]
+            return end(lambda s, r: (fail_row(s, tid, token, 'reslice'), None), reason='reslice', reason_detail=detail)
         return block('context_too_large', 'prompt of %s characters exceeds %d' %
                      (error, channels.PROMPT_LIMIT_CHARS))
     except Exception as error_obj:  # noqa: BLE001 - fail closed, never retry an uncertain worker

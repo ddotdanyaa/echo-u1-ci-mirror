@@ -59,6 +59,21 @@ def test_old_and_unreadable_sections_do_not_count(tmp_path):
     assert Q.others(tmp_path, 'me', now=NOW) == []
 
 
+def test_the_day_counter_of_one_key_group_adds_up_over_all_sections(tmp_path):
+    chan = [dict(id='co', model='cohere/m', key_env='K1', group='trial', tpm=100000, rpd=30, verified=True)]
+    Q.publish(tmp_path, 'station', {'trial': {'request_times': [NOW - 100 - i for i in range(25)]}}, now=NOW)
+    Q.publish(tmp_path, 'architect', {'trial': {'request_times': [NOW - 50 - i for i in range(28)]}}, now=NOW)
+    seen = Q.view({}, Q.others(tmp_path, 'third', now=NOW))
+    assert len(seen['trial']['request_times']) == 53
+    try:
+        C.choose(chan, seen, 100, ENV, now=NOW)
+        raise AssertionError('53 of 30 requests today must not be free')
+    except C.ChannelUnavailable as error:
+        assert error.reason == 'rpd'
+    alone = Q.view({}, Q.others(tmp_path, 'architect', now=NOW))      # the station's 25 alone leave room
+    assert C.choose(chan, alone, 100, ENV, now=NOW)['id'] == 'co'
+
+
 def test_a_section_file_is_replaced_whole(tmp_path):
     Q.publish(tmp_path, 'state-A', {'g1': {'request_times': [NOW]}}, now=NOW)
     files = [p for p in tmp_path.iterdir() if p.suffix == '.json']

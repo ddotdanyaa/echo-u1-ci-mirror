@@ -228,9 +228,10 @@ def test_bookings_coolings_memory_and_ratings_survive_a_json_round_trip():
 
 
 def test_a_channel_cooled_model_is_not_another_free_route_for_the_series_cap():
-    ch_list = [A1, B1]
+    small = dict(A1, rpd=500)           # (rpd >= C.HIGH_RPD is parked for 5 minutes at most: its own test)
+    ch_list = [small, B1]
     state = {}
     C.cool_channel(state, B1, now=NOW, seconds=600)
     for _ in range(8):
-        out = C.note_outcome(state, A1, False, now=NOW, channels=ch_list)
+        out = C.note_outcome(state, small, False, now=NOW, channels=ch_list)
     assert out['cool_s'] == C.STREAK_COOL_S

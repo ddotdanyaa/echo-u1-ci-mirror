@@ -7,6 +7,8 @@ import time
 from pathlib import Path
 
 STALE_S = 2 * 86400
+COOL_STALE_S = 1800          # a foreign section older than this keeps no cooling mark of ours
+FOREIGN_OVERLOAD_S = 300     # a foreign model mark (a 503) holds this section at most this long
 LISTS = ('request_times', 'rpm_times', 'minute')
 
 
@@ -22,6 +24,16 @@ def publish(folder, section, quotas, *, now=None) -> None:
     tmp = target.with_name(target.name + '.tmp%d' % os.getpid())
     tmp.write_text(json.dumps({'section': str(section), 'saved': now, 'quotas': quotas}), encoding='utf-8')
     os.replace(tmp, target)
+
+
+def _same_section(a, b) -> bool:
+    """Two section names that are one path spelled differently (the section is the state file's path)."""
+    if not isinstance(a, str) or not a or not b:
+        return False
+    try:
+        return os.path.normcase(os.path.realpath(a)) == os.path.normcase(os.path.realpath(str(b)))
+    except (OSError, ValueError):
+        return False
 
 
 def others(folder, section, *, now=None) -> list:
@@ -40,13 +52,32 @@ def others(folder, section, *, now=None) -> list:
             continue
         if not isinstance(data, dict) or not isinstance(data.get('quotas'), dict):
             continue                   # not a section: skipped, never a crash
-        if now - float(data.get('saved') or 0) > STALE_S:
+        if _same_section(data.get('section'), section):
+            continue                   # my own section under another spelling of the path (relative, other case, ..)
+        age = now - float(data.get('saved') or 0)
+        if age > STALE_S:
             continue
-        out.append(data['quotas'])
+        quotas = data['quotas']
+        if age > COOL_STALE_S:
+            quotas = _without_cooling(quotas)      # a section nobody has written for 30 minutes holds nobody
+        out.append(quotas)
     return out
 
 
-def view(own, others_list) -> dict:
+def _without_cooling(quotas) -> dict:
+    """``quotas`` of a stale section without its cooling marks (its bookings still count)."""
+    out = {}
+    for k, v in quotas.items():
+        if k in ('model_cool', 'channel_cool', 'day_probe'):
+            continue
+        if isinstance(v, dict) and 'cool_until' in v:
+            v = {sk: sv for sk, sv in v.items() if sk != 'cool_until'}
+        out[k] = v
+    return out
+
+
+def view(own, others_list, *, now=None) -> dict:
+    now = time.time() if now is None else now
     seen = copy.deepcopy(own)
     for other in others_list:
         for k, v in other.items():
@@ -54,7 +85,21 @@ def view(own, others_list) -> dict:
                 if 'model_cool' not in seen:
                     seen['model_cool'] = {}
                 for m, t in v.items():
-                    seen['model_cool'][m] = max(seen['model_cool'].get(m, 0), t)
+                    if isinstance(t, (int, float)) and not isinstance(t, bool):
+                        # a foreign mark (mostly a 503 of the model) holds us FOREIGN_OVERLOAD_S at most; our own
+                        # calls will cool it for longer when the model is still bad for us. The shared log cannot tell
+                        # a 503 from a per-model daily mark, so a foreign DAILY model mark also holds us 5 minutes
+                        # at most (accepted simplification): our own first call probes it and sets our own mark
+                        t = min(t, now + FOREIGN_OVERLOAD_S)
+                        seen['model_cool'][m] = max(seen['model_cool'].get(m, 0), t)
+            elif k == 'day_probe' and isinstance(v, dict):
+                table = seen.setdefault('day_probe', {})
+                for key, row in v.items():
+                    mine = table.get(key)
+                    if not isinstance(mine, dict):
+                        table[key] = copy.deepcopy(row)
+                    elif isinstance(row, dict) and isinstance(row.get('flight'), (int, float)):
+                        mine['flight'] = max(mine.get('flight') or 0, row['flight'])
             elif k == 'channel_cool':
                 if 'channel_cool' not in seen:
                     seen['channel_cool'] = {}

@@ -81,6 +81,23 @@ def test_hold_with_expired_block_unblocks():
     assert F.next_action(s, 300.0, 0, False, tasks)["task_id"] == "T" "2"     # the dead dependency is lifted with it
 
 
+def test_expired_block_is_lifted_also_during_a_channel_cooldown():
+    """W-sha: <id> is BLOCKED by worker_exception (term 300 s, 50 min passed) while a runnable card waits for a cooling
+    channel: the lift is not held back by WAIT channel_cooldown; with no expired block the WAIT stays."""
+    tasks = _plan(task_row(1), task_row(2))
+    s = F.initial_state(tasks)
+    F.park(s, "T1", "spec_not_testable", "a fault of the code", now=0.0)
+    s["tasks"]["T1"].update(blocked_reason="worker_exception", block_until=300.0)
+    now = 300.0 + 3000.0
+    act = F.next_action(s, now, 120.0, False, tasks)
+    assert act == {"action": "UNBLOCK", "task_id": "T1", "reason": "worker_exception", "block_until": 300.0}
+    F.unblock(s, "T1", None)
+    assert F.next_action(s, now, 120.0, False, tasks)["reason"] == "channel_cooldown"      # <id> and <id> are runnable now
+    s["tasks"]["T1"].update(status="BLOCKED", blocked_reason="worker_exception", block_until=now + 100)
+    assert F.next_action(s, now, 120.0, False, tasks)["reason"] == "channel_cooldown"      # the term is not over: waits
+    assert F.next_action(s, now, 0.0, False, tasks)["action"] == "RUN"
+
+
 def test_loop_never_holds_over_five_min_while_blocked_tasks(tmp_path, monkeypatch):
     e = Env(tmp_path, monkeypatch, tasks=_pair())
     e.set_row("T" "2", status="BLOCKED", blocked_reason="spec_not_testable", blocked_at=e.clock.t,
