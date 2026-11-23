@@ -410,6 +410,77 @@ def votes_of_diff(pend, diff_hash):
     return None
 
 
+_SHARED_BASE: dict = {}          # W-base 2: the red bases of this process, one per (tree, kind, tests, file bytes)
+_SHARED_BASE_LOCK = threading.Lock()
+SHARED_BASE_MAX = 256
+
+
+def _base_core(root, task: Task, baseline: dict) -> str:
+    """The identity of a base measurement WITHOUT the commit: the tree, the kind, the tests and the bytes of the staged
+    files. The commit is checked apart (same, or moved over files the red base does not depend on)."""
+    h = sha256(('%s\n%s\n%s' % (Path(root).resolve(), task.kind, '\n'.join(sorted(task.tests)))).encode('utf-8'))
+    for name, data in sorted(baseline.items()):
+        if name != POLICY_FILE:
+            h.update(name.encode('utf-8') + b'\0' + sha256(data).digest())
+    return h.hexdigest()
+
+
+def _base_deps(task: Task, result) -> set:
+    """The files a red base depends on: the tests' files, the task's files and the files of the failing tests' path."""
+    deps = {str(t).split('::', 1)[0] for t in task.tests} | set(task.touch_files) | set(task.read_files)
+    for entry in getattr(result, 'path', ()) or ():
+        try:
+            name = str(entry[0]).replace('\\', '/')
+        except (IndexError, TypeError):
+            continue
+        deps.add(name)
+        if not name.endswith('.py'):
+            deps.add(name.replace('.', '/') + '.py')
+    return deps
+
+
+def _changed_between(root, old: str, new: str):
+    """The files that differ between two commits of the repo at ``root``, or None (a commit unknown here, git fails)."""
+    try:
+        done = subprocess.run(['git', '-C', str(root), 'diff', '--name-only', old, new], capture_output=True,
+                              text=True, timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if done.returncode != 0:
+        return None
+    return {line.strip() for line in done.stdout.splitlines() if line.strip()}
+
+
+def _shared_base_get(core: str, base_sha: str | None, root):
+    """A red base measured earlier in this process (by this card or another with the same tests and file bytes): on the
+    same commit as it is; on a moved commit when the move did not touch a file the base depends on. Else None."""
+    if not core or not base_sha:
+        return None
+    with _SHARED_BASE_LOCK:
+        rec = _SHARED_BASE.get(core)
+    if rec is None or not 0 <= _now() - rec['at'] < BASE_CACHE_S:
+        return None
+    if rec['sha'] != base_sha:
+        if not rec['carry']:
+            return None
+        changed = _changed_between(root, rec['sha'], base_sha)
+        if changed is None or changed & rec['deps']:
+            return None
+        with _SHARED_BASE_LOCK:
+            _SHARED_BASE[core] = dict(rec, sha=base_sha)
+    return rec['result']
+
+
+def _shared_base_put(core: str, base_sha: str | None, task: Task, result) -> None:
+    if not core or not base_sha:
+        return
+    with _SHARED_BASE_LOCK:
+        while len(_SHARED_BASE) >= SHARED_BASE_MAX:
+            _SHARED_BASE.pop(next(iter(_SHARED_BASE)))
+        _SHARED_BASE[core] = {'sha': base_sha, 'at': _now(), 'result': result, 'deps': _base_deps(task, result),
+                              'carry': bool(getattr(result, 'path', ()))}
+
+
 def _held_base(row: dict, key: str | None, kind: str | None = None, state_dir: Path | None = None):
     """The red base kept on the row for this key while it is fresh; None when absent, stale, foreign or unreadable
     (a damaged record only costs a new measurement). A code task's record must carry the path of its failing tests
@@ -3138,10 +3209,16 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                            reason_detail=detail)
         key = _base_key(base_sha, task, ctx['baseline'])
         held = _held_base(row, key, task.kind, checkpoint.parent)
+        core, shared = None, None
+        if key and task.kind != 'unit_test':
+            core = _base_core(root, task, ctx['baseline'])
+            if held is None:      # W-base 2: another card's measure, or this one's on the commit before a base_moved
+                shared = _shared_base_get(core, base_sha, root)
+                held = shared
         verdict, base = None, None        # the red base may still be running in the background: closures read None, never an unbound name
         if held is not None:
             verdict, base = 'red', held
-            events.append('base_reused')
+            events.append('base_shared' if shared is not None else 'base_reused')
         else:
             red_args = (base_root() if task.kind != 'unit_test' else root, task.tests, GATE_TIMEOUT_S, task.kind)
             red_kwargs = dict(wait_s=(min(RED_BEFORE_WAIT_S, max(0.0, slot['left'])) if slot['armed'] else RED_BEFORE_WAIT_S),
@@ -3156,7 +3233,7 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                 # gates wait for both (settle_base below, right after the first coder call)
                 bg_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix='red-base')
                 bg = bg_pool.submit(measure_base)
-        base_fresh = held is None
+        base_fresh = held is None or shared is not None      # a shared base is written on the row too
         base_settled = False
         on_mods, off_mods, off_short, path_focus = {}, {}, [], frozenset()
 
@@ -3173,6 +3250,8 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
             if base_fresh:
                 base_fresh = False
                 keep_red = (key and verdict == 'red' and not base.env_reason and task.kind != 'unit_test')
+                if keep_red and shared is None:
+                    _shared_base_put(core, base_sha, task, base)
 
                 def note_base(state, row):
                     row.pop('base_red', None)
