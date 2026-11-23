@@ -4869,7 +4869,7 @@ class Loop:
         found = re.match(r"^([A-Za-z]+\d+)_(\d+)$", tail)
         if found:
             return found.group(1) + ("-" if found.group(2).startswith("0") else ".") + found.group(2)
-        return tail
+        return tail if re.match(r"^[A-Za-z]+\d+([._-]\d+)?$", tail) else ""
 
     def _guard_red_tick(self, now, AF) -> None:
         """W-echo 1: on every NEW record of the sweep (its file or its modification changed) the red-guard invariant runs once."""
