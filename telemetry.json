@@ -1,6 +1,6 @@
 {
  "accepted": 5,
- "free_ram_gb": 4.41,
+ "free_ram_gb": 4.94,
  "funnel": {
   "accepted": 5,
   "claimed": 141,
@@ -145,7 +145,7 @@
   }
  },
  "promoted": 29,
- "rows_recognized": 22042,
+ "rows_recognized": 22052,
  "schema": 3,
  "side": {
   "blocked": 0,
@@ -205,7 +205,7 @@
    "calls_usage_unknown": 0,
    "errors": {},
    "http_429": 0,
-   "rows": 4361,
+   "rows": 4367,
    "status": {
     "BLOCKED": 259,
     "FAILED": 282,
@@ -217,7 +217,7 @@
     "deferred": 512,
     "empty": 92,
     "infra": 17,
-    "ok": 1700,
+    "ok": 1706,
     "other": 43,
     "refused": 1,
     "requeued": 2,
@@ -231,12 +231,12 @@
    "calls_usage_unknown": 0,
    "errors": {},
    "http_429": 0,
-   "rows": 2830,
+   "rows": 2833,
    "status": {
     "added": 1,
-    "failed": 34,
+    "failed": 36,
     "ok": 62,
-    "other": 2710,
+    "other": 2711,
     "rejected": 23
    },
    "tokens_in": 0,
@@ -303,10 +303,10 @@
    "calls_usage_unknown": 0,
    "errors": {},
    "http_429": 0,
-   "rows": 298,
+   "rows": 299,
    "status": {
     "added": 43,
-    "empty": 247,
+    "empty": 248,
     "hold_dropped": 3,
     "other": 5
    },
@@ -327,13 +327,13 @@
   "brake_cleared": 1,
   "cleared": 56,
   "deferred": 1030,
-  "empty": 339,
+  "empty": 340,
   "error": 366,
-  "failed": 34,
+  "failed": 36,
   "hold_dropped": 3,
   "infra": 17,
-  "ok": 12059,
-  "other": 2970,
+  "ok": 12065,
+  "other": 2971,
   "parked": 18,
   "refused": 2,
   "rejected": 40,
