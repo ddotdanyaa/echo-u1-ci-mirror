@@ -2134,7 +2134,19 @@ def _with_retry_after(raw: bytes, header) -> bytes:
 
 
 def _light_post(url: str, key: str, body: dict, timeout: float) -> tuple[int | None, bytes]:
-    """(HTTP status or None, body). The key travels only in the Authorization header, never in a log."""
+    """(HTTP status or None, body) within ``timeout`` seconds IN TOTAL: urllib's timeout is per socket operation
+    (connect, each read), so a slow answer lived far longer than asked (live 23.11: 87 s and 180 s for a 30 s limit).
+    The key travels only in the Authorization header, never in a log."""
+    box = []
+    worker = threading.Thread(target=lambda: box.append(_light_post_once(url, key, body, timeout)), daemon=True)
+    worker.start()
+    worker.join(timeout)
+    if worker.is_alive() or not box:
+        return None, b'TimeoutError'       # the late answer, if it ever comes, is dropped
+    return box[0]
+
+
+def _light_post_once(url: str, key: str, body: dict, timeout: float) -> tuple[int | None, bytes]:
     request = urllib.request.Request(url, data=json.dumps(body).encode('utf-8'), method='POST',
                                      headers={'Content-Type': 'application/json', 'Authorization': 'Bearer ' + key})
     try:
@@ -2906,7 +2918,18 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
         affinity = call_affinity(role)
 
         hopped, last_info = [], None     # models that answered "overloaded" in THIS call: the next hop skips them
-        for retry in range(1 + TRANSIENT_HOPS):
+        pauses = list(channels.OVERLOAD_RETRY_S)    # W-503: no free channel after a 503: the same one again after 5 s, 15 s
+
+        def overload_pause() -> bool:
+            """After a 503 with no free channel left: wait the next pause, forget the hops (the cooling is short now)
+            and let the loop ask again. False when the pauses are spent (the pass is deferred, no penalty to the card)."""
+            if last_info is None or not pauses:
+                return False
+            time.sleep(pauses.pop(0))
+            hopped.clear()
+            return True
+
+        for retry in range(1 + TRANSIENT_HOPS + len(pauses)):
             selected, at, chosen, kwargs = None, None, preferred, {}
             if configured:
                 route = 'code' if role == 'repair' else role
@@ -2914,7 +2937,9 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                 live_state = whole.get('channel_quotas') or {}    # a fresh private copy: ratings, parked 404s, cooling
                 order = call_order(role, preferred, base_tokens, exclude_model, hopped, skip_tiers, later, live_state,
                                    light, steps)
-                if not order and hopped:              # every other model is overloaded too: the old transient path
+                if not order and hopped:              # every other model is overloaded too: pauses, then the old path
+                    if overload_pause():
+                        continue
                     raise ChannelFault(last_info or {'kind': 'transient'})
                 if not order:
                     raise NoIndependentReviewer()
@@ -2933,7 +2958,14 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                         quota_ledger.publish(ledger, str(checkpoint), quota)
                     booked_one(row)
                     return pick, when, tokens
-                selected, at, tokens = ck.commit(book)
+                try:
+                    selected, at, tokens = ck.commit(book)
+                except channels.ChannelUnavailable:
+                    if overload_pause():          # nothing booked, nothing charged: the 503's channel is asked again
+                        continue
+                    if last_info is not None:     # the pauses are spent: the pass is deferred as 'transient' (no strike)
+                        raise ChannelFault(last_info)
+                    raise
                 if tokens < base_tokens and 'reservation_capped' not in events:
                     events.append('reservation_capped')
                 chosen, kwargs['key_env'] = selected['model'], selected['key_env']
@@ -2952,13 +2984,16 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                 models_out.add(chosen)
             if on_booked is not None:
                 on_booked(chosen)
+            # W-503: the small tier waits SMALL_FIRST_TIMEOUT_S for ANY role of the light engine (it was the edit role only:
+            # a review or a code call of Gemma waited the full 180 s, live 23.11: 180 and 87 s)
+            small_quick = bool(selected and channels.tier_of(selected) == 'small' and (role == 'edit' or light))
             began = time.monotonic()
             try:
                 directory = directory_for(retry)
                 engine = light_attempt if light else model_attempt
                 if light:
                     kwargs['temperature'] = candidate_temperature(candidate)
-                timeout = channels.SMALL_FIRST_TIMEOUT_S if role == 'edit' and selected and channels.tier_of(selected) == 'small' else 240
+                timeout = channels.SMALL_FIRST_TIMEOUT_S if small_quick else 240
                 code, stdout, stderr = engine(call_task, directory, chosen, timeout=timeout,
                                               prompt_override=prompt, steps=steps, **kwargs)
             except BaseException:
@@ -3025,7 +3060,8 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                         streak = channels.note_outcome(
                             state['channel_quotas'], selected,
                             not empty and (info['kind'] == 'ok' or (info['kind'] == 'unknown' and code == 0)),
-                            channels=configured)
+                            channels=configured,
+                            overload=info['kind'] == 'transient' and info.get('status') in channels.OVERLOAD_STATUSES)
                         if streak.get('reason'):
                             info['streak_cool'] = streak
                     if ledger is not None:
@@ -3055,12 +3091,15 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
             kind = info['kind']
             if kind == 'ok' or (kind == 'unknown' and code == 0):
                 return code, stdout, stderr
-            if kind == 'timeout' and role == 'edit' and selected and channels.tier_of(selected) == 'small':
+            if kind == 'timeout' and small_quick:
                 info['kind'] = kind = 'transient'
             if kind in ('timeout', 'launcher'):
                 raise ChannelFault(info)
             if selected is not None:
                 def failure(state, row):
+                    if ledger is not None:      # a success of another process ends our series of 503s too
+                        channels.absorb_foreign_ok(state.setdefault('channel_quotas', {}),
+                                                   quota_ledger.others(ledger, str(checkpoint)))
                     outcome = channels.apply_failure(state['channel_quotas'], selected, info, env=os.environ)
                     if ledger is not None:
                         quota_ledger.publish(ledger, str(checkpoint), state['channel_quotas'])
@@ -3072,7 +3111,8 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                 # owner: on a 503 the step does not wait or throw the candidate away, it moves to a free model at
                 # once (live 21.11 20:41-21:01: <id>_test lost three gate-passed candidates, 4-7 min each, because both
                 # review channels were one overloaded Gemma). Only this call skips the model; its cooling is the channel's.
-                hopped.append(chosen)
+                if done.get('action') != 'cool_channel':     # a hiccup rests only its channel: the model's other key stays
+                    hopped.append(chosen)
                 last_info = info
                 continue
             if kind in ('transient', 'network') and retry == 0:

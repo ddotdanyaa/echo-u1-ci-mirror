@@ -52,6 +52,15 @@ OVERLOAD_COOL_S = 120          # long enough for the retry and the next pass to 
 OVERLOAD_COOL_MAX_S = 900      # a model that stays overloaded is tried 4 times an hour, not 30 (live 19.11: Gemma 4
                                # answered 503 to 11 of 17 reviews, each refusal took 0.6-43 s)
 OVERLOAD_FORGET_S = 1800       # no overload of the model for half an hour: the next one starts a new series
+# W-503 (live 23.11: 7 % of the calls of two healthy Gemini models answered 503, and every single one cooled the model on
+# BOTH keys for 120 s, doubling to 900 s: 24 channels were closed at 15:50 with 484 of 2000 requests spent). A 503 is
+# an overload only when it repeats: the series counts the model's 503s in a row with no success between them (a success
+# of ANY process ends it, model_ok in the shared quota section). The first one cools only that channel for 5 s (the
+# other key stays open), the second the model for 15 s, then 30, 60, 120 -- at most 120 s for a model with at least half
+# good calls among its recent ones; the others (Gemma now) keep the old 120..300 (900) rule.
+OVERLOAD_STEPS = (5, 15, 30, 60, 120)
+OVERLOAD_RETRY_S = (5, 15)     # a call with no free channel left asks the same channel again after these pauses
+OPEN_SOON_S = 30               # a channel that opens within this many seconds counts as free for the pool's headroom
 # A channel whose last STREAK_FAILS calls all failed (any kind, the hours between them do not matter) is cooled for
 # STREAK_COOL_S, doubled for every further failure of the series, at most STREAK_COOL_MAX_S; a successful call ends the
 # series (live 20.11: g-gemma-4-31b failed 9 calls in a row over 5 h, 1317 s went into calls after 3 failures in a row)
@@ -301,6 +310,19 @@ def rating(state, model) -> float:
     return sum(results) / len(results)
 
 
+def tier_rating(state, channels, tier) -> float:
+    """Share of good calls among the recent ones of every model of ``tier`` together; 1.0 until RATING_MIN are known."""
+    models = {c['model'] for c in channels if tier_of(c) == tier}
+    table = state.get('channel_stats') if isinstance(state, dict) else None
+    results = []
+    for row in (table.values() if isinstance(table, dict) else ()):
+        if isinstance(row, dict) and row.get('model') in models:
+            results.extend(r for r in (row.get('results') or []) if r in (0, 1) and type(r) is int)
+    if len(results) < RATING_MIN:
+        return 1.0
+    return sum(results) / len(results)
+
+
 def missing_for_good(state, channel) -> bool:
     """The last MISSING_STREAK calls of this channel all answered 404 and its config is unchanged since."""
     table = state.get('channel_stats') if isinstance(state, dict) else None
@@ -327,6 +349,13 @@ def route_order(channels, role, attempt, tokens, *, preferred=None, exclude_mode
     ranks = _ROLE_TIERS.get(key, _ROLE_TIERS[('code', 1)])
     if role == 'edit' and attempt <= 1 and state and state.get('edit_route') == 'small_second':
         ranks = ('main', 'small')
+    if (state is not None and ranks and ranks[0] == 'small' and (role == 'review' or (role == 'edit' and attempt <= 1))
+            and (tokens > SMALL_PROMPT_TOKENS or tier_rating(state, channels, 'small') < RATING_BAD)):
+        # W-503: the small tier (Gemma) leads only a SHORT review or edit while at least half of its recent calls were
+        # good (live 23.11: 10 ok of 45+17 failed calls); otherwise it comes after the main tier
+        ranks = tuple(t for t in ranks if t != 'small')
+        at = ranks.index('main') + 1 if 'main' in ranks else 0
+        ranks = ranks[:at] + ('small',) + ranks[at:]
     excluded = excluded_models(exclude_model)
     picked = []
     for channel in channels:
@@ -396,10 +425,31 @@ def _numbers(value):
     return [v for v in value if isinstance(v, (int, float)) and not isinstance(v, bool)]
 
 
-def _model_cool(state, channel) -> float:
+def overload_healthy(state, model) -> bool:
+    """At least half of the model's recent calls were good (or too few are known): its 503s are single hiccups."""
+    return rating(state, model) >= RATING_BAD
+
+
+def _model_cool(state, channel, now=None) -> float:
     table = state.get('model_cool')
     value = table.get(channel['model']) if isinstance(table, dict) else None
-    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else 0.0
+    if not (isinstance(value, (int, float)) and not isinstance(value, bool)):
+        return 0.0
+    now = time.time() if now is None else now
+    model = channel['model']
+    if value > now + OVERLOAD_STEPS[-1]:
+        # a mark made by the old overload rule (no source recorded, born from the model's last 503, up to 900 s) is cut
+        # to the new limit when it is read; marks of daily quotas, probes and series of failures stay
+        sources = state.get('model_cool_src')
+        runs = state.get('model_overload')
+        last = _numbers(runs.get(model)) if isinstance(runs, dict) else []
+        probes = state.get('day_probe')
+        if (not (isinstance(sources, dict) and model in sources) and len(last) == 2
+                and 0 <= value - last[1] <= OVERLOAD_COOL_MAX_S + 1
+                and not (isinstance(probes, dict) and 'model:' + str(model) in probes)
+                and overload_healthy(state, model)):
+            return float(now + OVERLOAD_STEPS[-1])
+    return float(value)
 
 
 def _channel_cool(state, channel) -> float:
@@ -408,13 +458,13 @@ def _channel_cool(state, channel) -> float:
     return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else 0.0
 
 
-def cooled_until(state, channel) -> float:
+def cooled_until(state, channel, now=None) -> float:
     """When the channel can take a call again as far as cooling goes: the latest of its quota group, its model and
     the channel itself (a per-minute limit cools only the channel)."""
     group = state.get(channel['group'])
     until = group.get('cool_until', 0) if isinstance(group, dict) else 0
     until = until if isinstance(until, (int, float)) and not isinstance(until, bool) else 0
-    return max(until, _model_cool(state, channel), _channel_cool(state, channel), _probe_flight(state, channel))
+    return max(until, _model_cool(state, channel, now), _channel_cool(state, channel), _probe_flight(state, channel))
 
 
 def _probe_keys(channel) -> tuple:
@@ -480,8 +530,9 @@ def _balanced(channels, state, now):
     return [c for m in models for c in sorted(by_model[m], key=lambda c: -left(c))]
 
 
-def choose(channels, state, tokens, env, *, now=None, requests=1, affinity=None):
+def choose(channels, state, tokens, env, *, now=None, requests=1, affinity=None, grace=0):
     """First channel that can take ``tokens`` and ``requests`` now, else ChannelUnavailable(reason, wait_s).
+    ``grace``: a cooled channel whose cooling ends within this many seconds counts as free (the headroom's view).
     ``affinity``: a name (or a list of names, the closest first: the task, then its module family) whose last
     channel is tried first within its tier while it has room; reserve() with the same names remembers the pick.
     None keeps the plain order."""
@@ -505,8 +556,8 @@ def choose(channels, state, tokens, env, *, now=None, requests=1, affinity=None)
         if tokens > channel['tpm']:
             reasons.append(('reservation_exceeds_tpm', 3600.0))
             continue
-        cool = cooled_until(state, channel)
-        if cool > now:
+        cool = cooled_until(state, channel, now)
+        if cool > now + grace:
             reasons.append(('cool', cool - now))
             continue
         start, end = quota_day(channel['model'], now)       # the provider's day, not the last 24 h
@@ -606,13 +657,14 @@ def _remember(state, channel, affinity, now) -> None:
 
 def headroom(channels, state, tokens, env, *, now=None, requests=1, cap=16) -> int:
     """How many first calls choose()+reserve() could book right now on ``channels`` (a deep copy of ``state``: nothing
-    is booked). The pool admits one more worker only while this exceeds the workers that have not booked yet."""
+    is booked). The pool admits one more worker only while this exceeds the workers that have not booked yet. A channel
+    that opens within OPEN_SOON_S counts as free: the card waits for it itself (2.3), the pool must not refuse for it."""
     work = copy.deepcopy(state)
     now = time.time() if now is None else now
     found = 0
     while found < cap:
         try:
-            pick = choose(channels, work, tokens, env, now=now, requests=requests)
+            pick = choose(channels, work, tokens, env, now=now, requests=requests, grace=OPEN_SOON_S)
         except ChannelUnavailable:
             break
         reserve(work, pick, tokens, now=now, requests=requests)
@@ -961,8 +1013,45 @@ def apply_failure(state, channel, info, *, env=None, now=None) -> dict:
         # "This model is currently experiencing high demand" (503): the MODEL is overloaded, not the account. Cooled,
         # the retry and the next pass take another channel (live 19.11 18:18-18:20: two passes were deferred on a
         # 503 of gemini-3.5-flash-lite while three other channels idled).
-        return _cool_model(state, channel, now, _overload_seconds(state, channel['model'], now, _big_daily(channel)))
+        if overload_healthy(state, channel['model']):
+            run = _overload_run(state, channel['model'], now)
+            if run == 1:      # one 503 is a hiccup: this channel rests 5 s, the model on the other key stays open
+                return cool_channel(state, channel, now=now, seconds=OVERLOAD_STEPS[0])
+            return _cool_model(state, channel, now, OVERLOAD_STEPS[min(run - 1, len(OVERLOAD_STEPS) - 1)],
+                               src='overload')
+        return _cool_model(state, channel, now, _overload_seconds(state, channel['model'], now, _big_daily(channel)),
+                           src='overload')
     return {'action': 'none', 'cool_s': 0}
+
+
+def _overload_run(state, model, now) -> int:
+    """The model's 503s in a row: this one's number. A success of any process since the previous 503 (model_ok), or
+    OVERLOAD_FORGET_S of quiet, starts the series again."""
+    table = state.get('overload_run')
+    if not isinstance(table, dict):
+        table = state['overload_run'] = {}
+    last = _numbers(table.get(model))
+    oks = state.get('model_ok')
+    ok_at = oks.get(model) if isinstance(oks, dict) else None
+    ok_at = ok_at if isinstance(ok_at, (int, float)) and not isinstance(ok_at, bool) else 0
+    run = 1
+    if len(last) == 2 and 0 <= now - last[1] < OVERLOAD_FORGET_S and not ok_at > last[1]:
+        run = min(int(last[0]), 1000) + 1
+    table[model] = [run, now]
+    return run
+
+
+def absorb_foreign_ok(state, others) -> None:
+    """Take the latest success of every model from the other processes' sections (``others``: quota_ledger.others())
+    into ``state['model_ok']``: their success ends our series of 503s too."""
+    oks = state.get('model_ok')
+    if not isinstance(oks, dict):
+        oks = state['model_ok'] = {}
+    for other in others or ():
+        table = other.get('model_ok') if isinstance(other, dict) else None
+        for model, at in (table.items() if isinstance(table, dict) else ()):
+            if isinstance(at, (int, float)) and not isinstance(at, bool) and at > oks.get(model, 0):
+                oks[model] = at
 
 
 def _day_cool(channel, info, now, state=None, *, whole=False, model=False) -> int:
@@ -1026,7 +1115,7 @@ def _overload_seconds(state, model, now, big=False) -> int:
     return min(limit, OVERLOAD_COOL_S * 2 ** min(series - 1, 8))
 
 
-def note_outcome(state, channel, ok, *, now=None, channels=()) -> dict:
+def note_outcome(state, channel, ok, *, now=None, channels=(), overload=False) -> dict:
     """Count the failed calls of ``channel`` in a row (kept in its quota group, per channel); the STREAK_FAILS-th and
     every further one cools it through cool() -- or only its model through _cool_model() when ``channels`` shows other
     models in the same group. A successful call ends the series. Returns what was done, with the reason."""
@@ -1039,6 +1128,11 @@ def note_outcome(state, channel, ok, *, now=None, channels=()) -> dict:
     if ok:
         row['missing'] = 0
         table.pop(channel['id'], None)
+        if isinstance(state.get('overload_run'), dict):
+            state['overload_run'].pop(channel['model'], None)    # a success ends the model's series of 503s
+        if not isinstance(state.get('model_ok'), dict):
+            state['model_ok'] = {}
+        state['model_ok'][channel['model']] = now      # the other processes see it in the shared section
         probes = state.get('day_probe')
         if isinstance(probes, dict):             # a 200 is the end of the daily mark: the probe worked
             if probes.pop(channel['id'], None) is not None and isinstance(state.get('channel_cool'), dict):
@@ -1050,6 +1144,8 @@ def note_outcome(state, channel, ok, *, now=None, channels=()) -> dict:
                     and isinstance(state.get('model_cool'), dict)):
                 state['model_cool'].pop(channel['model'], None)
         return {'action': 'none', 'cool_s': 0}
+    if overload and overload_healthy(state, channel['model']):
+        return {'action': 'none', 'cool_s': 0}     # a 503 of a healthy model has its own series (apply_failure)
     prior = table.get(channel['id'])
     n = (prior if type(prior) is int and prior > 0 else 0) + 1
     big = _big_daily(channel)
@@ -1083,7 +1179,7 @@ def _other_route(state, channel, channels, now) -> bool:
             until = _dead_until(mark)
             if until is None or until > now:
                 continue
-        if cooled_until(state, other) <= now:
+        if cooled_until(state, other, now) <= now:
             return True
     return False
 
@@ -1102,7 +1198,7 @@ def probe_targets(channels, state, env, *, now=None) -> list:
             until = _dead_until(mark)
             if until is None or until > now:
                 continue
-        until = cooled_until(state, channel)
+        until = cooled_until(state, channel, now)
         if until <= now:
             continue
         tier = tier_of(channel)
@@ -1129,6 +1225,8 @@ def probe_outcome(state, channel, info, *, env=None, now=None, channels=()) -> d
         state['model_cool'].pop(channel['model'], None)
     if isinstance(state.get('model_overload'), dict):
         state['model_overload'].pop(channel['model'], None)
+    if isinstance(state.get('overload_run'), dict):
+        state['overload_run'].pop(channel['model'], None)
     group = state.get(channel['group'])
     if isinstance(group, dict) and isinstance(group.get('cool_until'), (int, float)) and group['cool_until'] > now:
         group['cool_until'] = now       # the key answered: the whole key's mark ends too
@@ -1159,7 +1257,7 @@ def channel_report(channels, state, env, *, now=None) -> list:
             candidates.append(('no_key', None))
         if calls >= channel['rpd']:
             candidates.append(('rpd', end))
-        for kind, when in (('model', _model_cool(state, channel)), ('channel', _channel_cool(state, channel)),
+        for kind, when in (('model', _model_cool(state, channel, now)), ('channel', _channel_cool(state, channel)),
                            ('group', gcool)):
             if when > now:
                 label = kind
@@ -1179,10 +1277,16 @@ def channel_report(channels, state, env, *, now=None) -> list:
     return rows
 
 
-def _cool_model(state, channel, now, seconds) -> dict:
-    """Cool one MODEL (every channel of it) for ``seconds``; the account and the other models stay usable."""
+def _cool_model(state, channel, now, seconds, src='other') -> dict:
+    """Cool one MODEL (every channel of it) for ``seconds``; the account and the other models stay usable. ``src``
+    says what made the mark (a mark of ours is never cut like an old overload mark when it is read)."""
     if not isinstance(state.get('model_cool'), dict):
         state['model_cool'] = {}
     models = state['model_cool']
-    models[channel['model']] = max(models.get(channel['model'], 0), now + max(1, seconds))
+    until = now + max(1, seconds)
+    if until > models.get(channel['model'], 0):
+        if not isinstance(state.get('model_cool_src'), dict):
+            state['model_cool_src'] = {}
+        state['model_cool_src'][channel['model']] = src
+    models[channel['model']] = max(models.get(channel['model'], 0), until)
     return {'action': 'cool_model', 'cool_s': seconds}
