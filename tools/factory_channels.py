@@ -1425,9 +1425,10 @@ def main_free(channel_list, state, tokens, env, *, now=None) -> bool:
 
 
 def small_timeout(channel_list, state, tokens, env, *, now=None) -> int:
-    """W-gemma 2: how long a call of the small tier (Gemma) may wait for its answer: SMALL_FIRST_TIMEOUT_S while a main
-    channel is free (it would answer faster), BIG_TIMEOUT_S when Gemma is the only voice left."""
-    return SMALL_FIRST_TIMEOUT_S if main_open(channel_list, state, env, now=now) else BIG_TIMEOUT_S   # W-gemma 3: one condition
+    """W-gemma 2/4: how long a call of the small tier (Gemma, already chosen by the card) may wait for its answer:
+    BIG_TIMEOUT_S always, except SMALL_FIRST_TIMEOUT_S while a main-tier channel (not escalation) is free right now with
+    room in its minute window (a half-open channel after a 429 with rpm 5 is no reason to cut Gemma at 30 s)."""
+    return SMALL_FIRST_TIMEOUT_S if main_free(channel_list, state, tokens, env, now=now) else BIG_TIMEOUT_S
 
 
 def close_big(state, channel, *, now=None) -> dict:

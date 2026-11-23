@@ -931,11 +931,11 @@ OFF_BODIES_NOTE = ('\nCode the failing test runs outside the files you may chang
 GATE_RED = '(0 required)'     # the gate's "rc=1 (0 required)": the candidate ran and the tests stayed red
 
 
-def skip_small(k: int, attempt: int, feedback, small_follow_up: bool = False) -> tuple:
+def skip_small(k: int, attempt: int, feedback, small_follow_up: bool = False, main_open: bool = True) -> tuple:
     """Tiers a coder call skips. A second candidate never uses the small tier (<id>). The repeat of a card that came
     back red from the gate (rc=1) is led by the main/strong tier from candidate 0: the small model already wrote the
     candidate that did not turn the test green (live 23.11: 'gate: rc=1 (0 required)', the biggest red outcome)."""
-    if small_follow_up:
+    if small_follow_up or not main_open:     # W-gemma4 1: no open main/escalation channel: Gemma works on any attempt/candidate
         return ()
     if k or (attempt > 1 and GATE_RED in str(feedback or '')):
         return ('small',)
@@ -2918,9 +2918,10 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
         (which passes its own ``sink`` for the events, so it writes none of them)."""
         route = 'code' if role == 'repair' else role
         excl = sorted(channels.excluded_models(exclude_model) | set(hopped)) or None
-        if 'small' in skip_tiers and channels.main_dry(configured, live_state, os.environ):
-            # W-gemma2 1: 'no small tier for a repeat / a second candidate' is a preference for a day when a main channel is
-            # open; with every main channel closed by the day's mark Gemma is the only executor and takes the repeat too
+        if 'small' in skip_tiers and not channels.main_open(configured, live_state, os.environ):
+            # W-gemma2 1 / W-gemma4 fix1: 'no small tier for a repeat / a second candidate' is a preference for a day when a
+            # main channel is open; with none open (closed by any mark, or none usable) Gemma is the only executor and takes
+            # the repeat too. The same condition (main_open) as skip_for, so the two paths cannot disagree
             skip_tiers = tuple(t for t in skip_tiers if t != 'small')
         order = channels.route_order(configured, route, attempt, base_tokens, preferred=preferred,
                                      exclude_model=excl, skip_tiers=skip_tiers, state=live_state, later=later,
@@ -2935,6 +2936,13 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                                          skip_tiers=tuple(t for t in skip_tiers if t != 'small'), state=live_state,
                                          later=later)
         return _kilo_fits(order, steps, events if sink is None else sink) if order and not light else order
+
+    def skip_for(k, attempt, feedback, small_follow_up) -> tuple:
+        """W-gemma4 1: skip_small on the live quota state: with no open main/escalation channel the small tier is not skipped."""
+        if not configured or not (k or attempt > 1):
+            return skip_small(k, attempt, feedback, small_follow_up)
+        live = ck.read().get('channel_quotas') or {}
+        return skip_small(k, attempt, feedback, small_follow_up, channels.main_open(configured, live, os.environ))
 
     def call_affinity(role) -> list:
         """The channel affinity of a call of this role (a reviewer must not move the coder's remembered channel):
@@ -4012,7 +4020,8 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                     if channels.usable(channels.route_order(
                             configured, 'code', attempt, channels.estimate_tokens(len(prompt), 0),
                             exclude_model=now_out + older, state=live_now,
-                            skip_tiers=() if small_follow_up or not now_out else ('small',)),
+                            skip_tiers=() if small_follow_up or not now_out
+                            or not channels.main_open(configured, live_now, os.environ) else ('small',)),
                             live_now, os.environ):   # a dead channel (checked with the call's own env) is no other model
                         tag = 'other_model_than_%d' % len(older)
                         if tag not in events:
@@ -4050,7 +4059,7 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                         # a part asked again goes to ANOTHER model than the ones that already gave it an unusable
                         # answer (a preference: with no other model free the call takes any, below)
                         out = sorted(mine | own | (set(older) - mine))
-                        skip = skip_small(k, attempt, feedback, small_follow_up)
+                        skip = skip_for(k, attempt, feedback, small_follow_up)
 
                         def booked(model, k=k, own=own):
                             own.add(model)
@@ -4161,7 +4170,7 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                     events.append('tournament_candidate_%d' % (k + 1))
                 ctx['candidate'] = k
                 def coder_call(tried=tried, k=k, k_prompt=k_prompt):
-                    skip = skip_small(k, attempt, feedback, small_follow_up)        # <id> small_follow_up; gate-red repeat
+                    skip = skip_for(k, attempt, feedback, small_follow_up)        # <id> small_follow_up; gate-red repeat
                     excluded = coder_exclusions(tried)
                     try:
                         return call(role, task, dir_for, chosen, k_prompt, exclude_model=excluded, skip_tiers=skip, later=bool(k))
