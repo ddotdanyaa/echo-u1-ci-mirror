@@ -602,7 +602,7 @@ def _probe_channel(channel, key):
 
 
 class Loop:
-    TXN_WAIT_S = 10.0      # a transaction on the state waits at most this long for the lock (a commit lasts ms)
+    TXN_WAIT_S = 10.0       # a transaction on the state waits at most this long for the lock (a commit lasts ms)
     CLAIM_WAIT_S = 2.0      # the claim waits less: a held lock is WAIT state_locked, not a stalled loop
 
     def __init__(self, cfg: Config, *, triage_fn=None, runner_cmd=None, clock=time.time,

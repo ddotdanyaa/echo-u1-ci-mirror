@@ -1,6 +1,6 @@
 {
  "accepted": 5,
- "free_ram_gb": 4.87,
+ "free_ram_gb": 4.8,
  "funnel": {
   "accepted": 5,
   "claimed": 236,
@@ -9,7 +9,7 @@
   "gate_pass": 32,
   "known_to_loop": 300,
   "promoted": 30,
-  "ready": 124,
+  "ready": 125,
   "reviewed": 89,
   "triaged": 179
  },
@@ -178,7 +178,7 @@
   }
  },
  "promoted": 30,
- "rows_recognized": 27610,
+ "rows_recognized": 27630,
  "schema": 3,
  "side": {
   "blocked": 9,
@@ -186,7 +186,7 @@
   "requeued": 2
  },
  "skipped_files": 0,
- "source_sha": "sha584a3f7719aa",
+ "source_sha": "sha70c47da68cb4",
  "span": {
   "answer": {
    "calls": 0,
@@ -206,9 +206,9 @@
    "calls_usage_unknown": 0,
    "errors": {},
    "http_429": 0,
-   "rows": 4148,
+   "rows": 4151,
    "status": {
-    "ok": 3903,
+    "ok": 3906,
     "other": 245
    },
    "tokens_in": 0,
@@ -219,14 +219,14 @@
    "calls_usage_unknown": 0,
    "errors": {},
    "http_429": 0,
-   "rows": 791,
+   "rows": 792,
    "status": {
     "brake": 8,
     "brake_cleared": 1,
     "cleared": 58,
     "deferred": 518,
     "error": 14,
-    "other": 152,
+    "other": 153,
     "parked": 18,
     "released": 9,
     "run_failed": 13
@@ -239,19 +239,19 @@
    "calls_usage_unknown": 0,
    "errors": {},
    "http_429": 0,
-   "rows": 5048,
+   "rows": 5057,
    "status": {
     "BLOCKED": 340,
     "FAILED": 326,
     "READY": 1408,
     "REVIEW": 41,
-    "WAITING_CHANNEL": 199,
+    "WAITING_CHANNEL": 202,
     "added": 16,
     "brake": 15,
     "deferred": 512,
     "empty": 92,
     "infra": 17,
-    "ok": 1954,
+    "ok": 1960,
     "other": 51,
     "refused": 1,
     "requeued": 2,
@@ -265,13 +265,13 @@
    "calls_usage_unknown": 0,
    "errors": {},
    "http_429": 0,
-   "rows": 5478,
+   "rows": 5481,
    "status": {
     "added": 1,
     "applied": 209,
     "failed": 36,
     "ok": 78,
-    "other": 5131,
+    "other": 5134,
     "rejected": 23
    },
    "tokens_in": 0,
@@ -321,15 +321,15 @@
     "transient": 163
    },
    "http_429": 33,
-   "rows": 9568,
+   "rows": 9572,
    "status": {
     "BLOCKED": 356,
     "FAILED": 327,
     "READY": 1963,
     "REVIEW": 41,
-    "WAITING_CHANNEL": 208,
+    "WAITING_CHANNEL": 211,
     "error": 234,
-    "ok": 6400,
+    "ok": 6401,
     "other": 39
    },
    "tokens_in": 17818939,
@@ -356,7 +356,7 @@
   "FAILED": 653,
   "READY": 3371,
   "REVIEW": 82,
-  "WAITING_CHANNEL": 407,
+  "WAITING_CHANNEL": 413,
   "added": 71,
   "applied": 728,
   "approved": 41,
@@ -369,8 +369,8 @@
   "failed": 36,
   "hold_dropped": 3,
   "infra": 17,
-  "ok": 13751,
-  "other": 5661,
+  "ok": 13761,
+  "other": 5665,
   "parked": 18,
   "refused": 2,
   "rejected": 40,
@@ -385,8 +385,7 @@
   "DONE": 68,
   "FAILED": 203,
   "PROMOTED": 6,
-  "READY": 124,
-  "RUNNING": 1
+  "READY": 125
  },
  "unrecognized_rows": 0
 }

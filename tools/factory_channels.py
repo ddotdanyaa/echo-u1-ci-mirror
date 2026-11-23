@@ -418,7 +418,7 @@ def cooled_until(state, channel) -> float:
 
 
 def _probe_keys(channel) -> tuple:
-    return (channel['id'], 'group:' + str(channel['group']))
+    return (channel['id'], 'group:' + str(channel['group']), 'model:' + str(channel['model']))
 
 
 def _probe_flight(state, channel) -> float:
@@ -943,7 +943,7 @@ def apply_failure(state, channel, info, *, env=None, now=None) -> dict:
     if kind in ('rate_minute', 'rate_day'):
         if kind == 'rate_day':
             whole = not (info.get('scope') in ('model', 'channel'))
-            seconds = _day_cool(channel, info, now, state, whole=whole)
+            seconds = _day_cool(channel, info, now, state, whole=whole, model=info.get('scope') == 'model')
         else:
             seconds = int(info.get('retry_after_s') or DEFAULT_COOL_S)
         if info.get('scope') == 'model':     # an upstream provider of ONE model: the rest of the account is fine
@@ -965,7 +965,7 @@ def apply_failure(state, channel, info, *, env=None, now=None) -> dict:
     return {'action': 'none', 'cool_s': 0}
 
 
-def _day_cool(channel, info, now, state=None, *, whole=False) -> int:
+def _day_cool(channel, info, now, state=None, *, whole=False, model=False) -> int:
     """Cooling of a daily 429: not until the reset but until the next PROBE -- DAY_PROBE_S, doubled for every
     further daily 429 of the same series, at most DAY_PROBE_MAX_S and never past the reset (the time the provider
     named, else the midnight of the channel's provider); in the first DAY_GRACE_S of the provider's day without a
@@ -980,7 +980,9 @@ def _day_cool(channel, info, now, state=None, *, whole=False) -> int:
         to_reset = max(60, int(end - now))
         named = False
     n = 1
-    key = 'group:' + str(channel['group']) if whole else channel['id']
+    # the series and the probe flight belong to what the mark is on: the key, the model (a per-model quota of a
+    # provider: every channel of the model waits for one probe) or the channel
+    key = 'group:' + str(channel['group']) if whole else 'model:' + str(channel['model']) if model else channel['id']
     if isinstance(state, dict):
         table = state.get('day_probe')
         if not isinstance(table, dict):
@@ -1044,6 +1046,9 @@ def note_outcome(state, channel, ok, *, now=None, channels=()) -> dict:
             if (probes.pop('group:' + str(channel['group']), None) is not None
                     and isinstance(group.get('cool_until'), (int, float)) and group['cool_until'] > now):
                 group['cool_until'] = now
+            if (probes.pop('model:' + str(channel['model']), None) is not None
+                    and isinstance(state.get('model_cool'), dict)):
+                state['model_cool'].pop(channel['model'], None)
         return {'action': 'none', 'cool_s': 0}
     prior = table.get(channel['id'])
     n = (prior if type(prior) is int and prior > 0 else 0) + 1

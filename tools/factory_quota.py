@@ -87,7 +87,9 @@ def view(own, others_list, *, now=None) -> dict:
                 for m, t in v.items():
                     if isinstance(t, (int, float)) and not isinstance(t, bool):
                         # a foreign mark (mostly a 503 of the model) holds us FOREIGN_OVERLOAD_S at most; our own
-                        # calls will cool it for longer when the model is still bad for us
+                        # calls will cool it for longer when the model is still bad for us. The shared log cannot tell
+                        # a 503 from a per-model daily mark, so a foreign DAILY model mark also holds us 5 minutes
+                        # at most (accepted simplification): our own first call probes it and sets our own mark
                         t = min(t, now + FOREIGN_OVERLOAD_S)
                         seen['model_cool'][m] = max(seen['model_cool'].get(m, 0), t)
             elif k == 'day_probe' and isinstance(v, dict):
