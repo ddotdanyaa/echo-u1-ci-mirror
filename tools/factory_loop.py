@@ -3511,7 +3511,8 @@ class Loop:
             if rec.get("base_red"):
                 clues.append(rec["base_red"])
                 clues.append(self._trace_clue(task.id, rec))
-        clues.append(self._guard_traces(state).get(row, []))
+        guard_trace = self._guard_traces(state).get(row)
+        clues.append(guard_trace or [])
         red_given = Loop._is_red_row(row, entry)
         if red_given:
             try:
@@ -3519,6 +3520,20 @@ class Loop:
             except Exception as exc:                # an addition to the packet: without it the packet is as before
                 if hasattr(self, "err"):
                     self.err("row red evidence", exc)
+        row_trace = [t for t in (guard_trace or []) if not str(t[0]).startswith("tests/")]
+        if red_given and row_trace and rung < 2:
+            # W-free 4: the bodies of up to 4 functions of the trace nearest to the assert (rung >= 2 has the whole dossier)
+            try:
+                near, seen_fn = [], set()
+                for rel, name, _line in reversed(row_trace):
+                    if (rel, name) not in seen_fn:
+                        seen_fn.add((rel, name))
+                        near.append((rel, name, 0))
+                if bodies := A.hint_sources(root, near[:40], places=4, cap=8000):
+                    clues.append("CODE ALONG THE PATH OF THE RED TEST (the functions of its trace nearest to the assert):\n" + bodies)
+            except Exception as exc:                # an addition to the packet: without it the packet is as before
+                if hasattr(self, "err"):
+                    self.err("row red path", exc)
         def keywords(system, user):
             status, _, answer, _ = self._light_ask(system + "\n" + user, attempt=1,
                 section="loop-keywords", quotas=getattr(self, "_kw_quotas", {}), max_tokens=800, role="review", thrifty=True)
@@ -3543,7 +3558,9 @@ class Loop:
             except Exception as exc:               # an addition to the packet: without it the packet is as before
                 self.err("row dossier", exc)
         return dict(bid=row, title=safe(title), priority=entry.get("priority") or backlog.get("priority") or 9,
-                    **dossier, **({"red_given": True} if red_given else {}), quotes=[s for q in quotes if (s := safe(q))], hints=hints,
+                    **dossier, **({"red_given": True} if red_given else {}),
+                    **({"guard_test": str(entry["guard"])} if entry.get("guard") else {}),
+                    **({"trace_path": [[t[0], t[1]] for t in row_trace]} if red_given and row_trace else {}), quotes=[s for q in quotes if (s := safe(q))], hints=hints,
                     examples=[s for x in CL.contract_examples([f for f in files if isinstance(f, str)], k=2)
                               if (s := safe(x))], evidence="\n".join(s for x in clues if (s := safe(x))),
                     known_ids=list(ls.get("to_slice", {})) + list({t.backlog_id for t in tasks.values()}))
@@ -3648,6 +3665,8 @@ class Loop:
             packet, result = job.result
             contract, engine = result["contract"], result["engine"]
             outcome = contract["decision"]
+            if result.get("repaired"):
+                extra["repaired"] = list(result["repaired"])      # W-free 1: what the machine mended in the contract
             portion = dict(engine=engine, rung=job.ctx["rung"])
             if outcome == "fix":
                 prior = [t for t in tasks.values() if t.kind == "code" and F.row_of(t.backlog_id or t.id) == row]

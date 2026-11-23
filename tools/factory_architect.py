@@ -31,7 +31,7 @@ DECISIONS = ('fix', 'not_code', 'cannot_reproduce', 'already_fixed', 'hold')   #
 PART_CODE_FAULT = 'part code: '
 # Bump when the contract changes in a way the prompt/schema texts do not show; with the sha1 of those texts it is the
 # slicer version (agent_factory.slicer_version), so a quarantine opens only by a change of the contract.
-CONTRACT_REV = '1.3'
+CONTRACT_REV = '1.4'
 P2 = 'decide forks yourself: what is most convenient for the user and how the neighbouring mechanism already works; no questions to the owner'
 
 
@@ -221,7 +221,7 @@ def build_prompt(packet, engine=''):
               (DRY_RULE + '\n' if engine in ('paid', 'agent') and packet.get('edit_dry') else '') +
               'Schema: ' + json.dumps(schema, ensure_ascii=False) + '\nExamples:\n' +
               '\n'.join(str(e) for e in packet.get('examples', [])))
-    user = '\n'.join(f'{k}: {v}' for k, v in packet.items() if k not in ('examples', 'known_ids', 'rung', 'red_given', 'edit_dry', 'base_debt', 'fresh_waiting'))
+    user = '\n'.join(f'{k}: {v}' for k, v in packet.items() if k not in ('examples', 'known_ids', 'rung', 'red_given', 'edit_dry', 'base_debt', 'fresh_waiting', 'trace_path'))
     return system, user
 
 
@@ -760,6 +760,236 @@ def _red_fault(contract, engine):
     return ''
 
 
+_NEW_TEST_PATH = re.compile(r'tests/(?:[A-Za-z0-9_]+/)*test_[A-Za-z0-9_]+\.py')
+_SKIP_DIRS = frozenset(('.git', '__pycache__', 'node_modules', '.venv', 'venv', '.pytest_cache'))
+
+
+def _tree_files(root):
+    """Relative paths of the snapshot's files (posix); walked only when a repair needs it."""
+    root = Path(root)
+    found = []
+    for base, dirs, names in os.walk(root):
+        dirs[:] = [d for d in dirs if d not in _SKIP_DIRS]
+        found.extend((Path(base) / n).relative_to(root).as_posix() for n in names)
+    return found
+
+
+def _exact_file(root, rel):
+    """True when the file exists under exactly this spelling (a case-blind disk does not make a wrong case right)."""
+    try:
+        here = Path(root)
+        parts = F.safe_path(rel).split('/')
+        for i, name in enumerate(parts):
+            if name not in os.listdir(here):
+                return False
+            here = here / name
+        return here.is_file()
+    except (ValueError, TypeError, OSError):
+        return False
+
+
+def _unique_file(root, file):
+    """The one file of the tree that is `file` apart from its letter case, or, when `file` has no folder, the one file of
+    that name anywhere (a case-blind match); None when there are none or several."""
+    try:
+        file = F.safe_path(file)
+    except (ValueError, TypeError):
+        return None
+    low = file.casefold()
+    found = [p for p in _tree_files(root) if p.casefold() == low]
+    if not found and '/' not in file:
+        found = [p for p in _tree_files(root) if p.casefold().rsplit('/', 1)[-1] == low]
+    return found[0] if len(found) == 1 else None
+
+
+def _new_test_path(root, bid, new):
+    slug = re.sub(r'[^a-z0-9]+', '_', str(bid or 'row').lower()).strip('_')[:40] or 'row'
+    seed = str(bid) + json.dumps({k: new.get(k) for k in ('given', 'when', 'then')}, ensure_ascii=False, sort_keys=True)
+    for n in range(50):
+        path = 'tests/test_factory_%s_%s.py' % (slug, hashlib.sha1((seed + str(n)).encode('utf-8')).hexdigest()[:6])
+        if _NEW_TEST_PATH.fullmatch(path) and not (Path(root) / path).exists():
+            return path
+    return 'tests/test_factory_%s_%s.py' % (slug, hashlib.sha1(os.urandom(8)).hexdigest()[:6])
+
+
+def repair_contract(contract, root, packet):
+    """W-free 1: mechanical defects are mended by the machine, not by another model call. Returns the list of what was
+    repaired (names for the slice event); a contract that is not a fix is left alone."""
+    repaired = []
+    if not isinstance(contract, dict):
+        return repaired
+    bid = str(packet.get('bid', '') or contract.get('row', '') or '')
+    title = packet.get('title')
+    if not isinstance(title, str) or not title.strip() or len(title) > TITLE_MAX or \
+            ('title' in contract and (not isinstance(contract['title'], str) or not contract['title'].strip() or len(contract['title']) > 240)):
+        contract['title'] = clip_title(title if isinstance(title, str) else '', bid)
+        repaired.append('title')
+    if contract.get('decision') != 'fix':
+        return repaired
+    root = Path(root)
+    for i, part in enumerate(contract.get('parts') or []):
+        file = part.get('file') if isinstance(part, dict) else None
+        if isinstance(file, str) and file.strip() and not _exact_file(root, file):
+            found = _unique_file(root, file)
+            if found and found != file:
+                part['file'] = found
+                repaired.append('parts[%d].file' % i)
+    spec = contract.get('test')
+    if isinstance(spec, dict) and isinstance(spec.get('new'), dict) and not spec.get('use'):
+        new = spec['new']
+        path = new.get('path')
+        ok = isinstance(path, str) and _NEW_TEST_PATH.fullmatch(path.replace('\\', '/')) and not (root / path).exists()
+        if not ok:
+            new['path'] = _new_test_path(root, bid, new)
+            repaired.append('test.new.path')
+    elif isinstance(spec, dict) and isinstance(spec.get('use'), str) and spec['use'].strip():
+        use = spec['use']
+        try:
+            file = F.safe_path(_use_path(use.partition('::')[0]))
+        except (ValueError, TypeError):
+            file = ''
+        if file and not _exact_file(root, file):
+            name = use.partition('::')[2].strip()
+            found = _unique_file(root, file)
+            guard = str(packet.get('guard_test') or '').strip()
+            guard_file = guard.partition('::')[0]
+            if found:
+                spec['use'] = found + ('::' + name if name else '')
+                repaired.append('test.use')
+            elif guard_file:
+                try:
+                    guard_ok = _exact_file(root, _use_path(guard_file))
+                except (ValueError, TypeError):
+                    guard_ok = False
+                if guard_ok:
+                    spec['use'] = guard
+                    repaired.append('test.use')
+    return repaired
+
+
+def _flat(value):
+    if isinstance(value, (list, tuple)):
+        return '\n'.join(_flat(v) for v in value)
+    return '' if value is None else str(value)
+
+
+def unread_parts(contract, root, shown):
+    """W-free 2: the parts of a fix whose named functions the architect never saw (their text is not in `shown`):
+    [{'file', 'symbols'}]. A function counts as seen when its def line and 90% of its non-empty lines are in the text."""
+    seen = {line.strip() for line in str(shown).splitlines() if line.strip()}
+    out = []
+    for part in contract.get('parts') or []:
+        file, symbols = (part.get('file'), part.get('symbols')) if isinstance(part, dict) else (None, None)
+        if not isinstance(file, str) or not file.endswith('.py') or not isinstance(symbols, list) or not symbols:
+            continue
+        try:
+            text = (Path(root) / F.safe_path(file)).read_text(encoding='utf-8-sig')
+            found = K._symbols(ast.parse(text))
+        except (ValueError, TypeError, OSError, SyntaxError, UnicodeError, RecursionError):
+            continue
+        lines, missing = text.splitlines(), []
+        for symbol in symbols:
+            node = found.get(symbol)
+            if node is None:
+                continue
+            body = [l.strip() for l in lines[node.lineno - 1:node.end_lineno] if l.strip()]
+            if not body or body[0] not in seen or sum(1 for l in body if l in seen) < 0.9 * len(body):
+                missing.append(symbol)
+        if missing:
+            out.append({'file': file, 'symbols': missing})
+    return out
+
+
+def _trace_names(trace):
+    """The product functions of a trace [(file, qualname, ...)] in order of first appearance, tests left out."""
+    out = []
+    for call in trace or []:
+        try:
+            key = (str(call[0]).replace('\\', '/'), str(call[1]))
+        except (IndexError, TypeError):
+            continue
+        if not key[0].startswith('tests/') and key not in out:
+            out.append(key)
+    return out
+
+
+def reach_fault(contract, packet, root):
+    """W-free 3: a fix with a ready red test that has a trace must edit a function the test runs (or a module it imports).
+    '' when it does, when there is no trace, or when nothing can be judged."""
+    names = _trace_names(packet.get('trace_path'))
+    spec = contract.get('test') if isinstance(contract, dict) else None
+    if not names or not isinstance(spec, dict) or not spec.get('use'):
+        return ''
+    imported = set()
+    try:
+        test_file = Path(root) / F.safe_path(_use_path(str(spec['use']).partition('::')[0]))
+        for node in ast.walk(ast.parse(test_file.read_text(encoding='utf-8-sig'))):
+            mods = [a.name for a in node.names] if isinstance(node, ast.Import) else \
+                [node.module] if isinstance(node, ast.ImportFrom) and node.level == 0 and node.module else []
+            for mod in mods:
+                found = _module_file(root, mod)
+                if found is not None:
+                    imported.add(found.relative_to(Path(root)).as_posix())
+    except (ValueError, TypeError, OSError, SyntaxError, UnicodeError):
+        pass
+    asked = []
+    for part in contract.get('parts') or []:
+        if not isinstance(part, dict) or not str(part.get('file', '')).endswith('.py'):
+            return ''           # a non-Python part cannot be judged against a trace of functions
+        file = str(part['file']).replace('\\', '/')
+        if file in imported:
+            return ''
+        for symbol in part.get('symbols') or []:
+            asked.append(symbol)
+            for f, q in names:
+                if f == file and (q == symbol or q.startswith(symbol + '.') or q.endswith('.' + symbol)
+                                  or symbol.endswith('.' + q)):
+                    return ''
+    if not asked:
+        return ''
+    return 'unreachable: the test never runs %s; it runs: %s' % (', '.join(asked[:6]), ', '.join(q for _, q in names[-15:]))
+
+
+def fit_free(packet, rung, engine, initial, user, limit=None):
+    """W-free 2: bring a free step's prompt under `limit` by cutting hints in order of value (examples, then the hints
+    from the last, then the older source requests, then the old front of the evidence); the red test and its trace
+    (the end of the evidence) stay. Returns (packet, system, base, user): the trimmed packet copy, its system text, the user
+    text without the appended requests, and the whole user text."""
+    limit = FREE_PROMPT_MAX if limit is None else limit
+    packet = dict(packet)
+    appended = user[len(initial):] if user.startswith(initial) else ''
+    def build():
+        system, base = build_prompt(dict(packet, rung=rung), engine)
+        return system, base, base + appended
+    system, base, text = build()
+    for key in ('examples', 'hints'):
+        value = packet.get(key)
+        while len(system) + len(text) > limit and value:
+            packet[key] = value = list(value)[:-1] if isinstance(value, (list, tuple)) else ''
+            system, base, text = build()
+    if len(system) + len(text) > limit and appended:
+        keep = max(0, limit - len(system) - len(base))
+        appended = appended[-keep:] if keep else ''
+        system, base, text = build()
+    if len(system) + len(text) > limit and isinstance(packet.get('evidence'), str):
+        over = len(system) + len(text) - limit
+        packet['evidence'] = packet['evidence'][min(over, len(packet['evidence'])):]
+        system, base, text = build()
+    quotes = packet.get('quotes')
+    if len(system) + len(text) > limit and isinstance(quotes, (list, tuple)) and quotes:
+        # the last resort: the owner's quotes are cut to the room that is left (the later ones first, the head of a quote stays)
+        quotes = [str(q) for q in quotes]
+        while len(system) + len(text) > limit and quotes:
+            over = len(system) + len(text) - limit
+            if len(quotes[-1]) > over:
+                quotes[-1] = quotes[-1][:len(quotes[-1]) - over]
+            else:
+                quotes.pop()
+            packet['quotes'] = list(quotes)
+            system, base, text = build()
+    return packet, system, base, text
+
+
 def contract_for(packet, *, rung, root, asks, named_ok=False, red_given=None, skip=None):
     """`skip` is the cache of the row's wait record ({engine: {'kind', 'fault', 'answer'}}): a step that already answered
     this row with a flaw on this version and sha is not asked again in the repeat (its answer counts as given when any
@@ -779,12 +1009,23 @@ def contract_for(packet, *, rung, root, asks, named_ok=False, red_given=None, sk
         dry_asked = False
         replied, raw = False, ''
         code_asked = False
+        repaired = []
+        read_asked = reach_asked = False
+        free_packet, base_user = packet, initial
+
+        def shown_text():
+            # what the model really got: the (possibly cut) packet plus the requests appended to the prompt that still stand in it
+            return (_flat(free_packet.get('hints')) + '\n' + _flat(free_packet.get('evidence')) + '\n' +
+                    _flat(free_packet.get('red_dossier')) + '\n' + user[len(base_user):])
         system = build_prompt(dict(packet, rung=rung), engine)[0]
         refused = []        # files of this engine's requests that could not be shown: the slice event keeps their names
         try:
             while True:
                 if engine in ('free', 'free_main') and len(system) + len(user) > FREE_PROMPT_MAX:   # a limit of the free rungs
-                    raise ContractFault('prompt oversize')
+                    # W-free 2: no refusal: the hints are cut in order of value, the red test and its trace stay
+                    free_packet, system, base_user, user = fit_free(free_packet, rung, engine, base_user, user)
+                    if len(system) + len(user) > FREE_PROMPT_MAX:
+                        raise ContractFault('prompt oversize')
                 raw = asks[engine](system, user)
                 answered.add(engine)
                 replied = True
@@ -794,7 +1035,8 @@ def contract_for(packet, *, rung, root, asks, named_ok=False, red_given=None, sk
                     if rounds > limit:            # the extra round was given with the last-request message
                         raise ContractFault('need rounds exhausted')
                     before = len(refused)
-                    user += '\nRequested source:\n' + _need_source(contract['need'], root, named_ok, refused)
+                    answer = _need_source(contract['need'], root, named_ok, refused)
+                    user += '\nRequested source:\n' + answer
                     if len(refused) - before >= len(contract['need']) and idle < MAX_IDLE_NEEDS:
                         idle += 1                 # nothing was shown: the request costs no round
                         continue
@@ -812,6 +1054,7 @@ def contract_for(packet, *, rung, root, asks, named_ok=False, red_given=None, sk
                     raise ContractFault('hold without an exact reason')
                 if red and (bad := _red_fault(contract, engine)):
                     raise ContractFault(bad)        # a fault of this step: the next step answers in the same pass
+                repaired = repair_contract(contract, root, packet)     # W-free 1: mechanical defects, before any verdict
                 errors = validate(contract, root, bid=packet.get('bid', ''), title=packet.get('title', ''),
                                   known_ids=packet.get('known_ids'), named_ok=named_ok)
                 if any('oversize' in e for e in errors) and not shrunk:
@@ -842,6 +1085,21 @@ def contract_for(packet, *, rung, root, asks, named_ok=False, red_given=None, sk
                     dry_asked = True        # W-dry 1: one re-ask for the code of every part; then the card stands as it is
                     user += '\nThe edit channels are dry: ' + DRY_RULE + '\nReturn the full contract again, every part with its code.'
                     continue
+                if contract['decision'] == 'fix' and (bad := reach_fault(contract, packet, root)):
+                    if reach_asked:
+                        raise ContractFault(bad)
+                    reach_asked = True      # W-free 3: one re-ask of the same step; the test must run what the fix edits
+                    user += '\n' + bad + '\nReturn the full contract again with a part that edits a function the test runs.'
+                    continue
+                if contract['decision'] == 'fix' and engine in ('free', 'free_main') and not read_asked:
+                    # W-free 2: a free step does not fix code it has not read: the machine sends the named places itself
+                    # and asks for the contract confirmed or corrected in ONE call (no need round is spent)
+                    if unread := unread_parts(contract, root, shown_text()):
+                        read_asked = True
+                        answer = _need_source(unread, root, named_ok, refused)
+                        user += ('\nThe code of the functions your contract names (you had not seen it):\n' + answer +
+                                 '\nConfirm the contract or correct it now that you have read this code. Return the full contract again.')
+                        continue
                 if contract['decision'] == 'fix':
                     _stamp_part_codes(contract, root)
                 if contract['decision'] != 'fix' and engine in ('free', 'free_main'):
@@ -850,7 +1108,7 @@ def contract_for(packet, *, rung, root, asks, named_ok=False, red_given=None, sk
                         votes[decision] = engine
                         break
                     engine = votes[decision] + '+' + engine
-                return dict(contract=contract, engine=engine, faults=faults)
+                return dict(contract=contract, engine=engine, faults=faults, repaired=repaired)
         except Exception as exc:
             # Do not include arbitrary provider exception text (it can contain credentials).
             message = str(exc) if isinstance(exc, ContractFault) else type(exc).__name__
