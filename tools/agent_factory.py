@@ -1556,7 +1556,11 @@ def _move_traces(state_dir: Path, data: dict) -> None:
 
 
 def load_state(path: Path, tasks: dict[str, Task]) -> dict:
-    data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else initial_state(tasks)
+    # W-flow 4: deliberately NOT cached (unlike the plan). The caller mutates the dict and writes it back, every claim
+    # changes the file, and runners of other processes write it between our reads, so a stat-keyed cache would miss on
+    # nearly every call; a copy of the cached dict (deepcopy of 1.2 MB) costs more than json.loads, and a shared dict
+    # would let one transaction's half-done change leak into the next.
+    data =json.loads(path.read_text(encoding="utf-8")) if path.exists() else initial_state(tasks)
     _move_traces(path.parent, data)
     sync_state(tasks, data)
     validate_state(tasks, data)
