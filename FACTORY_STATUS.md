@@ -1,6 +1,6 @@
 # Factory status (generated, structured data only)
 
-Generated: 2026-11-23T06:14:59Z
+Generated: 2026-11-23T07:06:19Z
 Source commit: sha70c47da68cb4
 
 ## Commits (sha, time)
@@ -35,16 +35,16 @@ Source commit: sha70c47da68cb4
 | gate_pass | 32 |
 | known_to_loop | 300 |
 | promoted | 30 |
-| ready | 125 |
+| ready | 134 |
 | reviewed | 89 |
 | triaged | 179 |
 
-Side counters: blocked=9, parked=0, requeued=2
-Tasks now: BLOCKED=9, DONE=68, FAILED=203, PROMOTED=6, READY=125
+Side counters: blocked=0, parked=0, requeued=2
+Tasks now: DONE=68, FAILED=203, PROMOTED=6, READY=134
 Accepted: 5
 Promoted: 30
-Free RAM, GB: 4.8
-Telemetry rows: 27630 recognised, 0 unrecognised
+Free RAM, GB: 2.56
+Telemetry rows: 27760 recognised, 0 unrecognised
 
 ## Spend per model
 | model | calls | tokens_in | tokens_out | usage_unknown | http_429 | errors |
@@ -69,13 +69,13 @@ Telemetry rows: 27630 recognised, 0 unrecognised
 | span | rows | calls |
 |---|---|---|
 | answer | 536 | 0 |
-| gate | 4151 | 0 |
-| infra | 792 | 0 |
-| loop | 5057 | 0 |
-| other | 5481 | 0 |
+| gate | 4164 | 0 |
+| infra | 796 | 0 |
+| loop | 5123 | 0 |
+| other | 5512 | 0 |
 | promote | 41 | 0 |
-| review | 1675 | 887 |
-| run | 9572 | 2964 |
+| review | 1676 | 887 |
+| run | 9587 | 2964 |
 | triage | 325 | 0 |
 
 ## Channels (model ids)
