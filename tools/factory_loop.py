@@ -2379,7 +2379,7 @@ class Loop:
                 else:
                     data = job.result or {}
                     self._links_note(len(data.get("unlinked") or []))
-                    self.event("links", status="done", dur_s=round(job.dur_s, 3), reason="linked rows=%d unlinked=%d" % (
+                    self.event("links", status="partial" if data.get("partial") else "done", dur_s=round(job.dur_s, 3), reason="linked rows=%d unlinked=%d" % (
                         len(data.get("links") or {}), len(data.get("unlinked") or [])))
             if self._lk is not None or self._ending() or now - self._lk_at < LINKS_EVERY_S:
                 return
@@ -2405,7 +2405,7 @@ class Loop:
 
             def work():
                 data = I.run_links(words, rows, out, ask=ask, scrub=I.scrub)
-                self._lk_size = size
+                done = int(data.get("upto_line") or 0) >= I._entries(words)[1]; self._lk_size = size if done else self._lk_size; data = {**data, "partial": not done}
                 I.audit_closed_rows(self.cfg.backlog, out, lambda p, n: self._light_ask(p, attempt=n, section="loop-links", quotas=self._lk_quotas, max_tokens=300, role="review")[:3], I.scrub)
                 return data
             self._lk = Prefetch("links", work, {})
