@@ -288,7 +288,7 @@ def run(*, sha, snapshot, state_dir, sweep_fn, known=(), open_ids=(), open_tests
         out["status"], out["reason"] = "baseline", "the first sweep: %d red tests are the baseline" % len(names)
         return out
     baseline = set(_read_json(base_file, []))
-    got =red_ratchet.compare(names, known_path, env_path, extra_known=set(known) | baseline)
+    got = red_ratchet.compare(names, known_path, env_path, extra_known=set(known) | baseline)
     new = [n for n in got["new"] if not _queued_work(n, set(open_ids), set(open_tests))]
     if new and recheck_fn is not None:
         again = {red_ratchet.cut(red_ratchet.norm(n)) for n in (recheck_fn(list(new)) or ())}
@@ -387,6 +387,11 @@ def _debt_step(rel, names, baseline, results, known_path, env_path, known, open_
             if f in results:
                 continue                            # the file ran and none of its tests is a debt now: the entry is done
             new_book[f] = rec                       # the file did not run: stays closed
+    for f, rec in book.items():
+        if f in new_book or f in by_file or not rec.get("queued") or rec.get("closed"):
+            continue
+        if any(_queued_work(t, open_ids, open_tests) for t in rec.get("tests") or ()) or f not in results:
+            new_book[f] = rec                       # queued and in work (or not run): the entry stays, or its row is lost
     for f in sorted(new_book, key=lambda k: new_book[k]["n"]):
         rec = new_book[f]
         if not rec["queued"] and not rec["closed"]:
