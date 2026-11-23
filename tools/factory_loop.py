@@ -4641,7 +4641,11 @@ class Loop:
         from tools import agent_factory_import as imp, factory_architect as A
         rev = str(A.CONTRACT_REV)
         md = Path(self.cfg.backlog).read_bytes().decode("utf-8-sig")
-        open_rows = {r["backlog_id"]: r for r in imp.parse_section4(md) if r.get("open", True)}
+        try:
+            rows4 = imp.parse_section4(md)
+        except ValueError:                           # no bounded section 4 (a bare backlog): no rows to keep, no event
+            return None
+        open_rows = {r["backlog_id"]: r for r in rows4 if r.get("open", True)}
         if not open_rows:
             return None
         by_row = {}
@@ -4718,6 +4722,8 @@ class Loop:
             disp = imp.row_dispositions(self.cfg.backlog, self.cfg.worktree, self_repo=bool(self.cfg.self_repo))
             self._disp_cache = (mtime, now, disp)
             return disp
+        except ValueError:                           # a backlog with no bounded section 4: no dispositions, not an error
+            return {}
         except Exception as e:
             self.err("reconcile: dispositions", e)
             return {}
@@ -4729,6 +4735,8 @@ class Loop:
             from tools import agent_factory_import as imp
             md = Path(self.cfg.backlog).read_bytes().decode("utf-8-sig")
             backlog = [(r["backlog_id"], bool(r.get("open", True))) for r in imp.parse_section4(md)]
+        except ValueError:                           # a backlog with no bounded section 4 has no rows: the report is empty, not an error
+            backlog = []
         except Exception as e:
             self.err("reconcile: backlog unreadable", e)
             backlog = []
