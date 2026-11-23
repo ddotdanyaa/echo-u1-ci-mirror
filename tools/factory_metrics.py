@@ -184,7 +184,7 @@ def first_try_verdict(row):
         return None
     if reason.startswith(RED_FIRST_TRY) or any(x in reason for x in RED_FIRST_TRY[1:]):
         return False
-    if row.get("status") in GREEN_STATUSES and row.get("changed"):
+    if row.get("status") in GREEN_STATUSES:
         return True
     return None
 
@@ -208,9 +208,9 @@ def money_report(state_dir, now=None, spend=None, until="2026-11-30") -> dict:
             continue
         if span == "accept" and row.get("status") == "accepted" and (tid not in accepted or t < accepted[tid]):
             accepted[tid] = t
-        if span == "run" and not row.get("role") and row.get("kind") == "code" and tid not in passes:
+        if span == "run" and not row.get("role") and row.get("kind") == "code":
             verdict = first_try_verdict(row)
-            if verdict is not None:
+            if verdict is not None and (tid not in passes or t < passes[tid][0]):
                 passes[tid] = (t, verdict, row.get("edit_by") == "code")
     for tid, r in (_json(Path(state_dir) / "loop_state.json").get("accepted") or {}).items():
         if isinstance(r, dict) and isinstance(tid, str) and tid not in accepted:
@@ -237,9 +237,9 @@ def money_report(state_dir, now=None, spend=None, until="2026-11-30") -> dict:
         for d in P.allowance_left_by_day(spent=spend or 0.0, until=until, since=now_t.date().isoformat()):
             if spend is None:
                 value = None
-            elif explicit:         # a given total: the builders' spend still comes off (as in PK.left)
-                value = round(d["allowance"] - float(spend) - P._external("FACTORY_BUILDERS_SPEND", ("total_usd", "reserved_usd")), 2)
-            else:                  # the real number: PK.left = allowance - factory total - reserved - builders' spend
+            elif explicit:         # a given total (tests): the same PK formula over the row with that total
+                value = round(P._left(d["day"], dict(P._spend_row(), total_usd=float(spend))), 2)
+            else:                  # the real number: PK.left
                 value = round(P.left(d["day"]), 2)
             left.append(dict(d, left=value))
     except Exception:
