@@ -68,7 +68,8 @@ CLOUD_TRIAL_S = 60                    # a cloud that does not answer is asked ag
 FAST_LOCAL_SHARE = 0.20               # more of the gate time than this spent on local runs: new workers send every test to the cloud
 FAST_LOCAL_HOLD_S = 3600
 WAIT_PULSE_S = 60.0                   # a wait for live workers writes a short event at least this often (the watcher's quiet limit is 300 s)
-WAIT_CHUNK_S = 3.0                   # real seconds between two looks at the pool while workers run
+WAIT_BG_S = 0.1                      # the same look while a background triage / hold pick runs: a ready task is admitted within 0.1 s of its card
+WAIT_CHUNK_S = 3.0                  # real seconds between two looks at the pool while workers run
 STALE_INDEX_LOCK_S = 120
 ES_CONTINUOUS = 0x80000000
 ES_SYSTEM_REQUIRED = 0x00000001
@@ -1760,7 +1761,7 @@ class Loop:
         while True:
             if self._ending() or self._brake_due is not None:
                 return self._drain()
-            done = self.pool.wait_any(0.25 if self._bg is not None else WAIT_CHUNK_S)
+            done = self.pool.wait_any(WAIT_BG_S if self._bg is not None else WAIT_CHUNK_S)
             if done:
                 return self._account_done(done[0])
             self._wait_pulse()
@@ -2659,9 +2660,14 @@ class Loop:
                 got = AF.refresh_from_tasks(self._sweep_dir(), rows)
                 if got and (got["green"] or got["red"]):
                     self.event("sweep", status="refreshed", reason="green=%d red=%d" % (len(got["green"]), len(got["red"])))
+            if not self._ending():
+                try:
+                    self._guard_red_tick(now, AF)
+                except Exception as e:      # W-echo 1: the invariant never stops the sweep
+                    self.err("guard red", e)
             if self.sweep_fn is None or self._sw is not None or self._ending():
                 return
-            ls = ls or self.ls()
+            ls = self.ls()
             if not AF.sweep_due(ls.get("sweep"), self.base_sha, now, self.cfg.sweep_every_s):
                 return
             out = self._sweep_dir()
@@ -2694,6 +2700,7 @@ class Loop:
                 else:
                     data = job.result or {}
                     self._links_note(len(data.get("unlinked") or []))
+                    self._audit_reopened(data.get("reopened") or {})
                     self.event("links", status="partial" if data.get("partial") else "done", dur_s=round(job.dur_s, 3), reason="linked rows=%d unlinked=%d" % (
                         len(data.get("links") or {}), len(data.get("unlinked") or [])))
             if self._lk is not None or self._ending() or now - self._lk_at < LINKS_EVERY_S:
@@ -2721,12 +2728,26 @@ class Loop:
             def work():
                 data = I.run_links(words, rows, out, ask=ask, scrub=I.scrub)
                 done = all(e["line"] <= int(data.get("upto_line") or 0) for e in I._entries(words)[0]); self._lk_size = size if done else self._lk_size; data = {**data, "partial": not done}
-                I.audit_closed_rows(self.cfg.backlog, out, lambda p, n: self._light_ask(p, attempt=n, section="loop-links", quotas=self._lk_quotas, max_tokens=300, role="review", thrifty=True)[:3], I.scrub)
-                return data
+                audited = I.audit_closed_rows(self.cfg.backlog, out, lambda p, n: self._light_ask(p, attempt=n, section="loop-links", quotas=self._lk_quotas, max_tokens=300, role="review", thrifty=True)[:3], I.scrub)
+                return {**data, "reopened": {b: str(r.get("why") or "") for b, r in (audited or {}).items() if r.get("reopened")}}
             self._lk = Prefetch("links", work, {})
             self._lk.thread.start()
         except Exception as e:
             self.err("links", e)
+
+    def _audit_reopened(self, reopened: dict) -> None:
+        """W-echo 4: a row two different models called not_done is open again in the backlog (FC.reopen): it also goes to to_slice with
+        the audit's why as its text, and leaves the loop's closed book / holds, so the closure is not believed any more."""
+        if not reopened:
+            return
+        ls, now = self.ls(), self.clock()
+        for bid, why in sorted(reopened.items()):
+            for key in ("closed", "holds", "hold_ver", "hold_hash", "hold_arch", "arch_decision", "not_code", "slice_wait", "reslices"):
+                if isinstance(ls.get(key), dict):
+                    ls[key].pop(bid, None)
+            ls.setdefault("to_slice", {}).setdefault(bid, {"at": now, "hints": [], "guard": "", "text": self.rs(why, 300) or "not_done"})
+            self.event("supply", status="audit_reopened", backlog_id=bid, reason=self.rs(why, 200) or "not_done")
+        self.save_ls(ls)
 
     def _links_note(self, unlinked: int) -> None:
         self._lk_unlinked = unlinked          # written into reconcile.json by _write_reconcile_now
@@ -4418,7 +4439,7 @@ class Loop:
             if priority is None:
                 priority = min((t.priority for t in tasks.values() if F.row_of(t.backlog_id or t.id) == bid), default=9)
             tier = (2 if F.is_base_debt(bid) else 1 if bid.startswith("rel-") else 0) if eligible.get(bid) == "dry" else 0
-            return (tier, F.is_base_debt(bid), self._bisect_rank(bid), int(str(priority).removeprefix("P")), not bool(entry.get("guard")), bid)
+            return (F.row_rank(bid), tier, self._bisect_rank(bid), int(str(priority).removeprefix("P")), not bool(entry.get("guard")), bid)
         first_waits = any(c == "first" and b not in self._slicers for b, c in eligible.items())
         for bid in sorted(eligible, key=order)[:RESLICE_PER_STEP]:
             cause = eligible[bid]
@@ -4835,6 +4856,121 @@ class Loop:
         for bid in returned:
             self.event("supply", status="returned", backlog_id=bid, reason="all tasks terminal, no record: back to the slicer")
         return cur
+
+    GUARD_FILE = re.compile(r"(?:^|/)tests/verify/(?:[^/]+/)*test_v_[^/]+\.py$")
+
+    @staticmethod
+    def _guard_id_guess(path) -> str:
+        """The row ID of a guard file the backlog does not know: <id>.py -> <id>, <id>.py -> <id> (a number part
+        with a leading zero is a dash, a single number part is a dot); '' when the name has no ID."""
+        stem = Path(str(path)).stem
+        if not stem.lower().startswith("test_v_") or len(stem) <= 7:
+            return ""
+        tail = stem[7:]
+        found = re.match(r"^([A-Za-z]+\d+)_(\d+)$", tail)
+        if found:
+            return found.group(1) + ("-" if found.group(2).startswith("0") else ".") + found.group(2)
+        return tail if re.match(r"^[A-Za-z]+\d+([._-]\d+)?$", tail) else ""
+
+    def _guard_red_tick(self, now, AF) -> None:
+        """W-echo 1: on every NEW record of the sweep (its file or its modification changed) the red-guard invariant runs once."""
+        latest = AF.latest_sweep(self._sweep_dir())
+        if latest is None:
+            return
+        sig = (latest.name, latest.stat().st_mtime_ns)
+        if sig == getattr(self, "_gr_sig", None):
+            return
+        try:
+            tasks, state = self.load()
+        except Exception as e:      # a busy plan lock: the next tick tries again
+            if type(e).__name__ != "LockBusy":
+                raise
+            return
+        self._gr_sig = sig
+        self._guard_red_invariant(tasks, state, AF.read_sweep(latest), now)
+
+    def _guard_red_invariant(self, tasks, state, sweep, now):
+        """W-echo 1: a red tests/verify/**/test_v_<ID>.py is open work. A file with no live card (READY/RUNNING/REVIEW) and with no
+        to_slice / slice_wait / quarantine record of this slicer version goes back to to_slice as row <ID> (guard = its first red test,
+        priority 0), even when the row is closed in the backlog or DONE (supply status=guard_red_closed). An old rel-base-<n> record
+        on the same file is taken off (superseded:guard). Once per row and CONTRACT_REV per 24 h; a 'could not find a fix' hold
+        of an older CONTRACT_REV expires with it. Returns the number of rows returned."""
+        from tools import agent_factory_import as imp, factory_architect as A, factory_autofeed as AF
+        rev = str(A.CONTRACT_REV)
+        reds = {}
+        for name in sorted(k for k, red in sweep.items() if red is True):
+            path = str(name).partition("::")[0]
+            if self.GUARD_FILE.search(path):
+                reds.setdefault(path, name)
+        if not reds:
+            return 0
+        try:
+            rows4 = imp.parse_section4(Path(self.cfg.backlog).read_bytes().decode("utf-8-sig"))
+        except ValueError:
+            rows4 = []
+        is_open = {r["backlog_id"]: bool(r.get("open", True)) for r in rows4}
+        keys = AF._keys(list(is_open))
+        live_rows, live_files, done_rows = set(), set(), set()
+        for tid, row in state["tasks"].items():
+            t = tasks.get(tid)
+            bid = F.row_of(row.get("backlog_id") or (t.backlog_id if t else "") or tid)
+            if row.get("status") in ("READY", "RUNNING", "REVIEW"):
+                live_rows.add(bid)
+                live_files |= {str(x).partition("::")[0] for x in (t.tests if t else ())}
+            elif row.get("status") in ("DONE", "PROMOTED"):
+                done_rows.add(bid)
+        cur = self.ls()
+        version = F.slicer_version()
+        mem = cur.setdefault("guard_red", {})
+        to_slice = cur.setdefault("to_slice", {})
+        guard_of = {b: str(e.get("guard") or "").partition("::")[0] for b, e in to_slice.items() if isinstance(e, dict)}
+        returned, taken_off, seen_ids = [], [], set()
+        for path, test in reds.items():
+            bid = AF.id_of_guard(path, keys) or self._guard_id_guess(path)
+            if not bid or bid in seen_ids or bid in live_rows or path in live_files or bid in getattr(self, "_slicers", {}):
+                continue
+            quarantine = (cur.get("quarantine") or {}).get(bid)
+            if bid in to_slice or bid in (cur.get("slice_wait") or {}) or (isinstance(quarantine, dict) and quarantine.get("version") == version):
+                continue
+            if any(g == path and not b.startswith("rel-base-") for b, g in guard_of.items()):
+                continue                       # a row of its own already works on this red test
+            why = str((cur.get("holds") or {}).get(bid) or "").lower()
+            if any(rule in why for rule in ("only_opus", "private", "приватн")):
+                continue
+            rec = mem.get(bid) or {}
+            if rec.get("rev") == rev and now - float(rec.get("at") or 0) < self.SUPPLY_RETURN_S:
+                continue
+            if "could not find a fix" in why and rec.get("rev") == rev:
+                continue                       # that hold expires only with a NEW CONTRACT_REV, not with the 24 h term
+            seen_ids.add(bid)
+            closed = (not is_open.get(bid, True)) or bid in (cur.get("closed") or {}) or bid in done_rows
+            for key in ("holds", "hold_ver", "hold_hash", "hold_arch", "arch_decision", "not_code", "closed", "parents",
+                        "slice_wait", "reslices", "quarantine"):
+                if isinstance(cur.get(key), dict):
+                    cur[key].pop(bid, None)
+            for old, g in list(guard_of.items()):          # the old baseline record of the same file: the ECHO row works now
+                if g == path and old.startswith("rel-base-"):
+                    to_slice.pop(old, None)
+                    cur.get("slice_wait", {}).pop(old, None)
+                    cur.get("reslices", {}).pop(old, None)
+                    taken_off.append((old, bid))
+            to_slice[bid] = {"at": now, "hints": [], "guard": test, "priority": 0}
+            mem[bid] = {"rev": rev, "at": now}
+            returned.append((bid, closed, test))
+        if not returned:
+            return 0
+        self.save_ls(cur)
+        for old, bid in taken_off:
+            try:
+                from tools import factory_release as REL
+                REL.close_debt(self.cfg.state_dir, old)
+            except Exception as e:                          # noqa: BLE001 - the debt book never stops the supply
+                self.err("guard red: debt", e)
+            self.event("supply", status="superseded", backlog_id=old, reason="superseded:guard by %s" % bid)
+        for bid, closed, test in returned:
+            self.event("supply", status="guard_red_closed" if closed else "guard_red", backlog_id=bid,
+                       reason="red guard test %s: back to the slicer" % self.rs(test, 160))
+        return len(returned)
 
     def _reconcile_tick(self, tasks, state, ls, now) -> dict:
         """W-supply 4: reconcile.json was written only on HOLD and after a triage, so a loop that kept working never

@@ -93,6 +93,15 @@ def is_fresh_row(row) -> bool:
     return bool(rid) and not is_base_debt(rid) and (bool(_REGRESSION_ROW.match(rid)) or not rid.lower().startswith(("fac-", "rel-")))
 
 
+def row_rank(row) -> int:
+    """W-echo 3: the order of admission and of slicing: a fresh regression rel-<sha8>-<n> (0), then every other row, ECHO guard rows
+    among them (1), the old baseline debt rel-base-<n> last (2)."""
+    rid = _row_id(row)
+    if is_base_debt(rid):
+        return 2
+    return 0 if _REGRESSION_ROW.match(rid) else 1
+
+
 def call_cap(parts: int = 1) -> int:
     return 2 * (max(1, parts) * 3 + 4)
 
@@ -497,7 +506,7 @@ def ready(tasks: dict[str, Task], state: dict, *, google: bool = True,
     def spent(t) -> int:      # W-gemma5 2: 0 = a fresh card (no attempt, not deferred by the last pass), 1 = a repeat
         row = state["tasks"][t]
         return 1 if (fresh_first and (row.get("attempts", 0) or row.get("defer_reason"))) else 0
-    for tid in sorted(tasks, key=lambda t: (spent(t), is_base_debt(tasks[t]), tasks[t].priority, t)):
+    for tid in sorted(tasks, key=lambda t: (spent(t), row_rank(tasks[t]), tasks[t].priority, t)):
         task = tasks[tid]
         if _startable(tasks, state, tid, write_in_use, read_in_use, google, now):
             found.append(tid)
