@@ -1,0 +1,35 @@
+{
+ "id": "humanities-onegin",
+ "split": "dev",
+ "area": "humanities",
+ "kind": "qa",
+ "source": {
+  "name": "authored for ECHO (this repository), general knowledge, no external text copied",
+  "license": "CC0-1.0",
+  "kind": "authored",
+  "url": null
+ },
+ "turns": [
+  {
+   "user": "Кто написал Евгения Онегина?",
+   "expected": "Александр Сергеевич Пушкин",
+   "length": "short",
+   "kind": "question",
+   "gap_s": 6.0
+  },
+  {
+   "user": "В какой форме это написано?",
+   "expected": "роман в стихах",
+   "length": "short",
+   "kind": "question",
+   "gap_s": 6.0
+  },
+  {
+   "user": "Расскажи подробнее, о чём там.",
+   "expected": "молодой дворянин Онегин и Татьяна Ларина, её признание и его поздний ответ",
+   "length": "long",
+   "kind": "question",
+   "gap_s": 9
+  }
+ ]
+}
