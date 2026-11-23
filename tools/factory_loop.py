@@ -598,6 +598,7 @@ SLICE_PARALLEL = 12
 RESLICE_PER_STEP = SLICE_PARALLEL      # W-feed 4: up to SLICE_PARALLEL rows go to the slicer in one step
 RESLICE_SLEEP_S = 5
 SLICE_WAIT_S = 60
+SLICE_PAUSES = (60, 120, 300, 600)        # W-pay 2: the pause of a row's repeated wait grows
 QUARANTINE_TTL_S = 21600
 HARD_FAILED_GENS = 6        # W-hard 1: generations that reached a red fix: from here the row sits until CONTRACT_REV changes
 HARD_REOPEN_S = 86400       # ... and opens by a new CONTRACT_REV no more than once a day
@@ -3388,6 +3389,7 @@ class Loop:
                 if not left:
                     raise SliceWait()
                 asks = left
+            cached = dict(self._wait_record(ls, row).get("engines") or {})
             ctx = dict(root=root, gen=gen, rung=rung, cause=cause, ladder=",".join(asks))
             task_copy, state_copy, ls_copy = copy.deepcopy((tasks, state, ls))
             def work():
@@ -3396,6 +3398,8 @@ class Loop:
                 if self.cfg.self_repo:      # the second instance: a new test imports only the modules the mirror publishes
                     packet["publishable"] = ", ".join(A.publishable_modules())
                 extra = {"named_ok": True} if self.cfg.self_repo else {}      # 8.1: the factory's own files are the contract's subject
+                if cached:      # W-pay 2: the steps that already answered this row (or refused it) on this version and sha
+                    extra["skip"] = cached
                 try:
                     result = self.architect_fn(packet, rung=rung, root=root, asks=asks, **extra)
                 except A.Exhausted as exc:
@@ -3432,6 +3436,12 @@ class Loop:
                         log += [[now, fault_class(f["fault"])] for f in faults]
                         keep["slice_faults"] = log
                         self.save_ls(keep)
+                    keep = self.ls()
+                    if job.error.answered:
+                        (keep.get("slice_cache") or {}).pop(row, None)         # a counted void: the next generation asks anew
+                    else:       # the row waits: what the steps answered (or refused) is kept for the repeat
+                        self._wait_record(keep, row, create=True)["engines"].update(getattr(job.error, "cache", None) or {})
+                    self.save_ls(keep)
                     outcome = "void" if job.error.answered else "unavailable"
                     if job.error.answered:
                         return {"engine": engine, "rung": job.ctx["rung"]}
@@ -3454,6 +3464,7 @@ class Loop:
             else:
                 portion["holds"] = [dict(backlog_id=row, question=contract.get("why", outcome), decision=str(outcome))]
             fresh = self.ls()
+            (fresh.get("slice_cache") or {}).pop(row, None)
             fresh.setdefault("contracts_by_engine", {}).setdefault(engine, {"made": 0, "merged": 0})["made"] += 1
             self.save_ls(fresh)
             return portion
@@ -3465,6 +3476,17 @@ class Loop:
         finally:
             self.event("slice", backlog_id=row, engine=engine, status=outcome, rung=job.ctx["rung"],
                        ladder=job.ctx.get("ladder", ""), **extra)
+
+    def _wait_record(self, ls, bid, create=False):
+        """The row's wait record: the cached answers/refusals of the steps and the count of waits, valid for one slicer
+        version and one base sha (any change of either starts a new record)."""
+        version, sha = F.slicer_version(), self.base_sha
+        rec = (ls.get("slice_cache") or {}).get(bid)
+        if not isinstance(rec, dict) or rec.get("ver") != version or rec.get("sha") != sha:
+            rec = {"ver": version, "sha": sha, "waits": 0, "engines": {}}
+            if create:
+                ls.setdefault("slice_cache", {})[bid] = rec
+        return rec
 
     def _slice_pool_cap(self):
         if _cloud_up(self.cloud_fn):
@@ -3856,7 +3878,7 @@ class Loop:
             kept = ls.get("to_slice", {}).get(row)       # W-redrow 3: what the row was, so a lift can give it back as it was
             if isinstance(kept, dict):
                 ls.setdefault("rel_entry", {})[row] = {k: kept[k] for k in ("text", "guard", "priority", "hints", "at") if k in kept}
-        for key in ("to_slice", "slice_wait", "parents"):
+        for key in ("to_slice", "slice_wait", "parents", "slice_cache"):
             ls.get(key, {}).pop(row, None)
         for hold in portion.get("holds") or []:
             bid = hold.get("backlog_id", row)
@@ -3941,7 +3963,9 @@ class Loop:
                     count += self._apply_portion(bid, rec.get("n", 0) + 1, portion, cause)
             except Exception as exc:
                 ls = self.ls()
-                ls.setdefault("slice_wait", {})[bid] = now + SLICE_WAIT_S
+                rec = self._wait_record(ls, bid, create=True)
+                ls.setdefault("slice_wait", {})[bid] = now + SLICE_PAUSES[min(rec["waits"], len(SLICE_PAUSES) - 1)]
+                rec["waits"] += 1
                 self.save_ls(ls)
                 if not isinstance(exc, SliceWait):
                     self.event("reslice", status="error", backlog_id=bid, reason=F.redact(str(exc)))

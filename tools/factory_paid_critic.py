@@ -225,16 +225,93 @@ def add_spend(usd, architect=False, agent=False, critic=False):
         _write_spend(row)
 
 
+BOOKING_TTL_S = 1800
+
+
+def _pid_alive(pid, created) -> bool:
+    """True when the process `pid` lives and was started no later than the booking (a reused pid is another process)."""
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return False
+    if pid <= 0:
+        return False
+    if pid == os.getpid():
+        return True
+    try:
+        import psutil
+    except ImportError:
+        psutil = None
+    if psutil is not None:
+        try:
+            return psutil.Process(pid).create_time() <= float(created) + 2
+        except psutil.Error:
+            return False
+    if os.name == 'nt':
+        try:
+            import ctypes
+            handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)      # QUERY_LIMITED_INFORMATION
+            if not handle:
+                return False
+            try:
+                code = ctypes.c_ulong()
+                ok = ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(code))
+                return bool(ok) and code.value == 259                           # STILL_ACTIVE
+            finally:
+                ctypes.windll.kernel32.CloseHandle(handle)
+        except (OSError, AttributeError):
+            return True                                                          # cannot verify: the age limit decides
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True
+    return True
+
+
+def _bookings(row, now=None) -> list:
+    """The row's bookings {id, usd, pid, created}. The old number reserved_usd without a list becomes one booking
+    without an owner (pid None) that expires like any other."""
+    now = time.time() if now is None else now
+    found = row.get('bookings')
+    if isinstance(found, list):
+        return [b for b in found if isinstance(b, dict) and float(b.get('usd', 0) or 0) > 0]
+    old = float(row.get('reserved_usd', 0) or 0)
+    if old > 0:
+        return [{'id': uuid.uuid4().hex, 'usd': old, 'pid': None, 'created': now}]
+    return []
+
+
+def _set_bookings(row, bookings):
+    row['bookings'] = bookings
+    row['reserved_usd'] = round(sum(float(b['usd']) for b in bookings), 9)
+
+
+def _live_bookings(bookings, now) -> list:
+    live = []
+    for b in bookings:
+        if now - float(b.get('created', 0)) > BOOKING_TTL_S:
+            continue
+        if b.get('pid') is not None and not _pid_alive(b.get('pid'), b.get('created', 0)):
+            continue
+        live.append(b)                                  # no owner (the old number): lives until the age limit
+    return live
+
+
 def reserve(usd, architect=False, critic=False) -> bool:
     usd = _amount(usd)
     with _spend_lock():
         row = _spend_row()
+        now = time.time()
+        _set_bookings(row, _live_bookings(_bookings(row, now), now))          # a dead process's or stale booking goes
         available = _left(_today(), row)
         waiting = _external('FACTORY_BUILDERS_WAITING', ('usd',))
-        if float(row.get('credit_dead_until', 0)) > time.time() or available < usd + waiting:
+        if float(row.get('credit_dead_until', 0)) > now or available < usd + waiting:
+            _write_spend(row)
             return False
         _add(row, 0.0)
-        row['reserved_usd'] = round(float(row.get('reserved_usd', 0)) + usd, 9)
+        _set_bookings(row, _bookings(row, now) + [{'id': uuid.uuid4().hex, 'usd': usd, 'pid': os.getpid(), 'created': now}])
         _write_spend(row)
         return True
 
@@ -243,7 +320,12 @@ def settle(reserved, actual, architect=False, agent=False, critic=False, coder=F
     reserved, actual = _amount(reserved), _amount(actual)
     with _spend_lock():
         row = _spend_row()
-        row['reserved_usd'] = round(max(0, float(row.get('reserved_usd', 0)) - reserved), 9)
+        bookings = _bookings(row)
+        mine = [b for b in bookings if b.get('pid') == os.getpid() and abs(float(b['usd']) - reserved) < 1e-9]
+        same = mine or [b for b in bookings if b.get('pid') is None and abs(float(b['usd']) - reserved) < 1e-9]
+        if same:                                        # only an ownerless (migrated) booking is a fallback; never another process's
+            bookings.remove(min(same, key=lambda b: float(b.get('created', 0))))
+        _set_bookings(row, bookings)
         _add(row, actual, coder=coder, architect=architect, agent=agent, critic=critic)
         _write_spend(row)
 

@@ -43,8 +43,11 @@ class ContractFault(ValueError):
 
 
 class Exhausted(ContractFault):
-    def __init__(self, answered, faults):
+    def __init__(self, answered, faults, cache=None):
         self.answered, self.faults = answered, faults
+        # {engine: {'kind': 'answered'|'refused', 'fault': text, 'answer': text}}: what a repeat after the wait must not
+        # ask again (W-pay 2)
+        self.cache = cache or {}
         super().__init__('architect ladder exhausted')
 
 
@@ -304,6 +307,32 @@ def normalize_use(use, root=None):
     return path + '::' + name if name else path
 
 
+def test_name_exists(text, name):
+    """Does the pytest node name ('test_a', 'test_a[p-1]', 'TestX::test_a', 'TestX::test_a[1-2]', 'TestX') name something
+    the test file holds? The parameter ids in [..] are not looked up (they are made at collection); the function name is
+    compared without them, a class in the path must hold the method (W-pay 3)."""
+    head = name.split('[', 1)[0].strip()
+    parts = [p.strip() for p in head.split('::')]
+    if not parts or not all(re.fullmatch(r'[A-Za-z_]\w*', p) for p in parts):
+        return False
+    try:
+        tree = ast.parse(text)
+    except (SyntaxError, ValueError):
+        return bool(re.search(r'\b%s\b' % re.escape(parts[-1]), text))
+    scope = tree
+    for part in parts:
+        found = [n for n in ast.iter_child_nodes(scope)
+                 if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and n.name == part]
+        if not found:
+            if part == parts[-1] and scope is tree:
+                # not a def: a name made by an assignment or an import in the module is still a name of the file
+                return any(isinstance(n, (ast.Assign, ast.Import, ast.ImportFrom)) and re.search(r'\b%s\b' % re.escape(part), ast.get_source_segment(text, n) or '')
+                           for n in tree.body)
+            return False
+        scope = found[0]
+    return True
+
+
 def author_model(engine):
     """The model name an engine of the ladder stands for ('free+free_main' votes: the last engine): the card of a test
     written by the architect keeps it, so that model is never its reviewer."""
@@ -486,7 +515,7 @@ def validate(contract, root, *, bid='', title='', known_ids=None, named_ok=False
                 raise ValueError('missing test file: ' + path)
             use = normalize_use(use, root)
             name = use.partition('::')[2]
-            if not name or name not in target.read_text(encoding='utf-8-sig'):
+            if not name or not test_name_exists(target.read_text(encoding='utf-8-sig'), name):
                 raise ValueError('missing test name')
             spec['use'] = use            # the contract carries the normalized form to the plan
         else:
@@ -519,8 +548,10 @@ def validate(contract, root, *, bid='', title='', known_ids=None, named_ok=False
     return faults
 
 
-def ladder(rung, *, rungs):
-    if rung == 0:
+def ladder(rung, *, rungs, red=False):
+    if red:             # W-pay 2: a row with a ready red test: the agent reads the code itself and mends a flaw in one re-ask
+        order = ('agent', 'paid', 'free', 'free_main')
+    elif rung == 0:
         order = ('free', 'free_main', 'paid', 'agent')
     elif rung == 1:
         order = ('paid', 'agent', 'free', 'free_main')
@@ -575,26 +606,67 @@ def _need_one(part, root):
         if not path.is_relative_to(base) or not path.is_file():
             hint = K.hint_for(root, file, 'missing file')
             return file, None, 'not available: ' + file + (' (' + hint + ')' if hint else '')
-        text = path.read_text(encoding='utf-8-sig')
-    except (OSError, UnicodeError):
+        try:
+            text = path.read_text(encoding='utf-8-sig')
+        except UnicodeError:
+            text = path.read_text(encoding='utf-8-sig', errors='replace')     # a stray byte is no reason to refuse reading
+    except OSError:
         return file, None, 'not available: ' + file
     if file.lower().endswith(_PLAIN_SUFFIX) and F.is_private_text(text):
         return file, None, 'not available: ' + file
+    if file.endswith('.py'):
+        return file, _need_py(file, text, symbols, anchor), ''        # a readable Python file is always shown (W-pay 4)
     try:
-        if file.endswith('.py') and not symbols and not anchor and len(text) > K.PART_REGION_CHARS:
-            # a big file with no names: its table of contents, not a refusal (W-critic 2)
-            return file, (file + ' outline (' + str(len(text)) + ' characters, too big to show; ask again with '
-                          '"symbols": [names from this list]):\n' + _redact_whole(K.outline(text))), ''
-        try:
-            header, region = K.part_region(text, symbols, anchor)
-        except ValueError as exc:
-            if 'exceed region cap' not in str(exc):
-                raise
-            header, region = K.symbol_excerpt(text, symbols)     # a symbol bigger than the cap: its head, marked cut
-    except (ValueError, SyntaxError) as exc:
-        hint = K.hint_for(root, file, str(exc))
-        return file, None, 'not available: ' + file + ' (' + str(exc) + (('; ' + hint) if hint else '') + ')'
+        header, region = K.part_region(text, [], anchor)              # symbols mean nothing outside Python
+    except ValueError:
+        header, region = K.part_region(text, [], '')                  # an anchor not found: the head of the file
     return file, file + ' ' + header + '\n' + _redact_whole(region), ''
+
+
+def _need_py(file, text, symbols, anchor):
+    """What a read-only request for a Python file shows. Test files and helpers are read like any source; a big file with
+    no names, or with names not found, gives its outline (and the names it has), never a refusal; named symbols are
+    found by their qualified name or by the bare method name; a symbol bigger than the cap is shown by its head."""
+    cap = K.PART_REGION_CHARS
+    symbols = [s.strip().removesuffix('()') for s in symbols if s.strip()]
+    def outline_note(why):
+        return (file + ' outline (' + str(len(text)) + ' characters' + why + '; ask again with "symbols": [names from this '
+                'list]):\n' + _redact_whole(K.outline(text)))
+    try:
+        tree = ast.parse(text)
+    except (SyntaxError, ValueError, RecursionError):
+        return file + ' lines 1-' + str(len(text.splitlines())) + ' (not parsed as Python, the head only)\n' + \
+            _redact_whole(text[:cap])
+    if not symbols and not anchor:
+        if len(text) > cap:
+            return outline_note(', too big to show')
+        header, region = K.part_region(text, [], '')
+        return file + ' ' + header + '\n' + _redact_whole(region)
+    resolved, missing = [], []
+    known = K._symbols(tree)
+    for name in symbols:
+        if name in known:
+            resolved.append(name)
+            continue
+        like = [n for n in known if n.rsplit('.', 1)[-1] == name or n.endswith('.' + name)][:4]
+        (resolved.extend if like else missing.append)(like or name)
+    resolved = list(dict.fromkeys(resolved))
+    note = ('symbols not found: ' + ', '.join(missing) + '\n') if missing else ''
+    if not resolved and symbols:
+        return note + outline_note(', the names you asked for are not in it')
+    try:
+        if resolved:
+            try:
+                header, region = K.part_region(text, resolved, anchor)
+            except ValueError as exc:
+                if 'exceed region cap' not in str(exc):
+                    raise
+                header, region = K.symbol_excerpt(text, resolved)     # a symbol bigger than the cap: its head, marked cut
+        else:
+            header, region = K.part_region(text, [], anchor)
+    except ValueError as exc:
+        return str(exc) + '\n' + outline_note('')
+    return note + file + ' ' + header + '\n' + _redact_whole(region)
 
 
 def _need_source(need, root, named_ok, refused=None):
@@ -666,13 +738,19 @@ def _red_fault(contract, engine):
     return ''
 
 
-def contract_for(packet, *, rung, root, asks, named_ok=False, red_given=None):
+def contract_for(packet, *, rung, root, asks, named_ok=False, red_given=None, skip=None):
+    """`skip` is the cache of the row's wait record ({engine: {'kind', 'fault', 'answer'}}): a step that already answered
+    this row with a flaw on this version and sha is not asked again in the repeat (its answer counts as given when any
+    other step answers now); a step that refused ('prompt oversize') is not asked at all."""
     red = is_red(packet, red_given)
     packet = dict(packet, red_given=True) if red else packet
     system, initial = build_prompt(dict(packet, rung=rung))
     faults, answered, votes = [], set(), {}
-    for engine in ladder(rung, rungs=tuple(asks)):
+    skip = {e: v for e, v in (skip or {}).items() if e in asks and isinstance(v, dict)}
+    cache = dict(skip)
+    for engine in [e for e in ladder(rung, rungs=tuple(asks), red=red) if e not in skip]:
         user, rounds, shrunk, fixed, idle = initial, 0, False, False, 0
+        replied, raw = False, ''
         code_asked = False
         system = build_prompt(dict(packet, rung=rung), engine)[0]
         refused = []        # files of this engine's requests that could not be shown: the slice event keeps their names
@@ -682,6 +760,7 @@ def contract_for(packet, *, rung, root, asks, named_ok=False, red_given=None):
                     raise ContractFault('prompt oversize')
                 raw = asks[engine](system, user)
                 answered.add(engine)
+                replied = True
                 contract = parse(raw)
                 if 'need' in contract:
                     limit = need_rounds(rung, engine)
@@ -747,14 +826,21 @@ def contract_for(packet, *, rung, root, asks, named_ok=False, red_given=None):
             faults.append(dict(engine=engine, fault=F.redact(message)))
             if red and engine == 'agent' and message == AGENT_BUSY:
                 raise Exhausted(0, faults)      # AGENT_BUSY is raised only while live reservations hold money: the red row waits its turn, no weaker step guesses
+            if message.startswith('prompt oversize'):
+                cache[engine] = dict(kind='refused', fault='prompt oversize', answer='')     # a counted refusal of the step
+            elif replied and isinstance(exc, ContractFault) and not isinstance(exc, Exhausted):
+                cache[engine] = dict(kind='answered', fault=F.redact(message)[:300],
+                                     answer=F.redact(raw if isinstance(raw, str) else '')[:4000])
+    if answered and any(v.get('kind') == 'answered' for v in skip.values()):
+        answered |= {e for e, v in skip.items() if v.get('kind') == 'answered'}    # the earlier answers stand with the new one
     # One free voice for "do not fix" while the tier that could give the second voice was simply not answering
     # (no channel / 429 / 503) is no counted void slicing: nobody has judged yet, the row waits without a penalty.
     if red and 'agent' not in answered:
-        raise Exhausted(0, faults)      # the only step allowed to say "no fix" did not answer: the row waits, no void, no hold
+        raise Exhausted(0, faults, cache)   # the only step allowed to say "no fix" did not answer: the row waits, no void, no hold
     silent = [f for f in faults if f['engine'] in ('free', 'free_main') and _NO_ANSWER.fullmatch(f['fault'])]
     if votes and silent and answered <= set(votes.values()):
-        raise Exhausted(0, faults)
-    raise Exhausted(len(answered), faults)
+        raise Exhausted(0, faults, cache)
+    raise Exhausted(len(answered), faults, cache)
 
 
 def ask_paid(system, user, *, post=None):

@@ -11,12 +11,21 @@ PART_REGION_CHARS = 24000
 def _symbols(tree):
     found = {}
 
-    def walk(body, prefix="", in_function=False):
+    def walk(body, prefix="", in_function=False, nested=False):
         for node in body:
             if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
                 name = prefix + node.name
-                found[name] = node
+                if nested:                  # defined under if/try/with: a plain definition of the same name keeps its place
+                    found.setdefault(name, node)
+                else:
+                    found[name] = node
                 walk(node.body, name + ".", in_function or not isinstance(node, ast.ClassDef))
+            elif isinstance(node, (ast.If, ast.Try, ast.With, ast.For, ast.While)) and not in_function:
+                # a definition under `if TYPE_CHECKING:` / `try: import ... except` / a platform branch is a name too (W-pay 4)
+                for block in ("body", "orelse", "finalbody"):
+                    walk(getattr(node, block, []) or [], prefix, in_function, True)
+                for handler in getattr(node, "handlers", []) or []:
+                    walk(handler.body, prefix, in_function, True)
             elif isinstance(node, (ast.Assign, ast.AnnAssign)) and not in_function:
                 # a module (or class) constant is a named target too; a def of the same name keeps its place
                 targets = node.targets if isinstance(node, ast.Assign) else [node.target]
