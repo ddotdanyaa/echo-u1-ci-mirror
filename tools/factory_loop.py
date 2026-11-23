@@ -589,6 +589,7 @@ class Loop:
         self._sw_refresh_at = 0.0
         self._lk = None                 # the owner-links job in flight (Prefetch) or None (4.2)
         self._lk_at, self._lk_size, self._lk_unlinked = 0.0, -1, None
+        self._lk_quotas = {}            # the links job's own quota ledger, one for the life of the loop (only that job's thread uses it)
         self.release_fn = release_fn    # None: no final build (tests); main passes the cloud one (tools.factory_release)
         self._rel = None                # the final build in flight (Prefetch, its own slot) or None
         self._rel_snap = None           # the snapshot the final build reads: _prune_snapshots keeps it
@@ -2389,7 +2390,7 @@ class Loop:
             md = Path(self.cfg.backlog).read_bytes().decode("utf-8-sig")
             from tools import agent_factory_import as imp
             try:
-                rows = {r["backlog_id"]: str(r.get("title") or "")[:200] for r in imp.parse_section4(md)}
+                rows = {r["backlog_id"]: str(r.get("text") or "")[:200] for r in imp.parse_section4(md)}
             except ValueError:
                 return      # a backlog without a bounded section 4 has no rows to link to: nothing to do, not an error
             if not rows:
@@ -2397,7 +2398,7 @@ class Loop:
             out = words.parent / "owner_links.json"
 
             def ask(prompt):
-                status, _, answer, _ = self._light_ask(prompt, attempt=1, section="loop-links", quotas={}, max_tokens=300, role="review")
+                status, _, answer, _ = self._light_ask(prompt, attempt=1, section="loop-links", quotas=self._lk_quotas, max_tokens=300, role="review")
                 if status != "ok":
                     raise RuntimeError("links: no answer (%s)" % status)    # run_links stops here and resumes from this entry
                 return answer
@@ -2405,6 +2406,7 @@ class Loop:
             def work():
                 data = I.run_links(words, rows, out, ask=ask, scrub=I.scrub)
                 self._lk_size = size
+                I.audit_closed_rows(self.cfg.backlog, out, lambda p, n: self._light_ask(p, attempt=n, section="loop-links", quotas=self._lk_quotas, max_tokens=300, role="review")[:3], I.scrub)
                 return data
             self._lk = Prefetch("links", work, {})
             self._lk.thread.start()

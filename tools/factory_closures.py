@@ -50,6 +50,22 @@ def table_ids(backlog) -> dict:
     return out
 
 
+def table_evidence(backlog) -> dict:
+    """{ID: "commit <sha>: <note>"} of the closures table (what a closed row says it did); unreadable or no table is empty."""
+    raw = _read(backlog)
+    if raw is None:
+        return {}
+    lines = raw.split(_eol(raw))
+    start, end = _section(lines)
+    out = {}
+    for i in range(start + 1, end) if start is not None else ():
+        if lines[i].lstrip().startswith("|"):
+            cells = [c.strip() for c in lines[i].strip().strip("|").split("|")]
+            if len(cells) >= 2 and cells[0] and cells[0] not in ("ID", "N") and not set(cells[0]) <= set("-: "):
+                out.setdefault(cells[0], "commit %s: %s" % (cells[1], cells[2].split(AUDIT_MARK)[0] if len(cells) > 2 else ""))
+    return out
+
+
 def record_closures(backlog, items) -> dict:
     """items: [(ID, sha, note)] -> {ID: added|present|no_section|unreadable|error}; ONE read and ONE atomic replace."""
     path = Path(backlog)
@@ -122,6 +138,63 @@ def sync_stale(backlog, ids, sha_of, note="") -> dict:
     res = record_closures(backlog, [(b, s, note) for b, s in wanted]) if wanted else {}
     return {"added": [b for b, r in res.items() if r == "added"], "present": [b for b, r in res.items() if r == "present"],
             "no_sha": no_sha}
+
+
+AUDIT_MARK = " · audit: "
+
+
+def _edit_row(backlog, bid, change) -> str:
+    """The closure row of ``bid``: ``change(cells)`` returns the new cells, or None to drop the row.  Atomic, line endings kept.
+    -> done / absent / no_section / unreadable / error (never raises)."""
+    path = Path(backlog)
+    raw = _read(path)
+    if raw is None:
+        return "unreadable"
+    eol = _eol(raw)
+    lines = raw.split(eol)
+    start, end = _section(lines)
+    if start is None:
+        return "no_section"
+    at = next((i for i in range(start + 1, end) if lines[i].lstrip().startswith("|")
+               and lines[i].strip().strip("|").split("|")[0].strip() == str(bid).strip()), None)
+    if at is None:
+        return "absent"
+    cells = [c.strip() for c in lines[at].strip().strip("|").split("|")]
+    new = change(cells)
+    if new is None:
+        del lines[at]
+    else:
+        lines[at] = "| " + " | ".join(new) + " |"
+    tmp = path.with_name(path.name + ".closure.tmp")
+    try:
+        tmp.write_bytes(eol.join(lines).encode("utf-8"))
+        os.replace(tmp, path)
+    except OSError:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        return "error"
+    return "done"
+
+
+def add_evidence(backlog, bid, text) -> str:
+    """4.2 (<id>): the audit verdict goes into the evidence cell of the row's closure («... · audit: <text>»); a second call
+    replaces the first verdict, never stacks.  -> updated / absent / no_section / unreadable / error."""
+    def change(cells):
+        while len(cells) < 3:
+            cells.append("")
+        cells[2] = cells[2].split(AUDIT_MARK)[0].rstrip() + AUDIT_MARK + _cell(text)
+        return cells
+    got = _edit_row(backlog, bid, change)
+    return "updated" if got == "done" else got
+
+
+def reopen(backlog, bid) -> str:
+    """4.2 (<id>): the closure row of ``bid`` leaves the table, so the row is «new» again.  -> reopened / absent / no_section /
+    unreadable / error."""
+    got = _edit_row(backlog, bid, lambda cells: None)
+    return "reopened" if got == "done" else got
 
 
 PENDING = "merged by the loop (not yet taken)"
