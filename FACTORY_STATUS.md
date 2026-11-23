@@ -1,6 +1,6 @@
 # Factory status (generated, structured data only)
 
-Generated: 2026-11-23T10:15:13Z
+Generated: 2026-11-23T10:19:49Z
 Source commit: sha754753fcb10b
 
 ## Commits (sha, time)
@@ -29,22 +29,22 @@ Source commit: sha754753fcb10b
 | step | count |
 |---|---|
 | accepted | 5 |
-| claimed | 314 |
+| claimed | 315 |
 | coded | 178 |
 | found_in_backlog | unknown |
-| gate_pass | 49 |
-| known_to_loop | 300 |
-| promoted | 46 |
-| ready | 13 |
-| reviewed | 133 |
+| gate_pass | 50 |
+| known_to_loop | 306 |
+| promoted | 47 |
+| ready | 8 |
+| reviewed | 134 |
 | triaged | 182 |
 
-Side counters: blocked=0, parked=0, requeued=6
-Tasks now: DONE=68, FAILED=405, PROMOTED=22, READY=13
+Side counters: blocked=1, parked=0, requeued=6
+Tasks now: BLOCKED=1, DONE=68, FAILED=407, PROMOTED=23, READY=8, RUNNING=4
 Accepted: 5
-Promoted: 46
-Free RAM, GB: 4.68
-Telemetry rows: 30953 recognised, 0 unrecognised
+Promoted: 47
+Free RAM, GB: 4.99
+Telemetry rows: 31018 recognised, 0 unrecognised
 
 ## Spend per model
 | model | calls | tokens_in | tokens_out | usage_unknown | http_429 | errors |
@@ -53,10 +53,10 @@ Telemetry rows: 30953 recognised, 0 unrecognised
 | cohere/command-a-plus-05-2026 | 12 | 5678 | 452 | 8 | 0 | 8 |
 | cohere/north-mini-code-1.0 | 6 | 4159 | 237 | 3 | 0 | 3 |
 | google/gemini-3-flash-preview | 27 | 33838 | 6152 | 12 | 11 | 12 |
-| google/gemini-3.1-flash-lite | 1497 | 8446902 | 566086 | 67 | 4 | 67 |
+| google/gemini-3.1-flash-lite | 1499 | 8451650 | 566688 | 67 | 4 | 67 |
 | google/gemini-3.1-flash-lite-preview | 211 | 435191 | 66315 | 22 | 8 | 22 |
-| google/gemini-3.5-flash | 23 | 23222 | 1391 | 15 | 13 | 15 |
-| google/gemini-3.5-flash-lite | 1789 | 10597417 | 572879 | 33 | 4 | 33 |
+| google/gemini-3.5-flash | 24 | 23222 | 1391 | 16 | 14 | 16 |
+| google/gemini-3.5-flash-lite | 1791 | 10602381 | 573456 | 33 | 4 | 33 |
 | google/gemini-3.6-flash | 133 | 414079 | 20196 | 55 | 10 | 55 |
 | google/gemini-3.7-flash | 16 | 9121 | 14 | 15 | 5 | 15 |
 | google/gemini-3.8-flash | 20 | 21237 | 15 | 17 | 7 | 17 |
@@ -69,14 +69,14 @@ Telemetry rows: 30953 recognised, 0 unrecognised
 | span | rows | calls |
 |---|---|---|
 | answer | 536 | 0 |
-| gate | 4826 | 0 |
+| gate | 4829 | 0 |
 | infra | 821 | 0 |
-| loop | 5497 | 0 |
-| other | 6404 | 0 |
-| promote | 61 | 0 |
-| review | 1973 | 1072 |
-| run | 10487 | 3357 |
-| triage | 348 | 0 |
+| loop | 5503 | 0 |
+| other | 6447 | 0 |
+| promote | 62 | 0 |
+| review | 1977 | 1074 |
+| run | 10493 | 3360 |
+| triage | 350 | 0 |
 
 ## Channels (model ids)
 - 1db4ab-gemini-3-8-flash
