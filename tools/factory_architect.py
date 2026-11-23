@@ -43,7 +43,8 @@ class Exhausted(ContractFault):
 
 
 def need_rounds(rung, engine=''):
-    """Source requests one engine of the ladder may spend: the strong steps (paid, agent) get 2 on any rung."""
+    """Counted source requests one engine may spend: the strong steps (paid, agent) get 2 on any rung. The request that
+    meets the limit is answered with LAST_NEED and one more request is still served, so the real count is this + 1."""
     return 2 if engine in ('paid', 'agent') or rung >= 2 else 1
 
 
