@@ -71,6 +71,7 @@ WEAKENING = re.compile(
     r'|\bskipIf\b|\bskipUnless\b|\bSkipTest\b|\bskipTest\b|\bexpectedFailure\b|PYTEST_CURRENT_TEST'
     r'|from\s+pytest\s+import[^\n]*\b(?:skip|xfail|importorskip|exit)\b')
 DIAG_LIMIT = 1500
+TRACEBACK_LIMIT = 1100   # of an import fault's traceback kept in the note of the second instance (the tail: the exact line is last)
 WEAK_NAMES = frozenset(('skip', 'xfail', 'importorskip', 'exit'))
 # A red caused by the environment (missing module/data) cannot be fixed by a candidate.
 ENV_ERROR = re.compile(r'(ModuleNotFoundError|ImportError|FileNotFoundError)\b')
@@ -549,12 +550,12 @@ def _known_fast(root, tests) -> bool:
 
 
 SELF_REPO = False   # set by the runner of the second loop instance (--self-repo): the gate is the cloud only, never a local run
-CLOUD_SIGNS = ('cloud_down', 'cloud_busy', 'bad_tests', 'private_edit')   # env_reason of a run the cloud gave no verdict for
+CLOUD_SIGNS = ('cloud_down', 'cloud_busy', 'bad_tests', 'private_edit', 'scan_excluded')   # env_reason of a run the cloud gave no verdict for
 
 
 def _cloud_sign(cg, got):
     """The env_reason string of a distinct answer of the cloud gate (CLOUD_DOWN, CLOUD_BUSY, BAD_TESTS, PRIVATE_EDIT), else ''."""
-    for special, sign in zip((cg.CLOUD_DOWN, cg.CLOUD_BUSY, cg.BAD_TESTS, cg.PRIVATE_EDIT), CLOUD_SIGNS):
+    for special, sign in zip((cg.CLOUD_DOWN, cg.CLOUD_BUSY, cg.BAD_TESTS, cg.PRIVATE_EDIT, cg.SCAN_EXCLUDED), CLOUD_SIGNS):
         if got is special:
             return sign
     return ''
@@ -745,6 +746,10 @@ def _judge(cases, tests, rc, tail, root, path=()) -> GateResult:
             if (err.get('message') or '').startswith('collection failure'):
                 # the real cause (``E   ModuleNotFoundError: ...``) first, so the note limit never cuts it off
                 real = [text[:200] for text in COLLECTION_LINE.findall(err.text or '')][-3:]
+                if SELF_REPO and (err.text or '').strip():
+                    # the second instance's coder has no local run to see the import fault in: it gets the traceback itself
+                    notes.insert(0, line + ' | traceback: ' + (err.text or '').strip()[-TRACEBACK_LIMIT:])
+                    continue
                 if real:
                     notes.insert(0, line + ': ' + ' | '.join(real))
                     continue
@@ -1457,10 +1462,25 @@ def hollow_test_reasons(base_root, path, old: str, new: str, extra_names=()) -> 
     return out
 
 
-def is_forbidden(path: str, kind=None, named=()):
+OWN_TEST_RE = re.compile(r'tests/(?:test_agent_factory\.py|test_factory_[a-z0-9_]+\.py)')   # the factory's own tests (the mirror's whitelist)
+
+
+def own_test_edit(path: str, kind=None, named=(), own_tests=None) -> bool:
+    """True for the second instance's edit of an existing factory test file of a code task that NAMES it (tests/test_factory_*.py).
+    ``own_tests``: the caller's say (the loop, the architect); None takes the process flag SELF_REPO (the runner of the second
+    instance). The product instance never gets it: tests/** stays closed to a code task there."""
+    canon = _canon(path)
+    if canon is None or kind == 'unit_test' or not (SELF_REPO if own_tests is None else own_tests):
+        return False
+    return bool(OWN_TEST_RE.fullmatch(canon)) and canon in {_canon(n) for n in named}
+
+
+def is_forbidden(path: str, kind=None, named=(), own_tests=None):
     """The ONE rule of which paths a candidate may not write: the reason, or None when allowed.
 
-    ``named``: the touch_files of the candidate's own task - only they open the factory's own code (OWNER_*).
+    ``named``: the touch_files of the candidate's own task - only they open the factory's own code (OWNER_*), and, for the second
+    instance (``own_tests`` / SELF_REPO, see own_test_edit), a factory test file of a code task. Weakening of that test is
+    still refused by weakening_check (the number of test_* and of asserts never goes down).
     Canonicalised like everything else here (_canon: casefold, '//' and '.' collapsed, backslashes).
     weakening_violations and the triage (agent_factory_import) both call this."""
     canon = _canon(path)
@@ -1474,7 +1494,7 @@ def is_forbidden(path: str, kind=None, named=()):
     if ((canon in OWNER_PATHS or any(fnmatch.fnmatchcase(canon, g) for g in OWNER_GLOBS))
             and canon not in {_canon(n) for n in named}):
         return "forbidden file (the factory's own code: only a task that names it)"
-    if kind != 'unit_test' and parts[0] == 'tests':
+    if kind != 'unit_test' and parts[0] == 'tests' and not own_test_edit(path, kind, named, own_tests):
         return 'tests/** may be changed only by a unit_test task'
     return None
 
@@ -1507,12 +1527,12 @@ def candidate_findings(base_root, cand_files: dict, kind) -> tuple:
     return tuple(hollow), tuple(sorted(extra))
 
 
-def weakening_violations(base_root, cand_files: dict, kind, named=()) -> list[str]:
+def weakening_violations(base_root, cand_files: dict, kind, named=(), own_tests=None) -> list[str]:
     """Deterministic list of reasons a candidate weakens the checks (empty = clean); ``named`` as in is_forbidden."""
-    return weakening_check(base_root, cand_files, kind, named)[0]
+    return weakening_check(base_root, cand_files, kind, named, own_tests)[0]
 
 
-def weakening_check(base_root, cand_files: dict, kind, named=()):
+def weakening_check(base_root, cand_files: dict, kind, named=(), own_tests=None):
     """``(violations, notes)``: notes are neutral remarks (a check that had to be skipped), not violations."""
     out, notes = [], []
     root = Path(base_root)
@@ -1523,10 +1543,11 @@ def weakening_check(base_root, cand_files: dict, kind, named=()):
                 extra |= _defined_names(text or '')
     for raw, text in sorted(cand_files.items()):
         path = _canon(raw)
-        reason = is_forbidden(raw, kind, named)
+        reason = is_forbidden(raw, kind, named, own_tests)
         if reason is not None:
             out.append(f'{raw if path is None else path}: {reason}')
             continue
+        own_edit = own_test_edit(raw, kind, named, own_tests)
         old, base_exists = '', False
         base_file = root / raw.replace('\\', '/')
         try:
@@ -1547,7 +1568,10 @@ def weakening_check(base_root, cand_files: dict, kind, named=()):
             out.extend(f'{path}: {why}' for why in loosened_checks(old, new))
         if kind == 'unit_test' and is_py and _is_test_file(path):    # new files too: they had no content check
             out.extend(f'{path}: {why}' for why in hollow_test_reasons(root, path, old, new, extra))
-        if kind == 'unit_test' and base_exists and _is_test_file(path) and path.endswith('.py'):
+        if own_edit and not base_exists:
+            out.append(f'{path}: a code task edits an existing factory test, it does not create one')
+            continue
+        if (kind == 'unit_test' or own_edit) and base_exists and _is_test_file(path) and path.endswith('.py'):
             try:
                 old_checks, old_names = _shape(old)
             except (SyntaxError, ValueError, RecursionError):

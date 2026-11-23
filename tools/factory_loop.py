@@ -404,6 +404,8 @@ class Config:
     not_code_term_s: int = 7 * 86400   # <id>: a row the head model called not code is looked at again after this term
     self_repo: bool = False         # 8.1: the second instance: the repository is the factory's own code (fac-* rows only)
     exit_when_idle: bool = False    # 1.6: the canary's loop ends when nothing is left to do
+    sync_ref: str = "factory/ready-4534085"   # the second instance merges this branch into its own (cfg.branch) three-way: at the start, then hourly with no RUNNING
+    sync_every_s: int = 3600
 
 
 class _Later(Exception):
@@ -1466,6 +1468,8 @@ class Loop:
 
     def _step(self) -> Outcome:
         cfg, now = self.cfg, self.clock()
+        if cfg.self_repo:
+            self._sync_ready_tick(now)      # before the mirror is read: the merged branch is what the cards see
         try:
             self.base_sha = refresh_mirror(cfg.repo, cfg.branch, self.mirror)
         except (subprocess.CalledProcessError, OSError) as e:
@@ -2314,6 +2318,63 @@ class Loop:
     def _sweep_dir(self) -> Path:
         from tools import factory_autofeed as AF
         return AF.factory_dir(self.cfg.worktree) or Path(self.cfg.state_dir)
+
+    def _sync_ready_tick(self, now) -> str:
+        """The second instance's branch falls behind factory/ready-*: merge it in (a plain three-way ``git merge`` in the worktree)
+        at the start of the work and then once an hour while nothing RUNS. A conflict is aborted and ends as one line in the
+        report (event ``sync``, status ``conflict``); the work goes on on the branch as it is. Never raises; returns the status."""
+        cfg = self.cfg
+        if not cfg.sync_ref or self.pool.workers:
+            return ""
+        try:
+            ls = self.ls()
+            last = ls.get("ready_sync") or {}
+            if last and now - float(last.get("at", 0)) < cfg.sync_every_s:
+                return ""
+            _tasks, state = self.load()
+            if any(r.get("status") == "RUNNING" for r in state["tasks"].values()):
+                return ""
+            ls["ready_sync"] = {"at": now}       # a fault or a conflict also waits for the next hour
+            self.save_ls(ls)
+            wt = Path(cfg.worktree)
+            status, line = "up_to_date", ""
+            try:
+                git_run(wt, "rev-parse", "--verify", "--quiet", cfg.sync_ref + "^{commit}")
+                on = git_run(wt, "rev-parse", "--abbrev-ref", "HEAD").strip()
+                if on != cfg.branch:
+                    status, line = "skipped", "the worktree is on %s, not %s" % (on, cfg.branch)
+                elif git_run(wt, "status", "--porcelain", "--untracked-files=no").strip():
+                    status, line = "skipped", "the worktree has uncommitted changes"
+                else:
+                    try:
+                        git_run(wt, "merge-base", "--is-ancestor", cfg.sync_ref, "HEAD")
+                    except subprocess.CalledProcessError:
+                        before = git_run(wt, "rev-parse", "HEAD").strip()
+                        try:
+                            git_run(wt, "-c", "user.name=factory-loop", "-c", "user.email=factory-loop",
+                                    "merge", "--no-edit", "-m", "merge %s into %s" % (cfg.sync_ref, cfg.branch), cfg.sync_ref)
+                            status = "merged"
+                            line = "%s -> %s" % (before[:8], git_run(wt, "rev-parse", "HEAD").strip()[:8])
+                        except subprocess.CalledProcessError as error:
+                            files = git_run(wt, "diff", "--name-only", "--diff-filter=U").split()
+                            try:
+                                git_run(wt, "merge", "--abort")
+                            except subprocess.CalledProcessError:
+                                git_run(wt, "reset", "--merge")
+                            status = "conflict"
+                            line = "merge of %s into %s conflicts: %s" % (
+                                cfg.sync_ref, cfg.branch, ", ".join(files[:8]) or F.redact(str(getattr(error, "stderr", "") or error))[:200])
+            except subprocess.CalledProcessError as error:
+                status, line = "skipped", F.redact(str(getattr(error, "stderr", "") or ""))[:200] or "git %s failed: ref %s missing?" % (
+                    error.cmd[-1] if getattr(error, "cmd", None) else "", cfg.sync_ref)
+            self.event("sync", status=status, reason=self.rs(line, 300), ref=cfg.sync_ref)
+            return status
+        except Exception as error:      # noqa: BLE001  the sync never stops the loop
+            try:
+                self.event("sync", status="error", reason=self.rs("%s: %s" % (type(error).__name__, error), 300))
+            except Exception:           # noqa: BLE001
+                pass
+            return "error"
 
     def _sweep_tick(self, now) -> None:
         """Red-guard supply (the triage reads guard_sweep_<date>.json): (1) a finished cloud sweep is booked; (2) at most once a
@@ -4973,7 +5034,8 @@ class Loop:
         texts = {r: (src.joinpath(*r.split("/"))).read_text(encoding="utf-8", errors="replace")
                  for r in rel}
         named = tuple(task.touch_files) if getattr(getattr(self, "cfg", None), "self_repo", False) and task else ()   # 8.1: only the second instance merges the factory's
-        bad = factory_gate.weakening_violations(self.mirror, texts, task.kind, named)   # own code, and only files the contract names
+        own = bool(getattr(getattr(self, "cfg", None), "self_repo", False))
+        bad = factory_gate.weakening_violations(self.mirror, texts, task.kind, named, own)   # own code (and its tests, no weaker), only files the contract names
         return "; ".join(bad[:3]) if bad else ""
 
     @staticmethod

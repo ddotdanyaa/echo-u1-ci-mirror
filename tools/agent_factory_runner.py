@@ -66,7 +66,8 @@ TRANSIENT_HOPS = 4   # an overloaded (503) model: up to this many other models a
 ENV_HOLD_AFTER = 10          # consecutive environment shortages before the long hold (the candidate is kept)
 ENV_HOLD_S = 1800
 ENV_OTHER_CEILING = 3         # a persistent non-slot environment failure (a missing package...) is parked after this many
-RED_BEFORE_WAIT_S = 120      # the base run before the coder call waits for a slot at most this long (its own ceiling)
+SCAN_REASK_CEILING = 3       # a card whose test the scanner keeps out of the cloud run is asked again this many times (no strike), then it is a red attempt
+RED_BEFORE_WAIT_S = 120     # the base run before the coder call waits for a slot at most this long (its own ceiling)
 SLOT_BUDGET_S = 300         # ONE wait for a pytest slot / free RAM per runner pass, shared by every gate run
 IDLE_SUSPECTS_ALLOWED = 4   # 21.11 (was 2) idle timeouts treated as a rate limit; the next one is a worker fault (infra)
 
@@ -77,7 +78,7 @@ def factory_env(state: dict) -> dict:
     table = state.get('factory_env')
     if not isinstance(table, dict):
         table = state['factory_env'] = {}
-    for name in ('idle', 'shortages', 'other', 'cloud_down'):
+    for name in ('idle', 'shortages', 'other', 'cloud_down', 'scan_excluded'):
         if not isinstance(table.get(name), dict):
             table[name] = {}
     return table
@@ -2988,6 +2989,33 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
             # the scanner found private text in the files this candidate changed: an ordinary bad edit (a strike)
             return reject('gate', 'private_text', 'the edit carries private text; remove it and do not copy it from elsewhere',
                           [])
+        if reason == 'scan_excluded':
+            # the second instance: the scanner (or an import the mirror lacks) kept the candidate's test out of the cloud run. The SAME card
+            # is asked again with the named cause (class of the hit and line), not charged as a red attempt; after SCAN_REASK_CEILING
+            # asks in a row it is an ordinary red attempt, so a card that cannot fix it still ends.
+            events.append('scan_excluded')
+            try:
+                from . import factory_cloud_gate as cloud_gate
+                cause = cloud_gate.last_error().get('text') or ''
+            except Exception:       # noqa: BLE001
+                cause = ''
+            cause = scrub(redact(cause))[:300] or 'the scanner excluded the test from the cloud run'
+            report['reason_detail'] = cause
+            note = ('your test was kept out of the cloud run, it never ran: %s. Fix exactly this (rename, remove or rewrite the text '
+                    'the scanner names; import only modules the mirror publishes) and keep the asserts.' % cause)
+
+            def ask_again(state, row):
+                table = factory_env(state)['scan_excluded']
+                seen = (table.get(tid) if type(table.get(tid)) is int else 0) + 1
+                table[tid] = seen
+                if seen > SCAN_REASK_CEILING:
+                    table.pop(tid, None)
+                    return 'strike'
+                add_feedback(state, tid, 'gate', '[attempt %d, no strike] %s' % (attempt, note))
+                return 'again'
+            if ck.commit(ask_again) == 'strike':
+                return reject('gate', 'scan_excluded', note, [])
+            return release('scan_excluded', 5)
         if reason in ('cloud_down', 'cloud_busy'):
             # the cloud gave no verdict (down, or no free place): the first thing handled. Not a strike, not counted toward
             # ENV_OTHER_CEILING, never parks the task; the finished candidate waits, the pass is released for a minute.

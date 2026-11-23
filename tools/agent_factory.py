@@ -30,6 +30,7 @@ CONTRACT_MAX = 32000     # room for test.new.code (up to 8000 characters)
 REASON_CLOUD_DOWN = "cloud_down"
 REASON_CLOUD_BUSY = "cloud_busy"
 SLICER_FILES: tuple[str, ...] = ("factory_architect.py", "factory_cards.py", "agent_factory_import.py")
+SLICER_REV = "1.3"      # 1.3: the second instance's cards may edit a factory test, a scanner-excluded test is asked again with its cause
 _slicer_version: str | None = None
 
 
@@ -37,7 +38,7 @@ def slicer_version() -> str:
     """Fingerprint the slicer's source once per process."""
     global _slicer_version
     if _slicer_version is None:
-        digest = sha1()
+        digest = sha1(SLICER_REV.encode("ascii"))     # a new revision opens every quarantine, whatever else the files hold
         for name in SLICER_FILES:
             path = Path(name)
             if not path.is_absolute():
@@ -206,6 +207,20 @@ def _parse_priority(value: object) -> int:
     raise InvalidPlan("invalid priority")
 
 
+OWN_TEST_PATH = re.compile(r"tests/(?:test_agent_factory\.py|test_factory_[a-z0-9_]+\.py)")
+
+
+def _own_test_contract(row: dict) -> bool:
+    """True when the row's contract says it edits an existing test of the factory itself (``own_test_edit``, written only by the
+    second instance's architect): the one case a code task's touch_files may meet its own tests (gate.is_forbidden and the
+    no-weakening check still decide per process)."""
+    try:
+        contract = json.loads(row.get("contract") or "")
+    except (ValueError, TypeError):
+        return False
+    return isinstance(contract, dict) and contract.get("own_test_edit") is True
+
+
 def read_plan(plan: object) -> dict[str, Task]:
     """Tasks require explicit scope, dependencies and privacy classification.
 
@@ -249,8 +264,9 @@ def read_plan(plan: object) -> dict[str, Task]:
             if set(files["touch_files"]) != set(files["tests"]):
                 raise InvalidPlan("unit_test task must touch exactly its tests")
         elif work_kind == "code":
-            if ({p.casefold() for p in files["touch_files"]} &
-                    {p.casefold() for p in files["tests"]}):
+            overlap = ({p.casefold() for p in files["touch_files"]} &
+                       {p.casefold() for p in files["tests"]})
+            if overlap and not (_own_test_contract(row) and all(OWN_TEST_PATH.fullmatch(p) for p in overlap)):
                 raise InvalidPlan("code task must not edit its own tests")
         else:
             raise InvalidPlan("invalid kind")
@@ -753,6 +769,7 @@ DEFER_REASONS = frozenset((REASON_CLOUD_DOWN, REASON_CLOUD_BUSY, "rate_minute", 
                            "channel_wait", "reviewer_failed", "budget_exhausted", "os_error",
                            "review_chain_short",   # one critic approved, no other model now: the candidate waits
                            "env_shortage",    # no slot / RAM: never a strike, never a block
+                           "scan_excluded",   # the second instance: the scanner kept the test out of the cloud run; asked again with the cause
                            "off_path"))      # the failing test runs a module outside the task: the loop widens it
 
 

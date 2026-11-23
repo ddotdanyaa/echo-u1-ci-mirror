@@ -381,7 +381,9 @@ def validate(contract, root, *, bid='', title='', known_ids=None, named_ok=False
             if file.casefold() in seen:
                 faults.append('duplicate part file: ' + file)
             seen.add(file.casefold())
-            forbidden = G.is_forbidden(file, 'code', named=named)
+            forbidden = G.is_forbidden(file, 'code', named=named, own_tests=bool(named_ok))
+            if not forbidden and named_ok and G.own_test_edit(file, 'code', named, True):
+                contract['own_test_edit'] = True      # the card edits an existing test of the factory: the plan lets its scope meet its tests
             if forbidden:
                 faults.append(forbidden + ': ' + file)
             symbols, anchor = part.get('symbols', []), part.get('anchor', '')
