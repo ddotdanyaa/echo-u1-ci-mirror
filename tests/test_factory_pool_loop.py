@@ -292,7 +292,7 @@ def test_a_proof_during_the_drain_cancels_the_brake(tmp_path, monkeypatch):
 def test_snapshot_survives_a_promote_while_a_worker_reads_it(tmp_path, monkeypatch):
     env = pool_env(tmp_path, monkeypatch, [task_row(1), task_row(2)])
     monkeypatch.setenv("POOL_SLEEP_T1", "0.2")
-    monkeypatch.setenv("POOL_SLEEP_T2", "1.5")
+    monkeypatch.setenv("POOL_SLEEP_T2", "6.0")       # a slow worker start (~1 s on a loaded machine) must not let <id> end before the promote
     _review_runner_env(monkeypatch, "T1", {"tools/x1.py": "a = 2\n"})
     loop = env.make_loop()
     seen = {}
