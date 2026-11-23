@@ -2931,7 +2931,8 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                 try:        # a streak of cloud_down for ONE task while other runs answer is the task's own fault, not the cloud's
                     streak = ck.commit(count_down)
                     from . import factory_cloud_gate as cloud_gate
-                    if streak > cloud_gate.CLOUD_DOWN_STREAK and cloud_gate.alive():
+                    over = streak - cloud_gate.CLOUD_DOWN_STREAK - 1       # 0 at the first alarming pass; one alarm per 5 passes (~5 min) after
+                    if over >= 0 and over % 5 == 0 and cloud_gate.alive():
                         events.append('cloud_down_streak')
                         report['cloud_down_streak'] = streak
                         cloud_gate.alarm('cloud_down_streak', task=tid, count=streak, stage=report.get('cloud_stage') or '',
