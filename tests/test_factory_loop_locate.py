@@ -30,17 +30,19 @@ def test_triage_gets_an_ask_that_goes_through_the_light_call(tmp_path, monkeypat
     assert seen[-1]("third") == ""          # the pass budget is spent
 
 
-def test_a_loop_triage_with_the_ask_reaches_the_localization(tmp_path, monkeypatch):
+def test_a_loop_triage_leaves_the_localization_to_the_slicer(tmp_path, monkeypatch):
+    # was: the real triage reached the localization with the ask; the architect (slicer) now owns file discovery,
+    # so the real triage must hand the row to the slicer queue and never call the triage-side localization
     env = Env(tmp_path, monkeypatch, tasks=[])
     _backlog(env)
     _commit(env, "echo_sync/x.py", "# B9: the slow path\ndef slow():\n    return 1\n")
     reached = []
 
     def fake_localized(root, bid, text, ask, events):
-        reached.append((bid, ask("q")))
+        reached.append(bid)
         return [], ""
     monkeypatch.setattr(I, "_localized_scope", fake_localized)
-    loop = env.loop()           # the real triage
+    loop = env.loop(extra={"slice_fn": lambda *a, **k: None})           # the real triage; the slicer says "not yet"
     monkeypatch.setattr(loop, "_light_ask", lambda text, **kw: ("ok", "google/x", "reply", 3))
     loop.step()
-    assert reached and reached[0][1] == "reply"
+    assert reached == [] and "B9" in loop.ls()["to_slice"]

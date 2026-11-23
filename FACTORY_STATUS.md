@@ -1,29 +1,29 @@
 # Factory status (generated, structured data only)
 
-Generated: 2026-11-23T00:01:03Z
-Source commit: sha9071664a07e7
+Generated: 2026-11-23T00:11:18Z
+Source commit: shae6b536dad41e
 
 ## Commits (sha, time)
+- shae6b536da 2026-11-23T03:10:57+03:00
+- sha92e6360a 2026-11-23T03:10:25+03:00
+- sha600a83c7 2026-11-23T02:55:47+03:00
+- sha41067526 2026-11-23T02:53:28+03:00
+- sha72648fce 2026-11-23T02:48:24+03:00
+- shaac9bd99e 2026-11-23T02:40:16+03:00
+- sha93e1dad5 2026-11-23T02:40:05+03:00
+- shaa971293a 2026-11-23T02:35:20+03:00
+- shacdb2452e 2026-11-23T02:34:32+03:00
+- sha449e1e76 2026-11-23T02:33:14+03:00
+- sha1f432e80 2026-11-23T02:26:48+03:00
 - sha9071664a 2026-11-23T02:24:22+03:00
+- shab3c7f2d8 2026-11-23T02:23:57+03:00
 - sha13b577c0 2026-11-23T02:23:56+03:00
 - shad4e979d0 2026-11-23T02:23:16+03:00
 - sha775f48b0 2026-11-23T02:22:47+03:00
-- shaa087e15d 2026-11-23T00:57:44+03:00
-- sha9a3ab9bc 2026-11-23T00:54:44+03:00
-- sha24628bc7 2026-11-23T00:35:50+03:00
-- shae58997cb 2026-11-23T00:23:36+03:00
-- sha6cd8239c 2026-11-22T23:50:27+03:00
-- sha5294a04b 2026-11-22T23:50:08+03:00
-- sha90dd4489 2026-11-22T23:28:24+03:00
-- sha1fa4b239 2026-11-22T23:21:29+03:00
-- shaab96af18 2026-11-22T22:27:45+03:00
-- shaf2d5fae6 2026-11-22T22:25:37+03:00
-- shadef16629 2026-11-22T22:23:21+03:00
-- sha2afa53ca 2026-11-22T22:15:21+03:00
-- shadba3e872 2026-11-22T22:13:55+03:00
-- sha15951366 2026-11-22T22:13:50+03:00
-- sha7267beb4 2026-11-22T22:12:43+03:00
-- shab515ae15 2026-11-22T22:12:03+03:00
+- sha04761862 2026-11-23T01:14:37+03:00
+- sha97958749 2026-11-23T01:13:23+03:00
+- sha6c0c5ecc 2026-11-23T01:11:25+03:00
+- shab324ce21 2026-11-23T01:03:31+03:00
 
 ## Funnel
 | step | count |
@@ -43,8 +43,8 @@ Side counters: blocked=0, parked=0, requeued=2
 Tasks now: DONE=68, FAILED=95, PROMOTED=5, READY=9
 Accepted: 5
 Promoted: 29
-Free RAM, GB: 4.96
-Telemetry rows: 21952 recognised, 0 unrecognised
+Free RAM, GB: 5.4
+Telemetry rows: 21970 recognised, 0 unrecognised
 
 ## Spend per model
 | model | calls | tokens_in | tokens_out | usage_unknown | http_429 | errors |
@@ -69,12 +69,12 @@ Telemetry rows: 21952 recognised, 0 unrecognised
 | answer | 536 | 0 |
 | gate | 3269 | 0 |
 | infra | 766 | 0 |
-| loop | 4315 | 0 |
-| other | 2799 | 0 |
+| loop | 4325 | 0 |
+| other | 2805 | 0 |
 | promote | 40 | 0 |
 | review | 1544 | 843 |
 | run | 8394 | 2627 |
-| triage | 289 | 0 |
+| triage | 291 | 0 |
 
 ## Channels (model ids)
 - 1db4ab-gemini-3-8-flash
@@ -119,27 +119,25 @@ Telemetry rows: 21952 recognised, 0 unrecognised
 - or-north-mini-code
 
 ## Published files
-Modules: 29
-Tests in the cloud: 116
-Tests not in the cloud: 53
+Modules: 27
+Tests in the cloud: 119
+Tests not in the cloud: 47
 - tests/test_agent_factory.py (backlog-id, call-word, env-path, long-run, pid-port)
 - tests/test_factory_architect.py (env-path, path)
 - tests/test_factory_asked_memory.py (backlog-id)
 - tests/test_factory_autofeed.py (backlog-id)
 - tests/test_factory_cannot_scope.py (env-path)
+- tests/test_factory_channels.py (dependency)
 - tests/test_factory_class_cases.py (backlog-id, call-word, long-run, path, phone)
 - tests/test_factory_closures.py (backlog-id)
 - tests/test_factory_cloud_path.py (email)
 - tests/test_factory_cloud_product.py (long-run)
 - tests/test_factory_context_pinned.py (path)
-- tests/test_factory_decompose.py (backlog-id, call-word, email)
-- <redacted-name> (backlog-id)
-- <redacted-name> (backlog-id)
+- tests/test_factory_decompose.py (call-word, email)
 - <redacted-name> (backlog-id, long-run)
-- <redacted-name> (backlog-id, call-word, email, key, long-run)
+- tests/test_factory_fanout.py (long-run)
 - tests/test_factory_intake.py (call-word, pid-port)
 - tests/test_factory_intake_merge.py (dependency)
-- tests/test_factory_jam_lift.py (backlog-id)
 - tests/test_factory_light_squeezed.py (path)
 - tests/test_factory_loop_answers.py (backlog-id, call-word)
 - tests/test_factory_loop_answers2.py (backlog-id, call-word, env-path, path, phone, user-path)
@@ -147,33 +145,29 @@ Tests not in the cloud: 53
 - tests/test_factory_loop_channel_brake.py (long-run)
 - tests/test_factory_loop_d8c.py (dependency)
 - tests/test_factory_loop_d8d.py (backlog-id, call-word, key, long-run, phone)
-- <redacted-name> (backlog-id)
-- tests/test_factory_loop_parents.py (dependency)
 - tests/test_factory_loop_r7.py (dependency)
 - tests/test_factory_loop_r7b.py (dependency)
 - tests/test_factory_loop_selffix.py (call-word, phone)
 - tests/test_factory_metrics.py (owner-words)
 - tests/test_factory_owner_list.py (backlog-id, call-word, long-run)
-- tests/test_factory_paid_coder.py (backlog-id, env-path, key, owner-words)
-- tests/test_factory_paid_critic.py (url)
 - tests/test_factory_paid_critic_span.py (key)
-- tests/test_factory_paid_wholeview.py (dependency)
-- tests/test_factory_path.py (dependency)
+- tests/test_factory_path.py (backlog-id)
 - tests/test_factory_port_wiring.py (dependency)
 - <redacted-name> (backlog-id, long-run)
-- tests/test_factory_refeed.py (backlog-id)
 - tests/test_factory_regex_lock.py (call-word, key)
 - tests/test_factory_registry.py (backlog-id, owner-words)
 - tests/test_factory_reject_apply.py (dependency)
 - tests/test_factory_reject_note.py (dependency)
 - tests/test_factory_round7.py (backlog-id, call-word, owner-name, path, phone, user-path)
-- tests/test_factory_route_d.py (backlog-id, long-run)
+- tests/test_factory_slicer.py (backlog-id, call-word, email, key, long-run)
+- tests/test_factory_slicer_pool.py (env-path, long-run)
 - tests/test_factory_status.py (dependency)
+- tests/test_factory_supply.py (dependency)
 - tests/test_factory_survive.py (path, pid-port, user-path)
 - tests/test_factory_sync.py (backlog-id, email)
 - tests/test_factory_test_order.py (dependency)
 - tests/test_factory_tree.py (dependency)
-- tests/test_factory_triage.py (backlog-id, call-word, email, env-path, key, phone, tunnel-host)
+- tests/test_factory_triage.py (backlog-id, call-word, email, env-path, key, phone)
 - tests/test_factory_triage_example.py (dependency)
 
 ## Cloud test matrix

@@ -408,6 +408,34 @@ def validate_state(tasks: dict[str, Task], state: dict) -> None:
         raise InvalidPlan("invalid infra streak")
 
 
+def stuck_rows(state, tasks) -> dict[str, list[str]]:
+    """Current-generation failures, grouped by the whole backlog row."""
+    grouped = {}
+    for tid, task in tasks.items():
+        bid = row_of(task.backlog_id or tid)
+        grouped.setdefault(bid, []).append(tid)
+    result = {}
+    rows = state["tasks"]
+    for bid, ids in grouped.items():
+        if any(rows[t]["status"] in ("RUNNING", "REVIEW") for t in ids):
+            continue
+        def generation(t):
+            match = re.search(r"_r(\d+)(?:_test)?$", t)
+            return int(match[1]) if match else 0
+        newest = max(map(generation, ids))
+        current = [t for t in ids if generation(t) == newest]
+        code = [t for t in current if tasks[t].kind == "code"]
+        if code and all(rows[t]["status"] in SATISFIED for t in code):
+            continue
+        stuck = [t for t in current if (
+            rows[t]["status"] == "FAILED" and not is_terminal(rows[t].get("reason"))) or (
+            rows[t]["status"] == "READY" and any(
+                rows.get(d, {}).get("status") == "FAILED" for d in tasks[t].depends_on))]
+        if stuck:
+            result[bid] = sorted(stuck)
+    return result
+
+
 def ready(tasks: dict[str, Task], state: dict, *, google: bool = True,
           occupied: tuple[str, ...] = (), now: float | None = None) -> list[str]:
     """Sorted tasks ready to execute, mutually compatible. Busy = RUNNING and REVIEW rows (a candidate holds its files
@@ -416,10 +444,10 @@ def ready(tasks: dict[str, Task], state: dict, *, google: bool = True,
     validate_state(tasks, state)
     now = time.time() if now is None else float(now)
     read_in_use = set()
-    write_in_use = {p.casefold() for p in occupied}
+    write_in_use = {(p.casefold(), None) for p in occupied}
     for tid, row in state["tasks"].items():
         if row["status"] in ("RUNNING", "REVIEW"):
-            write_in_use.update(p.casefold() for p in tasks[tid].touch_files + tasks[tid].tests)
+            write_in_use.update(write_claims(tasks[tid]))
             read_in_use.update(p.casefold() for p in tasks[tid].read_files)
     found = []
     for tid in sorted(tasks, key=lambda t: (tasks[t].priority, t)):
@@ -431,14 +459,58 @@ def ready(tasks: dict[str, Task], state: dict, *, google: bool = True,
         if google and (not task.privacy_safe or task.only_opus):
             continue
         reads = {p.casefold() for p in task.read_files}
-        writes = {p.casefold() for p in task.touch_files + task.tests}
-        if (writes & (write_in_use | read_in_use)) or (reads & write_in_use):
+        writes = write_claims(task)
+        if _claims_clash(writes, write_in_use) or {f for f, _ in writes} & read_in_use \
+                or reads & {f for f, _ in write_in_use}:
             continue
         if all(state["tasks"][dep]["status"] in SATISFIED for dep in task.depends_on):
             found.append(tid)
             write_in_use.update(writes)
             read_in_use.update(reads)
     return found
+
+
+def write_claims(task: Task) -> set[tuple[str, str | None]]:
+    """What a task books for writing: (file, None) is the whole file; (file, function) only that function. A task with
+    a contract books the pairs "file + function" of its parts; a part with an anchor or without symbols, a test file
+    and a file the contract does not name book the whole file."""
+    whole = {p.casefold() for p in task.touch_files + task.tests}
+    by_file: dict[str, set[str] | None] = {}
+    if task.contract:
+        try:
+            parts = json.loads(task.contract).get("parts") or []
+        except (ValueError, AttributeError):
+            parts = []
+        for part in parts:
+            if not isinstance(part, dict) or not isinstance(part.get("file"), str):
+                continue
+            name = part["file"].casefold()
+            symbols = part.get("symbols") or []
+            if part.get("anchor") or not symbols:
+                by_file[name] = None
+            elif by_file.get(name, set()) is not None:
+                by_file.setdefault(name, set()).update(str(s) for s in symbols)
+    claims = set()
+    for name in whole:
+        symbols = by_file.get(name)
+        if symbols:
+            claims.update((name, s) for s in symbols)
+        else:
+            claims.add((name, None))
+    return claims
+
+
+def _claims_clash(claims, in_use) -> bool:
+    for name, symbol in claims:
+        for other, other_symbol in in_use:
+            if name == other and (symbol is None or other_symbol is None or _symbols_overlap(symbol, other_symbol)):
+                return True
+    return False
+
+
+def _symbols_overlap(a: str, b: str) -> bool:
+    """The same name, or one inside the other: a class ``Foo`` holds its method ``Foo.bar``."""
+    return a == b or a.startswith(b + ".") or b.startswith(a + ".")
 
 
 def acquire(tasks: dict[str, Task], state: dict, tid: str, *,
@@ -680,7 +752,6 @@ DEFER_REASONS = frozenset((REASON_CLOUD_DOWN, REASON_CLOUD_BUSY, "rate_minute", 
                            "provider_error", "gate_unknown", "no_independent_reviewer",
                            "channel_wait", "reviewer_failed", "budget_exhausted", "os_error",
                            "review_chain_short",   # one critic approved, no other model now: the candidate waits
-                           "fresh_model_busy",     # only models that failed this task are free now: a minute, not an attempt
                            "env_shortage",    # no slot / RAM: never a strike, never a block
                            "off_path"))      # the failing test runs a module outside the task: the loop widens it
 
@@ -888,9 +959,35 @@ def note_infra(state: dict, ok: bool) -> int:
     return state["infra_streak"]
 
 
+def hold_census(state, tasks, *, google=True) -> dict[str, int]:
+    counts = {}
+    for tid, row in state["tasks"].items():
+        status, reason = row["status"], row.get("reason")
+        task = tasks.get(tid)
+        if reason == "quarantine":
+            key = "quarantine"
+        elif is_terminal(reason):
+            continue
+        elif status == "BLOCKED":
+            key = "owner_rule" if row.get("blocked_reason") in OWNER_RULES else "blocked_term"
+        elif status == "READY" and google and task and task.only_opus:
+            key = "only_opus"
+        elif status == "READY" and google and task and not task.privacy_safe:
+            key = "private"
+        elif status == "READY" and task and any(state["tasks"].get(d, {}).get("status") == "FAILED" for d in task.depends_on):
+            key = "ready_dead_dep"
+        elif status == "FAILED":
+            key = "failed_other"
+        else:
+            continue
+        counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
 def next_action(state: dict, now: float, channel_wait_s: float,
                 backlog_has_more: bool, tasks: dict[str, Task], *,
-                google: bool = True, free: int = 0, skip=()) -> dict:
+                google: bool = True, free: int = 0, skip=(),
+                resliceable: frozenset[str] = frozenset(), slice_wait_s: float | None = None) -> dict:
     """PROMOTE | RUN | WAIT | TRIAGE | HOLD | DONE.
 
     Candidates come only from ready() (same google flag as the runner), so scope
@@ -931,9 +1028,15 @@ def next_action(state: dict, now: float, channel_wait_s: float,
         return {"action": "WAIT", "wait_s": 5, "reason": "running_lease"}
     if backlog_has_more:
         return {"action": "TRIAGE", "reason": "no_runnable_tasks"}
+    if resliceable:
+        return {"action": "RESLICE", "reason": "rows_to_slice", "backlog_ids": sorted(resliceable)}
+    if slice_wait_s is not None:
+        return {"action": "WAIT", "wait_s": max(5, slice_wait_s), "reason": "architect_wait"}
     held, owner, terms = False, set(), []
     for tid, row in rows.items():
         st = row["status"]
+        if is_terminal(row.get("reason")) and row.get("reason") != "quarantine":
+            continue
         task = tasks.get(tid)
         if st == "BLOCKED" and row.get("blocked_reason") in OWNER_RULES:
             owner.add(row["blocked_reason"])
@@ -948,11 +1051,13 @@ def next_action(state: dict, now: float, channel_wait_s: float,
         elif st == "READY":
             held = True  # not runnable now: dead dependency, conflict
     if terms:        # the HOLD ends at the earliest term: then that block is lifted (UNBLOCK)
-        return {"action": "HOLD", "reason": "blocked_until", "wait_s": max(5.0, min(terms) - now)}
+        return {"action": "HOLD", "reason": "blocked_until", "wait_s": max(5.0, min(terms) - now),
+                "blockers": hold_census(state, tasks, google=google)}
     if held:
-        return {"action": "HOLD", "reason": "only_opus_or_blocked"}
+        return {"action": "HOLD", "reason": "only_opus_or_blocked", "blockers": hold_census(state, tasks, google=google)}
     if owner:
-        return {"action": "HOLD", "reason": "owner_rule:" + ",".join(sorted(owner))}
+        return {"action": "HOLD", "reason": "owner_rule:" + ",".join(sorted(owner)),
+                "blockers": hold_census(state, tasks, google=google)}
     return {"action": "DONE", "reason": "nothing_left"}
 
 

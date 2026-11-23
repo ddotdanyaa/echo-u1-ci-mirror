@@ -1,6 +1,6 @@
 {
  "accepted": 5,
- "free_ram_gb": 4.96,
+ "free_ram_gb": 5.4,
  "funnel": {
   "accepted": 5,
   "claimed": 141,
@@ -145,7 +145,7 @@
   }
  },
  "promoted": 29,
- "rows_recognized": 21952,
+ "rows_recognized": 21970,
  "schema": 3,
  "side": {
   "blocked": 0,
@@ -153,7 +153,7 @@
   "requeued": 2
  },
  "skipped_files": 0,
- "source_sha": "sha9071664a07e7",
+ "source_sha": "shae6b536dad41e",
  "span": {
   "answer": {
    "calls": 0,
@@ -205,7 +205,7 @@
    "calls_usage_unknown": 0,
    "errors": {},
    "http_429": 0,
-   "rows": 4315,
+   "rows": 4325,
    "status": {
     "BLOCKED": 259,
     "FAILED": 282,
@@ -215,13 +215,13 @@
     "added": 16,
     "brake": 15,
     "deferred": 512,
-    "empty": 87,
+    "empty": 88,
     "infra": 17,
-    "ok": 1660,
+    "ok": 1668,
     "other": 43,
     "refused": 1,
     "requeued": 2,
-    "stop": 58
+    "stop": 59
    },
    "tokens_in": 0,
    "tokens_out": 0
@@ -231,12 +231,12 @@
    "calls_usage_unknown": 0,
    "errors": {},
    "http_429": 0,
-   "rows": 2799,
+   "rows": 2805,
    "status": {
     "added": 1,
-    "failed": 23,
-    "ok": 60,
-    "other": 2692,
+    "failed": 24,
+    "ok": 62,
+    "other": 2695,
     "rejected": 23
    },
    "tokens_in": 0,
@@ -303,10 +303,10 @@
    "calls_usage_unknown": 0,
    "errors": {},
    "http_429": 0,
-   "rows": 289,
+   "rows": 291,
    "status": {
     "added": 43,
-    "empty": 238,
+    "empty": 240,
     "hold_dropped": 3,
     "other": 5
    },
@@ -327,20 +327,20 @@
   "brake_cleared": 1,
   "cleared": 56,
   "deferred": 1030,
-  "empty": 325,
+  "empty": 328,
   "error": 366,
-  "failed": 23,
+  "failed": 24,
   "hold_dropped": 3,
   "infra": 17,
-  "ok": 12017,
-  "other": 2948,
+  "ok": 12027,
+  "other": 2951,
   "parked": 18,
   "refused": 2,
   "rejected": 40,
   "released": 9,
   "requeued": 4,
   "run_failed": 13,
-  "stop": 58
+  "stop": 59
  },
  "summary": "ok",
  "tasks_now": {

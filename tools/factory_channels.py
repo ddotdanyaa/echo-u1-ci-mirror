@@ -22,6 +22,8 @@ import datetime
 import hashlib
 import json
 import math
+import logging
+import statistics
 import re
 import time
 
@@ -67,6 +69,8 @@ MISSING_STREAK = 3
 # (fewer key switches, and Gemini's implicit prompt cache stays warm); the memory is forgotten after this long.
 AFFINITY_TTL_S = 1800
 AFFINITY_MAX = 200
+SMALL_PROMPT_TOKENS = 6000
+SMALL_FIRST_TIMEOUT_S = 30
 TIERS = ('small', 'main', 'escalation')
 # The day of a provider's daily quota (requests per day): Google AI Studio resets at midnight Pacific (the page
 # above), OpenRouter's free models at 00:00 UTC (live 19.11 20:03: its 429 free-models-per-day carries
@@ -175,9 +179,40 @@ def tier_of(channel) -> str:
 _ROLE_TIERS = {   # candidate order of tiers for a call; a tier that is not listed is not used for that role
     ('code', 1): ('main', 'small', 'escalation'),
     ('code', 2): ('escalation', 'main'),
+    ('edit', 1): ('small', 'main'),
+    ('edit', 2): ('main', 'escalation'),
+    'architect': ('escalation',),
     'review': ('small', 'main', 'escalation'),
     'cross_review': ('main', 'small', 'escalation'),
 }
+
+
+def note_edit_outcome(state, tier, green, seconds, now=None):
+    """Keep a rolling experiment, evaluating every thirty cards or two hours."""
+    now = time.time() if now is None else now
+    experiment = state.setdefault('edit_experiment', {})
+    samples = experiment.setdefault('samples', {})
+    bucket = samples.setdefault(tier, [])
+    bucket.append([bool(green), max(0, seconds)])
+    del bucket[:-30]
+    experiment['pending'] = experiment.get('pending', 0) + 1
+    totals = experiment.setdefault('totals', {})
+    totals[tier] = totals.get(tier, 0) + 1                  # the window below is cut to 30; the count is not
+    state['edit_by_tier'] = {t: {'cards': totals.get(t, len(rows)), 'green': sum(r[0] for r in rows),
+                                'median_s': statistics.median(r[1] for r in rows), 'window': len(rows)}
+                             for t, rows in samples.items() if rows}
+    small, main = (state['edit_by_tier'].get(t, {}) for t in ('small', 'main'))
+    if small.get('window', 0) < 30 or not main.get('window'):
+        return None
+    if experiment['pending'] < 30 and now - experiment.get('checked_at', 0) < 7200:
+        return None
+    experiment.update(pending=0, checked_at=now)
+    worse = (small['green'] / small['window'] < .7 * main['green'] / main['window']
+             or small['median_s'] > 1.5 * main['median_s'])
+    route = 'small_second' if worse else 'small_first'
+    prior = state.get('edit_route', 'small_first')
+    state['edit_route'] = route
+    return dict(status=route, small=dict(small), main=dict(main)) if route != prior else None
 
 
 def minute_steps(channel) -> int:
@@ -250,7 +285,7 @@ def missing_for_good(state, channel) -> bool:
 
 
 def route_order(channels, role, attempt, tokens, *, preferred=None, exclude_model=None, skip_tiers=(), state=None,
-                later=False, tier_floor=None):
+                later=False):
     """Channels in the order a call tries them. Coder, attempt 1: main, small (only when ``tokens`` fit its tpm),
     escalation; attempt 2 and later: escalation, main. Reviewer: small first; cross-review: main first.
     ``exclude_model`` (the coder's model) never reviews its own work; a collection of models excludes them all (the
@@ -260,21 +295,22 @@ def route_order(channels, role, attempt, tokens, *, preferred=None, exclude_mode
     rest follow the live reliability rating (``preferred`` first among equals), and a channel that answers 404 on
     every call is left out until its config changes. ``later``: a later candidate of one tournament (<id>): the
     earlier one already spent part of the same minute, so the small tier needs room for two runs.
-    ``tier_floor`` (D #20, the loop raises it after a repeated error): a code call tries the tiers at or above the
-    floor first (the escalation tier first for 'escalation'), the lower ones only after them."""
-    key = ('code', 1 if attempt <= 1 else 2) if role == 'code' else role
-    ranks = _ROLE_TIERS[key]
-    if role == 'code' and tier_floor in TIERS and tier_floor != TIERS[0]:
-        floor = TIERS.index(tier_floor)
-        high = tuple(t for t in ranks if TIERS.index(t) >= floor)
-        ranks = high + tuple(t for t in ranks if t not in high)      # the lower tiers only after the floor's tiers
+    Unknown roles fall back to the first code route and log a warning."""
+    key = (role, 1 if attempt <= 1 else 2) if role in ('code', 'edit') else role
+    if key not in _ROLE_TIERS:
+        logging.getLogger(__name__).warning('Unknown factory role %s; using code attempt 1', role)
+    ranks = _ROLE_TIERS.get(key, _ROLE_TIERS[('code', 1)])
+    if role == 'edit' and attempt <= 1 and state and state.get('edit_route') == 'small_second':
+        ranks = ('main', 'small')
     excluded = excluded_models(exclude_model)
     picked = []
     for channel in channels:
         tier = tier_of(channel)
         if tier not in ranks or tier in skip_tiers or channel['model'] in excluded:
             continue
-        if tier == 'small' and small_minute_need(tokens, channel) * (2 if later else 1) > channel['tpm']:    # Gemma only when a minute of it fits
+        if tier == 'small' and role == 'edit' and tokens > SMALL_PROMPT_TOKENS:
+            continue
+        if tier == 'small' and role != 'edit' and small_minute_need(tokens, channel) * (2 if later else 1) > channel['tpm']:    # Gemma only when a minute of it fits
             continue
         if state is not None and missing_for_good(state, channel):
             continue
@@ -737,16 +773,13 @@ def _classify_error_event(error: dict):
         if _find(body, 'provider_code') is not None:       # the UPSTREAM provider of one model, not the account
             info['scope'] = 'model'
         return info
-    if status is None and name == 'EmptyAnswer':
+    if status is None and name in ('EmptyAnswer', 'TruncatedAnswer'):
         # HTTP 200 and no answer: the model spent its whole output limit on reasoning for THIS task. Not an outage
         # of the model: the call hops to another model, and the rating/streak (note_outcome) judges a model that
         # does it again and again (D #22).
         info = _info('transient', None, name, message)
         info['scope'] = 'task'
         return info
-    if status is None and name in ('EmptyAnswer', 'TruncatedAnswer'):
-        # HTTP 200 and no answer: the model spent its whole output limit (on reasoning); the model, not the account
-        return _info('transient', None, name, message)
     if status is None and name == 'NetworkError':
         # no HTTP answer at all (the light engine): the machine's network, the same for every channel; the
         # runner counts it towards the brake instead of postponing one task for ever (critic 19.11)
@@ -861,7 +894,7 @@ def apply_failure(state, channel, info, *, env=None, now=None) -> dict:
         return {'action': 'cool', 'cool_s': seconds}
     if kind == 'transient' and info.get('scope') == 'task':
         return {'action': 'none', 'cool_s': 0}       # D #22: this task was too big for the model, the model is fine
-    if kind == 'transient' and (info.get('status') in OVERLOAD_STATUSES or info.get('name') in ('EmptyAnswer', 'TruncatedAnswer')):
+    if kind == 'transient' and (info.get('status') in OVERLOAD_STATUSES):
         # "This model is currently experiencing high demand" (503): the MODEL is overloaded, not the account. Cooled,
         # the retry and the next pass take another channel (live 19.11 18:18-18:20: two passes were deferred on a
         # 503 of gemini-3.5-flash-lite while three other channels idled).

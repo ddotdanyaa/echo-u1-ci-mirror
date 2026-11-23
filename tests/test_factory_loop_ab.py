@@ -2,9 +2,12 @@
 import json
 
 from tests.test_factory_loop import Env, task_row
-from tests.test_factory_loop_spec import CHANNEL, GOOD, fake_post
 from tools import factory_ab as AB
 from tools import factory_loop as L
+
+CHANNEL = {"id": "g1", "model": "google/gemini-x", "group": "g", "key_env": "FAKE_KEY_ENV",
+           "tpm": 100000, "rpm": 100, "rpd": 1000}
+ARM_A, ARM_B = L.EXPERIMENTS["coder_model"]       # the experiment these tests decide (the spec pass is gone: 2.4)
 
 
 def pick(experiment, arm, kind=None):
@@ -37,12 +40,12 @@ def tel(path, rows, raw_first=None):
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def rows(arm, status, n=12, exp="spec_pass"):
+def rows(arm, status, n=12, exp="coder_model"):
     return [{"span": "loop", "action": "RUN", "status": status, "experiments": {exp: arm}} for _ in range(n)]
 
 
 def test_registry_has_the_experiments():
-    assert L.EXPERIMENTS["spec_pass"] == ("on", "off")
+    assert "spec_pass" not in L.EXPERIMENTS
     assert L.EXPERIMENTS["coder_model"] == ("google/gemini-3.5-flash-lite", "google/gemini-3.1-flash-lite")
     assert L.EXPERIMENTS["small_follow_up"] == ("on", "off")
     assert L.PER_HOUR_EXPERIMENTS == {"small_follow_up"}
@@ -54,17 +57,16 @@ def test_run_event_carries_the_experiments(tmp_path, monkeypatch):
     env.loop().step()
     ev = run_events(env)
     assert len(ev) == 1
-    # a plain code task is not in the spec_pass experiment
     assert ev[0]["experiments"] == {"coder_model": L.EXPERIMENTS["coder_model"][0],
                                     "small_follow_up": AB.assign("T%d" % i, "small_follow_up", ("on", "off"))}
 
 
-def test_run_event_of_a_unit_test_task_has_all(tmp_path, monkeypatch):
-    i = pick("spec_pass", "off")
+def test_run_event_of_a_unit_test_task_has_the_same_experiments(tmp_path, monkeypatch):
+    i = pick("coder_model", ARM_A)
     env = make(tmp_path, monkeypatch, i, kind="unit_test", touch_files=["tests/test_x%d.py" % i])
     env.loop().step()
     exps = run_events(env)[0]["experiments"]
-    assert exps["spec_pass"] == "off" and set(exps) == {"spec_pass", "coder_model", "small_follow_up"}
+    assert exps["coder_model"] == ARM_A and set(exps) == {"coder_model", "small_follow_up"}
 
 
 def test_the_small_follow_up_arm_is_what_the_runner_gets(tmp_path, monkeypatch):
@@ -88,27 +90,6 @@ def test_start_decides_small_follow_up_per_hour(tmp_path, monkeypatch):
     assert loop.arm("T%d" % 999, "small_follow_up") == "off"
 
 
-def test_spec_pass_off_makes_no_spec_call(tmp_path, monkeypatch):
-    i = pick("spec_pass", "off")
-    env = make(tmp_path, monkeypatch, i, kind="unit_test", touch_files=["tests/test_x%d.py" % i],
-               read_files=["tools/x1.py"], goal="Add must add two numbers properly.")
-    calls = []
-    monkeypatch.setattr(L, "_light_post", fake_post(calls, json.dumps(GOOD)))
-    env.loop(extra={"extra_env": {"FAKE_KEY_ENV": "k"}}).step()
-    assert calls == [] and env.runs() == 1
-    assert "specs" not in env.loop().ls() or "T%d" % i not in env.loop().ls()["specs"]
-
-
-def test_spec_pass_on_still_calls_the_model(tmp_path, monkeypatch):
-    i = pick("spec_pass", "on")
-    env = make(tmp_path, monkeypatch, i, kind="unit_test", touch_files=["tests/test_x%d.py" % i],
-               read_files=["tools/x1.py"], goal="Add must add two numbers properly.")
-    calls = []
-    monkeypatch.setattr(L, "_light_post", fake_post(calls, json.dumps(GOOD)))
-    env.loop(extra={"extra_env": {"FAKE_KEY_ENV": "k"}}).step()
-    assert len(calls) == 1
-
-
 def test_the_coder_arm_is_the_model_the_runner_gets(tmp_path, monkeypatch):
     a, b = L.EXPERIMENTS["coder_model"]
     for n, arm in enumerate((a, b)):
@@ -124,23 +105,22 @@ def test_the_coder_arm_is_the_model_the_runner_gets(tmp_path, monkeypatch):
 
 def test_start_decides_a_winner_and_arm_returns_it(tmp_path, monkeypatch):
     env = make(tmp_path, monkeypatch, 1)
-    tel(env.state_dir / "telemetry.jsonl", rows("on", "REVIEW") + rows("off", "FAILED"))
+    tel(env.state_dir / "telemetry.jsonl", rows(ARM_A, "REVIEW") + rows(ARM_B, "FAILED"))
     loop = env.loop(once=True)
     assert loop.run() == L.EXIT_OK
-    win = loop.ls()["experiments"]["spec_pass"]
-    assert win["winner"] == "on" and win["per_arm"]["off"]["n"] == 12 and win["at"]
-    assert "coder_model" not in loop.ls().get("experiments", {})
+    win = loop.ls()["experiments"]["coder_model"]
+    assert win["winner"] == ARM_A and win["per_arm"][ARM_B]["n"] == 12 and win["at"]
+    assert "small_follow_up" not in loop.ls().get("experiments", {})
     journal = [json.loads(x) for x in (env.state_dir / "growth.jsonl").read_text(encoding="utf-8").splitlines()]
-    assert journal[0]["experiment"] == "spec_pass" and journal[0]["winner"] == "on"
+    assert journal[0]["experiment"] == "coder_model" and journal[0]["winner"] == ARM_A
     assert any(e["span"] == "experiment" and e["status"] == "decided" for e in env.events())
-    for t in ("T%d" % 1, "T%d" % 2, "T%d" % pick("spec_pass", "off")):
-        assert loop.arm(t, "spec_pass") == "on"
-    assert loop.arm("T1", "coder_model") in L.EXPERIMENTS["coder_model"]
+    for t in ("T%d" % 1, "T%d" % 2, "T%d" % pick("coder_model", ARM_B)):
+        assert loop.arm(t, "coder_model") == ARM_A
 
 
 def test_a_decided_experiment_is_not_decided_twice(tmp_path, monkeypatch):
     env = make(tmp_path, monkeypatch, 1)
-    tel(env.state_dir / "telemetry.jsonl", rows("on", "REVIEW") + rows("off", "FAILED"))
+    tel(env.state_dir / "telemetry.jsonl", rows(ARM_A, "REVIEW") + rows(ARM_B, "FAILED"))
     env.loop(once=True).run()
     env.loop(once=True).run()
     journal = (env.state_dir / "growth.jsonl").read_text(encoding="utf-8").splitlines()
@@ -149,11 +129,11 @@ def test_a_decided_experiment_is_not_decided_twice(tmp_path, monkeypatch):
 
 def test_a_broken_telemetry_line_stops_nothing(tmp_path, monkeypatch):
     env = make(tmp_path, monkeypatch, 1)
-    tel(env.state_dir / "telemetry.jsonl", rows("on", "REVIEW", 6), raw_first="{not json")
-    tel(env.state_dir / "telemetry.jsonl.1", rows("on", "REVIEW", 6) + rows("off", "FAILED"), raw_first="\x00garbage")
+    tel(env.state_dir / "telemetry.jsonl", rows(ARM_A, "REVIEW", 6), raw_first="{not json")
+    tel(env.state_dir / "telemetry.jsonl.1", rows(ARM_A, "REVIEW", 6) + rows(ARM_B, "FAILED"), raw_first="\x00garbage")
     loop = env.loop(once=True)
     assert loop.run() == L.EXIT_OK
-    assert loop.ls()["experiments"]["spec_pass"]["winner"] == "on"
+    assert loop.ls()["experiments"]["coder_model"]["winner"] == ARM_A
     assert env.runs() == 1
 
 

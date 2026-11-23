@@ -64,13 +64,16 @@ def _skip(r):
     return {x["backlog_id"]: x["reason"] for x in r["skipped"]}
 
 
-def test_id_in_a_comment_gives_a_candidate_hold_not_a_skip(ctree):
+def _sliced(r):
+    return [x["backlog_id"] for x in r["to_slice"]]
+
+
+def test_every_open_row_goes_to_the_slicer_not_to_a_hold_or_a_skip(ctree):
+    # replaces the candidate-hold and no-candidates-skip tests: the mechanical slicer is gone, the architect finds files
     root, b = ctree
     r = imp.triage_portion(b, root, set(), 50)
-    q = _holds(r)["E60000"]
-    assert H.kind_of(q) == "candidates" and "E60000" not in _skip(r)
-    assert H.candidates(q)[0][0] == "echo_sync/x.py"
-    assert "(P1)" in q and "Медленный" not in q               # paths and tags only, never the row text
+    assert sorted(_sliced(r)) == sorted(x[0] for x in ROWS)
+    assert r["holds"] == [] and r["tasks"] == [] and r["skipped"] == []
 
 
 def test_backticked_symbol_finds_the_defining_module(ctree):
@@ -93,36 +96,36 @@ def test_candidates_never_tests_protected_or_init(ctree):
     assert not [c for c in cands if c.startswith("tests/") or c.endswith("__init__.py") or imp._protected(c)]
 
 
-def test_no_candidates_stays_a_skip(ctree):
+def test_a_row_without_files_and_an_owner_words_row_reach_the_slicer_and_never_show_their_text(ctree):
+    # replaces the no-candidates-skip and owner-words tests: no strong-signal gate any more, the row text stays private
     root, b = ctree
     r = imp.triage_portion(b, root, set(), 50)
-    assert "нет упомянутых" in _skip(r)["E51000"] and "кандидатов нет" in _skip(r)["E51000"]
+    assert {"E51000", "E64000", "E66000"} <= set(_sliced(r)) and r["holds"] == [] and r["skipped"] == []
+    blob = repr(r)
+    assert "молчит" not in blob and "14:36" not in blob
 
 
-def test_owner_words_row_needs_a_strong_signal_and_never_shows_its_text(ctree):
+def test_the_slicer_queue_keeps_backlog_priority_order(ctree):
     root, b = ctree
     r = imp.triage_portion(b, root, set(), 50)
-    assert "E64000" in _skip(r) and "E64000" not in _holds(r)       # only a docs word (погода): no hold
-    q = _holds(r)["E66000"]                                      # its ID is in echo_sync/x.py
-    assert H.kind_of(q) == "candidates" and "echo_sync/x.py" in q
-    assert "молчит" not in q and "14:36" not in q
-
-
-def test_holds_keep_backlog_priority_order(ctree):
-    root, b = ctree
-    r = imp.triage_portion(b, root, set(), 50)
-    order = [h["backlog_id"] for h in r["holds"] if H.kind_of(h["question"]) == "candidates"]
+    order = _sliced(r)
     assert order.index("E62000") < order.index("E60000")
 
 
-def test_a_public_row_with_only_word_matches_gets_no_hold(ctree):
-    # <id> live 20.11: <id>/<id>/<id> (design, proxy watchdog, a work rule) were candidates holds by words alone; the free
-    # head scoped them wrongly, the coordinator rejected all 5 promotions. Words rank files, they never make a hold.
+def test_a_known_row_is_not_handed_to_the_slicer_again(ctree):
+    root, b = ctree
+    r = imp.triage_portion(b, root, {"E60000"}, 50)
+    assert "E60000" not in _sliced(r) and _skip(r)["E60000"] == "already known"
+
+
+def test_word_matches_only_rank_files_they_never_make_a_hold(ctree):
+    # <id> live 20.11: <id>/<id>/<id> were candidates holds by words alone; the free head scoped them wrongly.
+    # Words rank files, they never make a hold (and now no row is held for lack of a strong candidate either).
     root, b = ctree
     cands = imp.candidate_files(root, "E63000", "Подключить базу законов к ответу ассистента")
     assert cands and cands[0][1] >= imp.CAND_MIN and all(c[2] == ["doc"] for c in cands)
     r = imp.triage_portion(b, root, set(), 50)
-    assert "E63000" not in _holds(r) and "кандидаты слабые" in _skip(r)["E63000"]
+    assert "E63000" not in _holds(r) and "E63000" in _sliced(r)
     assert not imp.strong_candidates(cands)
 
 
@@ -164,17 +167,13 @@ def test_weak_candidate_holds_names_rows_whose_candidates_are_words_only(ctree):
     assert set(weak) == {"E63000", "E64000"} and all("кандидаты слабые" in w for w in weak.values())
 
 
-def test_a_picked_scope_makes_the_normal_task_pair(ctree):
+def test_a_picked_scope_makes_no_task_in_the_triage_any_more(ctree):
+    # replaces the task-pair test: the triage never makes tasks, the slicer owns the row and its files
     root, b = ctree
     scopes = {"E60000": {"touch_files": ["echo_sync/x.py", "echo_sync/ghost.py", "tools/factory_zz.py"],
                       "note": "Speed up slow in x"}}
     r = imp.triage_portion(b, root, set(), 50, scopes=scopes)
-    t = {x["id"]: x for x in r["tasks"]}
-    assert t["bl_E60000_test"]["kind"] == "unit_test" and t["bl_E60000_test"]["touch_files"] == ["tests/test_factory_e60000.py"]
-    main = t["bl_E60000"]
-    assert main["touch_files"] == ["echo_sync/x.py"] and main["depends_on"] == ["bl_E60000_test"]
-    assert "Speed up slow in x" in main["goal"] and main["privacy_safe"] is True
-    assert "E60000" not in _holds(r)
+    assert r["tasks"] == [] and "E60000" in _sliced(r) and "E60000" not in _holds(r)
 
 
 def test_a_scope_of_only_missing_or_protected_files_is_ignored(ctree):

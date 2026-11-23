@@ -17,10 +17,10 @@ from tools import factory_context
 WHERE = {
     'search-miss': ('tools/agent_factory_runner.py', 'tools/factory_patterns.py'),
     'no-edit-block': ('tools/agent_factory_runner.py',),
-    'cannot': ('tools/factory_spec.py', 'tools/agent_factory_import.py'),
+    'cannot': ('tools/factory_cards.py', 'tools/agent_factory_import.py'),
     'test-hang': ('tools/factory_gate.py',),
     'gate-cut': ('tools/factory_gate.py',),
-    'weak-test': ('tools/factory_gate.py', 'tools/factory_spec.py'),
+    'weak-test': ('tools/factory_gate.py', 'tools/factory_cards.py'),
     'test-crash': ('tools/factory_gate.py', 'tools/agent_factory_runner.py'),
     'review-reject': ('tools/agent_factory_runner.py',),
     # <id> audit 20.11: the two largest classes were never asked (gate-red 212 rows, token-waste 27)

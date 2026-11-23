@@ -197,11 +197,11 @@ def _add(row, usd, *, coder=False, architect=False, agent=False, critic=False):
         row.setdefault(name, 0.0)
 
 
-def add_spend(usd, coder=False, architect=False, agent=False, critic=False):
+def add_spend(usd, architect=False, agent=False, critic=False):
     usd = _amount(usd)
     with _spend_lock():
         row = _spend_row()
-        _add(row, usd, coder=coder, architect=architect, agent=agent, critic=critic)
+        _add(row, usd, architect=architect, agent=agent, critic=critic)
         _write_spend(row)
 
 
@@ -375,7 +375,8 @@ def _control(task, diff, failure, exclude_model, baseline, workdir, key):
             refuse_opus(model)
         except ValueError:
             continue
-        if model == str(exclude_model).rpartition('/')[2]:
+        if model in ({str(m).rpartition('/')[2] for m in exclude_model} if isinstance(exclude_model, (list, tuple, set, frozenset))
+                     else {str(exclude_model).rpartition('/')[2]}):
             continue
         body = dict(model=model, max_tokens=2000, output_config=dict(effort='medium'),
                     messages=[dict(role='user', content=prompt)])

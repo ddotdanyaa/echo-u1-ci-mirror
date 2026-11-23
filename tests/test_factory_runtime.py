@@ -2688,7 +2688,7 @@ def light_rig(rig, answers):
     def post(url, key, body, timeout):
         role = 'review' if body['messages'][0]['content'] == rig.w.LIGHT_REVIEW_RULES else 'code'
         sent.append(dict(url=url, key=key, role=role, prompt=body['messages'][1]['content'], model=body['model']))
-        status, content = answers[role]
+        status, content = answers(role, body['messages'][1]['content']) if callable(answers) else answers[role]
         reply = dict(choices=[dict(message=dict(content=content), finish_reason='stop')],
                      usage=dict(prompt_tokens=900, completion_tokens=40,
                                 prompt_tokens_details=dict(cached_tokens=100)))

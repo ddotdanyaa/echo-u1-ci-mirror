@@ -63,24 +63,24 @@ def test_a_row_built_on_an_old_branch_is_open_as_a_port_and_other_waits_still_wa
         assert not rows[bid]["open"] and rows[bid]["port_from"] == ""
 
 
-def test_a_port_row_with_its_guard_test_is_one_code_task_on_the_file_that_holds_the_function_now(tmp_path):
+def test_a_port_row_with_its_guard_test_goes_to_the_slicer_with_the_guard(tmp_path):
+    # replaces the one-code-task test: the mechanical slicer is gone, the architect finds the files
     root, sha = _head(tmp_path)
     b = _backlog(tmp_path, "| E35000 | **Команды только на целой речи** | A01000 | P0 | блокер · реализовано на ветке: "
                            "H6 п.5 `%s`, в `integ-c15000`; не выложено | E33000 |\n" % sha)
     r = imp.triage_portion(b, root, set(), 20)
-    assert r["holds"] == [] and [t["kind"] for t in r["tasks"]] == ["code"]
-    task = r["tasks"][0]
-    assert task["port_from"] == sha and task["touch_files"] == ["echo_sync/cm_kind.py"]
-    assert task["tests"] == ["tests/verify/question/test_v_E35000.py"] and task["privacy_safe"] is True
-    assert sha in task["goal"]
+    assert r["holds"] == [] and r["tasks"] == []
+    # the guard id comes only from the sweep verdict (none given here); the row still reaches the slicer
+    assert [x["backlog_id"] for x in r["to_slice"]] == ["E35000"]
 
 
-def test_a_port_row_without_a_guard_test_is_a_question_never_a_test_task(tmp_path):
+def test_a_port_row_without_a_guard_test_still_reaches_the_slicer_and_makes_no_task(tmp_path):
+    # replaces the question-hold test: the row is no longer parked, the slicer owns it (empty guard)
     root, sha = _head(tmp_path, guard=False)
     b = _backlog(tmp_path, "| E35000 | **Команды** | A01000 | P0 | блокер · реализовано на ветке: `%s` | E33000 |\n" % sha)
     r = imp.triage_portion(b, root, set(), 20)
-    assert r["tasks"] == []
-    assert len(r["holds"]) == 1 and "теста-стража" in r["holds"][0]["question"] and sha in r["holds"][0]["question"]
+    assert r["tasks"] == [] and r["holds"] == []
+    assert [(x["backlog_id"], x["guard"]) for x in r["to_slice"]] == [("E35000", "")]
 
 
 def test_the_definitions_of_the_tree_are_parsed_once_until_a_file_changes(tmp_path, monkeypatch):
