@@ -3083,7 +3083,9 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
             ctx['light_note'] = stderr.decode('utf-8', 'replace')[:300] if light and code == 0 else ''
             elapsed = round(time.monotonic() - began, 3)
             summary = event_summary(stdout, directory)
-            idle = code == 124 and summary['steps'] == 0 and summary['tool_events'] == 0
+            # W-gemma 3: a Gemma call that ran out of its answer limit is a timeout (10 s rest), never a rate_minute in disguise
+            idle = (code == 124 and summary['steps'] == 0 and summary['tool_events'] == 0
+                    and not (selected is not None and channels.no_streak(selected)))
             kinds = ('input_tokens', 'cache_read_tokens', 'cache_write_tokens')
             actual_input = (sum(summary[k] or 0 for k in kinds) if any(summary[k] is not None for k in kinds)
                             else None)       # None = Kilo reported no usage: unknown, never 0
@@ -3164,8 +3166,9 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
             kind = info['kind']
             if kind == 'ok' or (kind == 'unknown' and code == 0):
                 return code, stdout, stderr
-            if kind == 'timeout' and small_quick:
+            if kind == 'timeout' and (small_quick or (selected is not None and channels.no_streak(selected))):
                 info['kind'] = kind = 'transient'
+                info['timed_out'] = True       # W-gemma 3: apply_failure rests the Gemma channel BIG_TIMEOUT_CLOSE_S
             if kind in ('timeout', 'launcher'):
                 raise ChannelFault(info)
             if selected is not None:
@@ -3938,7 +3941,8 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
 
             def dir_for(retry: int) -> Path:
                 if retry:  # a failed worker may have written files; never reuse its directory
-                    ctx['workdir'] = staging / (prefix + "-retry-" + str(retry))
+                    # W-gemma 3: the second candidate's hop must not meet the first one's retry directory (FileExistsError, os_error)
+                    ctx['workdir'] = staging / (prefix + ("-c%d" % ctx['candidate'] if ctx.get('candidate') else "") + "-retry-" + str(retry))
                     ctx['baseline'] = prepare(root, task, ctx['workdir'])
                 return ctx['workdir']
 

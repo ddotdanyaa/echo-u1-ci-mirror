@@ -105,6 +105,11 @@ DAY_PROBE_FORGET_S = 4 * 3600  # a series whose last mark ended this long ago st
 # 10 calls in 80 minutes).
 HIGH_RPD = 1000
 HIGH_RPD_COOL_MAX_S = 300
+# W-gemma 3: a small-tier channel with a big daily allowance (Gemma) has no series of failures at all; its timeout closes
+# it BIG_TIMEOUT_CLOSE_S, and a mark of it that is longer than BIG_MARK_CAP_S (any old streak / suspect / overload mark)
+# is cut to that when read -- daily marks (day_probe), a dead key and a balance mark stay
+BIG_TIMEOUT_CLOSE_S = 10
+BIG_MARK_CAP_S = 20
 # W-gemma 1: a 503 of a big-quota model (Gemma: 35 % of the calls succeed, a refusal comes in 1 s and costs no quota) cools
 # neither the model nor the key. The call hops to the next channel of the circle (BIG_HOP_PAUSE_S), up to BIG_SENDS_MAX
 # sends, then BIG_ROUNDS more rounds (one circle each) after BIG_ROUND_PAUSE_S; only then the last channel is closed
@@ -494,13 +499,56 @@ def _channel_cool(state, channel) -> float:
     return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else 0.0
 
 
+def _group_cool(state, channel) -> float:
+    group = state.get(channel['group'])
+    until = group.get('cool_until', 0) if isinstance(group, dict) else 0
+    return float(until) if isinstance(until, (int, float)) and not isinstance(until, bool) else 0.0
+
+
+def no_streak(channel) -> bool:
+    """W-gemma 3: a small-tier channel with a big daily allowance (rpd >= HIGH_RPD): no series of failures closes it."""
+    return tier_of(channel) == 'small' and _big_daily(channel)
+
+
+def day_marked(state, channel, now) -> bool:
+    """A daily mark of this channel, of its model or of its key is on (running, or expired and waiting for its probe's 200:
+    the 200 removes the row). A row whose series ended DAY_PROBE_FORGET_S ago is forgotten."""
+    probes = state.get('day_probe')
+    if not isinstance(probes, dict):
+        return False
+    for key in _probe_keys(channel):
+        row = probes.get(key)
+        if isinstance(row, dict) and isinstance(row.get('end'), (int, float)) and now - row['end'] < DAY_PROBE_FORGET_S:
+            return True
+    return False
+
+
+def read_marks(state, channel, now=None) -> dict:
+    """The one reading of the cooling marks of a channel (cooled_until, channel_report and the pool all use it):
+    {'model', 'channel', 'group'} -> epoch seconds (0 = none). For a no_streak channel (Gemma) a mark that would hold it
+    still longer than BIG_MARK_CAP_S ahead is cut off (read as 0) -- old marks of the series / suspect / overload rules,
+    none of them made by this module any more -- unless a daily mark is on it (day_probe) or the mark is longer than
+    STREAK_COOL_MAX_S (a balance or a dead mark of the provider). The last BIG_MARK_CAP_S of such an old mark still hold."""
+    now = time.time() if now is None else now
+    marks = {'model': _model_cool(state, channel, now), 'channel': _channel_cool(state, channel),
+             'group': _group_cool(state, channel)}
+    if no_streak(channel) and not day_marked(state, channel, now):
+        sources = state.get('channel_cool_src')
+        own = sources.get(channel['id']) if isinstance(sources, dict) else None
+        for kind, value in marks.items():
+            if kind == 'channel' and own in ('rate', 'big_close'):
+                continue          # the provider's own retry-after (a real 429) and our own short close are never cut
+            if now + BIG_MARK_CAP_S < value <= now + STREAK_COOL_MAX_S:
+                marks[kind] = 0.0       # ignored (not cut to "now + 20", which would slide for ever); a mark of the last 20 s holds
+    return marks
+
+
 def cooled_until(state, channel, now=None) -> float:
     """When the channel can take a call again as far as cooling goes: the latest of its quota group, its model and
     the channel itself (a per-minute limit cools only the channel)."""
-    group = state.get(channel['group'])
-    until = group.get('cool_until', 0) if isinstance(group, dict) else 0
-    until = until if isinstance(until, (int, float)) and not isinstance(until, bool) else 0
-    return max(until, _model_cool(state, channel, now), _channel_cool(state, channel), _probe_flight(state, channel))
+    now = time.time() if now is None else now
+    marks = read_marks(state, channel, now)
+    return max(marks['group'], marks['model'], marks['channel'], _probe_flight(state, channel))
 
 
 def _probe_keys(channel) -> tuple:
@@ -780,21 +828,45 @@ def align_day(state, channel, quota_value, *, now=None) -> int:
 
 
 def main_dry(channels, state, env=None, *, now=None) -> bool:
-    """True when every channel that can take an edit call (the edit route of the main and escalation tiers: a card's
-    prompt is over the small tier's limit; a channel with no key or a dead key is no channel) is closed by the day's
-    mark (``daily_quota`` / ``rpd``) -- the free main edit is out for the rest of the provider's day. ``env`` None: every
-    key is taken as present (route_order has no environment)."""
+    """W-gemma 3, the one condition of every Gemma rule: NO channel that can take an edit call (the edit route of the main
+    and escalation tiers: a card's prompt is over the small tier's limit; a channel with no key or a dead key is no
+    channel) is open -- open means: it takes a call now or by its marks within OPEN_SOON_S, and its day has room. What
+    closed a channel does not matter (the day's mark, a channel / group / model cooling of any length). A channel with a
+    daily mark (day_probe) is not open until its probe has answered 200, also when the mark has expired. ``env`` None:
+    every key is taken as present (route_order has no environment). No usable channel at all: False (nothing to be dry)."""
     now = time.time() if now is None else now
+    live = _edit_live(channels, state, env, now)
+    return bool(live) and not any(_open_soon(state, c, now) for c in live)
+
+
+def main_open(channels, state, env=None, *, now=None) -> bool:
+    """Some main / escalation channel is open (the opposite of main_dry's reading, but also False with no usable channel at
+    all): the small tier's answer limit is the quick one only while this is True."""
+    now = time.time() if now is None else now
+    return any(_open_soon(state, c, now) for c in _edit_live(channels, state, env, now))
+
+
+def _edit_live(channels, state, env, now) -> list:
+    """The usable channels of the edit route of the main and escalation tiers (a prompt over the small tier's limit)."""
     if env is None:
         env = {c['key_env']: 'x' for c in channels if 'key_env' in c}
     edit = {}
     for attempt in (1, 2):
         for channel in route_order(channels, 'edit', attempt, SMALL_PROMPT_TOKENS + 1):
             edit[channel['id']] = channel
-    live = usable(list(edit.values()), state, env, now=now)
-    if not live:
+    return usable(list(edit.values()), state, env, now=now)
+
+
+def _open_soon(state, channel, now) -> bool:
+    """main_dry's reading of one channel: no daily mark waiting for its 200, cooled at most OPEN_SOON_S more, and today's
+    count under its rpd."""
+    if day_marked(state, channel, now):
         return False
-    return all(row['closed_by'] in DAILY_CLOSED for row in channel_report(live, state, env, now=now))
+    if cooled_until(state, channel, now) > now + OPEN_SOON_S:
+        return False
+    group = state.get(channel['group']) if isinstance(state.get(channel['group']), dict) else {}
+    start, _ = quota_day(channel['model'], now)
+    return sum(1 for t in _numbers(group.get('request_times')) if t >= start) < channel['rpd']
 
 
 def small_open(channels, state, env, *, now=None) -> bool:
@@ -851,14 +923,20 @@ def cool(state, channel, *, now=None, seconds=DEFAULT_COOL_S):
     group['cool_until'] = max(group.get('cool_until', 0), now + max(1, seconds))
 
 
-def cool_channel(state, channel, *, now=None, seconds=DEFAULT_COOL_S) -> dict:
+def cool_channel(state, channel, *, now=None, seconds=DEFAULT_COOL_S, src=None) -> dict:
     """Cool ONE channel (its model on its key); the key's other models and the model on other keys stay usable.
-    Never shortens a longer cooling."""
+    Never shortens a longer cooling. ``src``: what made the mark ('rate' = the provider's own retry-after, which read_marks
+    never cuts); recorded when this mark is the longest."""
     now = time.time() if now is None else now
     if not isinstance(state.get('channel_cool'), dict):
         state['channel_cool'] = {}
     table = state['channel_cool']
-    table[channel['id']] = max(_channel_cool(state, channel), now + max(1, seconds))
+    until = now + max(1, seconds)
+    if src and until > _channel_cool(state, channel):
+        if not isinstance(state.get('channel_cool_src'), dict):
+            state['channel_cool_src'] = {}
+        state['channel_cool_src'][channel['id']] = src
+    table[channel['id']] = max(_channel_cool(state, channel), until)
     for cid in [c for c, until in table.items() if not isinstance(until, (int, float)) or until <= now - 3600]:
         del table[cid]                                       # old terms are history
     return {'action': 'cool_channel', 'cool_s': seconds}
@@ -1153,6 +1231,10 @@ def apply_failure(state, channel, info, *, env=None, now=None) -> dict:
     if kind == 'region':
         cool(state, channel, now=now, seconds=REGION_COOL_S)
         return {'action': 'cool', 'cool_s': REGION_COOL_S}
+    if no_streak(channel) and (info.get('timed_out') or info.get('suspect')):
+        # W-gemma 3: the answer limit of a Gemma call passed (also an idle one: Kilo's own sleep is no rate limit here):
+        # this channel rests BIG_TIMEOUT_CLOSE_S, never more, and the 30 s cut-off is no rate_minute
+        return cool_channel(state, channel, now=now, seconds=BIG_TIMEOUT_CLOSE_S)
     if kind in ('rate_minute', 'rate_day'):
         if kind == 'rate_day':
             note_day_429(state, channel, now=now)         # W-gemma 5: BEFORE the count is aligned to the provider's
@@ -1168,7 +1250,7 @@ def apply_failure(state, channel, info, *, env=None, now=None) -> dict:
             # a per-model daily quota (D #18) or a per-minute limit is the limit of one model on one key
             # a per-minute limit is the limit of one model on one key: the other models of the project keep working
             # (live 20.11: 15 suspected per-minute stalls each cooled a whole project for 15 minutes)
-            return cool_channel(state, channel, now=now, seconds=seconds)
+            return cool_channel(state, channel, now=now, seconds=seconds, src='rate')
         cool(state, channel, now=now, seconds=seconds)     # a daily quota or the account's own budget: the whole key
         return {'action': 'cool', 'cool_s': seconds}
     if kind == 'transient' and info.get('scope') == 'task':
@@ -1345,7 +1427,7 @@ def main_free(channel_list, state, tokens, env, *, now=None) -> bool:
 def small_timeout(channel_list, state, tokens, env, *, now=None) -> int:
     """W-gemma 2: how long a call of the small tier (Gemma) may wait for its answer: SMALL_FIRST_TIMEOUT_S while a main
     channel is free (it would answer faster), BIG_TIMEOUT_S when Gemma is the only voice left."""
-    return SMALL_FIRST_TIMEOUT_S if main_free(channel_list, state, tokens, env, now=now) else BIG_TIMEOUT_S
+    return SMALL_FIRST_TIMEOUT_S if main_open(channel_list, state, env, now=now) else BIG_TIMEOUT_S   # W-gemma 3: one condition
 
 
 def close_big(state, channel, *, now=None) -> dict:
@@ -1405,6 +1487,9 @@ def note_outcome(state, channel, ok, *, now=None, channels=(), overload=False) -
         return {'action': 'none', 'cool_s': 0}
     if overload and (overload_healthy(state, channel['model']) or _big_daily(channel)):
         return {'action': 'none', 'cool_s': 0}     # a 503 of a healthy (or big-quota) model has its own rule (apply_failure)
+    if no_streak(channel):
+        table.pop(channel['id'], None)     # W-gemma 3: Gemma has no series of failures: a timeout or a 503 closes nothing here
+        return {'action': 'none', 'cool_s': 0}
     prior = table.get(channel['id'])
     n = (prior if type(prior) is int and prior > 0 else 0) + 1
     big = _big_daily(channel)
@@ -1506,7 +1591,7 @@ def channel_report(channels, state, env, *, now=None) -> list:
         mark = dead.get(channel['id'])
         probes = state.get('day_probe') if isinstance(state.get('day_probe'), dict) else {}
         probe = next((probes[k] for k in _probe_keys(channel) if isinstance(probes.get(k), dict)), None)
-        gcool = group.get('cool_until') if isinstance(group.get('cool_until'), (int, float)) else 0
+        marks = read_marks(state, channel, now)      # W-gemma 3: the same reading as choose() and main_dry
         candidates = []
         if isinstance(mark, dict) and _dead_applies(mark, env, channel):
             when = _dead_until(mark)
@@ -1516,8 +1601,7 @@ def channel_report(channels, state, env, *, now=None) -> list:
             candidates.append(('no_key', None))
         if calls >= channel['rpd']:
             candidates.append(('rpd', end))
-        for kind, when in (('model', _model_cool(state, channel, now)), ('channel', _channel_cool(state, channel)),
-                           ('group', gcool)):
+        for kind, when in (('model', marks['model']), ('channel', marks['channel']), ('group', marks['group'])):
             if when > now:
                 label = kind
                 if isinstance(probe, dict) and probe.get('end', 0) > now - 1 and kind in ('channel', 'group'):

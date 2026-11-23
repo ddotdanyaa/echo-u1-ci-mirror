@@ -1835,7 +1835,8 @@ class Loop:
                             except OSError as e:
                                 self.err(section + " day gate", e)
                     else:
-                        C.cool_channel(quotas, channel, now=self.clock())
+                        C.cool_channel(quotas, channel, now=self.clock(),      # W-gemma 3: a refused send of Gemma rests it 10 s
+                                       **({"seconds": C.BIG_TIMEOUT_CLOSE_S} if C.no_streak(channel) else {}))
                     publish()
             return "http_%s" % code_http, model, "", tokens
         try:
