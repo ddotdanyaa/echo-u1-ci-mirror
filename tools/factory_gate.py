@@ -659,7 +659,7 @@ def _cloud_attempt(root, tests, touched, trace=()):
         xml_text, rc, trusted = got
         if extra:
             xml_text, rc = _split_companions(root, xml_text, rc, tests, extra)
-        if (SELF_REPO or trusted) and _file_not_found(xml_text):
+        if (SELF_REPO or trusted) and _file_not_found(xml_text, root, tests):
             # the cloud could not open a test file that the candidate commit carries (the checkout's line endings, a stale
             # workflow): a fault of the environment, not of the card - no strike, no "junit not ok"
             return replace(_failure(-1, NOT_STARTED + 'cloud: cloud_down'), env_reason='cloud_down')
@@ -691,9 +691,25 @@ _NO_TESTS_TAIL = ('the cloud run finished and ran no test (pytest "no tests ran"
                   'task is missing there or its collection stopped; this is the cloud\'s answer, not its absence')
 
 
-def _file_not_found(xml_text) -> bool:
-    """True when the cloud's JUnit says pytest could not find a test file ("file or directory not found")."""
-    return 'file or directory not found' in str(xml_text).lower()
+_NOT_FOUND = re.compile(r'file or directory not found:\s*([^\s"\'<>]+)', re.I)
+
+
+def _file_not_found(xml_text, root=None, tests=()) -> bool:
+    """True when a collection <error> of the cloud's JUnit says pytest could not find a test file AND that file is in the
+    candidate's commit (``root / file`` exists): then the cloud's checkout is at fault. A file the card never created, or the
+    same words inside an ordinary failed test, is not this."""
+    if root is None:
+        return False
+    try:
+        errors = [e for e in ET.fromstring(xml_text).iter('error')]
+    except (ET.ParseError, ValueError, TypeError):
+        return False
+    for e in errors:
+        for m in _NOT_FOUND.finditer((e.get('message') or '') + '\n' + (e.text or '')):
+            name = m.group(1).split('::', 1)[0].replace('\\', '/').strip('.,:;')
+            if name and (Path(root) / name).is_file():
+                return True
+    return False
 
 
 def _no_testcase(xml_text) -> bool:
