@@ -3174,8 +3174,8 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                 note = ctx.get('light_note') or ''
                 return reject('gate', 'gate:no_changes', 'the model produced no change to the approved files'
                               + (' (' + note + ')' if note else ''), ())
-            if ensure_test_marker(task, ctx['workdir'], changed):
-                events.append('marker_autofixed')
+            # the agent path (the model writes the files itself) keeps the gate's rejection with the exact marker line;
+            # the runner writes a forgotten marker only for the edit-block answer of the contract card (see below)
             cand_files = {n: ctx['workdir'].joinpath(*n.split('/')).read_text(encoding='utf-8', errors='replace')
                           for n in changed}
             for name, source in cand_files.items():
