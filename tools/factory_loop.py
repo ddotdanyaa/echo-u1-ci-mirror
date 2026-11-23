@@ -4702,7 +4702,7 @@ class Loop:
             return "outside task scope: " + ", ".join(extra[:5])
         texts = {r: (src.joinpath(*r.split("/"))).read_text(encoding="utf-8", errors="replace")
                  for r in rel}
-        named = tuple(task.touch_files) if self.cfg.self_repo and task else ()   # 8.1: only the second instance merges the factory's
+        named = tuple(task.touch_files) if getattr(getattr(self, "cfg", None), "self_repo", False) and task else ()   # 8.1: only the second instance merges the factory's
         bad = factory_gate.weakening_violations(self.mirror, texts, task.kind, named)   # own code, and only files the contract names
         return "; ".join(bad[:3]) if bad else ""
 
