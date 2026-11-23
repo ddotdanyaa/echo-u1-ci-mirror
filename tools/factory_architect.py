@@ -971,6 +971,18 @@ def fit_free(packet, rung, engine, initial, user, limit=None):
         over = len(system) + len(text) - limit
         packet['evidence'] = packet['evidence'][min(over, len(packet['evidence'])):]
         system, base, text = build()
+    quotes = packet.get('quotes')
+    if len(system) + len(text) > limit and isinstance(quotes, (list, tuple)) and quotes:
+        # the last resort: the owner's quotes are cut to the room that is left (the later ones first, the head of a quote stays)
+        quotes = [str(q) for q in quotes]
+        while len(system) + len(text) > limit and quotes:
+            over = len(system) + len(text) - limit
+            if len(quotes[-1]) > over:
+                quotes[-1] = quotes[-1][:len(quotes[-1]) - over]
+            else:
+                quotes.pop()
+            packet['quotes'] = list(quotes)
+            system, base, text = build()
     return packet, system, base, text
 
 
@@ -992,8 +1004,12 @@ def contract_for(packet, *, rung, root, asks, named_ok=False, red_given=None, sk
         code_asked = False
         repaired = []
         read_asked = reach_asked = False
-        shown = _flat(packet.get('hints')) + '\n' + _flat(packet.get('evidence')) + '\n' + _flat(packet.get('red_dossier'))
         free_packet, base_user = packet, initial
+
+        def shown_text():
+            # what the model really got: the (possibly cut) packet plus the requests appended to the prompt that still stand in it
+            return (_flat(free_packet.get('hints')) + '\n' + _flat(free_packet.get('evidence')) + '\n' +
+                    _flat(free_packet.get('red_dossier')) + '\n' + user[len(base_user):])
         system = build_prompt(dict(packet, rung=rung), engine)[0]
         refused = []        # files of this engine's requests that could not be shown: the slice event keeps their names
         try:
@@ -1013,7 +1029,6 @@ def contract_for(packet, *, rung, root, asks, named_ok=False, red_given=None, sk
                         raise ContractFault('need rounds exhausted')
                     before = len(refused)
                     answer = _need_source(contract['need'], root, named_ok, refused)
-                    shown += '\n' + answer
                     user += '\nRequested source:\n' + answer
                     if len(refused) - before >= len(contract['need']) and idle < MAX_IDLE_NEEDS:
                         idle += 1                 # nothing was shown: the request costs no round
@@ -1072,10 +1087,9 @@ def contract_for(packet, *, rung, root, asks, named_ok=False, red_given=None, sk
                 if contract['decision'] == 'fix' and engine in ('free', 'free_main') and not read_asked:
                     # W-free 2: a free step does not fix code it has not read: the machine sends the named places itself
                     # and asks for the contract confirmed or corrected in ONE call (no need round is spent)
-                    if unread := unread_parts(contract, root, shown):
+                    if unread := unread_parts(contract, root, shown_text()):
                         read_asked = True
                         answer = _need_source(unread, root, named_ok, refused)
-                        shown += '\n' + answer
                         user += ('\nThe code of the functions your contract names (you had not seen it):\n' + answer +
                                  '\nConfirm the contract or correct it now that you have read this code. Return the full contract again.')
                         continue

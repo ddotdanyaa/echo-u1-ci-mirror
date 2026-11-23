@@ -3508,7 +3508,8 @@ class Loop:
             if rec.get("base_red"):
                 clues.append(rec["base_red"])
                 clues.append(self._trace_clue(task.id, rec))
-        clues.append(self._guard_traces(state).get(row, []))
+        guard_trace = self._guard_traces(state).get(row)
+        clues.append(guard_trace or [])
         red_given = Loop._is_red_row(row, entry)
         if red_given:
             try:
@@ -3516,7 +3517,7 @@ class Loop:
             except Exception as exc:                # an addition to the packet: without it the packet is as before
                 if hasattr(self, "err"):
                     self.err("row red evidence", exc)
-        row_trace = [t for t in (self._guard_traces(state).get(row) or []) if not str(t[0]).startswith("tests/")]
+        row_trace = [t for t in (guard_trace or []) if not str(t[0]).startswith("tests/")]
         if red_given and row_trace and rung < 2:
             # W-free 4: the bodies of up to 4 functions of the trace nearest to the assert (rung >= 2 has the whole dossier)
             try:
