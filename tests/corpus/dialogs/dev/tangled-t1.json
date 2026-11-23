@@ -1,0 +1,31 @@
+{
+ "id": "tangled-t1",
+ "split": "dev",
+ "area": "work",
+ "kind": "tangled",
+ "source": {
+  "name": "authored for ECHO (this repository), general knowledge, no external text copied",
+  "license": "CC0-1.0",
+  "kind": "authored",
+  "url": null,
+  "note": "imitation of the form of a tangled message; the real messages stay local in tests/fixtures/harvest_scenes (not in git)"
+ },
+ "turns": [
+  {
+   "user": "Ну в общем нужно чтобы ответ был сразу, но не абы какой, а по делу, и чтобы если я перебил то оно молчало, а, да, ещё то самое, ну как его, ну которое раньше было, не ломалось.",
+   "expected": null,
+   "length": "long",
+   "kind": "tangled",
+   "gap_s": 6.0
+  }
+ ],
+ "requirements": [
+  "ответ сразу",
+  "ответ по делу",
+  "при перебивании замолчать",
+  "прежнее не ломать"
+ ],
+ "unclear": [
+  "что значит «то самое, которое раньше было»"
+ ]
+}
