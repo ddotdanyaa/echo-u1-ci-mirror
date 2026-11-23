@@ -746,7 +746,7 @@ def contract_for(packet, *, rung, root, asks, named_ok=False, red_given=None):
                 message += ' (not available: ' + ', '.join(dict.fromkeys(refused)) + ')'
             faults.append(dict(engine=engine, fault=F.redact(message)))
             if red and engine == 'agent' and message == AGENT_BUSY:
-                raise Exhausted(0, faults)      # money is only held by live reservations: the red row waits its turn, no weaker step guesses
+                raise Exhausted(0, faults)      # AGENT_BUSY is raised only while live reservations hold money: the red row waits its turn, no weaker step guesses
     # One free voice for "do not fix" while the tier that could give the second voice was simply not answering
     # (no channel / 429 / 503) is no counted void slicing: nobody has judged yet, the row waits without a penalty.
     if red and 'agent' not in answered:
@@ -977,8 +977,10 @@ def ask_agent(system, user, *, cwd: Path, run=stream_run, argv_fn=PR.claude_argv
     try:
         booking = agent_booking()
         if not PK.reserve(booking, architect=True):
-            # money is left once the live reservations are taken off: the row waits its turn, it is not out of budget
-            raise ContractFault(AGENT_BUSY if PK.left(PK._today()) > 0 else 'agent budget')
+            # busy only when live reservations hold money and some is left; a remainder below the booking with
+            # no live reservation will never grow today: that is the budget, not a turn to wait for
+            live = float(PK._spend_row().get('reserved_usd', 0)) + PK._external('FACTORY_BUILDERS_SPEND', ('reserved_usd',))
+            raise ContractFault(AGENT_BUSY if live > 0 and PK.left(PK._today()) > 0 else 'agent budget')
         reserved = True
         limit = round(max(booking, min(AGENT_BUDGET_USD, PK.left(PK._today()) + booking)), 6)
         settings = _agent_settings(cwd)
