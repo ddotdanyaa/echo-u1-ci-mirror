@@ -68,7 +68,8 @@ CLOUD_TRIAL_S = 60                    # a cloud that does not answer is asked ag
 FAST_LOCAL_SHARE = 0.20               # more of the gate time than this spent on local runs: new workers send every test to the cloud
 FAST_LOCAL_HOLD_S = 3600
 WAIT_PULSE_S = 60.0                   # a wait for live workers writes a short event at least this often (the watcher's quiet limit is 300 s)
-WAIT_CHUNK_S = 3.0                   # real seconds between two looks at the pool while workers run
+WAIT_BG_S = 0.1                      # the same look while a background triage / hold pick runs: a ready task is admitted within 0.1 s of its card
+WAIT_CHUNK_S = 3.0                  # real seconds between two looks at the pool while workers run
 STALE_INDEX_LOCK_S = 120
 ES_CONTINUOUS = 0x80000000
 ES_SYSTEM_REQUIRED = 0x00000001
@@ -1760,7 +1761,7 @@ class Loop:
         while True:
             if self._ending() or self._brake_due is not None:
                 return self._drain()
-            done = self.pool.wait_any(0.25 if self._bg is not None else WAIT_CHUNK_S)
+            done = self.pool.wait_any(WAIT_BG_S if self._bg is not None else WAIT_CHUNK_S)
             if done:
                 return self._account_done(done[0])
             self._wait_pulse()
