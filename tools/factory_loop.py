@@ -3475,7 +3475,7 @@ class Loop:
         known |= {b for b, rec in (ls.get("parents") or {}).items()
                   if rec.get("children") and all(c in known for c in rec["children"])}   # all parts exist: no re-import
         known |= set(ls.get("to_slice", {})) | set(ls.get("quarantine", {}))
-        known |= set(self._slicers) | {b for b in (ls.get("head_scope") or {})}
+        known |= set(self._slicers)          # a head_scope row stays unknown: the triage takes it through ``scopes`` below
         # invariant "no lost row": a row whose tasks are all terminal (live_rows leaves it out) is known only through a
         # live decision above; an expired not_code/hold or a lost record makes it unknown, the triage hands it to the slicer
         t0 = self.clock()
