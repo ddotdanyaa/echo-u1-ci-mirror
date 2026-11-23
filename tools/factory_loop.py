@@ -3476,8 +3476,9 @@ class Loop:
                   if rec.get("children") and all(c in known for c in rec["children"])}   # all parts exist: no re-import
         known |= set(ls.get("to_slice", {})) | set(ls.get("quarantine", {}))
         known |= set(self._slicers)          # a head_scope row stays unknown: the triage takes it through ``scopes`` below
-        # invariant "no lost row": a row whose tasks are all terminal (live_rows leaves it out) is known only through a
-        # live decision above; an expired not_code/hold or a lost record makes it unknown, the triage hands it to the slicer
+        # invariant "no lost row": a row whose tasks are all terminal (_task_rows leaves it out) is known only through a
+        # live decision above (parents, to_slice, quarantine); an expired not_code/hold or a lost record makes it unknown,
+        # the triage hands it to the slicer. Lost paths: a portion that made no tasks, a dropped not_code record.
         t0 = self.clock()
         kwargs = dict(backlog_path=cfg.backlog, head_root=cfg.worktree,
                       known_backlog_ids=known, limit=cfg.triage_limit)

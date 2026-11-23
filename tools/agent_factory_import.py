@@ -753,7 +753,7 @@ def skip_reason_table(dispositions: dict, untriaged=()) -> dict:
     return dict(sorted(table.items()))
 
 
-_CYR =dict(zip("АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ", "A B V G D E E ZH Z I Y K L M N O P R S T U F KH TS CH SH SCH _ Y _ E YU YA".split()))
+_CYR = dict(zip("АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ", "A B V G D E E ZH Z I Y K L M N O P R S T U F KH TS CH SH SCH _ Y _ E YU YA".split()))
 _CYR.update({k.lower(): v.lower() for k, v in list(_CYR.items())})
 MAX_TOUCH = 5           # 3 -> 5 (21.11): the prompt (factory_channels.PROMPT_LIMIT_CHARS) is the real bound, not the file count
 MAX_TEXT = 6000          # 1500 -> 6000 (21.11)
