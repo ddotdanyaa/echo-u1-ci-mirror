@@ -345,6 +345,17 @@ def _review_source(task, baseline, workdir):
     return '\n'.join(chunks)
 
 
+def available() -> bool:
+    """Whether ``control`` could spend now (a key, live credit, budget left): the same guards, no call, nothing booked.
+    The review precheck uses it to keep the paid second voice reachable (W-review fix 2)."""
+    if os.environ.get('PYTEST_CURRENT_TEST') and not os.environ.get('FACTORY_PAID_ENV'):
+        return False
+    try:
+        return bool(load_env(env_path()).get('ANTHROPIC_API_KEY', '')) and not credit_dead() and left(_today()) > 0
+    except (ValueError, TypeError, OSError, TimeoutError):
+        return False
+
+
 def control(task, diff: str, failure: str = '', exclude_model: str = '', *, baseline=None, workdir=None) -> dict | None:
     """One paid judgement of a candidate, or None (no key, no budget, a refused model, any fault). The free verdict
     stands when None. The dict never holds the key. ``exclude_model``: the coder's model never judges its own

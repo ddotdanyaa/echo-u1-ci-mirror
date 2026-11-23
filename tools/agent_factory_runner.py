@@ -2563,8 +2563,10 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
         steps = 1 if light else (REVIEW_STEPS if role == 'review' else PROVIDER_STEPS)
         return light, base_tokens, steps, (1 if light else requests_for(steps))
 
-    def call_order(role, preferred, base_tokens, exclude_model, hopped, skip_tiers, later, live_state, light, steps) -> list:
-        """The route a call walks (excluded models, tiers, the code fallback, Kilo rpm): shared with the precheck."""
+    def call_order(role, preferred, base_tokens, exclude_model, hopped, skip_tiers, later, live_state, light, steps,
+                   sink=None) -> list:
+        """The route a call walks (excluded models, tiers, the code fallback, Kilo rpm): shared with the precheck
+        (which passes its own ``sink`` for the events, so it writes none of them)."""
         route = 'code' if role == 'repair' else role
         excl = sorted(channels.excluded_models(exclude_model) | set(hopped)) or None
         order = channels.route_order(configured, route, attempt, base_tokens, preferred=preferred,
@@ -2573,7 +2575,7 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
             order = channels.route_order(configured, 'code', 1, 0, preferred=preferred,
                                          exclude_model=excl,   # never a model the tournament tried
                                          skip_tiers=skip_tiers, state=live_state, later=later)
-        return _kilo_fits(order, steps, events) if order and not light else order
+        return _kilo_fits(order, steps, events if sink is None else sink) if order and not light else order
 
     def call_pick(order, seen, base_tokens, requests, affinity) -> tuple:
         """(channel, tokens): the choice on a quota view, nothing booked; raises ChannelUnavailable. Shared with the precheck."""
@@ -3612,36 +3614,42 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
             return fresh
 
         def reviewers_wait() -> tuple:
-            """W-review 1: (wait_s, reason, short) of the review route right now, by the very helpers call() uses
+            """W-review 1: (wait_s, reason, short, kept) of the review route right now, by the very helpers call() uses
             (call_size, call_order with the same exclusions: the authors AND the critics who already voted on this diff,
             call_pick on the ledger view, nothing booked). ``short``: a voice is kept and no other reviewer exists, so the
             chain would end cut short whatever the gates say. The prompt is not built yet: its size is the diff plus 4000
             for the rubric (the one difference from the call, named in the report)."""
             if not configured:
-                return 0.0, '', []
+                return 0.0, '', [], []
             try:
                 changed = inspect_changes(task, ctx['workdir'], ctx['baseline']) if ctx['baseline'] is not None else ()
             except Exception:                        # the gates will name it
-                return 0.0, '', []
+                return 0.0, '', [], []
             text = diff_of(changed)
             diff_hash = sha256(text.encode('utf-8', 'replace')).hexdigest() if ctx['baseline'] is not None else ''
             kept = kept_votes(diff_hash)
             voted = [v['model'] for v in kept]
             light, base_tokens, steps, booked = call_size('review', task, len(text) + 4000, channels.cyrillic_share(text))
             live_state = ck.read().get('channel_quotas') or {}
-            order = call_order('review', review_model, base_tokens, authors() + voted, (), (), False, live_state, light, steps)
+            scratch_events = list(events)            # _kilo_fits writes into it: the precheck leaves no event behind
+            order = call_order('review', review_model, base_tokens, authors() + voted, (), (), False, live_state, light, steps,
+                               scratch_events)
             if not order:
-                return 0.0, '', kept                 # without a voice the call's own NoIndependentReviewer path decides
+                return 0.0, '', kept, kept           # without a voice the call's own NoIndependentReviewer path decides
             seen = quota_ledger.view(live_state, quota_ledger.others(ledger, str(checkpoint))) if ledger is not None else live_state
             family = os.path.splitext(task.touch_files[0].replace('\\', '/'))[0] if task.touch_files else ''
             affinity = ['task:' + tid + ':review'] + (['family:' + family + ':review'] if family else [])
             try:
                 call_pick(order, seen, base_tokens, booked, affinity)
             except channels.ChannelUnavailable as error:
-                return float(error.wait_s or 0), str(error.reason or ''), []
-            return 0.0, '', []
+                return float(error.wait_s or 0), str(error.reason or ''), [], kept
+            return 0.0, '', [], kept
         if decision is None and pending:             # a standing candidate: no cloud gates while no reviewer is free
-            hold, why_hold, short_chain = reviewers_wait()
+            hold, why_hold, short_chain, kept_now = reviewers_wait()
+            # rule 4 of 21.11: with a kept voice the paid critic is the insurance second voice, so while it can be asked
+            # the chain is not cut short here: the gates run and the chain's own handler calls it (W-review fix 2)
+            if kept_now and paid_critic.available():
+                short_chain, hold = [], 0.0
             if short_chain:                          # a voice is kept, no other model exists: the gates would end in this
                 events.append('review_deferred_before_gates')
                 events.append('review_chain_short')
