@@ -1,9 +1,10 @@
 # Factory status (generated, structured data only)
 
-Generated: 2026-11-23T12:37:57Z
-Source commit: sha00b3e0c2e164
+Generated: 2026-11-23T12:44:29Z
+Source commit: sha5c67e4382824
 
 ## Commits (sha, time)
+- sha5c67e438 2026-11-23T15:42:39+03:00
 - sha00b3e0c2 2026-11-23T15:36:47+03:00
 - shadfd1091a 2026-11-23T15:33:13+03:00
 - shafb8b8ab7 2026-11-23T14:47:43+03:00
@@ -23,28 +24,27 @@ Source commit: sha00b3e0c2e164
 - sha3c212cce 2026-11-23T13:25:03+03:00
 - sha754753fc 2026-11-23T13:14:23+03:00
 - shac23bc46b 2026-11-23T13:08:28+03:00
-- shabdbd0514 2026-11-23T13:06:35+03:00
 
 ## Funnel
 | step | count |
 |---|---|
-| accepted | 14 |
+| accepted | 16 |
 | claimed | 388 |
 | coded | 183 |
 | found_in_backlog | unknown |
 | gate_pass | 67 |
-| known_to_loop | 432 |
+| known_to_loop | 461 |
 | promoted | 63 |
-| ready | 66 |
+| ready | 81 |
 | reviewed | 164 |
-| triaged | 258 |
+| triaged | 273 |
 
 Side counters: blocked=0, parked=0, requeued=7
-Tasks now: DONE=68, FAILED=461, PROMOTED=39, READY=66, RUNNING=5
-Accepted: 14
+Tasks now: DONE=68, FAILED=465, PROMOTED=39, READY=81, RUNNING=1
+Accepted: 16
 Promoted: 63
-Free RAM, GB: 4.38
-Telemetry rows: 33574 recognised, 0 unrecognised
+Free RAM, GB: 4.01
+Telemetry rows: 33734 recognised, 0 unrecognised
 
 ## Spend per model
 | model | calls | tokens_in | tokens_out | usage_unknown | http_429 | errors |
@@ -53,10 +53,10 @@ Telemetry rows: 33574 recognised, 0 unrecognised
 | cohere/command-a-plus-05-2026 | 12 | 5678 | 452 | 8 | 0 | 8 |
 | cohere/north-mini-code-1.0 | 6 | 4159 | 237 | 3 | 0 | 3 |
 | google/gemini-3-flash-preview | 28 | 35638 | 6501 | 12 | 11 | 12 |
-| google/gemini-3.1-flash-lite | 1598 | 8670358 | 606772 | 73 | 4 | 73 |
-| google/gemini-3.1-flash-lite-preview | 275 | 560944 | 89539 | 27 | 8 | 27 |
+| google/gemini-3.1-flash-lite | 1603 | 8681022 | 608206 | 73 | 4 | 73 |
+| google/gemini-3.1-flash-lite-preview | 278 | 568586 | 90821 | 27 | 8 | 27 |
 | google/gemini-3.5-flash | 32 | 30545 | 1824 | 22 | 20 | 22 |
-| google/gemini-3.5-flash-lite | 1917 | 10852491 | 630615 | 40 | 7 | 40 |
+| google/gemini-3.5-flash-lite | 1918 | 10852491 | 630615 | 41 | 8 | 41 |
 | google/gemini-3.6-flash | 133 | 414079 | 20196 | 55 | 10 | 55 |
 | google/gemini-3.7-flash | 20 | 9121 | 14 | 19 | 8 | 19 |
 | google/gemini-3.8-flash | 24 | 21237 | 15 | 21 | 9 | 21 |
@@ -69,13 +69,13 @@ Telemetry rows: 33574 recognised, 0 unrecognised
 | span | rows | calls |
 |---|---|---|
 | answer | 536 | 0 |
-| gate | 5327 | 0 |
-| infra | 849 | 0 |
-| loop | 5748 | 0 |
-| other | 7414 | 0 |
+| gate | 5344 | 0 |
+| infra | 863 | 0 |
+| loop | 5756 | 0 |
+| other | 7511 | 0 |
 | promote | 79 | 0 |
-| review | 2130 | 1160 |
-| run | 11116 | 3647 |
+| review | 2131 | 1160 |
+| run | 11139 | 3656 |
 | triage | 375 | 0 |
 
 ## Channels (model ids)
@@ -169,7 +169,7 @@ Tests not in the cloud: 71
 - tests/test_factory_path.py (backlog-id)
 - tests/test_factory_port_wiring.py (dependency)
 - <redacted-name> (backlog-id, long-run)
-- tests/test_factory_redrow.py (key)
+- tests/test_factory_redrow.py (key, long-run)
 - tests/test_factory_regex_lock.py (call-word, key)
 - tests/test_factory_registry.py (backlog-id, owner-words)
 - tests/test_factory_reject_apply.py (dependency)

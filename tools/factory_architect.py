@@ -636,6 +636,8 @@ def _red_fault(contract, engine):
     decision = str(contract.get('decision', ''))
     if decision == 'not_code':
         return 'red test: not_code is not an answer for a row whose test is red on this tree'
+    if decision == 'hold':
+        return 'red test: hold is not an answer for a row whose test is red on this tree; answer fix or need'
     if (decision in ('cannot_reproduce', 'already_fixed') or decision.startswith('duplicate_of')) and engine != 'agent':
         return 'red test: %s is the answer of the agent step only (it reads the code itself)' % decision.split(':')[0]
     if decision == 'fix':

@@ -352,7 +352,7 @@ def failure_of(state_dir, name):
     return str((rec or {}).get("text") or "") if isinstance(rec, dict) else ""
 
 
-DEBT_FILE = "baseline_debt.json"       # {file: {"tests": [...], "queued": bool, "n": int, "closed": bool}}
+DEBT_FILE = "baseline_debt.json"        # {file: {"tests": [...], "queued": bool, "n": int, "closed": bool}}
 DEBT_SEQ = "baseline_debt_seq.json"     # {"next": n}: the number of a file's row is never used twice
 DEBT_ROW = re.compile(r"^rel-base-(\d+)$")
 
