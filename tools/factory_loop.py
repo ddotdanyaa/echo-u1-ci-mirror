@@ -3821,6 +3821,8 @@ class Loop:
                 "--max-model-calls", str(budget), "--base-sha", base,
                 "--port-repo", str(cfg.repo),    # the runner's --root is a plain copy: a port task's old commit lives here
                 "--execute", "--ack-host-access-risk"]
+            if cfg.self_repo:
+                cmd += ["--self-repo"]                        # 8.1: the gate of the second instance is the cloud only
             if (exps or {}).get("small_follow_up") in EXPERIMENTS["small_follow_up"]:
                 cmd += ["--small-follow-up", exps["small_follow_up"]]
             if self.clock() < getattr(self, "_fast_local_off_until", 0.0):
@@ -5298,8 +5300,9 @@ def _cloud_sweep_fn(a):
 
 
 def _release_fn(a):
-    """The final build (tools.factory_release.run over the cloud sweep), or None with --no-cloud-sweep / when a module is absent."""
-    if getattr(a, "no_cloud_sweep", False):
+    """The final build (tools.factory_release.run over the cloud sweep), or None with --no-cloud-sweep / --self-repo (the second
+    instance has no product to build) / when a module is absent."""
+    if getattr(a, "no_cloud_sweep", False) or getattr(a, "self_repo", False):
         return None
     try:
         from tools import echo_cloud, factory_release

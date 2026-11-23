@@ -3790,7 +3790,11 @@ def main(argv=None):
                    help="git repository that holds the old-branch commits of port tasks (--root is a copy without .git)")
     p.add_argument("--fast-local-s", type=float, default=None,
                    help="tests known to last this long or less run locally (default gate.FAST_LOCAL_S); 0 sends every test to the cloud")
+    p.add_argument("--self-repo", action="store_true",
+                   help="the second loop instance (the repository is the factory's own code): the gate runs in the cloud only")
     args = p.parse_args(argv)
+    if args.self_repo:
+        gate.SELF_REPO = True
     if args.fast_local_s is not None:
         if args.fast_local_s < 0:
             p.error("--fast-local-s must be nonnegative")

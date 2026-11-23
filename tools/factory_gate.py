@@ -541,6 +541,7 @@ def _known_fast(root, tests) -> bool:
         return False
 
 
+SELF_REPO = False   # set by the runner of the second loop instance (--self-repo): the gate is the cloud only, never a local run
 CLOUD_SIGNS = ('cloud_down', 'cloud_busy', 'bad_tests', 'private_edit')   # env_reason of a run the cloud gave no verdict for
 
 
@@ -616,12 +617,16 @@ def _cloud_attempt(root, tests, touched, trace=()):
     try:
         from . import factory_cloud_gate
         extra = _take_companions(root, tests)
-        got = factory_cloud_gate.attempt(root, tests, touched, **({'companions': extra} if extra else {}), **_traced(trace))
+        if SELF_REPO:            # the second loop instance: the cloud only, the answer is the candidate's own run; no local fallback
+            extra = []
+            got = factory_cloud_gate.attempt(root, tests, touched, self_repo=True)
+        else:
+            got = factory_cloud_gate.attempt(root, tests, touched, **({'companions': extra} if extra else {}), **_traced(trace))
         sign = _cloud_sign(factory_cloud_gate, got)
         if sign:                 # the cloud gave no verdict: nothing runs here; the pass is released or the row re-sliced
             return replace(_failure(-1, NOT_STARTED + 'cloud: ' + sign), env_reason=sign)
         if not got:
-            return None
+            return replace(_failure(-1, NOT_STARTED + 'cloud: cloud_down'), env_reason='cloud_down') if SELF_REPO else None
         xml_text, rc, trusted = got
         if extra:
             xml_text, rc = _split_companions(root, xml_text, rc, tests, extra)
@@ -631,10 +636,12 @@ def _cloud_attempt(root, tests, touched, trace=()):
         # gate decides) stays for a process whose product route is off
         try:
             from . import factory_cloud_gate as _cg
-            on = bool(_cg._product['on'])
+            on = bool(_cg._product['on']) or SELF_REPO
         except Exception:       # noqa: BLE001
-            on = False
+            on = SELF_REPO
         return replace(_failure(-1, NOT_STARTED + 'cloud: cloud_down'), env_reason='cloud_down') if on else None
+    if SELF_REPO:               # the factory's own gate has no local run: a result the cloud did not settle waits for the cloud
+        return result if _conclusive(result) else replace(_failure(-1, NOT_STARTED + 'cloud: cloud_down'), env_reason='cloud_down')
     if trusted:
         return result if _conclusive(result) else None
     # The mirror tree can differ from the local base: only a clean green is taken from the mirror route, a red is
@@ -660,7 +667,10 @@ def cloud_each(root, names):
         cases = _held_companions(root, names)     # they rode in the candidate's own run: no second run
         if cases is None:
             from . import factory_cloud_gate
-            got = factory_cloud_gate.run_product(root, list(names))
+            if SELF_REPO:                         # the neighbours too go to the factory's own mirror branch, not the product route
+                got = factory_cloud_gate.attempt(root, list(names), sorted({_node(n).split('::', 1)[0] for n in names}), self_repo=True)
+            else:
+                got = factory_cloud_gate.run_product(root, list(names))
             sign = _cloud_sign(factory_cloud_gate, got)
             if sign:
                 return sign

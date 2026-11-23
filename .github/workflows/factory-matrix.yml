@@ -7,7 +7,7 @@ permissions:
   contents: read
 jobs:
   tests:
-    if: startsWith(github.ref, 'refs/heads/factory-sync') || github.event_name == 'workflow_dispatch'
+    if: (startsWith(github.ref, 'refs/heads/factory-sync') && !startsWith(github.ref, 'refs/heads/factory-sync-self-')) || github.event_name == 'workflow_dispatch'
     strategy:
       fail-fast: false
       max-parallel: 20
@@ -95,7 +95,7 @@ jobs:
           path: junit-${{ matrix.shard }}.xml
           if-no-files-found: ignore
   gate:
-    if: startsWith(github.ref, 'refs/heads/gate/')
+    if: startsWith(github.ref, 'refs/heads/gate/') || startsWith(github.ref, 'refs/heads/factory-sync-self-')
     name: gate
     runs-on: windows-latest
     timeout-minutes: 5
