@@ -1590,7 +1590,7 @@ class Loop:
             self.event("infra", status="released", reason="lease_expired:" + ",".join(freed))
         tasks, state = self.load()
         ls = self.ls()
-        self._reconcile_tick(tasks, state, ls, now)
+        ls = self._reconcile_tick(tasks, state, ls, now)
         ls = self._close_parents(tasks, state, ls)
         if now - float(ls.get("tmp_clean_at", 0)) > 86400 and not any(
                 r["status"] == "RUNNING" for r in state["tasks"].values()):
@@ -4689,15 +4689,16 @@ class Loop:
             self.event("supply", status="returned", backlog_id=bid, reason="all tasks terminal, no record: back to the slicer")
         return cur
 
-    def _reconcile_tick(self, tasks, state, ls, now) -> None:
+    def _reconcile_tick(self, tasks, state, ls, now) -> dict:
         """W-supply 4: reconcile.json was written only on HOLD and after a triage, so a loop that kept working never
-        refreshed it (live 23.11: not written since 16:53). Now also every RECONCILE_TICK_S of any step."""
+        refreshed it (live 23.11: not written since 16:53). Now also every RECONCILE_TICK_S of any step.
+        Returns the ls the caller must go on with (the invariant may have saved a newer one: never save the old dict over it)."""
         if now - float(getattr(self, "_reconcile_at", 0.0)) < self.RECONCILE_TICK_S:
-            return
+            return ls
         self._reconcile_at = now
-        self._write_reconcile(tasks, state, ls, now)
+        return self._write_reconcile(tasks, state, ls, now)
 
-    def _write_reconcile(self, tasks, state, ls, now) -> None:
+    def _write_reconcile(self, tasks, state, ls, now) -> dict:
         """<id> («Утром сверка с бэклогом: ни одной забытой задачи»): <state>/reconcile.json maps EVERY backlog row
         to where the loop holds it, with a reason and a term: the queue (the task state wins), a triage hold, the
         closed book, a cut parent, a stale or skipped row (seen, with its term), a deferred row, a row whose state
@@ -4710,6 +4711,7 @@ class Loop:
             self._write_reconcile_now(tasks, state, ls, now)
         except Exception as e:                       # the report never stops the loop
             self.err("reconcile", e)
+        return ls
 
     def _dispositions(self, now) -> dict:
         """imp.row_dispositions of the live backlog, kept for 10 minutes per backlog edit (it reads git); {} on a failure."""
