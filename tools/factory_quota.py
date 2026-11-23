@@ -1,4 +1,5 @@
 """<id> foundation: one shared ledger of key usage per channel registry folder. Each task state publishes its own channel quotas as one section file (one writer per state: its checkpoint lock); a call chooses on the union of its own quotas and the other sections; old sections stop counting; an unreadable file is skipped, never a crash."""
+import contextlib
 import copy
 import hashlib
 import json
@@ -74,6 +75,120 @@ def _without_cooling(quotas) -> dict:
             v = {sk: sv for sk, sv in v.items() if sk != 'cool_until'}
         out[k] = v
     return out
+
+
+GATE_NAME = 'day_gate.json'      # not a section (no 'quotas'): others() skips it
+DAY_ASK_PROBE_S = 1200           # W-gemma2 3: a channel closed by the day's mark is probed by ONE slicer ask per 20 minutes
+
+
+def _gate_read(folder) -> dict:
+    try:
+        data = json.loads((Path(folder) / GATE_NAME).read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return {}
+    table = data.get('gate') if isinstance(data, dict) else None
+    return {k: v for k, v in table.items() if isinstance(v, dict)} if isinstance(table, dict) else {}
+
+
+def _gate_write(folder, table) -> None:
+    folder = Path(folder)
+    folder.mkdir(parents=True, exist_ok=True)
+    target = folder / GATE_NAME
+    tmp = target.with_name(target.name + '.tmp%d' % os.getpid())
+    tmp.write_text(json.dumps({'gate': table}), encoding='utf-8')
+    os.replace(tmp, target)
+
+
+def gate_closed(folder, *, since=None) -> set:
+    """Ids of the channels the slicer asks know as closed by the day's mark (until a probe of theirs answers 200).
+    ``since``: {channel id: start of its provider's day}: an entry older than that day is of yesterday."""
+    since = since or {}
+    return {cid for cid, row in _gate_read(folder).items()
+            if isinstance(row.get('at'), (int, float)) and row['at'] >= since.get(cid, 0)}
+
+
+GATE_LOCK_WAIT_S = 5.0           # a gate update waits this long for the other instance's lock
+GATE_LOCK_STALE_S = 10.0         # a lock file older than this is a dead holder's: it is broken
+
+
+@contextlib.contextmanager
+def _gate_lock(folder):
+    """The read-change-write of day_gate.json is one step: a lock file made with O_EXCL (works across processes on every
+    platform). A lock older than GATE_LOCK_STALE_S is a crashed holder's; after GATE_LOCK_WAIT_S the step goes on without
+    the lock (an aid must not hang a call: the worst case is the old race, one extra probe)."""
+    folder = Path(folder)
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / (GATE_NAME + '.lock')
+    deadline = time.monotonic() + GATE_LOCK_WAIT_S
+    held = False
+    while True:
+        try:
+            os.close(os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+            held = True
+            break
+        except FileExistsError:
+            try:
+                if time.time() - path.stat().st_mtime > GATE_LOCK_STALE_S:
+                    # break it by a unique name: of two waiters only one rename succeeds; the stolen file is looked at again
+                    # (a fresh one a third party made in between is put back unless the path is taken again): a narrow window
+                    mine = path.with_name(path.name + '.stale%d' % os.getpid())
+                    os.replace(str(path), str(mine))
+                    try:
+                        if time.time() - mine.stat().st_mtime <= GATE_LOCK_STALE_S and not path.exists():
+                            os.replace(str(mine), str(path))      # it was a live holder's new lock: give it back
+                        else:
+                            mine.unlink()
+                    except OSError:
+                        pass
+                    continue
+            except OSError:
+                continue
+        except OSError:
+            break
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(0.01)
+    try:
+        yield
+    finally:
+        if held:
+            try:
+                path.unlink()
+            except OSError:
+                pass
+
+
+def gate_note(folder, channel_id, *, now=None) -> None:
+    """The channel answered a daily 429 (or is seen closed by the day's mark): the next probe is DAY_ASK_PROBE_S away."""
+    now = time.time() if now is None else now
+    with _gate_lock(folder):
+        table = _gate_read(folder)
+        row = table.get(channel_id)
+        table[channel_id] = {'at': now, 'probe_at': row['probe_at'] if isinstance(row, dict)
+                             and isinstance(row.get('probe_at'), (int, float)) else now}
+        _gate_write(folder, table)
+
+
+def gate_claim(folder, channel_id, *, now=None) -> bool:
+    """True for the ONE ask that may probe this closed channel now (the claim is read and written under the lock of the
+    folder both instances share, before the request goes out); False while the last probe is under DAY_ASK_PROBE_S old."""
+    now = time.time() if now is None else now
+    with _gate_lock(folder):
+        table = _gate_read(folder)
+        row = table.get(channel_id)
+        last = row.get('probe_at') if isinstance(row, dict) else None
+        if isinstance(last, (int, float)) and now - last < DAY_ASK_PROBE_S:
+            return False
+        table[channel_id] = {'at': row.get('at', now) if isinstance(row, dict) else now, 'probe_at': now}
+        _gate_write(folder, table)
+        return True
+
+
+def gate_clear(folder, channel_id) -> None:
+    with _gate_lock(folder):
+        table = _gate_read(folder)
+        if table.pop(channel_id, None) is not None:
+            _gate_write(folder, table)
 
 
 def view(own, others_list, *, now=None) -> dict:

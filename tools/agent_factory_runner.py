@@ -2918,6 +2918,10 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
         (which passes its own ``sink`` for the events, so it writes none of them)."""
         route = 'code' if role == 'repair' else role
         excl = sorted(channels.excluded_models(exclude_model) | set(hopped)) or None
+        if 'small' in skip_tiers and channels.main_dry(configured, live_state, os.environ):
+            # W-gemma2 1: 'no small tier for a repeat / a second candidate' is a preference for a day when a main channel is
+            # open; with every main channel closed by the day's mark Gemma is the only executor and takes the repeat too
+            skip_tiers = tuple(t for t in skip_tiers if t != 'small')
         order = channels.route_order(configured, route, attempt, base_tokens, preferred=preferred,
                                      exclude_model=excl, skip_tiers=skip_tiers, state=live_state, later=later,
                                      env=os.environ)
@@ -2925,6 +2929,11 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
             order = channels.route_order(configured, 'code', 1, 0, preferred=preferred,
                                          exclude_model=excl,   # never a model the tournament tried
                                          skip_tiers=skip_tiers, state=live_state, later=later)
+        if not order and 'small' in skip_tiers and route in ('code', 'edit'):
+            # W-gemma2 1: nothing else is left (a pool of Gemma only): any open model, small tier included, not a deferral
+            order = channels.route_order(configured, 'code', 1, 0, preferred=preferred, exclude_model=excl,
+                                         skip_tiers=tuple(t for t in skip_tiers if t != 'small'), state=live_state,
+                                         later=later)
         return _kilo_fits(order, steps, events if sink is None else sink) if order and not light else order
 
     def call_affinity(role) -> list:
@@ -3014,6 +3023,12 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                 try:
                     selected, at, tokens = ck.commit(book)
                 except channels.ChannelUnavailable:
+                    # W-gemma2 2 (live 19:11:36, three sends, no cool_reason, 'transient'): checked and excluded: the call budget
+                    # (refunded on every big 503), a deadline (none in call()), the same-channel ban (hopped is filled by the
+                    # non-big path only), group cooling (a big 503 marks nothing). The cause: big['skip'] held the refusing channels
+                    if big['skip']:               # while the others were not free: the ones that answered 503 are asked again,
+                        big['skip'].clear()       # no pause spent
+                        continue
                     if overload_pause():          # nothing booked, nothing charged: the 503's channel is asked again
                         continue
                     if last_info is not None:     # the pauses are spent: the pass is deferred as 'transient' (no strike)

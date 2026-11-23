@@ -599,6 +599,7 @@ RESLICE_PER_STEP = SLICE_PARALLEL      # W-feed 4: up to SLICE_PARALLEL rows go 
 RESLICE_SLEEP_S = 5
 SLICE_WAIT_S = 60
 SLICE_PAUSES = (60, 120, 300, 600)        # W-pay 2: the pause of a row's repeated wait grows
+SLICE_HOPELESS_S = 600                    # W-gemma2 4: a row without a step (no money, no main channel) waits at least this
 QUARANTINE_TTL_S = 21600
 DRY_SLICE_MAX = 8           # W-dry 1: rows of cards without code that go to the slicer for code at the same time
 DRY_CACHE_S = 5             # the edit_dry reading is kept this long
@@ -1782,11 +1783,32 @@ class Loop:
             self._seed_section(folder, section, quotas)
             seen = Q.view(quotas, Q.others(folder, section))
             try:
+                now_ask = self.clock()
                 order = C.route_order(channels, role, attempt, tokens)
-                if thrifty:       # links / keywords: with under KW_DAY_LEFT_MIN of the day left a main-tier channel is kept for the cards
-                    order = [c for c in order if C.tier_of(c) == "small"
-                             or C.day_left_share(seen, c, now=self.clock()) >= KW_DAY_LEFT_MIN]
-                channel = C.choose(order, seen, tokens, env, now=self.clock())
+                order, closed = self._day_split(order, seen, env, folder, now_ask)
+                if section.startswith("loop-architect@") and C.main_dry(channels, seen, env, now=now_ask):
+                    # W-gemma2 3: every main channel is closed by the day's mark: the free steps (architect / code) go to Gemma
+                    # only and send no request to a channel the day's mark closed (but the one probe of the gate below)
+                    shut = {c["id"] for c in closed}
+                    order = [c for c in C.route_order(channels, "edit", 1, min(tokens, C.DRY_SMALL_TOKENS), state=seen,
+                                                      env=env, now=now_ask)
+                             if C.tier_of(c) == "small" and c["id"] not in shut]
+
+                def thrifty_ok(c):     # links / keywords: with under KW_DAY_LEFT_MIN of the day left a main-tier channel is kept for the cards
+                    return (not thrifty or C.tier_of(c) == "small"
+                            or C.day_left_share(seen, c, now=self.clock()) >= KW_DAY_LEFT_MIN)
+                order, closed = [c for c in order if thrifty_ok(c)], [c for c in closed if thrifty_ok(c)]
+                channel = None
+                for probe in closed:     # one probe per channel per 20 minutes, the claim shared by both instances; due whether
+                    try:                 # or not the open channels answer (a healthy channel must not stay shut all day)
+                        C.choose([probe], seen, tokens, env, now=now_ask)
+                    except C.ChannelUnavailable:
+                        continue
+                    if Q.gate_claim(folder, probe["id"], now=now_ask):
+                        channel = probe
+                        break
+                if channel is None:
+                    channel = C.choose(order, seen, tokens, env, now=now_ask)
             except C.ChannelUnavailable:
                 return "no_channel", None, "", tokens
             model = channel["model"]
@@ -1807,10 +1829,25 @@ class Loop:
                             self.err("light failure class", e)
                     if info is not None and info.get("kind") in ("rate_day", "rate_minute"):
                         C.apply_failure(quotas, channel, info, env=env, now=self.clock())
+                        if info.get("kind") == "rate_day":
+                            try:
+                                Q.gate_note(folder, channel["id"], now=self.clock())   # W-gemma2 3: closed until a probe answers
+                            except OSError as e:
+                                self.err(section + " day gate", e)
                     else:
                         C.cool_channel(quotas, channel, now=self.clock())
                     publish()
             return "http_%s" % code_http, model, "", tokens
+        try:
+            Q.gate_clear(folder, channel["id"])      # W-gemma2 3: an answer 200 ends the day's closing of the channel
+        except OSError as e:
+            self.err(section + " day gate", e)
+        with self._ask_lock:       # ... and of the channel report's own probe series (day_probe) kept in the same ledger
+            try:
+                C.note_outcome(quotas, channel, True, now=self.clock())
+                publish()
+            except Exception as e:      # an aid: the answer stands
+                self.err(section + " day probe", e)
         try:
             data = json.loads(raw.decode("utf-8") if isinstance(raw, bytes) else raw)
             answer = data["choices"][0]["message"].get("content") or ""
@@ -1818,6 +1855,47 @@ class Loop:
         except (ValueError, KeyError, IndexError, TypeError, AttributeError):
             answer, used = "", None
         return "ok", model, answer, used or tokens
+
+    def _slice_hopeless(self) -> bool:
+        """W-gemma2 4: no paid step (no key, no agent) and every main channel closed by the day's mark: only Gemma is left."""
+        try:
+            asks = self._asks()
+            if "paid" in asks or "agent" in asks:
+                return False
+            from tools import factory_channels as C
+            from tools import factory_quota as Q
+            channels = json.loads(Path(self.cfg.channels).read_text(encoding="utf-8"))["channels"]
+            env = {**os.environ, **self.extra_env}
+            folder = Path(self.cfg.channels).resolve().parent / "quota"
+            seen = Q.view(self._arch_quotas or {}, Q.others(folder, "%s@%s" % ("loop-architect", self.ckpt)))
+            return bool(C.main_dry(channels, seen, env, now=self.clock()))
+        except Exception as e:      # an aid: on any doubt the usual pause stands
+            self.err("slice hopeless", e)
+            return False
+
+    def _day_split(self, order, seen, env, folder, now) -> tuple:
+        """W-gemma2 3: (open channels of ``order``, the channels the day's mark closes). The closed ones are the rows of the
+        channel report closed by the daily mark and the ones a slicer ask saw refused for the day (day_gate.json of the
+        shared folder: kept until a probe of theirs answers, so an expired mark does not open them for every ask)."""
+        from tools import factory_channels as C
+        from tools import factory_quota as Q
+        if not order:
+            return [], []
+        rows = {r["id"]: r for r in C.channel_report(order, seen, env, now=now)}
+        today = {c["id"]: C.quota_day(c["model"], now)[0] for c in order}
+        held = Q.gate_closed(folder, since=today)
+        closed, free = [], []
+        for c in order:
+            if rows[c["id"]]["closed_by"] in C.DAILY_CLOSED or c["id"] in held:
+                closed.append(c)
+                if c["id"] not in held:
+                    try:
+                        Q.gate_note(folder, c["id"], now=now)   # seen closed the first time: its first probe is 20 minutes away
+                    except OSError as e:
+                        self.err("day gate", e)
+            else:
+                free.append(c)
+        return free, closed
 
     def _telemetry_rows(self) -> list:
         """The rows of telemetry.jsonl and .1 (a broken line is skipped)."""
@@ -4077,7 +4155,10 @@ class Loop:
             except Exception as exc:
                 ls = self.ls()
                 rec = self._wait_record(ls, bid, create=True)
-                ls.setdefault("slice_wait", {})[bid] = now + SLICE_PAUSES[min(rec["waits"], len(SLICE_PAUSES) - 1)]
+                pause = SLICE_PAUSES[min(rec["waits"], len(SLICE_PAUSES) - 1)]
+                if isinstance(exc, SliceWait) and self._slice_hopeless():
+                    pause = max(pause, SLICE_HOPELESS_S)     # W-gemma2 4: no money and no main: not oftener than every 10 minutes
+                ls.setdefault("slice_wait", {})[bid] = now + pause
                 rec["waits"] += 1
                 self.save_ls(ls)
                 if not isinstance(exc, SliceWait):
