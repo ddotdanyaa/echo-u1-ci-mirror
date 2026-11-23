@@ -3131,7 +3131,7 @@ class Loop:
                 priority = packet["priority"]
                 priority = int(str(priority).removeprefix("P"))
                 portion["tasks"] = A.to_tasks(contract, bid=row, base_id=base, gen=job.ctx["gen"],
-                                              priority=priority, title=packet["title"])
+                                              priority=priority, title=packet["title"], author=A.author_model(engine))
             elif outcome == "not_code":
                 portion["not_code"] = [dict(backlog_id=row, reason=contract.get("why", ""))]
             else:

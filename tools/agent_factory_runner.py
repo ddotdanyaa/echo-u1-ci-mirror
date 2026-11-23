@@ -3481,6 +3481,27 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
             remembered = frozenset(state['tasks'][tid].get('asked') or ()) & defined_names(task, ctx['workdir'])
 
             test_new = task.kind == 'unit_test' and bool(((K.contract_of(task).get('test') or {}).get('new') or {}).get('path'))
+            # the architect's own test text (test.new.code): the first attempt applies it as the candidate, no model call
+            architect_new = ((K.contract_of(task).get('test') or {}).get('new') or {}) if test_new else {}
+            architect_code = architect_new.get('code') if isinstance(architect_new.get('code'), str) else ''
+            architect_code = architect_code if architect_code.strip() and architect_new.get('path') in task.tests else ''
+            architect_author = str(K.contract_of(task).get('author') or 'architect')
+
+            def apply_architect_code() -> bool:
+                """Writes test.new.code as the candidate (the marker line included); False when it cannot be written."""
+                name = architect_new['path']
+                target = ctx['workdir'].joinpath(*name.split('/'))
+                try:
+                    if target.exists():
+                        return False
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_bytes(architect_code.replace('\r\n', '\n').encode('utf-8'))
+                    ensure_test_marker(task, ctx['workdir'], [name])
+                except OSError:
+                    return False
+                ctx['light_note'] = ctx['last_text'] = ''
+                events.append('architect_test_applied')
+                return True
 
             def contract_test_card(note: str = '') -> str:
                 """A test task whose contract names the test (given / when / then / why it is red now): the card is
@@ -3511,6 +3532,9 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                               "part must be exactly: # factory-backlog-id: " + task.backlog_id +
                               " . Never put the marker into SEARCH.\n")
                 extra += UNIT_TEST_RULES + "\n"
+                if architect_code and (feedback or attempt > 1 or note):
+                    extra += ("The architect wrote this test text; it was applied and rejected (the exact reason is below). "
+                              "Correct THIS code, do not write another test from nothing:\n" + redact(architect_code) + "\n")
                 if feedback:       # the feedback shrinks first (the oldest lines go), the card keeps its fixed blocks
                     extra += "The previous candidate was rejected. Feedback:\n" + redact(feedback)[-FEEDBACK_CARD_CHARS:] + "\n"
                 # the read-only code and the example are squeezed to what the rest leaves (task W-ctx 1): a card over the
@@ -3766,8 +3790,13 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                         return call(role, task, dir_for, chosen, k_prompt, exclude_model=list(tried) or None,
                                     skip_tiers=skip, later=bool(k))
 
+                architect_made = False
                 try:
-                    rc, out, err = timed('code_s', coder_call)
+                    if architect_code and not k and not feedback and attempt <= 1 and apply_architect_code():
+                        architect_made = True
+                        rc, out, err = 0, b'', b''
+                    else:
+                        rc, out, err = timed('code_s', coder_call)
                 except (ChannelFault, channels.ChannelUnavailable, NoIndependentReviewer):
                     if not k:
                         raise
@@ -3778,7 +3807,7 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                 if early is not None:
                     return early
                 decision = None          # the earlier candidate's failure is history now; this one is judged afresh
-                ctx['coder_model'] = calls[-1]['model']
+                ctx['coder_model'] = architect_author if architect_made else calls[-1]['model']
                 if event_summary(out)['finish_reason'] in ('length', 'max_tokens'):
                     events.append('output_truncated')
                 signal = scope_signal()
