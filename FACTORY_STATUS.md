@@ -1,9 +1,10 @@
 # Factory status (generated, structured data only)
 
-Generated: 2026-11-23T04:51:54Z
-Source commit: sha34b691ac2f39
+Generated: 2026-11-23T04:58:17Z
+Source commit: shacda473613518
 
 ## Commits (sha, time)
+- shacda47361 2026-11-23T07:57:41+03:00
 - sha34b691ac 2026-11-23T07:33:35+03:00
 - shad0a360fb 2026-11-23T07:22:47+03:00
 - sha911a5ccb 2026-11-23T07:07:57+03:00
@@ -23,7 +24,6 @@ Source commit: sha34b691ac2f39
 - sha8f131f88 2026-11-23T04:41:43+03:00
 - sha145eb03d 2026-11-23T04:35:37+03:00
 - shac42dbe95 2026-11-23T04:34:10+03:00
-- sha07b31cd3 2026-11-23T04:28:58+03:00
 
 ## Funnel
 | step | count |
@@ -43,8 +43,8 @@ Side counters: blocked=7, parked=0, requeued=2
 Tasks now: BLOCKED=7, DONE=68, FAILED=201, PROMOTED=6, READY=128
 Accepted: 5
 Promoted: 30
-Free RAM, GB: 4.24
-Telemetry rows: 26976 recognised, 0 unrecognised
+Free RAM, GB: 4.25
+Telemetry rows: 27013 recognised, 0 unrecognised
 
 ## Spend per model
 | model | calls | tokens_in | tokens_out | usage_unknown | http_429 | errors |
@@ -69,13 +69,13 @@ Telemetry rows: 26976 recognised, 0 unrecognised
 | span | rows | calls |
 |---|---|---|
 | answer | 536 | 0 |
-| gate | 4005 | 0 |
+| gate | 4009 | 0 |
 | infra | 788 | 0 |
-| loop | 4899 | 0 |
-| other | 5334 | 0 |
+| loop | 4907 | 0 |
+| other | 5354 | 0 |
 | promote | 41 | 0 |
-| review | 1645 | 879 |
-| run | 9403 | 2938 |
+| review | 1646 | 879 |
+| run | 9407 | 2938 |
 | triage | 325 | 0 |
 
 ## Channels (model ids)

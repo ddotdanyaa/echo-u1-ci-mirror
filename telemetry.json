@@ -1,6 +1,6 @@
 {
  "accepted": 5,
- "free_ram_gb": 4.24,
+ "free_ram_gb": 4.25,
  "funnel": {
   "accepted": 5,
   "claimed": 227,
@@ -178,7 +178,7 @@
   }
  },
  "promoted": 30,
- "rows_recognized": 26976,
+ "rows_recognized": 27013,
  "schema": 3,
  "side": {
   "blocked": 7,
@@ -186,7 +186,7 @@
   "requeued": 2
  },
  "skipped_files": 0,
- "source_sha": "sha34b691ac2f39",
+ "source_sha": "shacda473613518",
  "span": {
   "answer": {
    "calls": 0,
@@ -206,10 +206,10 @@
    "calls_usage_unknown": 0,
    "errors": {},
    "http_429": 0,
-   "rows": 4005,
+   "rows": 4009,
    "status": {
-    "ok": 3799,
-    "other": 206
+    "ok": 3802,
+    "other": 207
    },
    "tokens_in": 0,
    "tokens_out": 0
@@ -239,20 +239,20 @@
    "calls_usage_unknown": 0,
    "errors": {},
    "http_429": 0,
-   "rows": 4899,
+   "rows": 4907,
    "status": {
     "BLOCKED": 338,
     "FAILED": 325,
     "READY": 1384,
     "REVIEW": 41,
-    "WAITING_CHANNEL": 153,
+    "WAITING_CHANNEL": 155,
     "added": 16,
     "brake": 15,
     "deferred": 512,
     "empty": 92,
     "infra": 17,
-    "ok": 1885,
-    "other": 48,
+    "ok": 1890,
+    "other": 49,
     "refused": 1,
     "requeued": 2,
     "stop": 70
@@ -265,13 +265,13 @@
    "calls_usage_unknown": 0,
    "errors": {},
    "http_429": 0,
-   "rows": 5334,
+   "rows": 5354,
    "status": {
     "added": 1,
     "applied": 205,
     "failed": 36,
     "ok": 74,
-    "other": 4995,
+    "other": 5015,
     "rejected": 23
    },
    "tokens_in": 0,
@@ -301,11 +301,11 @@
     "transient": 204
    },
    "http_429": 2,
-   "rows": 1645,
+   "rows": 1646,
    "status": {
     "approved": 41,
     "error": 211,
-    "ok": 1393
+    "ok": 1394
    },
    "tokens_in": 3600405,
    "tokens_out": 91684
@@ -321,15 +321,15 @@
     "transient": 156
    },
    "http_429": 22,
-   "rows": 9403,
+   "rows": 9407,
    "status": {
     "BLOCKED": 354,
     "FAILED": 326,
     "READY": 1939,
     "REVIEW": 41,
-    "WAITING_CHANNEL": 162,
+    "WAITING_CHANNEL": 164,
     "error": 216,
-    "ok": 6326,
+    "ok": 6328,
     "other": 39
    },
    "tokens_in": 17806947,
@@ -356,7 +356,7 @@
   "FAILED": 651,
   "READY": 3323,
   "REVIEW": 82,
-  "WAITING_CHANNEL": 315,
+  "WAITING_CHANNEL": 319,
   "added": 71,
   "applied": 724,
   "approved": 41,
@@ -369,8 +369,8 @@
   "failed": 36,
   "hold_dropped": 3,
   "infra": 17,
-  "ok": 13477,
-  "other": 5480,
+  "ok": 13488,
+  "other": 5502,
   "parked": 18,
   "refused": 2,
   "rejected": 40,

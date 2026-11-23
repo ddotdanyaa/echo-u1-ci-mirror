@@ -2577,6 +2577,13 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                                          skip_tiers=skip_tiers, state=live_state, later=later)
         return _kilo_fits(order, steps, events if sink is None else sink) if order and not light else order
 
+    def call_affinity(role) -> list:
+        """The channel affinity of a call of this role (a reviewer must not move the coder's remembered channel):
+        shared by call() and the review precheck (W-review fix 1, round 1 finding 1)."""
+        family = os.path.splitext(task.touch_files[0].replace('\\', '/'))[0] if task.touch_files else ''
+        suffix = ':review' if role == 'review' else ''
+        return ['task:' + tid + suffix] + (['family:' + family + suffix] if family else [])
+
     def call_pick(order, seen, base_tokens, requests, affinity) -> tuple:
         """(channel, tokens): the choice on a quota view, nothing booked; raises ChannelUnavailable. Shared with the precheck."""
         live = channels.usable(order, seen, os.environ) or order   # a dead or keyless channel sets no ceiling
@@ -2603,9 +2610,7 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
             if isinstance(began, dict):
                 began['booked'] = int(began.get('booked') or 0) + 1      # the pool's admission counts workers that did not book yet
 
-        family = os.path.splitext(task.touch_files[0].replace('\\', '/'))[0] if task.touch_files else ''
-        suffix = ':review' if role == 'review' else ''      # a reviewer must not move the coder's remembered channel
-        affinity = ['task:' + tid + suffix] + (['family:' + family + suffix] if family else [])
+        affinity = call_affinity(role)
 
         hopped, last_info = [], None     # models that answered "overloaded" in THIS call: the next hop skips them
         for retry in range(1 + TRANSIENT_HOPS):
@@ -3613,12 +3618,16 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                 fresh.append(old_vote)
             return fresh
 
+        def said_line(number, ok, why) -> str:
+            """What the next critic is told of an earlier voice (the loop below and the precheck's prompt use it)."""
+            return 'critic %d %s: %s' % (number, 'approved' if ok else 'rejected', '; '.join(list(why or [])[:5]) or 'no remarks')
+
         def reviewers_wait() -> tuple:
             """W-review 1: (wait_s, reason, short, kept) of the review route right now, by the very helpers call() uses
             (call_size, call_order with the same exclusions: the authors AND the critics who already voted on this diff,
             call_pick on the ledger view, nothing booked). ``short``: a voice is kept and no other reviewer exists, so the
-            chain would end cut short whatever the gates say. The prompt is not built yet: its size is the diff plus 4000
-            for the rubric (the one difference from the call, named in the report)."""
+            chain would end cut short whatever the gates say. The prompt is the one review_candidate builds (its invoke
+            only captures it), so the size is the call's own."""
             if not configured:
                 return 0.0, '', [], []
             try:
@@ -3629,7 +3638,23 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
             diff_hash = sha256(text.encode('utf-8', 'replace')).hexdigest() if ctx['baseline'] is not None else ''
             kept = kept_votes(diff_hash)
             voted = [v['model'] for v in kept]
-            light, base_tokens, steps, booked = call_size('review', task, len(text) + 4000, channels.cyrillic_share(text))
+            class _PromptSeen(Exception):            # the real builder's prompt, caught before any model is asked
+                pass
+
+            def capture(call_task, directory, preferred, **kwargs):
+                raise _PromptSeen(call_task, kwargs['prompt_override'])
+            try:
+                review_candidate(task, ctx['workdir'], review_model, capture, baseline=ctx['baseline'], scratch=staging,
+                                 lens=REVIEW_LENSES[min(len(kept), len(REVIEW_LENSES) - 1)],
+                                 prior=tuple(said_line(n + 1, v['ok'], v.get('why')) for n, v in enumerate(kept)),
+                                 rejected=rejected_for(ck.read(), tid), rubric=True,
+                                 execution=execution_report(base, tuple(ctx.get('hollow') or ()), tuple(ctx.get('extra_names') or ())))
+                return 0.0, '', [], kept             # the builder asked no model: nothing to wait for
+            except _PromptSeen as seen_prompt:
+                call_task, prompt = seen_prompt.args
+            except Exception:                        # the gates / the call will name it
+                return 0.0, '', [], []
+            light, base_tokens, steps, booked = call_size('review', call_task, len(prompt), channels.cyrillic_share(prompt))
             live_state = ck.read().get('channel_quotas') or {}
             scratch_events = list(events)            # _kilo_fits writes into it: the precheck leaves no event behind
             order = call_order('review', review_model, base_tokens, authors() + voted, (), (), False, live_state, light, steps,
@@ -3637,10 +3662,8 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
             if not order:
                 return 0.0, '', kept, kept           # without a voice the call's own NoIndependentReviewer path decides
             seen = quota_ledger.view(live_state, quota_ledger.others(ledger, str(checkpoint))) if ledger is not None else live_state
-            family = os.path.splitext(task.touch_files[0].replace('\\', '/'))[0] if task.touch_files else ''
-            affinity = ['task:' + tid + ':review'] + (['family:' + family + ':review'] if family else [])
             try:
-                call_pick(order, seen, base_tokens, booked, affinity)
+                call_pick(order, seen, base_tokens, booked, call_affinity('review'))
             except channels.ChannelUnavailable as error:
                 return float(error.wait_s or 0), str(error.reason or ''), [], kept
             return 0.0, '', [], kept
@@ -3707,8 +3730,7 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                 critics.append(old_vote['model'])
                 votes.append(old_vote['ok'])
                 kept_log.append(dict(model=old_vote['model'], ok=old_vote['ok'], why=list(old_vote.get('why') or [])[:5]))
-                said.append('critic %d %s: %s' % (len(votes), 'approved' if old_vote['ok'] else 'rejected',
-                                                  '; '.join(kept_log[-1]['why']) or 'no remarks'))
+                said.append(said_line(len(votes), old_vote['ok'], kept_log[-1]['why']))
                 if not old_vote['ok']:
                     rejections.extend(kept_log[-1]['why'] or ['rejected without a stated reason'])
             if kept_log:
