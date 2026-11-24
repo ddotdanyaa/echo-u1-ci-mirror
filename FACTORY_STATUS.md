@@ -1,9 +1,10 @@
 # Factory status (generated, structured data only)
 
-Generated: 2026-11-24T23:21:14Z
-Source commit: shacf56926806b2
+Generated: 2026-11-24T23:42:00Z
+Source commit: sha62eb1f3ed971
 
 ## Commits (sha, time)
+- sha62eb1f3e 2026-11-25T02:37:37+03:00
 - shacf569268 2026-11-25T02:19:55+03:00
 - sha7ed74397 2026-11-25T02:10:13+03:00
 - sha5afc9948 2026-11-25T01:57:05+03:00
@@ -23,7 +24,6 @@ Source commit: shacf56926806b2
 - sha09a6f450 2026-11-24T23:07:09+03:00
 - sha0e7b82a2 2026-11-24T23:06:56+03:00
 - sha79ece083 2026-11-24T22:51:12+03:00
-- sha8a1e7eea 2026-11-24T22:35:23+03:00
 
 ## Funnel
 | step | count |
@@ -34,17 +34,17 @@ Source commit: shacf56926806b2
 | found_in_backlog | unknown |
 | gate_pass | 86 |
 | known_to_loop | 646 |
-| promoted | 81 |
-| ready | 50 |
+| promoted | 82 |
+| ready | 30 |
 | reviewed | 226 |
 | triaged | 458 |
 
-Side counters: blocked=40, parked=0, requeued=9
-Tasks now: BLOCKED=40, DONE=68, FAILED=891, PROMOTED=55, READY=50, RUNNING=1
+Side counters: blocked=55, parked=0, requeued=9
+Tasks now: BLOCKED=55, DONE=68, FAILED=897, PROMOTED=55, READY=30
 Accepted: 31
-Promoted: 81
-Free RAM, GB: 3.46
-Telemetry rows: 67720 recognised, 0 unrecognised
+Promoted: 82
+Free RAM, GB: 3.62
+Telemetry rows: 67935 recognised, 0 unrecognised
 
 ## Spend per model
 | model | calls | tokens_in | tokens_out | usage_unknown | http_429 | errors |
@@ -62,22 +62,22 @@ Telemetry rows: 67720 recognised, 0 unrecognised
 | google/gemini-3.8-flash | 28 | 21237 | 15 | 25 | 13 | 25 |
 | google/gemini-4-hydrogen | 3 | 0 | 0 | 3 | 0 | 3 |
 | google/gemini-robotics-er-2-preview | 2 | 5373 | 134 | 0 | 0 | 0 |
-| google/gemma-4-26b-a4b-it | 4140 | 3163108 | 566370 | 2859 | 18 | 2859 |
-| google/gemma-4-31b-it | 3436 | 1487580 | 167237 | 2833 | 10 | 2833 |
+| google/gemma-4-26b-a4b-it | 4164 | 3205145 | 571553 | 2867 | 19 | 2867 |
+| google/gemma-4-31b-it | 3466 | 1510851 | 172875 | 2855 | 10 | 2855 |
 | openrouter/nvidia/nemotron-3-ultra-550b-a55b:free | 130 | 715529 | 156330 | 2 | 2 | 2 |
 | other | 65 | 1154192 | 66710 | 6 | 0 | 7 |
 
 ## Spans
 | span | rows | calls |
 |---|---|---|
-| answer | 542 | 0 |
-| gate | 8900 | 0 |
-| infra | 3398 | 0 |
-| loop | 9328 | 0 |
-| other | 19641 | 0 |
-| promote | 99 | 0 |
+| answer | 543 | 0 |
+| gate | 8954 | 0 |
+| infra | 3421 | 0 |
+| loop | 9343 | 0 |
+| other | 19675 | 0 |
+| promote | 100 | 0 |
 | review | 3477 | 1610 |
-| run | 21894 | 10623 |
+| run | 21981 | 10677 |
 | triage | 441 | 0 |
 
 ## Channels (model ids)
