@@ -4362,7 +4362,7 @@ class Loop:
                 self.save_ls(fresh)
             contracts = []
             for cand in found["green"]:
-                contract = HY.to_contract(row, ids, cand)
+                contract = HY.to_contract(row, ids, cand, group=found.get("group"), rep=(found.get("ids") or ids)[0])
                 if not A.validate(contract, root, bid=row, known_ids=packet.get("known_ids")):
                     contracts.append(contract)
             if contracts:

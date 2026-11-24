@@ -768,7 +768,9 @@ def _batch(env, ids, cands):
             files = batch_files(cands)
             files[CONTROL] = _control_files(env.root, cands)
             got = env.cloud(env.root, _cloud_ids(ids), files)
-            if isinstance(got, dict):
+            if isinstance(got, dict) and not isinstance(got.get(CONTROL), dict):
+                last = CloudFail("no control verdict")      # W-part fix3: without the control nothing may be credited
+            elif isinstance(got, dict):
                 env.stats.add("batches")
                 env.stats.add("candidates", len(cands))
                 return got
@@ -934,7 +936,7 @@ def _evidence(tried, verdicts) -> list:
     return out[:12]
 
 
-def to_contract(row, ids, cand, why="a hypothesis of the batch verifier made the red test green"):
+def to_contract(row, ids, cand, why="a hypothesis of the batch verifier made the red test green", group=None, rep=None):
     """The contract of a green candidate: a fix with a part that carries the code (applied without a model, W-dry) and
     test.use = the red id; the other red ids go to ``also``."""
     greens = list(cand.get("greens") or ())
@@ -946,6 +948,8 @@ def to_contract(row, ids, cand, why="a hypothesis of the batch verifier made the
         test = {"use": ids[0]}
         if len(ids) > 1:
             test["also"] = list(ids[1:])
+    if group:       # the card shows the representative of the group that was searched
+        why = "%s [группа: %s; представитель: %s]" % (why, str(group)[:120], rep or ids[0])
     out = dict(row=row, decision="fix", why=why, test=test,
                parts=[dict(file=cand["file"], symbols=[cand["symbol"]], code=cand["code"],
                            instruction="Replace %s with the verified text from code: the cloud batch made the red test green with it."
