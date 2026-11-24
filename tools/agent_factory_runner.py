@@ -2737,14 +2737,8 @@ def edit_parts(task: Task, parts: list, workdir: Path, call, failing: str = '', 
         try:
             try:
                 if file.endswith('.py'):
-                    now_sha = K.region_sha((workdir / file).read_text(encoding='utf-8-sig', errors='replace')
-                                           if (workdir / file).is_file() else '', part.get('symbols') or [])
-                    if part.get('code_of') and part['code_of'] != now_sha and info is not None:
-                        # W-optim 3: not a refusal and not a reslice: the replacement is applied once onto the fresh snapshot
-                        # (REPLACE FUNCTION is by name) and the gates judge it; the function moved since the architect's read
-                        with lock:
-                            info['code_refreshed'] = info.get('code_refreshed', 0) + 1
-                    # (no early return: the check that refused the code here is gone)
+                    # W-optim 3: a function that moved since the architect's read is not a refusal and not a reslice: the
+                    # replacement is applied by name onto the fresh snapshot and the gates judge it
                     blocks = [(file, _FuncTarget(symbol), text)
                               for symbol, text in K.split_part_code(part['code'], part.get('symbols') or [])]
                 else:

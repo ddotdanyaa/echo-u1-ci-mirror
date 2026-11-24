@@ -2300,6 +2300,7 @@ class Loop:
     ANSWER_MAX_AGE_S = 2 * F.LEASE_LIFETIME_S   # an answer to an orphaned RUNNING task outlives its lease
     NO_RESULT_PARK = ESCALATE_AFTER   # the runner's own 'N times in a row' (no second constant)
     REQUEUE_PARK = ESCALATE_AFTER
+    MERGE_RETRY_MAX = 5      # W-optim fix2: a contract card goes back to READY on a merge conflict at most so often in a row
 
     def apply_answers(self) -> int:
         box = self.dir / "answers"
@@ -3024,10 +3025,12 @@ class Loop:
         tasks, state = self.load()
         ls, picked = self.ls(), []
         for tid, rec in state["tasks"].items():
-            if rec.get("status") != "BLOCKED" or "already_green" not in str(rec.get("blocked_reason") or rec.get("reason") or ""):
-                continue
             task = tasks.get(tid)
             row = F.row_of(rec.get("backlog_id") or (task.backlog_id if task else "") or tid)
+            # W-optim 4: a READY debt card (rel-base) is passed too, but only when its guard is PROVEN green on this base
+            waiting = rec.get("status") == "READY" and not rec.get("lease") and str(row).startswith("rel-")
+            if not waiting and (rec.get("status") != "BLOCKED" or "already_green" not in str(rec.get("blocked_reason") or rec.get("reason") or "")):
+                continue
             guard = self._guard_of_row(row, ls)
             if not guard:
                 continue
@@ -3039,14 +3042,15 @@ class Loop:
             except Exception as exc:         # noqa: BLE001 - nothing known: the card is left as it was
                 self.err("guard requeue ids", exc)
                 known = None
-            if known is not None:
+            if known is not None and (known == [] or not waiting):
                 picked.append((tid, row, guard))
         if not picked:
             return 0
         done = []
         with self.txn() as (_tasks, st):
             for tid, row, guard in picked:
-                if st["tasks"].get(tid, {}).get("status") == "BLOCKED":
+                cur = st["tasks"].get(tid, {})
+                if cur.get("status") == "BLOCKED" or (cur.get("status") == "READY" and not cur.get("lease")):
                     st["tasks"][tid].update(status="FAILED", reason="reslice:stale")
                     st["tasks"][tid].pop("blocked_reason", None)
                     done.append((tid, row))
@@ -6788,6 +6792,13 @@ class Loop:
         the feedback (the note names the conflicting files)."""
         n = int(ls.setdefault("merge_retry", {}).get(tid, 0)) + 1
         ls["merge_retry"][tid] = n
+        if n > self.MERGE_RETRY_MAX:         # a constant conflict does not circle for ever: the card goes up as a merge failure
+            ls["merge_retry"].pop(tid, None)
+            shutil.rmtree(src, ignore_errors=True)
+            ls["bases"].pop(tid, None)
+            self.save_ls(ls)
+            self._park(tid, "promote_failed", "the merge conflicted %d times in a row: %s" % (n - 1, note))
+            return finish("parked", "merge_conflict")
         hint = note if n < 2 else note + " (repeat %d: the previous edit is a hint, apply it onto the fresh code)" % n
         now = self.clock()
         def back(st):
