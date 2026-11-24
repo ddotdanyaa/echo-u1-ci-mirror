@@ -1,0 +1,30 @@
+{
+ "id": "tangled-t2",
+ "split": "dev",
+ "area": "work",
+ "kind": "tangled",
+ "source": {
+  "name": "authored for ECHO (this repository), general knowledge, no external text copied",
+  "license": "CC0-1.0",
+  "kind": "authored",
+  "url": null,
+  "note": "imitation of the form of a tangled message; the real messages stay local in tests/fixtures/harvest_scenes (not in git)"
+ },
+ "turns": [
+  {
+   "user": "Вот смотри, тесты пусть идут в облаке, а на ноутбуке не надо, он и так тормозит, и ещё короче отчёты, и это, ну ты понял, про ветки тоже.",
+   "expected": null,
+   "length": "long",
+   "kind": "tangled",
+   "gap_s": 6.0
+  }
+ ],
+ "requirements": [
+  "тесты в облаке",
+  "на ноутбуке тесты не гонять",
+  "отчёты короче"
+ ],
+ "unclear": [
+  "что именно «про ветки»"
+ ]
+}
