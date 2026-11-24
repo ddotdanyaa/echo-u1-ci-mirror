@@ -2991,6 +2991,8 @@ class Loop:
             latest = AF.latest_sweep(self._sweep_dir())
             if latest is None or not AF.sweep_has_ids(latest):
                 return 0
+        except ImportError:                         # no sweep module in this setting: nothing to reset, and no event (the loop's event stream stays as it was)
+            return 0
         except Exception as exc:                    # noqa: BLE001 - no sweep, no reset yet: the next tick looks again
             self.err("guard ids reset", exc)
             return 0
