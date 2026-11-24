@@ -4378,8 +4378,9 @@ class Loop:
         ls = self.ls()
         old = ls.setdefault("reslices", {}).get(row, {})
         ls["reslices"][row] = {"n": max(gen, old.get("n", 0)), "used": old.get("used", 0), "stale": False, "at": now,
-                               "version": F.slicer_version(), "rung": portion["rung"]}
-        count = ls.setdefault("lost_escalated", {}).get(row) or {}
+                               "version": F.slicer_version(), "rung": int(portion.get("rung") or 0) + 1,
+                               "esc": True}                 # one rung higher: the next pass starts there, `stuck` adds nothing
+        count =ls.setdefault("lost_escalated", {}).get(row) or {}
         count = {"ver": F.slicer_version(), "n": (count.get("n", 0) if count.get("ver") == F.slicer_version() else 0) + 1}
         ls["lost_escalated"][row] = count
         if count["n"] >= self.LOST_ESCALATIONS:         # the top of the ladder keeps saying it: the row waits, it is not closed
@@ -4928,10 +4929,10 @@ class Loop:
                     hard_rung = self.cfg.hard_first_rung if "paid" in self._asks() else 0
                     hist = ls.get("row_hist", {}).get(bid, {})
                     free_ok = bool(guarded) and not hist.get("free_first")     # W-hard 2: free once in the life of the row
-                    rung = (0 if free_ok else hard_rung) if cause == "first" else rec.get("rung", used) + (cause == "stuck")
+                    rung = (0 if free_ok else hard_rung) if cause == "first" else rec.get("rung", used) + (cause == "stuck" and not rec.get("esc"))
                     if ls.get("to_slice", {}).get(bid, {}).get("done"):
                         rung = 0 if free_ok else hard_rung
-                    if cause == "first" and hist.get("failed_gens"):
+                    if cause == "first" and (hist.get("failed_gens") or rec.get("esc")):
                         rung = max(rung, rec.get("rung", 0))               # W-hard 1: the history goes on, not from the start
                 if cause == "dry":
                     rung = 0                   # W-dry 1: no step of the ladder is spent
@@ -5454,7 +5455,7 @@ class Loop:
                     continue
                 engine = str(rec.get("engine") or "")
                 if (not str(rec.get("reason") or "").startswith(self.NOT_CODE_DOC) or engine in self.ARCH_ENGINES
-                        or "+" in engine or bid in (cur.get("not_code_free") or {})):
+                        or "+" in engine or (cur.get("not_code_free") or {}).get(bid) == version):
                     continue                          # the answer of two different models stays
                 cur["not_code"].pop(bid, None)
                 cur.setdefault("not_code_free", {})[bid] = version

@@ -1,9 +1,10 @@
 # Factory status (generated, structured data only)
 
-Generated: 2026-11-24T06:59:17Z
-Source commit: shad3514836d0c8
+Generated: 2026-11-24T07:09:26Z
+Source commit: shadf8595e0fab7
 
 ## Commits (sha, time)
+- shadf8595e0 2026-11-24T10:07:23+03:00
 - shad3514836 2026-11-24T09:57:32+03:00
 - shac2f37bd6 2026-11-24T09:50:07+03:00
 - sha19486ded 2026-11-24T09:47:12+03:00
@@ -23,28 +24,27 @@ Source commit: shad3514836d0c8
 - shac3311953 2026-11-24T05:25:58+03:00
 - shafd6fc201 2026-11-24T04:28:32+03:00
 - sha51589267 2026-11-24T04:24:26+03:00
-- shaf0542e52 2026-11-24T04:21:51+03:00
 
 ## Funnel
 | step | count |
 |---|---|
 | accepted | 22 |
-| claimed | 635 |
+| claimed | 637 |
 | coded | 185 |
 | found_in_backlog | unknown |
 | gate_pass | 74 |
 | known_to_loop | 543 |
 | promoted | 70 |
-| ready | 67 |
+| ready | 70 |
 | reviewed | 191 |
 | triaged | 366 |
 
 Side counters: blocked=0, parked=0, requeued=7
-Tasks now: DONE=68, FAILED=653, PROMOTED=46, READY=67, RUNNING=5
+Tasks now: DONE=68, FAILED=657, PROMOTED=46, READY=70
 Accepted: 22
 Promoted: 70
-Free RAM, GB: 3.62
-Telemetry rows: 53181 recognised, 0 unrecognised
+Free RAM, GB: 3.93
+Telemetry rows: 53344 recognised, 0 unrecognised
 
 ## Spend per model
 | model | calls | tokens_in | tokens_out | usage_unknown | http_429 | errors |
@@ -61,8 +61,8 @@ Telemetry rows: 53181 recognised, 0 unrecognised
 | google/gemini-3.7-flash | 26 | 9121 | 14 | 25 | 14 | 25 |
 | google/gemini-3.8-flash | 28 | 21237 | 15 | 25 | 13 | 25 |
 | google/gemini-4-hydrogen | 1 | 0 | 0 | 1 | 0 | 1 |
-| google/gemma-4-26b-a4b-it | 2292 | 1923053 | 352414 | 1544 | 9 | 1544 |
-| google/gemma-4-31b-it | 1696 | 872334 | 90971 | 1380 | 7 | 1380 |
+| google/gemma-4-26b-a4b-it | 2305 | 1941786 | 354934 | 1547 | 9 | 1547 |
+| google/gemma-4-31b-it | 1718 | 876485 | 91483 | 1400 | 7 | 1400 |
 | openrouter/nvidia/nemotron-3-ultra-550b-a55b:free | 130 | 715529 | 156330 | 2 | 2 | 2 |
 | other | 65 | 1154192 | 66710 | 6 | 0 | 7 |
 
@@ -70,14 +70,14 @@ Telemetry rows: 53181 recognised, 0 unrecognised
 | span | rows | calls |
 |---|---|---|
 | answer | 536 | 0 |
-| gate | 7441 | 0 |
+| gate | 7453 | 0 |
 | infra | 1347 | 0 |
-| loop | 7996 | 0 |
-| other | 15537 | 0 |
+| loop | 8011 | 0 |
+| other | 15608 | 0 |
 | promote | 86 | 0 |
-| review | 3058 | 1460 |
-| run | 16753 | 6938 |
-| triage | 427 | 0 |
+| review | 3068 | 1460 |
+| run | 16807 | 6973 |
+| triage | 428 | 0 |
 
 ## Channels (model ids)
 - 1db4ab-gemini-3-8-flash
