@@ -5433,8 +5433,10 @@ class Loop:
                 if (row not in open_rows or row in disp or row in private or bid in (cur.get("hold_arch") or {})
                         or any(w in low for w in self.KEPT_HOLD_WORDS)):
                     continue
-                if bid in (cur.get("hold_ver") or {}) and not any(m in low for m in self.OLD_HOLD_TEXT):
-                    continue
+                if not any(m in low for m in self.OLD_HOLD_TEXT):
+                    continue                          # a hold in the current wording (scope question, contract) stays
+                if low.startswith(self.OLD_HOLD_TEXT[0]) and "[" in low:
+                    continue                          # candidates with signal tags are the current hold; the old one had paths only
                 for key in ("holds", "hold_ver", "hold_hash", "arch_decision"):
                     if isinstance(cur.get(key), dict):
                         cur[key].pop(bid, None)
