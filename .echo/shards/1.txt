@@ -1,0 +1,25 @@
+tests/test_h28_quantity_scene.py::test_silence_repeats_with_no_mode_for_about_a_minute
+tests/test_h29_call.py::test_a_question_at_the_end_of_a_long_remark_is_answered[1]
+tests/test_h29_call.py::test_a_question_at_the_end_of_a_long_remark_is_answered[20]
+tests/test_h29_call.py::test_a_question_at_the_end_of_a_long_remark_is_answered[5]
+tests/test_h29_call.py::test_a_question_word_inside_a_long_remark_is_no_question
+tests/test_h29_call.py::test_silence_repeats_after_about_a_second
+tests/test_h2_brain.py::test_a_backchannel_does_not_take_the_job_from_the_candidate
+tests/test_h2_brain.py::test_a_candidate_adopts_a_prepared_job
+tests/test_h2_brain.py::test_a_declined_lookup_question_says_nothing
+tests/test_h2_brain.py::test_a_fault_of_the_pump_hands_the_candidate_to_the_cloud
+tests/test_h2_brain.py::test_a_follow_up_or_a_new_question_is_no_repair[\u0421\u043a\u043e\u043b\u044c\u043a\u043e \u0431\u0443\u0434\u0435\u0442 \u043f\u044f\u0442\u044c \u0443\u043c\u043d\u043e\u0436\u0438\u0442\u044c \u043d\u0430 \u043f\u044f\u0442\u044c?-25.]
+tests/test_h2_brain.py::test_a_job_that_gave_no_text_in_time_hands_the_candidate_to_the_cloud
+tests/test_h2_brain.py::test_a_question_the_classifier_opened_and_the_job_declined_gives_the_plan_back[\u041d\u0443 \u0447\u0442\u043e, \u0434\u0430\u0432\u0430\u0439\u0442\u0435 \u0437\u0430\u0434\u0430\u0432\u0430\u0439\u0442\u0435 \u043b\u044e\u0431\u043e\u0439 \u0432\u043e\u043f\u0440\u043e\u0441, \u0441\u043e\u0431\u0441\u0442\u0432\u0435\u043d\u043d\u043e, \u0433\u043e\u0442\u043e\u0432]
+tests/test_h2_brain.py::test_a_reply_that_came_before_the_final_admits_nothing_either
+tests/test_h2_brain.py::test_after_a_failed_job_the_delegation_admits_as_it_did
+tests/test_h2_brain.py::test_meta_tails_of_the_job_are_no_portions_on_the_wire
+tests/test_h2_brain.py::test_no_reply_of_the_cloud_admits_a_candidate_while_a_job_runs
+tests/test_h2_brain.py::test_speech_that_goes_on_drops_the_held_verdict
+tests/test_h2_brain.py::test_talk_about_itself_said_first_is_no_portion_of_a_job[\u041f\u043e\u043d\u044f\u043b \u0442\u0435\u0431\u044f, \u0431\u0443\u0434\u0443 \u0440\u0435\u0430\u0433\u0438\u0440\u043e\u0432\u0430\u0442\u044c \u0431\u044b\u0441\u0442\u0440\u0435\u0435.]
+tests/test_h2_brain.py::test_the_clouds_text_is_set_aside_while_a_job_runs
+tests/test_h2_brain.py::test_the_delegation_of_a_candidate_is_served_when_the_job_admits_it
+tests/test_h2_brain.py::test_the_final_of_a_long_turn_a_stable_partial_took_at_its_start_is_judged
+tests/test_h2_brain.py::test_the_remarks_of_the_call_say_nothing_whatever_the_cloud_replies[\u041d\u0443 \u0447\u0442\u043e, \u0434\u0430\u0432\u0430\u0439\u0442\u0435 \u0437\u0430\u0434\u0430\u0432\u0430\u0439\u0442\u0435 \u043b\u044e\u0431\u043e\u0439 \u0432\u043e\u043f\u0440\u043e\u0441, \u0441\u043e\u0431\u0441\u0442\u0432\u0435\u043d\u043d\u043e, \u0433\u043e\u0442\u043e\u0432]
+tests/test_h2_brain.py::test_the_verdict_waits_while_the_listener_speaks_and_their_words_are_judged
+tests/test_h2_brain.py::test_with_the_breaker_open_a_candidate_goes_to_the_cloud_as_before
