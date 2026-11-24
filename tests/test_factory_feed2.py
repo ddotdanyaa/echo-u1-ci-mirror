@@ -14,7 +14,7 @@ def _pump(ask, **kw):
 
 def test_a_busy_small_tier_does_not_stop_the_pump_while_the_minute_has_tokens():
     asked = []
-    pump = _pump(lambda c, t, tmp: (asked.append(t) or ('ok', '', 1)), live=lambda: True, minute=HY.Minute(limit=1000))
+    pump = _pump(lambda c, t, tmp: (asked.append(t) or ('ok', '', 1)), minute=HY.Minute(limit=1000))
     pump.submit([HY.Item((0, 0, 0), str(i), 'q%d' % i, 100, 0.2, 'x') for i in range(5)])
     assert pump.run(5) and len(asked) == 5
 
@@ -100,6 +100,7 @@ def test_feeder_candidates_come_in_the_order_echo_rel_base_and_leave_out_the_bus
 def test_the_slicer_no_longer_owns_the_search():
     import inspect
     assert '_hypo_row' not in inspect.getsource(L.Loop._slice)       # one owner: the feeder tick of the loop
+    assert not hasattr(L.Loop, '_hypo_row') and not hasattr(HY.Pump(None, None), 'live')      # no second path, no dead yield flag
 
 
 def _tree(tmp_path):

@@ -32,6 +32,7 @@ TPM = 16000                     # input tokens a minute per channel
 DEFAULT_CHANNELS = ("default",)  # a bare pump (no loop): one anonymous channel; the loop names the real ones (channels.json ids)
 FAILS_MAX = 12                  # network refusals of one hypothesis before it is dropped
 WAIT_MAX_S = 5.0                # a worker waits at most this long for a closed channel
+SHUT_MAX_S = 1.0                # a channel that said 'no_channel' takes no booking from its other workers for at most this long
 SAMPLES_MAX = 20                # kept first answers of each bad / invalid kind (hypo_samples.json)
 RETRY_REFUSED_S = 30.0             # a refused hypothesis waits this long for the SAME channel (others take it at once)
 PER_CHANNEL = 4                 # concurrent requests of the pump on one channel
@@ -459,10 +460,10 @@ class Pump:
     requests of the pump at once per channel, only the minute (tpm, rpm of the channel) limits them. A refusal sends the same
     item to ANOTHER channel at once."""
 
-    def __init__(self, ask, on_answer, *, channels=DEFAULT_CHANNELS, clock=time.monotonic, sleep=time.sleep, live=lambda: False,
+    def __init__(self, ask, on_answer, *, channels=DEFAULT_CHANNELS, clock=time.monotonic, sleep=time.sleep,
                  minute=None, stats=None):
         self.ask, self.on_answer, self.channels = ask, on_answer, tuple(channels)
-        self.clock, self.sleep, self.live = clock, sleep, live
+        self.clock, self.sleep = clock, sleep
         self.minute = minute or Minute(clock=clock)
         self.stats = stats or Stats()
         self.q: list = []
@@ -472,6 +473,7 @@ class Pump:
         self.refused = collections.Counter()
         self.threads = {}           # channel -> its live worker (one pump serves every search of the loop at once)
         self.until = 0.0
+        self.shut = {}              # channel -> the time before which it books and asks nothing (it answered 'no_channel')
 
     def submit(self, items, on_answer=None) -> Group:
         """Queue the items of one search (its own ``on_answer``; default the pump's). One queue for all searches: the lowest
@@ -543,14 +545,21 @@ class Pump:
             if item.group is not None and item.group.cancelled:
                 self._done(item)
                 continue
+            if self.clock() < self.shut.get(chan, 0.0):     # the channel just said 'no channel': no booking, no ask until it may open
+                self._back(item)
+                self.sleep(0.05)
+                continue
             if not self.minute.book(chan, item.tokens):
                 self._back(item)
                 self.sleep(0.2)
                 continue
             status, answer, _tokens, wait = self._call(chan, item)
             if status == "no_channel":
-                # no request went out: the booking comes back, no call, no fail; the worker waits what the channel names
+                # no request went out: the booking comes back, no call, no fail; the worker waits what the channel names;
+                # the channel's other workers book nothing while it is shut (the window stays free for real sends)
                 self.minute.refund(chan, item.tokens)
+                if wait > 0:
+                    self.shut[chan] = self.clock() + min(SHUT_MAX_S, wait)
                 self.refused["no_channel"] += 1
                 self.stats.refuse("no_channel")
                 self._back(item)
@@ -629,7 +638,6 @@ class Ctx:
         self.root = None
         self.ask = None             # (chan, text, temp) -> (status, answer, tokens)
         self.cloud = None           # (root, ids, {n: {file: text}}) -> {n: {passed, failed, text}}; raises CloudFail
-        self.live = lambda: False
         self.clock, self.sleep = time.monotonic, time.sleep
         self.failure_text = lambda ids: ""      # the failure of the red test on the base
         self.trace = lambda ids: ()             # ((file, name, line), ...) the functions the test ran
@@ -667,7 +675,7 @@ def mark_searched(table: dict, base_sha: str, test: str, now: float) -> None:
 def _run_pump(env, row, items, collect):
     pump = getattr(env, "pump", None)       # the loop's ONE pump: every search of the loop queues into it (ECHO < rel < base)
     if pump is None:
-        pump = Pump(env.ask, collect, clock=env.clock, sleep=env.sleep, live=env.live, minute=env.minute, stats=env.stats,
+        pump = Pump(env.ask, collect, clock=env.clock, sleep=env.sleep, minute=env.minute, stats=env.stats,
                     channels=getattr(env, "channels", None) or DEFAULT_CHANNELS)
     group = pump.submit(items, collect)
     return pump.run(env.timeout_s, group)

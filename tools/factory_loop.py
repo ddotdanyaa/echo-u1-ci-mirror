@@ -4161,9 +4161,6 @@ class Loop:
         def sample(why, answer):
             loop._hypo_sample(why, answer)
 
-        def live():     # a live ensemble of the slicer holds the small tier: the pump gives way
-            sem = getattr(loop, "_small_sem", None)
-            return bool(sem is not None and getattr(sem, "_value", loop.SMALL_SLICE_MAX) < loop.SMALL_SLICE_MAX)
         evidence = str(packet.get("evidence") or "")
         marker = "FAILURE OF THE RED TEST (assert, message, last frames):\n"
         failure = evidence.partition(marker)[2][:4000] if marker in evidence else ""
@@ -4189,9 +4186,9 @@ class Loop:
         with self._hypo_lock:       # W-feed2 2: up to six searches build their env at once, the pump and the minute are made once
             self._hypo_min()
             if getattr(self, "_hypo_pump", None) is None:       # ONE pump for every searching row of the loop (ECHO < rel < base)
-                self._hypo_pump = HY.Pump(ask, None, channels=names, live=live, minute=self._hypo_minute, stats=HY.STATS)
+                self._hypo_pump = HY.Pump(ask, None, channels=names, minute=self._hypo_minute, stats=HY.STATS)
         return HY.Ctx(root=root, ask=ask, cloud=lambda r, ids, files: HY.cloud_batch(r, ids, files, tid="h" + str(packet.get("bid"))),
-                      pump=self._hypo_pump, live=live, failure_text=lambda ids: failure, trace=lambda ids: trace,
+                      pump=self._hypo_pump, failure_text=lambda ids: failure, trace=lambda ids: trace,
                       diff_funcs=lambda ids: diff, ranked=ranked, minute=self._hypo_minute, channels=names, sample=sample,
                       event=lambda name, **f: loop.event(name, **f))
 
@@ -4253,31 +4250,6 @@ class Loop:
         if contract is not None:
             self.event("hypo", backlog_id=row, status="spare", greens=1, tried=0)
         return contract
-
-    def _hypo_row(self, row, packet, root):
-        """W-hyp: the hypotheses search for a row that has a ready red test on the current base. A contract result (green
-        candidate: a fix whose part carries the code, engine 'hypo') or None (the slicer goes on; on a red end its evidence
-        carries what was tried). Never raises; once per base+test in 12 h."""
-        from tools import factory_hypo as HY
-        kind, ids = self._hypo_state(row, packet)
-        if kind in ("off", "none"):
-            return None
-        try:
-            if kind == "spare":
-                spare = self._hypo_take_spare(row, root, packet)
-                if spare is not None:       # a green candidate of the earlier search of this base, the first one went red: no new search
-                    return dict(contract=spare, engine="hypo", faults=[], repaired=[])
-                kind, ids = self._hypo_state(row, packet)
-            if kind != "search":
-                return None
-            env = self._hypo_env(root, packet)
-            if env is None:
-                return None
-            found = HY.search(row, ids, env)
-            return self._hypo_post(row, packet, root, ids, found)
-        except Exception as exc:        # noqa: BLE001  an aid: the slicer goes on as before
-            self.err("hypo", exc)
-        return None
 
     def _hypo_state(self, row, packet):
         """W-feed2 2: what a row needs from the search, by reads only: ('off' | 'none' (no red id) | 'spare' (a kept green
