@@ -514,7 +514,7 @@ def rig_faults(contract, engine=None):
     faults = []
     if contract.get('rig') is not True:
         return ['rig must be true']
-    if engine is not None and str(engine).split('+')[-1] not in RIG_ENGINES:
+    if engine is None or str(engine).split('+')[-1] not in RIG_ENGINES:     # no engine named = refusal
         faults.append('rig: only paid/agent/hypo/coordinator may give a rig contract (ready code)')
     parts = [p for p in contract.get('parts') or [] if isinstance(p, dict)]
     faults.extend(G.rig_touch_faults([p.get('file') for p in parts if isinstance(p.get('file'), str)]))
@@ -1227,7 +1227,7 @@ def _small_vote(ask, system, user, *, packet, root, named_ok=False, k=SMALL_K):
         _drop_part_codes(contract)
         repair_contract(contract, root, packet)
         errors = validate(contract, root, bid=packet.get('bid', ''), title=packet.get('title', ''),
-                          known_ids=packet.get('known_ids'), named_ok=named_ok)
+                          known_ids=packet.get('known_ids'), named_ok=named_ok, engine='free_small')
         if errors:
             return False, '; '.join(errors)[:300], ''
         if red and (bad := _red_fault(contract, 'free_small')):
@@ -1375,7 +1375,7 @@ def contract_for(packet, *, rung, root, asks, named_ok=False, red_given=None, sk
                         ((contract.get('test') or {}).get('new') or {}).pop('code', None)   # then the contract stands without the code, as before
                     _drop_part_codes(contract)
                     errors = validate(contract, root, bid=packet.get('bid', ''), title=packet.get('title', ''),
-                                      known_ids=packet.get('known_ids'), named_ok=named_ok)
+                                      known_ids=packet.get('known_ids'), named_ok=named_ok, engine=engine)
                 if errors and not fixed and not any('oversize' in e for e in errors):
                     fixed = True      # one re-ask on a repairable defect, the same step
                     user += '\nFix these problems and return the full contract again:\n' + '\n'.join(errors)

@@ -3431,7 +3431,9 @@ class Loop:
                     self.event("release", status="debt_closed", backlog_id=bid, reason="baseline debt row accepted")
                 from tools import factory_gate as _fg
                 if task_a is not None and _fg.is_rig_task(task_a) and not Loop._contract(task_a).get("more"):
-                    spec = Loop._contract(task_a).get("test") or {}      # W-rig: the ids of the card leave the baseline debt at once
+                    # W-rig (deliberate second way to close debt): the task says the ids leave the baseline debt at once, without the two
+                    # green builds of W-part; a rig card replaces the test stand itself, its ids were verified in the cloud run of the candidate
+                    spec = Loop._contract(task_a).get("test") or {}
                     gone = REL.close_debt_ids(self.cfg.state_dir, [spec.get("use")] + list(spec.get("also") or []))
                     if gone:
                         self.event("release", status="debt_closed", backlog_id=bid, reason="rig accepted: %d ids left the debt" % gone)
@@ -4323,7 +4325,7 @@ class Loop:
         left = list(rec.get("contracts") or ()) if rec.get("base") == str(self.base_sha) else []
         while left:
             contract = left.pop(0)
-            if not A.validate(contract, root, bid=row, known_ids=packet.get("known_ids")):
+            if not A.validate(contract, root, bid=row, known_ids=packet.get("known_ids"), engine="hypo"):
                 break
             contract = None
         else:
@@ -4412,7 +4414,7 @@ class Loop:
             contracts = []
             for cand in found["green"]:
                 contract = HY.to_contract(row, ids, cand, group=found.get("group"), rep=(found.get("ids") or ids)[0])
-                if not A.validate(contract, root, bid=row, known_ids=packet.get("known_ids")):
+                if not A.validate(contract, root, bid=row, known_ids=packet.get("known_ids"), engine="hypo"):
                     contracts.append(contract)
             if contracts:
                 keep = self.ls()
@@ -8571,7 +8573,10 @@ def rig_main(argv) -> int:
                 p.error("%s: a rig card carries only tests/** and echo_sync/**" % rel)
             if "__pycache__" in rel or rel.endswith((".pyc", ".pyo")):
                 continue
-            files[rel] = path.read_text(encoding="utf-8")
+            try:
+                files[rel] = path.read_bytes().decode("utf-8")      # bytes: CRLF stays CRLF (the card text and its hash are the file's own)
+            except (OSError, UnicodeDecodeError) as exc:
+                p.error("%s: unreadable as utf-8 text: %s" % (rel, exc))
     if not files:
         p.error("--cand holds no files")
     digest = hashlib.sha1(json.dumps([files, ids], sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()

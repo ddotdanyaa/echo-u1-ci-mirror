@@ -648,7 +648,7 @@ def neighbor_tests(root: Path, task: Task) -> list[str]:
         found, _, _ = affected_tests.affected(list(task.touch_files), radius=1, g=graph)
     out: list[str] = []
     rig = gate.is_rig_task(task)
-    mine = [n for n in task.touch_files if rig and Path(n).name.startswith('test_') and n.endswith('.py')]   # W-rig: every id of a changed test file runs
+    mine = [n for n in task.touch_files if rig and Path(n).name.startswith('test_') and n.endswith('.py') and n not in task.tests]   # W-rig: every id of a changed test file runs (the target file already runs as the target)
     for name in mine + list(found):
         if name in out:
             continue
