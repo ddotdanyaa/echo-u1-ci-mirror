@@ -20,10 +20,12 @@ MAX_PARTS = MAX_STEPS = 10
 INSTR_MIN, INSTR_MAX = 40, 3000
 FREE_PROMPT_MAX = 120_000
 FREE_RUNGS = ('free', 'free_main', 'free_small')     # the free steps of the ladder (W-gslice 1: free_small is the small tier's ensemble)
-SMALL_PROMPT_TOKENS = 9000      # the window of the small tier: estimated input tokens of one prompt
+SMALL_PROMPT_TOKENS = 4500      # the window of the small tier: estimated input tokens of one prompt (W-prio3: was 9000; the TPM of a channel is 15-16K)
 SMALL_MAX_TOKENS = 4096         # the answer limit of a small-tier call
 SMALL_REASONING = 'minimal'     # reasoning_effort of the small-tier call (the default of the model body; 'none' is refused by the API)
-SMALL_K = 4                     # the voices of the ensemble: different temperatures / models
+SMALL_K = 2                     # the voices of the ensemble: different temperatures / models (W-prio3: 2, a third when they do not agree)
+SMALL_K_MAX = 3
+SMALL_TOTAL_S = 240.0           # W-prio3: the common term of a slicing ensemble (the editors' ensemble keeps its own)
 SMALL_TEMPERATURES = (0.2, 0.5, 0.8, 0.35)
 KEYWORDS_MAX = 12
 AGENT_IDLE_S = 300
@@ -237,7 +239,7 @@ def build_prompt(packet, engine=''):
               (DRY_RULE + '\n' if engine in ('paid', 'agent') and packet.get('edit_dry') else '') +
               'Schema: ' + json.dumps(schema, ensure_ascii=False) + '\nExamples:\n' +
               '\n'.join(str(e) for e in packet.get('examples', [])))
-    user = '\n'.join(f'{k}: {v}' for k, v in packet.items() if k not in ('examples', 'known_ids', 'rung', 'red_given', 'edit_dry', 'base_debt', 'trace_path', 'bisect_key'))
+    user = '\n'.join(f'{k}: {v}' for k, v in packet.items() if k not in ('examples', 'known_ids', 'rung', 'red_given', 'edit_dry', 'base_debt', 'trace_path', 'bisect_key', 'guard_red', 'guard_green'))
     return system, user
 
 
@@ -938,7 +940,22 @@ def repair_contract(contract, root, packet):
                 part['file'] = found
                 repaired.append('parts[%d].file' % i)
     spec = contract.get('test')
-    if isinstance(spec, dict) and isinstance(spec.get('new'), dict) and not spec.get('use'):
+    red_ids = [str(x) for x in (packet.get('guard_red') or []) if '::' in str(x)]
+    if red_ids and isinstance(packet.get('guard_red'), list):
+        # W-guard 1: the row's guard is red: the card runs ITS red test (any step, any form), the model does not choose it
+        use = red_ids[0].split('[', 1)[0]
+        want = {'use': use}
+        also = []
+        for x in red_ids[1:]:                       # same form as use: no [param]
+            x = x.split('[', 1)[0]
+            if x != use and x not in also:
+                also.append(x)
+        if also:
+            want['also'] = also
+        if spec != want:
+            contract['test'] = spec = want
+            repaired.append('test.use')
+    elif isinstance(spec, dict) and isinstance(spec.get('new'), dict) and not spec.get('use'):
         new = spec['new']
         path = new.get('path')
         ok = isinstance(path, str) and _NEW_TEST_PATH.fullmatch(path.replace('\\', '/')) and not (root / path).exists()
@@ -1183,13 +1200,39 @@ def _small_vote(ask, system, user, *, packet, root, named_ok=False, k=SMALL_K):
         return True, '', contract_key(contract)
 
     channels = list(getattr(ask, 'channels', None) or []) or None
-    ens = ENS.Ensemble(k, branch, verify, channels=channels, temperatures=SMALL_TEMPERATURES)
-    with (getattr(ask, 'gate', None) or contextlib.nullcontext()):      # W-gslice 3: at most 3 ensembles at a time, editors first
+    started = time.monotonic()
+    ens = ENS.Ensemble(k, branch, verify, channels=channels, temperatures=SMALL_TEMPERATURES, total_s=SMALL_TOTAL_S)
+    stats, refused_by, rejected = dict(ens.stats), dict(ens.refused_by), list(ens.rejected)
+    with (getattr(ask, 'gate', None) or contextlib.nullcontext()):      # W-gslice 3: the places of the ensembles, editors first
         found = ens.run()
-    try:
-        ask.vgs = dict(ens.stats, rejected=len(ens.rejected))      # the telemetry of the slice event (W-gslice 4)
+        stats, refused_by, rejected = dict(ens.stats), dict(ens.refused_by), list(ens.rejected)
+        left = SMALL_TOTAL_S - (time.monotonic() - started)
+        if k < SMALL_K_MAX and not ens.early and not any(c.votes >= 2 for c in found) and left > 1:
+            # W-prio3: the first voices did not agree (or one was void): a third one, another temperature and channel, within the term
+            third = ENS.Ensemble(1, branch, verify, channels=(channels[k % len(channels):] + channels[:k % len(channels)])
+                                 if channels else None, temperatures=(SMALL_TEMPERATURES[k % len(SMALL_TEMPERATURES)],), total_s=left)
+            more = third.run()
+            by_key = {c.key: c for c in found}
+            for c in more:
+                if c.key in by_key:
+                    by_key[c.key].votes += c.votes
+                    by_key[c.key].callers += [k]
+                else:
+                    c.order += len(found) + 1
+                    by_key[c.key] = c
+            found = sorted(by_key.values(), key=lambda c: (-c.votes, c.order))
+            for name in ('asked', 'answered', 'valid', 'refused', 'retries_503'):
+                stats[name] = stats.get(name, 0) + third.stats.get(name, 0)
+            stats['k'] = k + 1
+            stats['unique'], stats['votes_top'] = len(found), found[0].votes if found else 0
+            for name, number in third.refused_by.items():
+                refused_by[name] = refused_by.get(name, 0) + number
+            rejected += third.rejected
+    try:        # the telemetry of the slice event (W-gslice 4; W-prio3: refusals by their kind, flat ints ``refused_<kind>``)
+        ask.vgs = dict(stats, rejected=len(rejected), **{'refused_' + name: number for name, number in refused_by.items()})
     except AttributeError:
         pass
+    ens.stats, ens.rejected = stats, rejected
     if found:
         def parts_of(candidate):
             try:

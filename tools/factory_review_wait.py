@@ -39,6 +39,32 @@ def retry_overload(attempt, is_overload, *, total_s: float = RETRY_TOTAL_S, cloc
             sleep(max(0.0, min(left, base * (1 + rng.uniform(-RETRY_JITTER, RETRY_JITTER)))))
 
 
+OWN_WAIT_MAX_S = 60.0                      # W-guard 3: the end of the branch's own minute window is waited for up to this
+OWN_WAIT_TRIES = 3                          # ... at most this many windows in one call
+
+
+def retry_own_window(attempt, window_of, *, budget_left, sleep=time.sleep, max_wait_s: float = OWN_WAIT_MAX_S,
+                     max_waits: int = OWN_WAIT_TRIES, on_wait=None):
+    """W-guard 3 (live 24.11 05:01-05:07: passes of 4-13 s ended in review_chain_short, the second voice's channel being shut
+    for a minute window only): ``attempt()`` is called again after the window when it raises an error whose ``window_of(error)``
+    is a number of seconds in (0, max_wait_s] (our own rpm / tpm_window / cool booking), as W-prio3's minute_local wait.
+    ``budget_left()`` is what the pass may still sleep; ``sleep(s)`` spends it. Any other error, a window longer than the
+    limit or than the budget, and the last window, go up."""
+    waits = 0
+    while True:
+        try:
+            return attempt()
+        except Exception as error:      # noqa: BLE001 - only a known short window is waited for
+            seconds = window_of(error)
+            if (not isinstance(seconds, (int, float)) or isinstance(seconds, bool) or not 0 < seconds <= max_wait_s
+                    or waits >= max_waits or seconds > budget_left()):
+                raise
+            waits += 1
+            if on_wait is not None:
+                on_wait(waits)
+            sleep(float(seconds) + 0.5)
+
+
 def channel_left(order, pick_error_reason: str | None) -> bool:
     """True when the review route has a channel that can still answer today: the route is not empty and the pick either
     worked (``None``) or failed only on a cooling / a minute window (a day limit, a dead or keyless channel, and any

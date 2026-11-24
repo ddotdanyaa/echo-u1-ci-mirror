@@ -4988,14 +4988,22 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                 try:
                     # W-rev 1: a 503 of the small tier is asked again round its channels (2, 4, 8, 12, 12 ... s, 120 s per
                     # call, at most PASS_WAIT_S of sleeping in the whole pass)
-                    return RW.retry_overload(
-                        lambda: call('review', call_task, lambda _retry: directory, preferred,
-                                     kwargs['prompt_override'], exclude_model=authors() + critics, fast_retry='small'),
-                        lambda err: isinstance(err, ChannelFault) and bool((err.info or {}).get('fast_retry')),
-                        total_s=max(0.0, min(RW.RETRY_TOTAL_S, pass_wait[0])), sleep=pass_sleep,
-                        on_retry=lambda n: events.append('review_503_retry_%d' % n) if n <= 3 else None)
+                    # W-guard 3: a channel shut only by its own minute window (rpm / tpm_window / cool, <= 60 s) is waited for
+                    return RW.retry_own_window(
+                        lambda: RW.retry_overload(
+                            lambda: call('review', call_task, lambda _retry: directory, preferred,
+                                         kwargs['prompt_override'], exclude_model=authors() + critics, fast_retry='small'),
+                            lambda err: isinstance(err, ChannelFault) and bool((err.info or {}).get('fast_retry')),
+                            total_s=max(0.0, min(RW.RETRY_TOTAL_S, pass_wait[0])), sleep=pass_sleep,
+                            on_retry=lambda n: events.append('review_503_retry_%d' % n) if n <= 3 else None),
+                        lambda err: (getattr(err, 'wait_s', None) if isinstance(err, channels.ChannelUnavailable)
+                                     and getattr(err, 'reason', None) in RW.OPEN_TODAY_REASONS else None),
+                        budget_left=lambda: pass_wait[0], sleep=pass_sleep,
+                        on_wait=lambda n: events.append('review_window_wait_%d' % n))
                 except (channels.ChannelUnavailable, ChannelFault) as error:
                     kind = error.info.get('kind') if isinstance(error, ChannelFault) else None
+                    # W-guard fix1 3: what ends a review call is now in the telemetry (the reason, not only "short chain")
+                    events.append('review_end_%s' % re.sub(r'[^a-z0-9_]', '_', str(kind or getattr(error, 'reason', '') or 'unknown').lower())[:30])
                     if number >= tries or (kind is not None and kind not in DRY_REVIEW_RETRY_KINDS) or (
                             isinstance(error, channels.ChannelUnavailable) and error.reason in INFRA_CHANNEL_REASONS):
                         raise

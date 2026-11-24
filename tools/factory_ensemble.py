@@ -17,12 +17,19 @@ TOTAL_S = 120.0           # ... or this long in all
 RETRY_PAUSES_S = (2.0, 4.0, 8.0, 12.0)    # W-vgs2: pauses before the next try of a branch after a 503 (12 s from then on)
 RETRY_JITTER = 0.3                         # +-30 %
 OTHER_REFUSALS_MAX = 3                     # refusals of no known kind a branch survives before it gives up
+LOCAL_WAIT_MAX_S = 60.0                    # W-prio3: a branch waits its own channel's minute window at most this long
+NO_ATTEMPT_PAUSE_S = 2.0                   # W-prio3: pause after a yield / sem refusal (not an attempt)
+REFUSAL_NAMES = {'overload': 'overload_503', 'minute_local': 'minute_local', 'minute': 'minute_429', 'day': 'day',
+                 'yield': 'yield', 'sem': 'sem', 'timeout': 'timeout'}
+REFUSAL_KINDS = ('overload_503', 'minute_local', 'minute_429', 'day', 'yield', 'sem', 'timeout', 'other')
 
 
 class ChannelRefused(Exception):
     """A 503 / 429 / timeout of a channel: not an answer. The branch is asked again within the term. ``kind``:
     'overload' (503: the next channel of the circle after a pause), 'minute' (429 of the minute: the channel waits
-    ``wait_s``, another one at once), 'day' (429 of the day: the channel is out), anything else: an unknown refusal."""
+    ``wait_s``, another one at once), 'day' (429 of the day: the channel is out), anything else: an unknown refusal.
+    W-prio3: 'minute_local' (our own TPM/RPM booking gave no place: the branch waits ITS channel for ``wait_s``, the end of the
+    window, and asks it again), 'yield' / 'sem' (the slicing gives way / waits for a place: no attempt, a short pause), 'timeout'."""
 
     def __init__(self, message: str = '', kind: str = 'other', wait_s: float = 0.0):
         super().__init__(message)
@@ -66,6 +73,7 @@ class Ensemble:
         self.first_good_s, self.total_s, self.clock = first_good_s, total_s, clock
         self.sleep, self.rng = sleep, rng or random.Random()
         self.stats = dict(k=self.k, asked=0, answered=0, valid=0, unique=0, votes_top=0, refused=0, retries_503=0)
+        self.refused_by = {name: 0 for name in REFUSAL_KINDS}      # W-prio3: every refusal of a branch by its kind
         self.rejected: list = []        # (why) of the answers the verifier threw out
         self.early = False
 
@@ -109,7 +117,12 @@ class Ensemble:
                 except ChannelRefused as refused:
                     with lock:
                         self.stats['refused'] += 1
-                        if refused.kind == 'day':
+                        self.refused_by[REFUSAL_NAMES.get(refused.kind, 'other')] += 1
+                        if refused.kind in ('yield', 'sem', 'minute_local'):
+                            self.stats['asked'] -= 1            # W-prio3: no request went out: not an attempt
+                        if refused.kind in ('yield', 'sem', 'minute_local'):
+                            pass
+                        elif refused.kind == 'day':
                             dead.add(channel)
                         elif refused.kind == 'minute':
                             blocked[channel] = self.clock() + max(1.0, refused.wait_s)
@@ -117,6 +130,12 @@ class Ensemble:
                             self.stats['retries_503'] += 1
                         else:
                             others += 1
+                    if refused.kind == 'minute_local':
+                        pause(min(LOCAL_WAIT_MAX_S, max(1.0, refused.wait_s)))    # its OWN channel, to the end of its window
+                        continue
+                    if refused.kind in ('yield', 'sem'):
+                        pause(NO_ATTEMPT_PAUSE_S)
+                        continue
                     hop += 1
                     if refused.kind == 'overload':
                         base = RETRY_PAUSES_S[min(overloads, len(RETRY_PAUSES_S) - 1)]

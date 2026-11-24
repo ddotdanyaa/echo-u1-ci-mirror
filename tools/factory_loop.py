@@ -683,6 +683,7 @@ def _cloud_up(fn) -> bool:
 
 LINKS_EVERY_S = 600     # 4.2 (<id>): the owner's journal is linked to backlog rows at most this often, and only when it grew
 SLICE_PARALLEL = 12
+GUARD_REQUEUE_MAX = 3      # W-guard fix1: cards of one guard row sent back to the slicer as already_green, at most so often
 RESLICE_PER_STEP = SLICE_PARALLEL      # W-feed 4: up to SLICE_PARALLEL rows go to the slicer in one step
 RESLICE_SLEEP_S = 5
 SLICE_WAIT_S = 60
@@ -1571,7 +1572,7 @@ class Loop:
         free = 1 if (self.pool.workers and not self._capacity(None)) else 0
         eligible = self._resliceable(tasks, state, ls, now) if self.slice_fn else {}
         waits = [until - now for until in ls.get("slice_wait", {}).values() if until > now]
-        skip = self.pool.tids() | self._dry_blocked(tasks, state) | self._prio_blocked(tasks, state, ls, now)
+        skip = self.pool.tids() | self._dry_blocked(tasks, state)
         later = self._bisect_later(tasks, state)        # W-bisect 4: never_green debt cards wait while there is other work
 
         def ask(hold):
@@ -1608,6 +1609,8 @@ class Loop:
             self.event("infra", status="released", reason="lease_expired:" + ",".join(freed))
         self._unburn_no_answer()
         self._unblock_short_chain()
+        self._guard_ids_reset()
+        self._guard_green_requeue()
         self._book_fixture_private()
         tasks, state = self.load()
         ls = self.ls()
@@ -1873,7 +1876,7 @@ class Loop:
             mine["requests"] = max(int(mine.get("requests") or 0), int(group.get("requests") or 0))
 
     def _light_ask(self, text: str, *, attempt: int, section: str, quotas: dict, max_tokens: int, role: str = "code",
-                   thrifty: bool = False, temperature: float = 0, only_tier: str = "", only_model: str = ""):
+                   thrifty: bool = False, temperature: float = 0, only_tier: str = "", only_model: str = "", why: dict = None):
         """One free model call outside the runner (the <id> self-fix head): a registry channel in
         route_order (attempt 1: main first; 2: escalation first), booked in the shared quota ledger under `section`
         and cooled there on 429/5xx. Returns (status, model, answer, tokens): status 'ok', 'no_channel' or
@@ -1928,7 +1931,9 @@ class Loop:
                         break
                 if channel is None:
                     channel = C.choose(order, seen, tokens, env, now=now_ask)
-            except C.ChannelUnavailable:
+            except C.ChannelUnavailable as unavailable:
+                if why is not None:         # W-prio3: the reason of the booking (tpm_window / rpm / rpd / cool ...) and the wait
+                    why.update(reason=str(getattr(unavailable, "reason", "")), wait_s=float(getattr(unavailable, "wait_s", 0) or 0))
                 return "no_channel", None, "", tokens
             model = channel["model"]
             C.reserve(quotas, channel, tokens, now=self.clock())
@@ -2685,10 +2690,11 @@ class Loop:
             if self.sweep_fn is None or self._sw is not None or self._ending():
                 return
             ls = self.ls()
-            if not AF.sweep_due(ls.get("sweep"), self.base_sha, now, self.cfg.sweep_every_s):
-                return
             out = self._sweep_dir()
             latest = AF.latest_sweep(out) if out.is_dir() else None
+            stale_ids = latest is not None and AF.sweep_lacks_ids(latest) and now - float((ls.get("sweep") or {}).get("failed_at") or 0) >= AF.SWEEP_BACKOFF_S
+            if not stale_ids and not AF.sweep_due(ls.get("sweep"), self.base_sha, now, self.cfg.sweep_every_s):
+                return          # W-guardid 2: a sweep without red_ids is stale (once; after a failure not before an hour)
             prev = sorted(AF.read_sweep(latest)) if latest is not None else []
             ls["sweep"] = {"sha": self.base_sha, "at": now, "prev": dict(ls.get("sweep") or {})}
             self.save_ls(ls)
@@ -2951,6 +2957,100 @@ class Loop:
         self.save_ls(ls)
         for tid in done:
             self.event("supply", status="unblocked", task_id=tid, reason="review_chain_short: a short chain is a wait now")
+        return len(done)
+
+    def _guard_of_row(self, row, ls):
+        """W-guard 2: the guard test of a row: its to_slice entry's, else the red test of the newest sweep whose file is the row's
+        guard file (test_v_<ID>.py); '' when the row has none (a rel-<sha> row's own guard is the regression book's)."""
+        entry = (ls.get("to_slice") or {}).get(row) or {}
+        if entry.get("guard"):
+            return str(entry["guard"])
+        if str(row).startswith("rel-"):
+            return "rel"
+        try:
+            from tools import factory_autofeed as AF
+            latest = AF.latest_sweep(self._sweep_dir())
+            sweep = AF.read_sweep(latest) if latest is not None else {}
+            for name in sorted(k for k, red in sweep.items() if red is True):
+                path = str(name).partition("::")[0]
+                if self.GUARD_FILE.search(path) and (self._guard_id_guess(path) == row):
+                    return name
+        except Exception as exc:                    # noqa: BLE001 - no guard found: the card is left as it was
+            self.err("guard of row", exc)
+        return ""
+
+    def _guard_ids_reset(self) -> int:
+        """W-guardid 3: ONCE, as soon as the newest sweep is of the new format (red_ids): the guard_requeues counters booked
+        while the ids were unknown (the packet could not name the red test) are dropped, so the BLOCKED already_green cards of
+        those rows go back to the slicer (_guard_green_requeue, reslice:stale, no budget).  The mark is in loop_state."""
+        ls = self.ls()
+        if ls.get("guard_ids_reset"):
+            return 0
+        try:
+            from tools import factory_autofeed as AF
+            latest = AF.latest_sweep(self._sweep_dir())
+            if latest is None or not AF.sweep_has_ids(latest):
+                return 0
+        except ImportError:                         # no sweep module in this setting: nothing to reset, and no event (the loop's event stream stays as it was)
+            return 0
+        except Exception as exc:                    # noqa: BLE001 - no sweep, no reset yet: the next tick looks again
+            self.err("guard ids reset", exc)
+            return 0
+        dropped = sorted((ls.get("guard_requeues") or {}))
+        ls.pop("guard_requeues", None)
+        ls["guard_ids_reset"] = self.clock()
+        self.save_ls(ls)
+        if dropped:
+            self.event("supply", status="guard_ids_reset", reason="guard_requeues dropped for %s (sweep with red ids)" % ",".join(dropped)[:200])
+        return len(dropped)
+
+    def _guard_green_requeue(self) -> int:
+        """W-guard 2: a card BLOCKED already_green whose row has a guard test is a wrong-test card (the contract named another,
+        green test): FAILED reslice:stale (no strike, no spent reslice); the slicer then runs the guard's red test (red on the
+        base) or closes the row by the guard (green).  Runs every tick, so the cards of earlier runs are passed at the start."""
+        tasks, state = self.load()
+        ls, picked = self.ls(), []
+        for tid, rec in state["tasks"].items():
+            if rec.get("status") != "BLOCKED" or "already_green" not in str(rec.get("blocked_reason") or rec.get("reason") or ""):
+                continue
+            task = tasks.get(tid)
+            row = F.row_of(rec.get("backlog_id") or (task.backlog_id if task else "") or tid)
+            guard = self._guard_of_row(row, ls)
+            if not guard:
+                continue
+            if int((ls.get("guard_requeues") or {}).get(row) or 0) >= GUARD_REQUEUE_MAX:
+                continue                     # a row came back too often: the card stays BLOCKED (no endless circle)
+            entry = (ls.get("to_slice") or {}).get(row) or {}
+            try:                             # only when the slicer will know the guard's red ids (a list, may be empty = green)
+                known = Loop._guard_red_ids(self, row, entry if entry.get("guard") or guard == "rel" else {"guard": guard})
+            except Exception as exc:         # noqa: BLE001 - nothing known: the card is left as it was
+                self.err("guard requeue ids", exc)
+                known = None
+            if known is not None:
+                picked.append((tid, row, guard))
+        if not picked:
+            return 0
+        done = []
+        with self.txn() as (_tasks, st):
+            for tid, row, guard in picked:
+                if st["tasks"].get(tid, {}).get("status") == "BLOCKED":
+                    st["tasks"][tid].update(status="FAILED", reason="reslice:stale")
+                    st["tasks"][tid].pop("blocked_reason", None)
+                    done.append((tid, row))
+        if done:                             # the count and the guard are booked only for cards that really went back
+            ls = self.ls()
+            counts = ls.setdefault("guard_requeues", {})
+            guards = {t: g for t, _r, g in picked}
+            for tid, row in done:            # the row keeps the guard: the packet of the new slice carries the red test
+                counts[row] = int(counts.get(row) or 0) + 1
+                if guards[tid] != "rel":
+                    entry = ls.setdefault("to_slice", {}).setdefault(row, {"at": self.clock(), "hints": [], "priority": 0})
+                    if not entry.get("guard"):
+                        entry["guard"] = guards[tid]
+            self.save_ls(ls)
+        for tid, row in done:
+            self.event("supply", status="guard_requeue", task_id=tid, backlog_id=row,
+                       reason="already_green on a row with a guard: back to the slicer (reslice:stale)")
         return len(done)
 
     def _book_fixture_private(self) -> int:
@@ -3643,54 +3743,12 @@ class Loop:
         return asks
 
     SMALL_SLICE_MAX = 6        # W-gslice 3 / W-prio 1: slicing ensembles of the small tier at one time (was 3)
-    SMALL_503_S = 300          # W-prio 1: the small tier answered 503 this long with no answer between: slicing cannot start, the pool is not held
 
     @staticmethod
     def _is_base_tid(tid) -> bool:
         """W-prio 1: a card of the old baseline debt rel-base-<n> (its task id is bl_rel_base_<n>...)."""
         return str(tid or "").startswith("bl_rel_base_")
 
-    def _slice_waiting(self, ls, tasks=None, state=None, now=0) -> bool:
-        """W-prio 1: a row that is not baseline debt (ECHO, rel-<sha8>, guard) waits for slicing.  Only a row that _resliceable would
-        let through counts: not quarantined/outdated, not private/only_opus, not out of reslices, not running, not in slice_wait."""
-        quarantine, outdated = ls.get("quarantine") or {}, ls.get("outdated_tests") or {}
-        by_row, running = {}, set()
-        for tid, t in (tasks or {}).items():
-            row_id = F.row_of(t.backlog_id or tid)
-            by_row.setdefault(row_id, []).append(t)
-            if ((state or {}).get("tasks", {}).get(tid) or {}).get("status") in ("RUNNING", "REVIEW"):
-                running.add(row_id)
-        for bid, entry in (ls.get("to_slice") or {}).items():
-            if F.is_base_debt(bid) or bid in quarantine or bid in outdated or bid in running:
-                continue
-            entry = entry if isinstance(entry, dict) else {}
-            if entry.get("private") or entry.get("only_opus") or F.is_private_text(str(entry.get("text", ""))):
-                continue
-            if any(t.only_opus or not t.privacy_safe or F.is_private_text(t.title + " " + (t.goal or "")) for t in by_row.get(bid, [])):
-                continue
-            if (ls.get("slice_wait") or {}).get(bid, 0) > now:
-                continue
-            rec = (ls.get("reslices") or {}).get(bid) or {}
-            if rec.get("version") == F.slicer_version() and rec.get("used", 0) >= F.MAX_RESLICES and not rec.get("stale"):
-                continue
-            return True
-        return False
-
-    def _slice_cannot_start(self, now) -> bool:
-        """W-prio 1: all the places of the small ensembles are taken, or the small tier answered 503 to everyone for SMALL_503_S."""
-        sem = self.__dict__.get("_small_sem")
-        if sem is not None and getattr(sem, "_value", 1) <= 0:
-            return True
-        since = self.__dict__.get("_small_503_since")
-        return since is not None and now - since >= self.SMALL_503_S
-
-    def _prio_blocked(self, tasks, state, ls, now) -> set:
-        """W-prio 1: while a non-base row waits for slicing, the READY rel-base cards are not admitted (running ones finish); when
-        slicing cannot start the pool takes them as before."""
-        if "free_small" not in (self.cfg.architect_rungs or ()) or not self._slice_waiting(ls, tasks, state, now) or self._slice_cannot_start(now):
-            return set()
-        return {tid for tid, task in tasks.items() if state["tasks"].get(tid, {}).get("status") == "READY"
-                and F.is_base_debt(task.backlog_id or tid)}
     SMALL_YIELD_S = 20         # a card that waits for the small tier longer than this goes before the slicing
 
     def _small_wait_note(self, tid, now):
@@ -3728,24 +3786,32 @@ class Loop:
 
         def ask(system, user, temperature=None, channel=None):
             if loop._small_yield():
-                raise ENS.ChannelRefused("editors wait for the small tier", kind="other")
+                raise ENS.ChannelRefused("editors wait for the small tier", kind="yield")
             if self._arch_quotas is None:
                 self._arch_quotas = {}
+            why = {}
             status, _, answer, _ = loop._light_ask(system + "\n\n" + user, attempt=1, section="loop-architect",
                 quotas=loop._arch_quotas, max_tokens=A.SMALL_MAX_TOKENS, role="review", only_tier="small",
-                only_model=channel or "", temperature=0.2 if temperature is None else temperature)
+                only_model=channel or "", temperature=0.2 if temperature is None else temperature, why=why)
             if status == "ok":
-                loop.__dict__["_small_503_since"] = None
                 if not answer.strip():
                     raise ENS.ChannelRefused("empty answer", kind="other")
                 return answer
             if status == "http_503":
-                if loop.__dict__.get("_small_503_since") is None:
-                    loop.__dict__["_small_503_since"] = loop.clock()      # W-prio 1: the streak of 503 with no answer between
                 raise ENS.ChannelRefused(status, kind="overload")
             if status == "http_429":
                 raise ENS.ChannelRefused(status, kind="minute", wait_s=20)
-            raise ENS.ChannelRefused(status)       # no_channel and the rest: no answer, the branch gives up after a few tries
+            if status == "http_0":
+                raise ENS.ChannelRefused(status, kind="timeout")
+            if status == "no_channel":        # W-prio3: the booking gave no channel; its reason says what to do
+                reason, wait = why.get("reason", ""), float(why.get("wait_s") or 0)
+                if reason in ("tpm_window", "rpm"):     # our own minute booking: the branch waits ITS channel to the end of the window
+                    raise ENS.ChannelRefused(status + ":" + reason, kind="minute_local", wait_s=min(60.0, max(1.0, wait)))
+                if reason == "rpd":
+                    raise ENS.ChannelRefused(status + ":" + reason, kind="day")
+                if reason == "cool":
+                    raise ENS.ChannelRefused(status + ":" + reason, kind="minute", wait_s=min(60.0, max(1.0, wait)))
+            raise ENS.ChannelRefused(status)       # the rest: no answer, the branch gives up after a few tries
 
         class Gate:
             def __enter__(self):
@@ -3941,6 +4007,54 @@ class Loop:
             pass
         return out
 
+    def _guard_red_ids(self, row, entry):
+        """W-guard 1: the red ids of the row's guard on the current base, from the newest sweep (its file keys): a list
+        (first = the test the card runs; EMPTY = the guard is green on the base) or None when nothing is known (then the
+        packet stays as it was).  The guard is the entry's own or the rel-<sha> regression's test."""
+        from tools import factory_release as REL, factory_autofeed as AF
+        name = str((entry or {}).get("guard") or "")
+        if not name and str(row).startswith("rel-"):
+            name = next((n for n, r in REL.regressions(self.cfg.state_dir).items() if r.get("row") == row), "")
+        if not name:
+            return None
+        file = name.partition("::")[0].replace("\\", "/")
+        try:
+            latest = AF.latest_sweep(self._sweep_dir())
+            sweep = AF.read_sweep(latest) if latest is not None else {}
+            sweep_ids = AF.read_sweep_ids(latest) if latest is not None else {}
+        except Exception as exc:                    # noqa: BLE001 - no sweep, no rule: the packet stays as it was
+            self.err("guard red ids", exc)
+            return None
+        mine = {k: red for k, red in sweep.items() if str(k).partition("::")[0] == file}
+        if not mine:
+            return None
+        reds = sorted(k for k, red in mine.items() if red is True)
+        if not reds and not Loop._sweep_is_of_base(self):      # W-guard fix3: green is proven only by a sweep of the CURRENT base
+            return None
+        ids: list = []                              # W-guardid 2: the red ids of the guard file (its red_ids), else keys with '::'
+        for k in reds:
+            if "::" in k:
+                found = [k]
+            elif k in sweep_ids:
+                found = sweep_ids[k]
+            else:
+                return None                         # a red file whose ids are unknown (an old sweep): _sweep_tick measures it again
+            ids.extend(x for x in found if x not in ids)
+        want = name.split("[", 1)[0]
+        if "::" in name and not reds:
+            return []
+        if "::" in name and want in ids:
+            return [want] + [k for k in ids if k != want and "::" in k]
+        return [k for k in ids if "::" in k] or ([name] if "::" in name else (reds or []))
+
+    def _sweep_is_of_base(self) -> bool:
+        """W-guard fix3: the newest sweep file was measured on the current base: no sweep job runs now and the book's sweep
+        record carries this base sha (unknown or different sha = not proven)."""
+        if getattr(self, "_sw", None) is not None:
+            return False
+        sha = str((self.ls().get("sweep") or {}).get("sha") or "")
+        return bool(sha) and sha == str(self.base_sha)
+
     def _row_packet(self, row, cause, evidence, *, tasks, state, ls, root, rung=0):
         from tools import factory_architect as A, factory_classes as CL, agent_factory_import as imp
         entry = ls.get("to_slice", {}).get(row, {})
@@ -4032,6 +4146,16 @@ class Loop:
                     dossier["red_dossier"] = text
             except Exception as exc:               # an addition to the packet: without it the packet is as before
                 self.err("row dossier", exc)
+        if red_given:                               # W-guard 1: the card runs the guard's red test, the model does not choose it
+            try:
+                red_ids = Loop._guard_red_ids(self, row, entry)
+            except Exception as exc:                # an addition to the packet: without it the packet is as before
+                red_ids = None
+                self.err("row guard ids", exc)
+            if red_ids is not None:
+                dossier["guard_red"] = red_ids
+                if not red_ids:
+                    dossier["guard_green"] = True
         return dict(bid=row, title=safe(title), priority=entry.get("priority") or backlog.get("priority") or 9,
                     **dossier, **({"red_given": True} if red_given else {}),
                     **({"guard_test": str(entry["guard"])} if entry.get("guard") else {}),
@@ -4087,6 +4211,11 @@ class Loop:
                 extra = {"named_ok": True} if self.cfg.self_repo else {}      # 8.1: the factory's own files are the contract's subject
                 if cached:      # W-pay 2: the steps that already answered this row (or refused it) on this version and sha
                     extra["skip"] = cached
+                if packet.get("guard_green"):       # W-guard 1: no red id on this base (the proof = a sweep of the current base, _guard_red_ids): no card
+                    self.event("guard_green", backlog_id=row, reason="guard %s is green on base %s" % (
+                        self.rs(str(packet.get("guard_test") or row), 120), str(self.base_sha)[:12]))
+                    return packet, dict(contract=dict(decision="already_fixed", why="guard_green: the red test of the guard is green on the base"),
+                                        engine="guard", faults=[], repaired=[])
                 try:
                     result = self.architect_fn(packet, rung=rung, root=root, asks=asks, **extra)
                 except A.Exhausted as exc:
@@ -4185,6 +4314,8 @@ class Loop:
             if vgs and "free_small" in str(engine) + job.ctx.get("ladder", ""):
                 extra["vgs"] = {k: vgs[k] for k in ("k", "asked", "answered", "valid", "unique", "votes_top", "retries_503", "rejected")
                                 if k in vgs}
+                extra["vgs"]["refused"] = {k[len("refused_"):]: int(v or 0) for k, v in vgs.items()      # W-prio3 2: by kind
+                                           if k.startswith("refused_") and type(v) is int}
             self.event("slice", backlog_id=row, engine=engine, status=outcome, rung=job.ctx["rung"],
                        ladder=job.ctx.get("ladder", ""), **extra)
 
@@ -5424,7 +5555,8 @@ class Loop:
         for bid, rec in (ls.get("arch_decision") or {}).items():     # the architect's own answer, in its own word
             if isinstance(rec, dict):
                 kind = str(rec.get("decision") or "")
-                put(bid, kind if kind in ("already_fixed", "not_code") else "hold",
+                put(bid, "closed_by_guard" if str(rec.get("why") or "").startswith("guard_green") else
+                    kind if kind in ("already_fixed", "not_code") else "hold",
                     "архитектор: %s%s" % (kind, (": " + str(rec.get("why"))) if rec.get("why") else ""))
         for bid, q in (ls.get("holds") or {}).items():
             put(bid, "hold", q)
