@@ -207,13 +207,14 @@ def test_ready_never_pairs_a_shared_file_or_test_and_a_review_holds_its_files():
     d = row('D', touch_files=['echo_sync/d.py'], tests=['tests/test_d.py'])
     tasks = _tasks(a, b, c, d)
     state = F.initial_state(tasks)
-    assert F.ready(tasks, state) == ['A', 'D']                           # B (a test) and C (reads A's file) wait for A
+    # W-optim 1 (replaces the file/test/read booking): only a REVIEW function, a new test file and a row hold a start
+    assert F.ready(tasks, state) == ['A', 'B', 'C', 'D']
     token = F.acquire(tasks, state, 'A', now=1, charge=False)
-    assert F.ready(tasks, state) == ['D']
-    F.settle(state, 'A', token, tests_ok=True, evidence=DIGEST)           # REVIEW: still busy until it is promoted
-    assert F.ready(tasks, state) == ['D']
+    assert F.ready(tasks, state) == ['B', 'C', 'D']
+    F.settle(state, 'A', token, tests_ok=True, evidence=DIGEST)           # REVIEW: holds functions of a contract only
+    assert F.ready(tasks, state) == ['B', 'C', 'D']
     F.mark_promoted(state, 'A', 'a' * 40)
-    assert F.ready(tasks, state) == ['B', 'C', 'D'] or F.ready(tasks, state) == ['B', 'D']   # C no longer reads a busy file
+    assert F.ready(tasks, state) == ['B', 'C', 'D']
 
 
 def test_settle_keeps_the_candidate_and_requeue_can_bring_it_back_as_a_pending_review():

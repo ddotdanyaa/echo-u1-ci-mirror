@@ -25,6 +25,7 @@ def _loop(free, live=0, peaks=(), headroom=99):
         ls=lambda: {}, _peaks=list(peaks), err=lambda *a: None,
         load=lambda: (None, {'tasks': {}}), _headroom=lambda task, state: headroom, _headroom_seen=None)
     stub._estimate = lambda: L.Loop._estimate(stub)
+    stub._mem_plan = lambda live=None: L.Loop._mem_plan(stub, live)
     stub._floor = L.Loop._floor
     return stub
 
@@ -58,14 +59,18 @@ def test_light_workers_are_admitted_up_to_the_measured_estimate():
             admitted = live
         else:
             break
-    # the floor (768) plus one estimate (100) plus what the live workers have not used yet (100 each)
-    assert admitted == 6
-    assert capacity(LIGHT, free=free, live=7, peaks=peaks) == 'low_ram'
+    # W-mem: the floor (768) plus one median (100) plus ONE shared burst reserve max(100, 0.15 x live x 100): live workers
+    # are not booked at their peak each, so all eleven fit; the shared reserve outgrows the room only at ~45 live
+    assert admitted == 11
+    assert capacity(LIGHT, free=free, live=44, peaks=peaks) == ''
+    assert capacity(LIGHT, free=free, live=46, peaks=peaks) == 'low_ram'
 
 
-def test_with_the_unmeasured_default_estimate_one_and_a_half_gb_holds_two_light_workers():
-    assert capacity(LIGHT, free=1536 * MB, live=1) == ''
-    assert capacity(LIGHT, free=1536 * MB, live=2) == 'low_ram'
+def test_with_the_unmeasured_default_estimate_one_and_a_half_gb_holds_many_light_workers():
+    # median 100 (unmeasured), est_peak 300 (default): 768 >= 100 + max(300, 45 x live) up to 14 live
+    assert capacity(LIGHT, free=1536 * MB, live=2) == ''
+    assert capacity(LIGHT, free=1536 * MB, live=14) == ''
+    assert capacity(LIGHT, free=1536 * MB, live=15) == 'low_ram'
 
 
 def test_a_kilo_second_worker_keeps_the_old_rule_and_an_unknown_task_the_light_floor():

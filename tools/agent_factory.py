@@ -496,49 +496,115 @@ def stuck_rows(state, tasks) -> dict[str, list[str]]:
 
 def ready(tasks: dict[str, Task], state: dict, *, google: bool = True,
           occupied: tuple[str, ...] = (), now: float | None = None, fresh_first: bool = False) -> list[str]:
-    """Sorted tasks ready to execute, mutually compatible. Busy = RUNNING and REVIEW rows (a candidate holds its files
-    until it is promoted). Exclusive = touch_files + tests, reads = read_files: two tasks never share an exclusive
-    file, and one never writes what the other reads."""
+    """Sorted tasks ready to execute (W-optim: optimistic parallelism, the merge is 3-way). Busy = RUNNING and REVIEW rows;
+    they stop a start only by the rules of _busy_claims (a REVIEW function, one NEW test file, one row)."""
     validate_state(tasks, state)
     now = time.time() if now is None else float(now)
-    write_in_use, read_in_use = _busy_claims(tasks, state, occupied)
+    locks, rows = _busy_claims(tasks, state, occupied)
     found = []
     def spent(t) -> int:      # W-gemma5 2: 0 = a fresh card (no attempt, not deferred by the last pass), 1 = a repeat
         row = state["tasks"][t]
         return 1 if (fresh_first and (row.get("attempts", 0) or row.get("defer_reason"))) else 0
+    # W-optim 2: among READY cards with the same (file, symbols) set one of each set goes first, then the seconds, ...
+    # (the stable order inside one row_rank/priority stays), so the places are not taken by copies of one edit
+    seen: dict = {}
+    nth: dict = {}
     for tid in sorted(tasks, key=lambda t: (spent(t), row_rank(tasks[t]), tasks[t].priority, t)):
+        if state["tasks"][tid]["status"] == "READY":
+            sig = _edit_set(tasks[tid])
+            nth[tid] = seen[sig] = seen.get(sig, -1) + 1
+    order = sorted((t for t in tasks if t in nth),
+                   key=lambda t: (spent(t), row_rank(tasks[t]), tasks[t].priority, nth[t], t))
+    for tid in order:
         task = tasks[tid]
-        if _startable(tasks, state, tid, write_in_use, read_in_use, google, now):
+        if _startable(tasks, state, tid, locks, rows, google, now):
             found.append(tid)
-            write_in_use.update(write_claims(task))
-            read_in_use.update(p.casefold() for p in task.read_files)
+            locks.update(new_test_claims(task))
+            rows.add(row_of(task.backlog_id or tid))
     return found
 
 
+def _edit_set(task: Task) -> tuple:
+    """(files, symbols) a card edits: the key of its set of identical edits (W-optim 2)."""
+    touched = {p.casefold() for p in task.touch_files}
+    claims = {(f, s) for f, s in write_claims(task) if f in touched}      # tests are not part of the edit
+    return tuple(sorted((f, s or "") for f, s in claims))
+
+
+def new_test_claims(task: Task) -> set:
+    """('new', path): the NEW test file a card creates (contract test.new.path); two cards never create the same one."""
+    try:
+        new = (json.loads(task.contract).get("test") or {}).get("new") if task.contract else None
+    except (ValueError, AttributeError):
+        new = None
+    path = new.get("path") if isinstance(new, dict) else None
+    return {("new", path.casefold())} if isinstance(path, str) and path else set()
+
+
+def review_claims(task: Task) -> set:
+    """('fn', file, symbol): the functions a card in REVIEW holds (its ready edit waits for the merge). A part with an
+    anchor or without symbols names no function, so it holds nothing (W-optim 1)."""
+    out = set()
+    try:
+        parts = json.loads(task.contract).get("parts") or [] if task.contract else []
+    except (ValueError, AttributeError):
+        parts = []
+    for part in parts:
+        if isinstance(part, dict) and isinstance(part.get("file"), str) and not part.get("anchor"):
+            out.update(("fn", part["file"].casefold(), str(s)) for s in part.get("symbols") or [])
+    return out
+
+
 def _busy_claims(tasks, state, occupied=()):
-    """Files held by the busy rows (RUNNING and REVIEW) and by ``occupied``: (writes, reads)."""
-    read_in_use = set()
-    write_in_use = {(p.casefold(), None) for p in occupied}
+    """W-optim 1 (optimistic): what stops a start is only (a) a function of a card in REVIEW (its ready edit waits for
+    the merge), (b) the same NEW test file of a busy card, (c) a busy card of the same row, and the files named in
+    ``occupied``. Whole-file claims, RUNNING functions and read_files do not hold (the merge is 3-way, the gates follow).
+    Returns (locks, rows)."""
+    locks = {("occ", p.casefold()) for p in occupied}
+    rows = set()
     for tid, row in state["tasks"].items():
         if row["status"] in ("RUNNING", "REVIEW"):
-            write_in_use.update(write_claims(tasks[tid]))
-            read_in_use.update(p.casefold() for p in tasks[tid].read_files)
-    return write_in_use, read_in_use
+            task = tasks[tid]
+            locks.update(new_test_claims(task))
+            rows.add(row_of(task.backlog_id or tid))
+            if row["status"] == "REVIEW":
+                locks.update(review_claims(task))
+    return locks, rows
 
 
-def _startable(tasks, state, tid, write_in_use, read_in_use, google, now) -> bool:
+def _locked(task, locks, rows, tid="") -> bool:
+    """True when a busy-claim stops this READY card (see _busy_claims)."""
+    if row_of(task.backlog_id or tid or task.id) in rows or new_test_claims(task) & locks:
+        return True
+    occ = {x[1] for x in locks if x[0] == "occ"}
+    if occ & {p.casefold() for p in task.touch_files + task.tests}:
+        return True
+    held = [x for x in locks if x[0] == "fn"]
+    return any(c[1] == h[1] and _symbols_overlap(c[2], h[2]) for c in review_claims(task) for h in held)
+
+
+def _startable(tasks, state, tid, locks, rows, google, now) -> bool:
     task = tasks[tid]
     row = state["tasks"][tid]
     if row["status"] != "READY" or row.get("not_before", 0) > now:
         return False
     if google and (not task.privacy_safe or task.only_opus):
         return False
-    reads = {p.casefold() for p in task.read_files}
-    writes = write_claims(task)
-    if _claims_clash(writes, write_in_use) or {f for f, _ in writes} & read_in_use \
-            or reads & {f for f, _ in write_in_use}:
+    if _locked(task, locks, rows, tid):
         return False
     return all(state["tasks"][dep]["status"] in SATISFIED for dep in task.depends_on)
+
+
+def claim_free(tasks, state, now, *, google=True, exclude=()) -> list:
+    """W-optim 5: READY cards that pass term, privacy and dependencies, WITHOUT the busy-claims (the pool event's startable)."""
+    return [tid for tid in tasks if tid not in exclude and _startable(tasks, state, tid, set(), set(), google, now)]
+
+
+def _blocked_by_claims(tasks, state, now, *, google=True, exclude=()) -> int:
+    """W-optim 5: of claim_free() the cards a busy-claim holds back (the pool event's locked)."""
+    locks, rows = _busy_claims(tasks, state)
+    return sum(1 for tid in claim_free(tasks, state, now, google=google, exclude=exclude)
+               if _locked(tasks[tid], locks, rows, tid))
 
 
 def startable(tasks: dict[str, Task], state: dict, tid: str, *, google: bool = True,
@@ -549,8 +615,8 @@ def startable(tasks: dict[str, Task], state: dict, tid: str, *, google: bool = T
     now = time.time() if now is None else float(now)
     if tid not in tasks:
         return False
-    write_in_use, read_in_use = _busy_claims(tasks, state, occupied)
-    return _startable(tasks, state, tid, write_in_use, read_in_use, google, now)
+    locks, rows = _busy_claims(tasks, state, occupied)
+    return _startable(tasks, state, tid, locks, rows, google, now)
 
 
 def write_claims(task: Task) -> set[tuple[str, str | None]]:
