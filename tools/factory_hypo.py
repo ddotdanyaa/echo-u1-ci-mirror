@@ -29,7 +29,10 @@ REPAIR_TOP = 3
 BATCH_MAX = 24
 ROW_COOLDOWN_S = 12 * 3600      # the same base+test is not searched again sooner
 TPM = 16000                     # input tokens a minute per channel
-CHANNELS = ("fast-a", "fast-b", "slow")    # the faster model of both keys first, the slower one in parallel
+DEFAULT_CHANNELS = ("default",)  # a bare pump (no loop): one anonymous channel; the loop names the real ones (channels.json ids)
+FAILS_MAX = 12                  # network refusals of one hypothesis before it is dropped
+WAIT_MAX_S = 5.0                # a worker waits at most this long for a closed channel
+SAMPLES_MAX = 20                # kept first answers of each bad / invalid kind (hypo_samples.json)
 RETRY_REFUSED_S = 30.0             # a refused hypothesis waits this long for the SAME channel (others take it at once)
 PER_CHANNEL = 4                 # concurrent requests of the pump on one channel
 CLOUD_TRIES = 3
@@ -320,6 +323,14 @@ def diff_size(root, cand: dict) -> int:
 
 
 # ------------------------------------------------------------------------------------------------------ 2. pump
+OUTCOMES = ("cannot", "bad", "invalid", "no_effect", "undefined", "dup")
+
+
+def outcome_of(why: str) -> str:
+    """The outcome name of a check_candidate reason ('bad: ...' -> 'bad', 'no effect: ...' -> 'no_effect')."""
+    return re.sub(r"\W+", "_", str(why).split(":")[0].strip().lower()).strip("_")
+
+
 class Stats:
     """stats.json['hypo']: counters of the search (thread safe) and the Gemma request times of the last 10 minutes."""
     NAMES = ("rows", "hypotheses", "answers", "valid", "batches", "candidates", "green_rows", "calls", "tokens")
@@ -328,16 +339,33 @@ class Stats:
         self.lock = threading.Lock()
         self.c = collections.Counter()
         self.times = collections.deque()
+        self.refused = collections.Counter()        # status of a refused request -> n
+        self.outcomes = collections.Counter()       # cannot / bad / invalid / no_effect / undefined / dup -> n
+        self.chan = {}                              # channel id -> {'sent': n, 'ok': n}
 
     def add(self, name, n=1):
         with self.lock:
             self.c[name] += n
 
-    def request(self, now, tokens):
+    def request(self, now, tokens, chan=None):
         with self.lock:
             self.c["calls"] += 1
             self.c["tokens"] += int(tokens)
             self.times.append(now)
+            if chan is not None:
+                self.chan.setdefault(str(chan), dict(sent=0, ok=0))["sent"] += 1
+
+    def refuse(self, status):
+        with self.lock:
+            self.refused[str(status)] += 1
+
+    def outcome(self, name):
+        with self.lock:
+            self.outcomes[str(name)] += 1
+
+    def answered(self, chan):
+        with self.lock:
+            self.chan.setdefault(str(chan), dict(sent=0, ok=0))["ok"] += 1
 
     def snapshot(self, now) -> dict:
         with self.lock:
@@ -349,6 +377,9 @@ class Stats:
             out["calls_per_green"] = round(c["calls"] / c["green_rows"], 1) if c["green_rows"] else None
             out["gemma_rpm"] = round(len(self.times) / 10.0, 2)
             out["tokens_per_call"] = round(c["tokens"] / c["calls"], 1) if c["calls"] else 0
+            out["refused"] = dict(self.refused)
+            out["outcomes"] = {n: int(self.outcomes.get(n, 0)) for n in OUTCOMES}
+            out["channels"] = {k: dict(v) for k, v in self.chan.items()}
             return out
 
 
@@ -380,6 +411,15 @@ class Minute:
                 return False
             self.rows[chan].append((self.clock(), tokens))
             return True
+
+    def refund(self, chan, tokens) -> None:
+        """The booking of a request that never went out (no channel answered): the tokens come back."""
+        with self.lock:
+            q = self.rows[chan]
+            for i in range(len(q) - 1, -1, -1):
+                if q[i][1] == tokens:
+                    del q[i]
+                    return
 
     def charge(self, chan, tokens) -> None:
         """A request that already goes (the slicer's live one) takes its tokens first, whatever the minute holds: the pump gets the rest."""
@@ -419,7 +459,7 @@ class Pump:
     requests of the pump at once per channel, only the minute (tpm, rpm of the channel) limits them. A refusal sends the same
     item to ANOTHER channel at once."""
 
-    def __init__(self, ask, on_answer, *, channels=CHANNELS, clock=time.monotonic, sleep=time.sleep, live=lambda: False,
+    def __init__(self, ask, on_answer, *, channels=DEFAULT_CHANNELS, clock=time.monotonic, sleep=time.sleep, live=lambda: False,
                  minute=None, stats=None):
         self.ask, self.on_answer, self.channels = ask, on_answer, tuple(channels)
         self.clock, self.sleep, self.live = clock, sleep, live
@@ -484,9 +524,11 @@ class Pump:
     def _call(self, chan, item):
         """One ask; an exception of the model call is a refusal 'other', never the end of the channel's thread."""
         try:
-            return self.ask(chan, item.text, item.temp)
+            got = self.ask(chan, item.text, item.temp)
+            wait = float(got[3]) if len(got) > 3 and got[3] else 0.0       # the 4th: the wait a closed channel names
+            return got[0], got[1], got[2], wait
         except Exception:       # noqa: BLE001
-            return "other", "", 0
+            return "other", "", 0, 0.0
 
     def _work(self, chan):
         while not self.stop.is_set() and self.clock() < self.until:
@@ -505,10 +547,19 @@ class Pump:
                 self._back(item)
                 self.sleep(0.2)
                 continue
-            self.stats.request(self.clock(), item.tokens)
-            status, answer, _tokens = self._call(chan, item)
+            status, answer, _tokens, wait = self._call(chan, item)
+            if status == "no_channel":
+                # no request went out: the booking comes back, no call, no fail; the worker waits what the channel names
+                self.minute.refund(chan, item.tokens)
+                self.refused["no_channel"] += 1
+                self.stats.refuse("no_channel")
+                self._back(item)
+                self.sleep(min(WAIT_MAX_S, wait) if wait > 0 else 0.2)
+                continue
+            self.stats.request(self.clock(), item.tokens, chan)
             if status == "ok":
                 self.stats.add("answers")
+                self.stats.answered(chan)
                 try:
                     if item.group is None or not item.group.cancelled:
                         (item.group.on_answer if item.group is not None else self.on_answer)(item, answer)
@@ -518,13 +569,15 @@ class Pump:
                     self._done(item)
                 continue
             self.refused[status] += 1             # the tokens of the refusal stay booked
+            self.stats.refuse(status)
             item.fails += 1
             item.avoid, item.avoid_until = chan, self.clock() + RETRY_REFUSED_S
-            if item.fails >= 6:
+            if item.fails >= FAILS_MAX:
                 self._done(item)
             else:
                 self._back(item)
-            self.sleep(0.05)
+            if len(self.channels) < 2:      # with another channel the item goes there at once, no pause
+                self.sleep(0.05)
 
     def _spawn(self):
         with self.lock:
@@ -583,6 +636,7 @@ class Ctx:
         self.diff_funcs = lambda ids: []        # functions of the guilty commit's diff
         self.ranked = lambda ids: []            # repomap order of the rest
         self.stats = STATS
+        self.sample = lambda why, answer: None      # the first bad / invalid answer of each kind (the loop redacts and files it)
         self.minute = None
         self.pump = None            # the loop's shared Pump (None: the search makes its own)
         self.event = lambda name, **f: None
@@ -613,9 +667,21 @@ def mark_searched(table: dict, base_sha: str, test: str, now: float) -> None:
 def _run_pump(env, row, items, collect):
     pump = getattr(env, "pump", None)       # the loop's ONE pump: every search of the loop queues into it (ECHO < rel < base)
     if pump is None:
-        pump = Pump(env.ask, collect, clock=env.clock, sleep=env.sleep, live=env.live, minute=env.minute, stats=env.stats)
+        pump = Pump(env.ask, collect, clock=env.clock, sleep=env.sleep, live=env.live, minute=env.minute, stats=env.stats,
+                    channels=getattr(env, "channels", None) or DEFAULT_CHANNELS)
     group = pump.submit(items, collect)
     return pump.run(env.timeout_s, group)
+
+
+def _note_outcome(env, why, answer):
+    """The count of a refused answer by kind; a bad / invalid one is offered as a sample (the loop keeps the first of each kind)."""
+    name = outcome_of(why)
+    env.stats.outcome(name)
+    if name in ("bad", "invalid"):
+        try:
+            env.sample(str(why), answer)
+        except Exception:       # noqa: BLE001  an aid
+            pass
 
 
 def _batch(env, ids, cands):
@@ -652,7 +718,7 @@ def search(row, ids, env, base_failure: str = ""):
                            ranked=env.ranked(ids))
     if not funcs:       # no trace and no rank: the product functions the test itself imports or calls
         funcs = rank_functions(env.root, ranked=test_functions(env.root, ids[0]))
-    if not funcs:
+    if not funcs:       # the order of the checks: no failure first, then no functions
         return dict(green=[], tried=[], evidence=[], status="none", why="no failure" if not failure else "no functions")
     cls = row_class(row)
     items, by_key = [], {}
@@ -672,9 +738,11 @@ def search(row, ids, env, base_failure: str = ""):
         with lock:
             if cand is None:
                 tried.append(dict(fn, outcome=why))
+                _note_outcome(env, why, answer)
                 return
             env.stats.add("valid")
             if cand["fp"] in seen_fp:
+                env.stats.outcome("dup")
                 return
             seen_fp.add(cand["fp"])
             cand.update(n=len(cands), temp=item.temp, answer=answer)
@@ -725,7 +793,11 @@ def _repair(env, row, ids, cands, verdicts, answers, failure, by_key, tried, see
         fn = by_key[item.key]
         cand, why = check_candidate(env.root, fn, answer)
         with lock:
-            if cand is None or cand["fp"] in seen_fp:
+            if cand is None:
+                _note_outcome(env, why, answer)
+                return
+            if cand["fp"] in seen_fp:
+                env.stats.outcome("dup")
                 return
             seen_fp.add(cand["fp"])
             env.stats.add("valid")

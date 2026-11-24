@@ -732,10 +732,10 @@ def _probe_channel(channel, key):
 
 class Loop:
     TXN_WAIT_S = 10.0       # a transaction on the state waits at most this long for the lock (a commit lasts ms)
-    CLAIM_RETRIES = 5        # W-feed2 4g: a LockBusy of the claim is retried this many times (CLAIM_PAUSE_S apart), then the next card
+    CLAIM_WAIT_S = 2.0      # the claim waits less: a held lock is WAIT state_locked, not a stalled loop
+    CLAIM_RETRIES = 5       # W-feed2 4g: a LockBusy of the claim is retried this many times (CLAIM_PAUSE_S apart), then the next card
     CLAIM_PAUSE_S = 0.3
-    TICK_MIN_S = 60.0        # W-feed2 4c: the ticks whose data change rarely run at most once in this time
-    CLAIM_WAIT_S = 2.0     # the claim waits less: a held lock is WAIT state_locked, not a stalled loop
+    TICK_MIN_S = 60.0       # W-feed2 4c: the ticks whose data change rarely run at most once in this time
 
     def __init__(self, cfg: Config, *, triage_fn=None, runner_cmd=None, clock=time.time,
                  sleep=time.sleep, power_fn=set_execution_state, free_ram_fn=free_ram_bytes,
@@ -1588,7 +1588,7 @@ class Loop:
         skip = self.pool.tids() | self._dry_blocked(tasks, state)
         if self._hypers:        # W-feed2 2: a row under the hypotheses search does not start with a card
             skip = skip | {t for t, task in tasks.items() if F.row_of(task.backlog_id or t) in self._hypers}
-        later =self._bisect_later(tasks, state)        # W-bisect 4: never_green debt cards wait while there is other work
+        later = self._bisect_later(tasks, state)        # W-bisect 4: never_green debt cards wait while there is other work
 
         def ask(hold):
             return F.next_action(state, now, wait_s, self._has_more(ls, now), tasks, free=free, skip=skip | hold,
@@ -1640,10 +1640,7 @@ class Loop:
         if ls.pop("git_wait", None) is not None:
             self.save_ls(ls)
         self._tick("apply_answers", self.apply_answers)  # Opus answers first: before anything else touches the state
-        done = self.pool.finished()
-        if done:                              # a worker ended: its result is accounted before anything new starts
-            return self._account_done(done[0])
-        out = self._early_fill(now)           # W-feed2 4b: the cards start BEFORE the heavy ticks
+        out = self._early_fill(now)          # W-feed2 4b: the cards start BEFORE the heavy ticks
         if out is not None:
             return out
         self._tick("bg_poll", self._bg_poll)  # a finished background triage / hold pick is applied here, in this thread
@@ -1955,7 +1952,8 @@ class Loop:
             mine["requests"] = max(int(mine.get("requests") or 0), int(group.get("requests") or 0))
 
     def _light_ask(self, text: str, *, attempt: int, section: str, quotas: dict, max_tokens: int, role: str = "code",
-                   thrifty: bool = False, temperature: float = 0, only_tier: str = "", only_model: str = "", why: dict = None):
+                   thrifty: bool = False, temperature: float = 0, only_tier: str = "", only_model: str = "", why: dict = None,
+                   only_channel: str = ""):
         """One free model call outside the runner (the <id> self-fix head): a registry channel in
         route_order (attempt 1: main first; 2: escalation first), booked in the shared quota ledger under `section`
         and cooled there on 429/5xx. Returns (status, model, answer, tokens): status 'ok', 'no_channel' or
@@ -1999,6 +1997,9 @@ class Loop:
                         return ((not only_tier or C.tier_of(c) == only_tier) and (not only_model or c["model"] == only_model)
                                 and not C.is_reserve(c))
                     order, closed = [c for c in order if wanted(c)], [c for c in closed if wanted(c)]
+                if only_channel:        # W-feed2 6: the pump's worker is bound to ONE real channel (model + key)
+                    order = [c for c in order if c["id"] == only_channel]
+                    closed = [c for c in closed if c["id"] == only_channel]
                 channel = None
                 for probe in closed:     # one probe per channel per 20 minutes, the claim shared by both instances; due whether
                     try:                 # or not the open channels answer (a healthy channel must not stay shut all day)
@@ -2038,7 +2039,7 @@ class Loop:
                                 Q.gate_note(folder, channel["id"], now=self.clock())   # W-gemma2 3: closed until a probe answers
                             except OSError as e:
                                 self.err(section + " day gate", e)
-                    else:
+                    elif not only_channel:      # W-feed2 6: the pump's net 503 does not rest the channel: tpm and rpm set its pace
                         C.cool_channel(quotas, channel, now=self.clock(),      # W-gemma 3: a refused send of Gemma rests it 10 s
                                        **({"seconds": C.BIG_TIMEOUT_CLOSE_S} if C.no_streak(channel) else {}))
                     publish()
@@ -4111,33 +4112,30 @@ class Loop:
 
     def _hypo_min_make(self, HY):
         limits, rpms = {}, {}
-        try:
-            configured = json.loads(Path(self.cfg.channels).read_text(encoding="utf-8"))["channels"]
-            small = [c for c in configured if CH.tier_of(c) == "small" and not CH.is_reserve(c)]
-            sized = sorted({c["model"] for c in small}, key=lambda m: int((re.search(r"(\d+)b", m) or [0, 0])[1]))
-            self._hypo_slow = sized[-1] if sized else None
-            for model, names in ((sized[0] if sized else None, ("fast-a", "fast-b")), (sized[-1] if sized else None, ("slow",))):
-                mine = [c for c in small if c["model"] == model]
-                tpm = max((int(c["tpm"]) for c in mine if c.get("tpm")), default=0)
-                rpm = max((int(c["rpm"]) for c in mine if c.get("rpm")), default=0)
-                for name in names:
-                    if tpm:
-                        limits[name] = tpm
-                    if rpm:
-                        rpms[name] = rpm
-        except (OSError, ValueError, KeyError, TypeError):
-            pass
+        for c in self._hypo_channels():     # the window of each REAL channel (model + key): its own tpm and rpm of channels.json
+            if c.get("tpm"):
+                limits[c["id"]] = int(c["tpm"])
+            if c.get("rpm"):
+                rpms[c["id"]] = int(c["rpm"])
         self._hypo_minute = HY.Minute(limits=limits, rpms=rpms)
         return self._hypo_minute
+
+    def _hypo_channels(self) -> list:
+        """W-feed2 6: the channels of the tier small that are not reserve (channels.json rows); [] when the file does not read."""
+        try:
+            configured = json.loads(Path(self.cfg.channels).read_text(encoding="utf-8"))["channels"]
+            return [c for c in configured if CH.tier_of(c) == "small" and not CH.is_reserve(c)]
+        except (OSError, ValueError, KeyError, TypeError):
+            return []
 
     def _hypo_charge(self, model, text):
         """W-feed2 1: a live request of the slicer takes its input tokens from the pump's minute first (the pump gets the rest)."""
         from tools import factory_hypo as HY
         try:
             minute = self._hypo_min()
-            names = ("slow",) if model == getattr(self, "_hypo_slow", None) else ("fast-a", "fast-b")
-            chan = min(names, key=minute.used)
-            minute.charge(chan, HY.est_tokens(text))
+            names = [c["id"] for c in self._hypo_channels() if not model or c["model"] == model]
+            if names:       # the live request goes to the least used channel of its model
+                minute.charge(min(names, key=minute.used), HY.est_tokens(text))
         except Exception as exc:        # noqa: BLE001  an aid
             self.err("hypo charge", exc)
 
@@ -4145,30 +4143,23 @@ class Loop:
         """W-hyp: the search's environment over the loop's own parts: the small-tier ask (the smaller and the larger model), the cloud
         batch, the failure text and the trace of the packet. None when no small channel is registered."""
         from tools import factory_hypo as HY
-        try:
-            configured = json.loads(Path(self.cfg.channels).read_text(encoding="utf-8"))["channels"]
-        except (OSError, ValueError, KeyError):
+        small = self._hypo_channels()
+        if not small:
             return None
-        models = sorted({c["model"] for c in configured if CH.tier_of(c) == "small" and not CH.is_reserve(c)})
-        def _size(name):
-            found = re.search(r"(\d+)b", name)
-            return int(found.group(1)) if found else 0
-        by_size = sorted(models, key=_size)
-        fast_model = by_size[0] if by_size else None
-        slow_model = by_size[-1] if by_size else None
-        if not fast_model:
-            return None
-        self._hypo_slow = slow_model
+        names = tuple(c["id"] for c in small)       # the pump's channels: every real channel of the tier small, not reserve
         if self._arch_quotas is None:
             self._arch_quotas = {}
         loop = self
 
         def ask(chan, text, temp):
-            model = slow_model if chan == "slow" else fast_model
+            why = {}
             status, _, answer, tokens = loop._light_ask(text, attempt=1, section="loop-hypo", quotas=loop._arch_quotas,
-                                                        max_tokens=3000, role="review", only_tier="small", only_model=model,
-                                                        temperature=temp)
-            return status, answer, tokens
+                                                        max_tokens=3000, role="review", only_tier="small", only_channel=chan,
+                                                        temperature=temp, why=why)
+            return status, answer, tokens, float(why.get("wait_s") or 0)
+
+        def sample(why, answer):
+            loop._hypo_sample(why, answer)
 
         def live():     # a live ensemble of the slicer holds the small tier: the pump gives way
             sem = getattr(loop, "_small_sem", None)
@@ -4198,11 +4189,32 @@ class Loop:
         with self._hypo_lock:       # W-feed2 2: up to six searches build their env at once, the pump and the minute are made once
             self._hypo_min()
             if getattr(self, "_hypo_pump", None) is None:       # ONE pump for every searching row of the loop (ECHO < rel < base)
-                self._hypo_pump = HY.Pump(ask, None, live=live, minute=self._hypo_minute, stats=HY.STATS)
+                self._hypo_pump = HY.Pump(ask, None, channels=names, live=live, minute=self._hypo_minute, stats=HY.STATS)
         return HY.Ctx(root=root, ask=ask, cloud=lambda r, ids, files: HY.cloud_batch(r, ids, files, tid="h" + str(packet.get("bid"))),
                       pump=self._hypo_pump, live=live, failure_text=lambda ids: failure, trace=lambda ids: trace,
-                      diff_funcs=lambda ids: diff, ranked=ranked, minute=self._hypo_minute,
+                      diff_funcs=lambda ids: diff, ranked=ranked, minute=self._hypo_minute, channels=names, sample=sample,
                       event=lambda name, **f: loop.event(name, **f))
+
+    def _hypo_sample(self, why, answer):
+        """W-feed2 7: the first bad / invalid answer of each kind (the reason text), cut to 600 signs and redacted, in
+        state_dir/hypo_samples.json, at most HYPO_SAMPLES_MAX. Called from the pump's threads: one lock."""
+        from tools import factory_hypo as HY
+        with self._hypo_lock:
+            path = Path(self.cfg.state_dir) / "hypo_samples.json"
+            try:
+                have = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                have = {}
+            if not isinstance(have, dict):
+                have = {}
+            kind = str(why)[:100]
+            if kind in have or len(have) >= HY.SAMPLES_MAX:
+                return
+            have[kind] = dict(kind=HY.outcome_of(why), text=F.redact(str(answer or "")[:600]))
+            try:
+                F.save_atomic(path, have)
+            except OSError as exc:
+                self.err("hypo samples", exc)
 
     def _hypo_ids(self, row, packet):
         """W-hyp 1: the red test ids of the row in the order guard -> rel-<sha> regression -> rel-base-<n> debt (runnable ids only)."""

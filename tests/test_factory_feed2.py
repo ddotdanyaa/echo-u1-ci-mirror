@@ -62,17 +62,20 @@ def test_the_minute_keeps_the_rpm_of_the_channel_and_a_charge_always_lands():
 def test_the_loop_minute_takes_tpm_rpm_from_channels_json_and_the_slicer_charges_it(tmp_path):
     path = tmp_path / 'channels.json'
     path.write_text(json.dumps({'channels': [
-        {'name': 'a', 'model': 'gemma-3-4b', 'tier': 'small', 'tpm': 16000, 'rpm': 30, 'rpd': 100},
-        {'name': 'b', 'model': 'gemma-3-27b', 'tier': 'small', 'tpm': 15000, 'rpm': 20, 'rpd': 100}]}), encoding='utf-8')
+        {'id': 'k1-4b', 'name': 'a', 'model': 'gemma-3-4b', 'tier': 'small', 'tpm': 16000, 'rpm': 30, 'rpd': 100},
+        {'id': 'k2-4b', 'name': 'a2', 'model': 'gemma-3-4b', 'tier': 'small', 'tpm': 16000, 'rpm': 30, 'rpd': 100},
+        {'id': 'k1-27b', 'name': 'b', 'model': 'gemma-3-27b', 'tier': 'small', 'tpm': 15000, 'rpm': 20, 'rpd': 100}]}),
+        encoding='utf-8')
     stub = types.SimpleNamespace(cfg=types.SimpleNamespace(channels=path), err=lambda *a: None, _hypo_lock=threading.RLock())
     stub._hypo_min = lambda: L.Loop._hypo_min(stub)
     stub._hypo_min_make = lambda HY_: L.Loop._hypo_min_make(stub, HY_)
-    minute = L.Loop._hypo_min(stub)
-    assert minute.limits == {'fast-a': 16000, 'fast-b': 16000, 'slow': 15000} and minute.rpms['slow'] == 20
+    stub._hypo_channels = lambda: L.Loop._hypo_channels(stub)
+    minute = L.Loop._hypo_min(stub)       # the windows are the REAL channels (model + key), not made-up names
+    assert minute.limits == {'k1-4b': 16000, 'k2-4b': 16000, 'k1-27b': 15000} and minute.rpms['k1-27b'] == 20
     L.Loop._hypo_charge(stub, 'gemma-3-27b', 'x' * 300)
-    assert minute.used('slow') == HY.est_tokens('x' * 300) and minute.used('fast-a') == 0
+    assert minute.used('k1-27b') == HY.est_tokens('x' * 300) and minute.used('k1-4b') == 0
     L.Loop._hypo_charge(stub, 'gemma-3-4b', 'x' * 300)
-    assert minute.used('fast-a') + minute.used('fast-b') == HY.est_tokens('x' * 300)
+    assert minute.used('k1-4b') + minute.used('k2-4b') == HY.est_tokens('x' * 300)
 
 
 def _card(row):
