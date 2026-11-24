@@ -2675,7 +2675,10 @@ class Loop:
                     return
                 rows = {tid: {"status": r.get("status"), "tests": list(tasks[tid].tests) if tid in tasks else [],
                               "base_red": r.get("base_red")} for tid, r in state["tasks"].items()}
-                got = AF.refresh_from_tasks(self._sweep_dir(), rows)
+                swat = float((self.ls().get("sweep") or {}).get("at") or 0)
+                mt = self.ls().get("merged_at") or {}
+                newer = [t for t, v in mt.items() if isinstance(v, (int, float)) and swat and v > swat] if isinstance(mt, dict) else []
+                got = AF.refresh_from_tasks(self._sweep_dir(), rows, merged_after=newer)     # W-refresh 1: red only from the cloud sweep
                 if got and (got["green"] or got["red"]):
                     self.event("sweep", status="refreshed", reason="green=%d red=%d" % (len(got["green"]), len(got["red"])))
             if not self._ending():
@@ -2692,11 +2695,13 @@ class Loop:
             ls = self.ls()
             out = self._sweep_dir()
             latest = AF.latest_sweep(out) if out.is_dir() else None
-            stale_ids = latest is not None and AF.sweep_lacks_ids(latest) and now - float((ls.get("sweep") or {}).get("failed_at") or 0) >= AF.SWEEP_BACKOFF_S
+            stale_ids = (latest is not None and AF.sweep_lacks_ids(latest) and ls.get("ids_sweep_sha") != self.base_sha     # W-refresh 2: once per base
+                         and now - float((ls.get("sweep") or {}).get("failed_at") or 0) >= AF.SWEEP_BACKOFF_S)
             if not stale_ids and not AF.sweep_due(ls.get("sweep"), self.base_sha, now, self.cfg.sweep_every_s):
                 return          # W-guardid 2: a sweep without red_ids is stale (once; after a failure not before an hour)
             prev = sorted(AF.read_sweep(latest)) if latest is not None else []
             ls["sweep"] = {"sha": self.base_sha, "at": now, "prev": dict(ls.get("sweep") or {})}
+            ls["ids_sweep_sha"] = self.base_sha
             self.save_ls(ls)
             fn, wt = self.sweep_fn, self.cfg.worktree
             self._sw = Prefetch("sweep", lambda: AF.run_cloud_sweep(fn, wt, out, previous=prev), {})
@@ -6524,6 +6529,7 @@ class Loop:
             dirty = True
         if tid not in ls.setdefault("slicer_merges", {}):
             ls["slicer_merges"][tid] = sha
+            ls.setdefault("merged_at", {}).setdefault(tid, self.clock())    # W-refresh 1: merge time for the sweep refresh
             engine = state["tasks"].get(tid, {}).get("engine")
             if engine:
                 ls.setdefault("contracts_by_engine", {}).setdefault(engine, {"made": 0, "merged": 0})["merged"] += 1
