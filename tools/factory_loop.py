@@ -450,15 +450,24 @@ def _fixture_def_faults(node, reserved) -> bool:
     return not all(_safe_annotation(a.annotation) for a in every) or not _safe_annotation(node.returns)
 
 
-def _conftest_faults(name: str, text: str, reserved=frozenset()) -> list[str]:
+def _conftest_faults(name: str, text: str, reserved=frozenset(), old: str = "") -> list[str]:
     """W-pack: tests/conftest.py by AST allow-list: imports, constants (literals), docstring, and `def` fixtures decorated with
     pytest.fixture without autouse. No hooks, no pytest_* names, no module-level code, no session/items access."""
     try:
         tree = ast.parse(text)
     except (SyntaxError, ValueError, RecursionError):
         return [name + ": conftest does not parse"]
+    try:  # a top-level node that stood there before is not the package's: only what it adds or changes is judged
+        stood = ast.parse(old).body
+        before = {ast.dump(n) for n in stood}
+    except (SyntaxError, ValueError, RecursionError):
+        stood, before = [], set()
     bad = name + ": conftest allows only imports, constants and pytest.fixture functions (no hooks, plugins, autouse)"
-    for node in tree.body:
+    fresh = [n for n in tree.body if ast.dump(n) not in before]
+    reserved = frozenset(reserved) | {n.name for n in stood if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))}
+    if before - {ast.dump(n) for n in tree.body}:
+        return [name + ": conftest drops or changes what stood there"]
+    for node in fresh:
         if isinstance(node, ast.Import):
             if any(a.name.split(".")[-1].startswith("pytest_") or (a.asname or "").startswith("pytest_") for a in node.names):
                 return [bad]
@@ -479,7 +488,7 @@ def _conftest_faults(name: str, text: str, reserved=frozenset()) -> list[str]:
                 return [bad]
         else:
             return [bad]
-    for node in ast.walk(tree):
+    for node in (x for top in fresh for x in ast.walk(top)):
         if (isinstance(node, ast.Attribute) and node.attr in ("items", "session", "hookimpl", "hookspec")) \
                 or (isinstance(node, ast.Name) and node.id in ("items", "session", "pytest_plugins")):
             return [name + ": conftest touches session/items/hooks"]
@@ -3680,7 +3689,7 @@ class Loop:
                 if not is_conftest and factory_gate.is_forbidden(name, "code", named=list(files), rig=True):
                     faults.append(name + ": forbidden")
                 if is_conftest:
-                    faults += _conftest_faults(name, text, _project_fixture_names(wt))
+                    faults += _conftest_faults(name, text, _project_fixture_names(wt), old)
                 if F.is_private_text(text) and not F.is_private_text(old):
                     faults.append(name + ": private text")
         if faults:
