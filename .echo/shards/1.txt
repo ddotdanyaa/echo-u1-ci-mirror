@@ -1,0 +1,2 @@
+tests/test_s6_fault_injection.py::test_losing_the_helper_mid_answer_ends_the_call_cleanly_quickly_and_with_a_logged_reason[X frame]
+tests/test_s6_fault_injection.py::test_losing_the_helper_mid_answer_ends_the_call_cleanly_quickly_and_with_a_logged_reason[corrupt pipe]
