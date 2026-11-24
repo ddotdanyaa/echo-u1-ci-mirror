@@ -638,12 +638,9 @@ def no_money():
 
 def ladder(rung, *, rungs, red=False, dry=False, base_debt=False, gone=()):
     """W-base0: a row of the old baseline debt (base_debt) is sliced by the free steps only, always: no paid, no agent.
-    W-prio 2: ``gone`` = the paid steps without money: they are skipped (no unavailable fault each pass), the free steps go first."""
+    W-prio 2: ``gone`` = the paid steps without money: they are skipped (no unavailable fault each pass); the order of the remaining steps is the usual one (dry/red/rung)."""
     if gone:
         rungs = tuple(e for e in rungs if e not in gone)
-        if not base_debt and not red:
-            rest = [e for e in ('paid', 'agent') if e in rungs]
-            return [e for e in ('free', 'free_main', 'free_small') if e in rungs] + rest
     if base_debt:
         order = ('free', 'free_main', 'free_small')
     elif dry and not red:      # W-dry 1: the edit channels are dry: agent, then paid give the finished code; the free steps last

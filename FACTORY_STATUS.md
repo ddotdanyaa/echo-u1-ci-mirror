@@ -1,9 +1,10 @@
 # Factory status (generated, structured data only)
 
-Generated: 2026-11-24T00:20:43Z
-Source commit: shaa7503929b0fb
+Generated: 2026-11-24T00:28:04Z
+Source commit: shaf95bd27d81fc
 
 ## Commits (sha, time)
+- shaf95bd27d 2026-11-24T03:25:46+03:00
 - shaa7503929 2026-11-24T03:16:58+03:00
 - sha98601c8e 2026-11-24T03:07:54+03:00
 - sha4be05b3b 2026-11-24T03:02:07+03:00
@@ -23,28 +24,27 @@ Source commit: shaa7503929b0fb
 - shad5989773 2026-11-24T01:04:32+03:00
 - sha12a341b4 2026-11-24T01:01:56+03:00
 - sha10b34100 2026-11-24T01:00:08+03:00
-- sha2e372a15 2026-11-24T00:56:39+03:00
 
 ## Funnel
 | step | count |
 |---|---|
 | accepted | 20 |
-| claimed | 558 |
+| claimed | 559 |
 | coded | 185 |
 | found_in_backlog | unknown |
-| gate_pass | 72 |
-| known_to_loop | 532 |
-| promoted | 68 |
+| gate_pass | 73 |
+| known_to_loop | 533 |
+| promoted | 69 |
 | ready | 87 |
-| reviewed | 182 |
+| reviewed | 184 |
 | triaged | 353 |
 
-Side counters: blocked=0, parked=0, requeued=7
-Tasks now: DONE=68, FAILED=542, PROMOTED=44, READY=87, RUNNING=18
+Side counters: blocked=3, parked=0, requeued=7
+Tasks now: BLOCKED=3, DONE=68, FAILED=546, PROMOTED=45, READY=87, RUNNING=10
 Accepted: 20
-Promoted: 68
-Free RAM, GB: 2.72
-Telemetry rows: 44848 recognised, 0 unrecognised
+Promoted: 69
+Free RAM, GB: 2.81
+Telemetry rows: 45061 recognised, 0 unrecognised
 
 ## Spend per model
 | model | calls | tokens_in | tokens_out | usage_unknown | http_429 | errors |
@@ -60,8 +60,8 @@ Telemetry rows: 44848 recognised, 0 unrecognised
 | google/gemini-3.6-flash | 135 | 414079 | 20196 | 57 | 12 | 57 |
 | google/gemini-3.7-flash | 26 | 9121 | 14 | 25 | 14 | 25 |
 | google/gemini-3.8-flash | 28 | 21237 | 15 | 25 | 13 | 25 |
-| google/gemma-4-26b-a4b-it | 1287 | 1186298 | 203590 | 874 | 1 | 874 |
-| google/gemma-4-31b-it | 851 | 438284 | 42568 | 700 | 0 | 700 |
+| google/gemma-4-26b-a4b-it | 1337 | 1240151 | 217680 | 895 | 1 | 895 |
+| google/gemma-4-31b-it | 884 | 450947 | 43255 | 729 | 0 | 729 |
 | openrouter/nvidia/nemotron-3-ultra-550b-a55b:free | 130 | 715529 | 156330 | 2 | 2 | 2 |
 | other | 65 | 1154192 | 66710 | 6 | 0 | 7 |
 
@@ -69,14 +69,14 @@ Telemetry rows: 44848 recognised, 0 unrecognised
 | span | rows | calls |
 |---|---|---|
 | answer | 536 | 0 |
-| gate | 6683 | 0 |
-| infra | 1103 | 0 |
-| loop | 7015 | 0 |
-| other | 12550 | 0 |
-| promote | 84 | 0 |
-| review | 2454 | 1320 |
-| run | 14036 | 5227 |
-| triage | 387 | 0 |
+| gate | 6734 | 0 |
+| infra | 1105 | 0 |
+| loop | 7032 | 0 |
+| other | 12572 | 0 |
+| promote | 85 | 0 |
+| review | 2467 | 1326 |
+| run | 14142 | 5304 |
+| triage | 388 | 0 |
 
 ## Channels (model ids)
 - 1db4ab-gemini-3-8-flash
