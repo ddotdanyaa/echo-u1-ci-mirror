@@ -943,9 +943,15 @@ def repair_contract(contract, root, packet):
     red_ids = [str(x) for x in (packet.get('guard_red') or []) if '::' in str(x)]
     if red_ids and isinstance(packet.get('guard_red'), list):
         # W-guard 1: the row's guard is red: the card runs ITS red test (any step, any form), the model does not choose it
-        want = {'use': red_ids[0].split('[', 1)[0]}
-        if len(red_ids) > 1:
-            want['also'] = red_ids[1:]
+        use = red_ids[0].split('[', 1)[0]
+        want = {'use': use}
+        also = []
+        for x in red_ids[1:]:                       # same form as use: no [param]
+            x = x.split('[', 1)[0]
+            if x != use and x not in also:
+                also.append(x)
+        if also:
+            want['also'] = also
         if spec != want:
             contract['test'] = spec = want
             repaired.append('test.use')

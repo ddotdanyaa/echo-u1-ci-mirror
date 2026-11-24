@@ -4001,11 +4001,21 @@ class Loop:
         if not mine:
             return None
         reds = sorted(k for k, red in mine.items() if red is True)
+        if not reds and not Loop._sweep_is_of_base(self):      # W-guard fix3: green is proven only by a sweep of the CURRENT base
+            return None
         if "::" in name and not reds:
             return []
         if "::" in name and name in reds:
             return [name] + [k for k in reds if k != name and "::" in k]
         return [k for k in reds if "::" in k] or ([name] if "::" in name else (reds or []))
+
+    def _sweep_is_of_base(self) -> bool:
+        """W-guard fix3: the newest sweep file was measured on the current base: no sweep job runs now and the book's sweep
+        record carries this base sha (unknown or different sha = not proven)."""
+        if getattr(self, "_sw", None) is not None:
+            return False
+        sha = str((self.ls().get("sweep") or {}).get("sha") or "")
+        return bool(sha) and sha == str(self.base_sha)
 
     def _row_packet(self, row, cause, evidence, *, tasks, state, ls, root, rung=0):
         from tools import factory_architect as A, factory_classes as CL, agent_factory_import as imp
@@ -4163,7 +4173,7 @@ class Loop:
                 extra = {"named_ok": True} if self.cfg.self_repo else {}      # 8.1: the factory's own files are the contract's subject
                 if cached:      # W-pay 2: the steps that already answered this row (or refused it) on this version and sha
                     extra["skip"] = cached
-                if packet.get("guard_green"):       # W-guard 1: no red id on this base: no card, the row closes by the guard
+                if packet.get("guard_green"):       # W-guard 1: no red id on this base (the proof = a sweep of the current base, _guard_red_ids): no card
                     self.event("guard_green", backlog_id=row, reason="guard %s is green on base %s" % (
                         self.rs(str(packet.get("guard_test") or row), 120), str(self.base_sha)[:12]))
                     return packet, dict(contract=dict(decision="already_fixed", why="guard_green: the red test of the guard is green on the base"),

@@ -1,9 +1,10 @@
 # Factory status (generated, structured data only)
 
-Generated: 2026-11-24T02:37:58Z
-Source commit: sha59aac0f3baac
+Generated: 2026-11-24T02:44:56Z
+Source commit: sha8e17c41e28b9
 
 ## Commits (sha, time)
+- sha8e17c41e 2026-11-24T05:43:57+03:00
 - sha59aac0f3 2026-11-24T05:37:09+03:00
 - sha3e683cb2 2026-11-24T05:32:36+03:00
 - shac3311953 2026-11-24T05:25:58+03:00
@@ -23,28 +24,27 @@ Source commit: sha59aac0f3baac
 - shaa7503929 2026-11-24T03:16:58+03:00
 - sha98601c8e 2026-11-24T03:07:54+03:00
 - sha4be05b3b 2026-11-24T03:02:07+03:00
-- shaaba4ecd1 2026-11-24T02:53:57+03:00
 
 ## Funnel
 | step | count |
 |---|---|
 | accepted | 21 |
-| claimed | 582 |
+| claimed | 585 |
 | coded | 185 |
 | found_in_backlog | unknown |
 | gate_pass | 73 |
 | known_to_loop | 539 |
 | promoted | 69 |
-| ready | 84 |
+| ready | 83 |
 | reviewed | 188 |
 | triaged | 361 |
 
-Side counters: blocked=2, parked=0, requeued=7
-Tasks now: BLOCKED=2, DONE=68, FAILED=581, PROMOTED=45, READY=84, RUNNING=4
+Side counters: blocked=3, parked=0, requeued=7
+Tasks now: BLOCKED=3, DONE=68, FAILED=583, PROMOTED=45, READY=83, RUNNING=6
 Accepted: 21
 Promoted: 69
-Free RAM, GB: 4.22
-Telemetry rows: 47240 recognised, 0 unrecognised
+Free RAM, GB: 3.11
+Telemetry rows: 47435 recognised, 0 unrecognised
 
 ## Spend per model
 | model | calls | tokens_in | tokens_out | usage_unknown | http_429 | errors |
@@ -60,8 +60,8 @@ Telemetry rows: 47240 recognised, 0 unrecognised
 | google/gemini-3.6-flash | 135 | 414079 | 20196 | 57 | 12 | 57 |
 | google/gemini-3.7-flash | 26 | 9121 | 14 | 25 | 14 | 25 |
 | google/gemini-3.8-flash | 28 | 21237 | 15 | 25 | 13 | 25 |
-| google/gemma-4-26b-a4b-it | 1616 | 1535720 | 281607 | 1037 | 1 | 1037 |
-| google/gemma-4-31b-it | 1196 | 616627 | 65409 | 973 | 1 | 973 |
+| google/gemma-4-26b-a4b-it | 1627 | 1540106 | 283119 | 1046 | 1 | 1046 |
+| google/gemma-4-31b-it | 1216 | 625907 | 65946 | 989 | 1 | 989 |
 | openrouter/nvidia/nemotron-3-ultra-550b-a55b:free | 130 | 715529 | 156330 | 2 | 2 | 2 |
 | other | 65 | 1154192 | 66710 | 6 | 0 | 7 |
 
@@ -69,14 +69,14 @@ Telemetry rows: 47240 recognised, 0 unrecognised
 | span | rows | calls |
 |---|---|---|
 | answer | 536 | 0 |
-| gate | 7032 | 0 |
-| infra | 1152 | 0 |
-| loop | 7300 | 0 |
-| other | 13165 | 0 |
+| gate | 7043 | 0 |
+| infra | 1156 | 0 |
+| loop | 7319 | 0 |
+| other | 13262 | 0 |
 | promote | 85 | 0 |
-| review | 2586 | 1351 |
-| run | 14980 | 5870 |
-| triage | 404 | 0 |
+| review | 2602 | 1354 |
+| run | 15027 | 5898 |
+| triage | 405 | 0 |
 
 ## Channels (model ids)
 - 1db4ab-gemini-3-8-flash
