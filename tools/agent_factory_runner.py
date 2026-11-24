@@ -2740,7 +2740,10 @@ def edit_parts(task: Task, parts: list, workdir: Path, call, failing: str = '', 
             shutil.copytree(workdir, folder)
         try:
             try:
-                if file.endswith('.py'):
+                if isinstance(part.get('file_text'), str):
+                    # W-rig fix2: a rig card carries the whole verified file; it is written as it is (bytes: CRLF stays)
+                    blocks = None
+                elif file.endswith('.py'):
                     # W-optim 3: a function that moved since the architect's read is not a refusal and not a reslice: the
                     # replacement is applied by name onto the fresh snapshot and the gates judge it
                     blocks = [(file, _FuncTarget(symbol), text)
@@ -2751,9 +2754,16 @@ def edit_parts(task: Task, parts: list, workdir: Path, call, failing: str = '', 
                         return 'the code block is not a SEARCH/REPLACE block of ' + file
             except (ValueError, OSError) as error:
                 return str(error)
-            applied, failed = apply_edit_blocks(folder, blocks, None, {file: part.get('symbols') or []})
-            if failed:
-                return '; '.join(sorted(failed))
+            if blocks is None:
+                try:
+                    (folder / file).parent.mkdir(parents=True, exist_ok=True)
+                    (folder / file).write_bytes(part['file_text'].encode('utf-8'))
+                except OSError as error:
+                    return str(error)
+            else:
+                applied, failed = apply_edit_blocks(folder, blocks, None, {file: part.get('symbols') or []})
+                if failed:
+                    return '; '.join(sorted(failed))
             target, before = folder / file, workdir / file
             with lock:
                 changed = target.is_file() and (not before.is_file() or target.read_bytes() != before.read_bytes())
@@ -2876,7 +2886,8 @@ def edit_parts(task: Task, parts: list, workdir: Path, call, failing: str = '', 
                 info['context_chars'] = info.get('context_chars', 0) + len(pack)
                 info['context_sections'] = sorted(set(info.get('context_sections', [])) | set(K.context_sections(pack)))
         reason, more = '', ''
-        if use_code and isinstance(part.get('code'), str) and part['code'].strip():
+        if use_code and (isinstance(part.get('code'), str) and part['code'].strip()
+                         or isinstance(part.get('file_text'), str)):
             why_not = apply_code(index, part)
             if not why_not:
                 if info is not None:

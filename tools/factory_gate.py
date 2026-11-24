@@ -1603,6 +1603,8 @@ def candidate_findings(base_root, cand_files: dict, kind) -> tuple:
     return tuple(hollow), tuple(sorted(extra))
 
 
+# Approximate by design: the words are counted per file as plain text, so a comment or a string can give a false refusal,
+# and a word moved from one file of the card to another is not caught.
 _RIG_MARK = re.compile(r'\b(skip|skipif|skipTest|xfail|sleep|monkeypatch)\b')
 
 

@@ -203,3 +203,18 @@ def test_rig_command_keeps_crlf_and_refuses_non_utf8(root, tmp_path):
     (cand / "tests" / "data.bin").write_bytes(b"\xff\xfe\x00")
     with pytest.raises(SystemExit):
         L.rig_main(argv)
+
+
+def test_a_rig_card_with_file_text_changes_the_file_in_the_work_copy(tmp_path):
+    """W-rig fix2: the runner applies file_text as the whole file (CRLF kept), without asking a model."""
+    from tools import agent_factory as F, agent_factory_runner as R
+    from test_factory_loop import task_row
+    work = tmp_path / "work"
+    (work / "tests").mkdir(parents=True)
+    (work / "tests" / "test_x.py").write_bytes(b"def test_a():\r\n    assert 1\r\n")
+    new = "def helper():\r\n    return 2\r\n\r\ndef test_a():\r\n    assert 1\r\n"
+    part = {"file": "tests/test_x.py", "file_text": new, "instruction": "Replace the whole file.", "stage": 1}
+    task = F.read_plan([task_row(1, touch_files=["tests/test_x.py"])])["T1"]
+    rc, _, err = R.edit_parts(task, [part], work, lambda *a: pytest.fail("a model was asked"), use_code=True)
+    assert rc == 0, err
+    assert (work / "tests" / "test_x.py").read_bytes() == new.encode("utf-8")
