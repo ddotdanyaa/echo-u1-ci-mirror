@@ -1806,7 +1806,9 @@ class Loop:
             if not got:
                 declined.add(tid)
                 continue
-            claimed = getattr(self, "_claimed_state", None)       # W-tick 4: the state the claim itself wrote (no read per start)
+            # W-tick 4: the state the claim itself wrote (no read per start). Known trade-off: began/booked written by _admit
+            # after the claim are seen only by the one read at the end of the pass; the claim re-checks every card under the lock
+            claimed = getattr(self, "_claimed_state", None)
             self._claimed_state = None
             if isinstance(claimed, dict):
                 state = claimed

@@ -625,11 +625,17 @@ def _closing_ids(subject: str) -> list[str]:
     return parts if parts and all(id_query.TOKEN.fullmatch(p) for p in parts) else []
 
 
-_HEAD_PIN: dict = {}     # W-tick 3: root -> HEAD sha read ONCE for a whole pass (parse_open_rows): no git call per row
+_HEAD_PIN: dict = {}     # W-tick 3: (thread, root) -> HEAD sha read ONCE for a whole pass (parse_open_rows): no git call per row
+                         # keyed by thread: a pass in the background slot and one in the main thread never unpin each other
+
+
+def _pin_key(root) -> tuple:
+    import threading
+    return (threading.get_ident(), str(Path(root)))
 
 
 def _head_of(root) -> str:
-    pinned = _HEAD_PIN.get(str(Path(root)))
+    pinned = _HEAD_PIN.get(_pin_key(root))
     return pinned if pinned else _git(root, "rev-parse", "HEAD").strip()
 
 
@@ -706,7 +712,7 @@ def _safe_title(r: dict) -> str:
 @contextlib.contextmanager
 def _head_pinned(root):
     """W-tick 3: HEAD is read once for the pass below (one ``git rev-parse``, not one per row); nested passes share it."""
-    key = str(Path(root))
+    key = _pin_key(root)
     if key in _HEAD_PIN:
         yield
         return
