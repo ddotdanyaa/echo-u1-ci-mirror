@@ -3709,6 +3709,9 @@ class Loop:
             except Exception as e2:
                 self.err("package restore", e2)
             raise F.InvalidPlan("package: write or commit failed (%s), the tree is restored" % type(e).__name__) from e
+        ls = self.ls()
+        ls["promoted_total"] = int(ls.get("promoted_total") or 0) + 1     # a merged package makes a final build due, like a product row
+        self.save_ls(ls)
         self.event("promote", task_id=key, backlog_id=key, status="promoted", reason="package", commit=sha, green=green)
         return {"task_id": None, "backlog_id": key, "reason": "package " + sha[:8]}
 
@@ -3747,6 +3750,7 @@ class Loop:
             git_run(wt, "-c", "user.name=agent-factory", "-c", "user.email=agent-factory@localhost", "commit", "-q", "-m",
                     "factory-revert(%s): %s" % (tid, text))
             new_sha = git_run(wt, "rev-parse", "HEAD").strip()
+        ls["promoted_total"] = int(ls.get("promoted_total") or 0) + 1     # the branch changed: a final build is due
         (ls.get("accepted") or {}).pop(tid, None)
         seen = ls.setdefault("rejected", {}).setdefault(tid, [])     # the recovered path of _promote never takes it again
         if sha not in seen:
