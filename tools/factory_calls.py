@@ -123,6 +123,35 @@ def _fakeish(expr, fakes) -> bool:
     return False
 
 
+def _fake_value(expr, fakes) -> bool:
+    """The VALUE is a fake: the chain of calls/attributes starts at a Mock/patch/fake name or ends in a Mock attribute.
+    A real call with a fake among its arguments is a real value."""
+    while True:
+        if isinstance(expr, ast.Attribute):
+            if expr.attr in _MOCK_ATTRS or expr.attr.startswith('assert_called'):
+                return True
+            expr = expr.value
+        elif isinstance(expr, ast.Call):
+            expr = expr.func
+        elif isinstance(expr, (ast.Subscript, ast.Await, ast.Starred)):
+            expr = expr.value
+        elif isinstance(expr, ast.UnaryOp):
+            expr = expr.operand
+        else:
+            return isinstance(expr, ast.Name) and (expr.id in fakes or expr.id in _MOCKERS)
+
+
+def _fake_assert(test, fakes) -> bool:
+    if isinstance(test, ast.Compare):
+        sides = [x for x in [test.left] + test.comparators if not isinstance(x, ast.Constant)]
+        return all(_fake_value(x, fakes) or _literal(x) for x in sides)
+    return _fakeish(test, fakes) if isinstance(test, ast.BoolOp) else _fake_value(test, fakes)
+
+
+def _literal(x) -> bool:
+    return not any(isinstance(n, (ast.Name, ast.Call, ast.Attribute)) for n in ast.walk(x))
+
+
 def card_test_faults(code: str, root=None) -> list[str]:
     """W-true2 2: refusals for a card's new test text: every assert goes only through fakes (assert_called*/call_args/Mock
     attributes), or it patches a function, checks a kwarg of its call, and no real definition accepts that kwarg."""
@@ -134,7 +163,7 @@ def card_test_faults(code: str, root=None) -> list[str]:
     patched, kws, real, seen = set(), set(), 0, 0
     for _ in range(2):          # two passes: ast.walk is breadth-first, a name may be assigned deeper than its first use
         for n in ast.walk(tree):
-            if isinstance(n, ast.Assign) and _fakeish(n.value, fakes):
+            if isinstance(n, ast.Assign) and _fake_value(n.value, fakes):
                 fakes.update(t.id for t in n.targets if isinstance(t, ast.Name))
             elif isinstance(n, ast.withitem) and n.optional_vars is not None and _fakeish(n.context_expr, fakes):
                 fakes.update(s.id for s in ast.walk(n.optional_vars) if isinstance(s, ast.Name))
@@ -151,7 +180,7 @@ def card_test_faults(code: str, root=None) -> list[str]:
             kws.add(n.slice.value)
         if isinstance(n, ast.Assert):
             seen += 1
-            real += not _fakeish(n.test, fakes)
+            real += not _fake_assert(n.test, fakes)
     out = []
     if seen and not real:
         out.append('every assert goes only through fakes (assert_called*/call_args/Mock attributes): assert a value that '
