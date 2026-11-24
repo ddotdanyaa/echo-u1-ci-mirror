@@ -553,8 +553,10 @@ def search(row, ids, env, base_failure: str = ""):
             cand.update(n=len(cands), temp=item.temp, answer=answer)
             cands.append(cand)
             answers[cand["n"]] = fn
-    _run_pump(env, row, items, collect)
+    finished = _run_pump(env, row, items, collect)
     if not cands:
+        if not finished:
+            return dict(green=[], tried=tried, evidence=[], status="cloud", why="pump timeout")
         return dict(green=[], tried=tried, evidence=_evidence(tried, {}), status="red")
     try:
         verdicts = {}
