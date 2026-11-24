@@ -6530,7 +6530,7 @@ class Loop:
         if tid not in ls.setdefault("slicer_merges", {}):
             ls["slicer_merges"][tid] = sha
             ls.setdefault("merged_at", {}).setdefault(tid, self.clock())    # W-refresh 1: merge time for the sweep refresh
-            engine =state["tasks"].get(tid, {}).get("engine")
+            engine = state["tasks"].get(tid, {}).get("engine")
             if engine:
                 ls.setdefault("contracts_by_engine", {}).setdefault(engine, {"made": 0, "merged": 0})["merged"] += 1
             more = self._contract(task).get("more")
