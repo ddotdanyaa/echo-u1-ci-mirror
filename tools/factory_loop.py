@@ -25,6 +25,7 @@ import hashlib
 import inspect
 import json
 import os
+import posixpath
 import random
 import re
 import shutil
@@ -410,6 +411,50 @@ def _drop_stale_lock(cwd: Path) -> bool:
     except (OSError, subprocess.SubprocessError) as e:
         LOCK_NOTES.append("lock_check_failed: " + F.redact(str(e))[:200])
         return False
+
+
+def _is_fixture_deco(d) -> bool:
+    """pytest.fixture or pytest.fixture(<keywords without autouse>), no positional args."""
+    if isinstance(d, ast.Call):
+        if d.args or any(k.arg is None or k.arg == "autouse" for k in d.keywords):
+            return False
+        d = d.func
+    return isinstance(d, ast.Attribute) and d.attr == "fixture" and isinstance(d.value, ast.Name) and d.value.id == "pytest"
+
+
+def _conftest_faults(name: str, text: str) -> list[str]:
+    """W-pack: tests/conftest.py by AST allow-list: imports, constants (literals), docstring, and `def` fixtures decorated with
+    pytest.fixture without autouse. No hooks, no pytest_* names, no module-level code, no session/items access."""
+    try:
+        tree = ast.parse(text)
+    except (SyntaxError, ValueError, RecursionError):
+        return [name + ": conftest does not parse"]
+    bad = name + ": conftest allows only imports, constants and pytest.fixture functions (no hooks, plugins, autouse)"
+    for node in tree.body:
+        if isinstance(node, ast.Import):
+            if any(a.name.split(".")[-1].startswith("pytest_") or (a.asname or "").startswith("pytest_") for a in node.names):
+                return [bad]
+        elif isinstance(node, ast.ImportFrom):
+            if any(a.name == "*" or a.name.startswith("pytest_") or (a.asname or "").startswith("pytest_") for a in node.names) \
+                    or (node.module or "").split(".")[-1].startswith("pytest_"):
+                return [bad]
+        elif isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant):
+            pass
+        elif isinstance(node, ast.Assign) and all(isinstance(t, ast.Name) and not t.id.startswith("pytest_") for t in node.targets):
+            try:
+                ast.literal_eval(node.value)
+            except (ValueError, SyntaxError, TypeError, MemoryError, RecursionError):
+                return [bad]
+        elif isinstance(node, ast.FunctionDef):
+            if node.name.startswith("pytest_") or not node.decorator_list or not all(_is_fixture_deco(d) for d in node.decorator_list):
+                return [bad]
+        else:
+            return [bad]
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Attribute) and node.attr in ("items", "session", "hookimpl", "hookspec")) \
+                or (isinstance(node, ast.Name) and node.id in ("items", "session", "pytest_plugins")):
+            return [name + ": conftest touches session/items/hooks"]
+    return []
 
 
 def package_digest(files: dict) -> str:
@@ -3545,7 +3590,7 @@ class Loop:
         files unchanged since the verdict's base. One commit, the worktree lock of the cycle, like _revert_answer.
         Trust: verdict.json is NOT signed; the answers folder is a trusted source (whoever can put a folder there is the owner).
         The two full cloud runs and the review are claimed by the verdict, the cycle cannot confirm them. A conftest is limited to
-        fixtures (hooks, plugins, autouse refused by regex). A failed write/add/commit restores the package paths."""
+        fixtures (AST allow-list _conftest_faults; the path is compared canonically, only the exact name is written). A failed write/add/commit restores the package paths."""
         from tools import factory_calls, factory_gate
         wt = Path(self.cfg.worktree)
         try:
@@ -3577,10 +3622,14 @@ class Loop:
                 old = (wt / name).read_text(encoding="utf-8") if (wt / name).is_file() else ""
                 if name.endswith(".py"):
                     faults += factory_calls.new_bad_calls(name, old, text, wt)
-                if name != "tests/conftest.py" and factory_gate.is_forbidden(name, "code", named=list(files), rig=True):
+                canon = posixpath.normpath(name.replace("\\", "/")).casefold()
+                is_conftest = canon == "tests/conftest.py"
+                if is_conftest and name != canon:
+                    faults.append(name + ": conftest must be written as exactly tests/conftest.py")
+                if not is_conftest and factory_gate.is_forbidden(name, "code", named=list(files), rig=True):
                     faults.append(name + ": forbidden")
-                if name == "tests/conftest.py" and re.search(r"def\s+pytest_|pytest_plugins|\bitems\s*[\[.]|autouse", text):
-                    faults.append(name + ": conftest hooks/autouse are not allowed, fixtures only")
+                if is_conftest:
+                    faults += _conftest_faults(name, text)
                 if F.is_private_text(text) and not F.is_private_text(old):
                     faults.append(name + ": private text")
         if faults:
@@ -8056,8 +8105,8 @@ class Loop:
     def _restore(self, wt: Path, rel: list[str]) -> None:
         """Put the package paths back to HEAD: index, tracked files, new untracked files."""
         for r in rel:
-            tracked = subprocess.run(["git", "-C", str(wt), "ls-files", "--error-unmatch", "--", r],
-                                     capture_output=True).returncode == 0
+            tracked = subprocess.run(["git", "-C", str(wt), "cat-file", "-e", "HEAD:" + r],      # in HEAD, not in the index: a
+                                     capture_output=True).returncode == 0                        # file that was just `add`ed is new
             subprocess.run(["git", "-C", str(wt), "reset", "-q", "--", r], capture_output=True)
             if tracked:  # content from HEAD written directly: works while index.lock is held
                 blob = subprocess.run(["git", "-C", str(wt), "cat-file", "--filters", "HEAD:" + r],
