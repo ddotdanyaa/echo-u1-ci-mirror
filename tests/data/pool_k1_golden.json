@@ -1,0 +1,795 @@
+{
+ "blocked": {
+  "events": [
+   [
+    "infra",
+    null,
+    "channels.json unreadable, env ",
+    "error",
+    null
+   ],
+   [
+    "infra",
+    null,
+    "call budget: FileNotFoundError",
+    "error",
+    null
+   ],
+   [
+    "run",
+    null,
+    "scope_violation",
+    "BLOCKED",
+    "T1"
+   ],
+   [
+    "loop",
+    "RUN",
+    "scope_violation",
+    "BLOCKED",
+    null
+   ],
+   [
+    "infra",
+    null,
+    "call budget: FileNotFoundError",
+    "error",
+    null
+   ],
+   [
+    "run",
+    null,
+    "scope_violation",
+    "BLOCKED",
+    "T1"
+   ],
+   [
+    "loop",
+    "RUN",
+    "scope_violation",
+    "BLOCKED",
+    null
+   ]
+  ],
+  "steps": [
+   {
+    "infra_streak": 0,
+    "out": [
+     "RUN",
+     "scope_violation",
+     "BLOCKED",
+     0,
+     false,
+     null
+    ],
+    "rows": {
+     "T1": [
+      "READY",
+      0,
+      null
+     ]
+    }
+   },
+   {
+    "infra_streak": 0,
+    "out": [
+     "RUN",
+     "scope_violation",
+     "BLOCKED",
+     0,
+     false,
+     null
+    ],
+    "rows": {
+     "T1": [
+      "READY",
+      0,
+      null
+     ]
+    }
+   }
+  ]
+ },
+ "budget_wait": {
+  "events": [
+   [
+    "infra",
+    null,
+    "channels.json unreadable, env ",
+    "error",
+    null
+   ],
+   [
+    "infra",
+    null,
+    "call budget: FileNotFoundError",
+    "error",
+    null
+   ],
+   [
+    "run",
+    null,
+    "budget_exhausted",
+    "WAITING_CHANNEL",
+    "T1"
+   ],
+   [
+    "loop",
+    "RUN",
+    "budget_exhausted",
+    "WAITING_CHANNEL",
+    null
+   ],
+   [
+    "loop",
+    "WAIT",
+    "channel_cooldown",
+    "ok",
+    null
+   ],
+   [
+    "loop",
+    "WAIT",
+    "channel_cooldown",
+    "ok",
+    null
+   ]
+  ],
+  "steps": [
+   {
+    "infra_streak": 0,
+    "out": [
+     "RUN",
+     "budget_exhausted",
+     "WAITING_CHANNEL",
+     0,
+     false,
+     null
+    ],
+    "rows": {
+     "T1": [
+      "READY",
+      0,
+      null
+     ]
+    }
+   },
+   {
+    "infra_streak": 0,
+    "out": [
+     "WAIT",
+     "channel_cooldown",
+     "ok",
+     60,
+     false,
+     null
+    ],
+    "rows": {
+     "T1": [
+      "READY",
+      0,
+      null
+     ]
+    }
+   },
+   {
+    "infra_streak": 0,
+    "out": [
+     "WAIT",
+     "channel_cooldown",
+     "ok",
+     60,
+     false,
+     null
+    ],
+    "rows": {
+     "T1": [
+      "READY",
+      0,
+      null
+     ]
+    }
+   }
+  ]
+ },
+ "locked_state": {
+  "events": [
+   [
+    "infra",
+    null,
+    "channels.json unreadable, env ",
+    "error",
+    null
+   ],
+   [
+    "loop",
+    "WAIT",
+    "state_locked",
+    "ok",
+    null
+   ]
+  ],
+  "steps": [
+   {
+    "infra_streak": 0,
+    "out": [
+     "WAIT",
+     "state_locked",
+     "ok",
+     3,
+     false,
+     null
+    ],
+    "rows": {
+     "T1": [
+      "READY",
+      0,
+      null
+     ]
+    }
+   }
+  ]
+ },
+ "low_ram": {
+  "events": [
+   [
+    "infra",
+    null,
+    "channels.json unreadable, env ",
+    "error",
+    null
+   ],
+   [
+    "loop",
+    "WAIT",
+    "low_ram",
+    "ok",
+    null
+   ],
+   [
+    "infra",
+    null,
+    "call budget: FileNotFoundError",
+    "error",
+    null
+   ],
+   [
+    "run",
+    null,
+    null,
+    "READY",
+    "T1"
+   ],
+   [
+    "loop",
+    "RUN",
+    "READY",
+    "READY",
+    null
+   ]
+  ],
+  "steps": [
+   {
+    "infra_streak": 0,
+    "out": [
+     "WAIT",
+     "low_ram",
+     "ok",
+     60,
+     false,
+     null
+    ],
+    "rows": {
+     "T1": [
+      "READY",
+      0,
+      null
+     ]
+    }
+   },
+   {
+    "infra_streak": 0,
+    "out": [
+     "RUN",
+     "READY",
+     "READY",
+     0,
+     false,
+     null
+    ],
+    "rows": {
+     "T1": [
+      "READY",
+      0,
+      null
+     ]
+    }
+   }
+  ]
+ },
+ "no_result": {
+  "events": [
+   [
+    "infra",
+    null,
+    "channels.json unreadable, env ",
+    "error",
+    null
+   ],
+   [
+    "infra",
+    null,
+    "call budget: FileNotFoundError",
+    "error",
+    null
+   ],
+   [
+    "run",
+    null,
+    "no result: ",
+    "NO_RESULT",
+    null
+   ],
+   [
+    "infra",
+    null,
+    "no result: ",
+    "run_failed",
+    null
+   ],
+   [
+    "loop",
+    "RUN",
+    "no result: ",
+    "infra",
+    null
+   ],
+   [
+    "infra",
+    null,
+    "call budget: FileNotFoundError",
+    "error",
+    null
+   ],
+   [
+    "run",
+    null,
+    "no result: ",
+    "NO_RESULT",
+    null
+   ],
+   [
+    "infra",
+    null,
+    "no result: ",
+    "run_failed",
+    null
+   ],
+   [
+    "loop",
+    "RUN",
+    "no result: ",
+    "infra",
+    null
+   ],
+   [
+    "infra",
+    null,
+    "call budget: FileNotFoundError",
+    "error",
+    null
+   ],
+   [
+    "run",
+    null,
+    "no result: ",
+    "NO_RESULT",
+    null
+   ],
+   [
+    "infra",
+    null,
+    "no result: ",
+    "run_failed",
+    null
+   ],
+   [
+    "loop",
+    "RUN",
+    "no result: ",
+    "infra",
+    null
+   ]
+  ],
+  "steps": [
+   {
+    "infra_streak": 1,
+    "out": [
+     "RUN",
+     "no result: ",
+     "infra",
+     60,
+     false,
+     null
+    ],
+    "rows": {
+     "T1": [
+      "READY",
+      0,
+      null
+     ]
+    }
+   },
+   {
+    "infra_streak": 2,
+    "out": [
+     "RUN",
+     "no result: ",
+     "infra",
+     60,
+     false,
+     null
+    ],
+    "rows": {
+     "T1": [
+      "READY",
+      0,
+      null
+     ]
+    }
+   },
+   {
+    "infra_streak": 3,
+    "out": [
+     "RUN",
+     "no result: ",
+     "infra",
+     60,
+     false,
+     null
+    ],
+    "rows": {
+     "T1": [
+      "READY",
+      0,
+      null
+     ]
+    }
+   }
+  ]
+ },
+ "ready_defer": {
+  "events": [
+   [
+    "infra",
+    null,
+    "channels.json unreadable, env ",
+    "error",
+    null
+   ],
+   [
+    "infra",
+    null,
+    "call budget: FileNotFoundError",
+    "error",
+    null
+   ],
+   [
+    "run",
+    null,
+    "transient",
+    "READY",
+    "T1"
+   ],
+   [
+    "infra",
+    null,
+    "transient",
+    "deferred",
+    null
+   ],
+   [
+    "loop",
+    "RUN",
+    "transient",
+    "deferred",
+    null
+   ],
+   [
+    "loop",
+    "WAIT",
+    "not_before_or_lease",
+    "ok",
+    null
+   ],
+   [
+    "loop",
+    "WAIT",
+    "not_before_or_lease",
+    "ok",
+    null
+   ]
+  ],
+  "steps": [
+   {
+    "infra_streak": 0,
+    "out": [
+     "RUN",
+     "transient",
+     "deferred",
+     1,
+     false,
+     null
+    ],
+    "rows": {
+     "T1": [
+      "READY",
+      0,
+      null
+     ]
+    }
+   },
+   {
+    "infra_streak": 0,
+    "out": [
+     "WAIT",
+     "not_before_or_lease",
+     "ok",
+     58,
+     false,
+     null
+    ],
+    "rows": {
+     "T1": [
+      "READY",
+      0,
+      null
+     ]
+    }
+   },
+   {
+    "infra_streak": 0,
+    "out": [
+     "WAIT",
+     "not_before_or_lease",
+     "ok",
+     58,
+     false,
+     null
+    ],
+    "rows": {
+     "T1": [
+      "READY",
+      0,
+      null
+     ]
+    }
+   }
+  ]
+ },
+ "review_promote": {
+  "events": [
+   [
+    "infra",
+    null,
+    "channels.json unreadable, env ",
+    "error",
+    null
+   ],
+   [
+    "infra",
+    null,
+    "call budget: FileNotFoundError",
+    "error",
+    null
+   ],
+   [
+    "run",
+    null,
+    null,
+    "REVIEW",
+    "T1"
+   ],
+   [
+    "loop",
+    "RUN",
+    "REVIEW",
+    "REVIEW",
+    null
+   ],
+   [
+    "promote",
+    null,
+    "promoted",
+    "promoted",
+    "T1"
+   ],
+   [
+    "loop",
+    "PROMOTE",
+    "promoted",
+    "promoted",
+    null
+   ],
+   [
+    "infra",
+    null,
+    "profile attempts refresh: Valu",
+    "error",
+    null
+   ],
+   [
+    "loop",
+    "TRIAGE",
+    "backlog_unparsable",
+    "empty",
+    null
+   ]
+  ],
+  "steps": [
+   {
+    "infra_streak": 0,
+    "out": [
+     "RUN",
+     "REVIEW",
+     "REVIEW",
+     0,
+     false,
+     null
+    ],
+    "rows": {
+     "T1": [
+      "READY",
+      0,
+      null
+     ]
+    }
+   },
+   {
+    "infra_streak": 0,
+    "out": [
+     "PROMOTE",
+     "promoted",
+     "promoted",
+     0,
+     true,
+     null
+    ],
+    "rows": {
+     "T1": [
+      "PROMOTED",
+      0,
+      null
+     ]
+    }
+   },
+   {
+    "infra_streak": 0,
+    "out": [
+     "TRIAGE",
+     "backlog_unparsable",
+     "empty",
+     120,
+     false,
+     null
+    ],
+    "rows": {
+     "T1": [
+      "PROMOTED",
+      0,
+      null
+     ]
+    }
+   }
+  ]
+ },
+ "temporary_429": {
+  "events": [
+   [
+    "infra",
+    null,
+    "channels.json unreadable, env ",
+    "error",
+    null
+   ],
+   [
+    "infra",
+    null,
+    "call budget: FileNotFoundError",
+    "error",
+    null
+   ],
+   [
+    "run",
+    null,
+    "rate_limited",
+    "READY",
+    "T1"
+   ],
+   [
+    "infra",
+    null,
+    "rate_limited",
+    "deferred",
+    null
+   ],
+   [
+    "loop",
+    "RUN",
+    "rate_limited",
+    "deferred",
+    null
+   ],
+   [
+    "loop",
+    "WAIT",
+    "channel_cooldown",
+    "ok",
+    null
+   ],
+   [
+    "loop",
+    "WAIT",
+    "channel_cooldown",
+    "ok",
+    null
+   ]
+  ],
+  "steps": [
+   {
+    "infra_streak": 0,
+    "out": [
+     "RUN",
+     "rate_limited",
+     "deferred",
+     5,
+     false,
+     null
+    ],
+    "rows": {
+     "T1": [
+      "READY",
+      0,
+      null
+     ]
+    }
+   },
+   {
+    "infra_streak": 0,
+    "out": [
+     "WAIT",
+     "channel_cooldown",
+     "ok",
+     58,
+     false,
+     null
+    ],
+    "rows": {
+     "T1": [
+      "READY",
+      0,
+      null
+     ]
+    }
+   },
+   {
+    "infra_streak": 0,
+    "out": [
+     "WAIT",
+     "channel_cooldown",
+     "ok",
+     58,
+     false,
+     null
+    ],
+    "rows": {
+     "T1": [
+      "READY",
+      0,
+      null
+     ]
+    }
+   }
+  ]
+ }
+}
