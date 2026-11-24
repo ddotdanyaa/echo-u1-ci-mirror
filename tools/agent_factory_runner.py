@@ -3361,8 +3361,9 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
     def call(role: str, call_task: Task, directory_for, preferred: str, prompt: str,
              *, exclude_model: str | None = None, skip_tiers: tuple = (), later: bool = False,
              candidate: int | None = None, models_out: set | None = None, on_booked=None,
-             temperature: float | None = None, fast_retry: bool = False) -> tuple[int, bytes, bytes]:
-        """W-vgs2 1-2: ``fast_retry`` (an ensemble branch): a 503 is handed back at once as ChannelFault (the ensemble
+             temperature: float | None = None, fast_retry: bool | str = False) -> tuple[int, bytes, bytes]:
+        """W-rev: ``fast_retry='small'`` hands a 503 back at once only on the small tier (the review call asks again itself,
+        RW.retry_overload); other tiers keep their own retry. W-vgs2 1-2: ``fast_retry`` (an ensemble branch): a 503 is handed back at once as ChannelFault (the ensemble
         retries the branch itself), the probe-mode fuse does not stop the call, and a channel's failure cooling is
         applied once per pass. One real model call with reservation, charging, classification, one transient retry. ``skip_tiers``:
         channel tiers this call may not use (factory_channels.route_order). ``candidate``: the number of the candidate
@@ -4876,7 +4877,7 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
             try:
                 call_pick(order, seen, base_tokens, booked, call_affinity('review'))
             except channels.ChannelUnavailable as error:
-                ctx['review_left'] = RW.channel_left(order, str(error.reason or ''))
+                ctx['review_left'] = RW.channel_left(order, error.reason or 'unknown')   # no reason: not a known open-today case
                 return float(error.wait_s or 0), str(error.reason or ''), [], kept
             ctx['review_left'] = True
             return 0.0, '', [], kept
@@ -4925,6 +4926,8 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                 files = inspect_changes(task, ctx['workdir'], ctx['baseline']) if ctx['baseline'] is not None else ()
             except Exception:                        # noqa: BLE001 - the gates will name it
                 return None
+            if g.get('base_sha') != base_sha:        # the base moved (or was never noted): the gates run again
+                return None
             if not files or sorted(files) != sorted(g['changed']) or gates_diff_hash(files) != g['diff']:
                 return None
             events.append('gates_kept')
@@ -4953,7 +4956,7 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
         # 4. Independent reviewer: another model, reasons go back as feedback.
         ck.commit(lambda s, r: set_pending(s, r))
         if ctx['baseline'] is not None:              # W-rev 2: the green gates stay with the candidate
-            gates_note = dict(diff=gates_diff_hash(changed), changed=list(changed), receipt=receipt)
+            gates_note = dict(diff=gates_diff_hash(changed), changed=list(changed), receipt=receipt, base_sha=base_sha)
             ck.commit(lambda s, r: r['pending_review'].__setitem__('gates', gates_note)
                       if isinstance(r.get('pending_review'), dict) else None)
 
@@ -4961,17 +4964,24 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
         critics = []      # the models that reviewed this candidate: the next critic is none of them, nor the coder
         told = rejected_for(ck.read(), tid)
 
+        pass_wait = [RW.PASS_WAIT_S]               # W-rev: the 503 sleeps of ALL tries of this pass share it (the lease lives 1800 s)
+
+        def pass_sleep(seconds):
+            pass_wait[0] -= seconds
+            time.sleep(seconds)
+
         def invoke(call_task, directory, preferred, **kwargs):
             tries = DRY_REVIEW_TRIES if dry_now() else 1     # W-dry 2: Gemma again and again while the edit channels are dry
             for number in range(1, tries + 1):
                 try:
-                    # W-rev 1: a 503 of the small tier is asked again round its channels (2, 4, 8, 12, 12 ... s, 120 s in all)
+                    # W-rev 1: a 503 of the small tier is asked again round its channels (2, 4, 8, 12, 12 ... s, 120 s per
+                    # call, at most PASS_WAIT_S of sleeping in the whole pass)
                     return RW.retry_overload(
                         lambda: call('review', call_task, lambda _retry: directory, preferred,
                                      kwargs['prompt_override'], exclude_model=authors() + critics, fast_retry='small'),
                         lambda err: isinstance(err, ChannelFault) and bool((err.info or {}).get('fast_retry')),
-                        sleep=lambda s: time.sleep(s), on_retry=lambda n: events.append('review_503_retry_%d' % n)
-                        if n <= 3 else None)
+                        total_s=max(0.0, min(RW.RETRY_TOTAL_S, pass_wait[0])), sleep=pass_sleep,
+                        on_retry=lambda n: events.append('review_503_retry_%d' % n) if n <= 3 else None)
                 except (channels.ChannelUnavailable, ChannelFault) as error:
                     kind = error.info.get('kind') if isinstance(error, ChannelFault) else None
                     if number >= tries or (kind is not None and kind not in DRY_REVIEW_RETRY_KINDS) or (

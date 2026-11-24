@@ -12,7 +12,8 @@ import time
 RETRY_PAUSES_S = (2.0, 4.0, 8.0, 12.0)    # then 12 s again (the same series as factory_ensemble.RETRY_PAUSES_S)
 RETRY_JITTER = 0.3
 RETRY_TOTAL_S = 120.0
-RECHECK_S = 120                            # a short chain with a channel left: asked again after this, no strike
+PASS_WAIT_S = 600.0                        # all 503 sleeps of one pass together (the lease lives 1800 s; the pass must not outlive it)
+RECHECK_S = 120                           # a short chain with a channel left: asked again after this, no strike
 BLOCK_REASON = 'review_chain_short'
 # why a channel is closed right now but answers today (route_order's reasons): a cooling, the minute windows
 OPEN_TODAY_REASONS = frozenset(('cool', 'rpm', 'tpm_window'))
@@ -40,7 +41,8 @@ def retry_overload(attempt, is_overload, *, total_s: float = RETRY_TOTAL_S, cloc
 
 def channel_left(order, pick_error_reason: str | None) -> bool:
     """True when the review route has a channel that can still answer today: the route is not empty and the pick either
-    worked or failed only on a cooling / a minute window (a day limit, a dead or keyless channel is no channel)."""
+    worked (``None``) or failed only on a cooling / a minute window (a day limit, a dead or keyless channel, and any
+    unknown or empty reason is no channel: the old strike-and-block rule stays)."""
     if not order:
         return False
     return pick_error_reason is None or pick_error_reason in OPEN_TODAY_REASONS
