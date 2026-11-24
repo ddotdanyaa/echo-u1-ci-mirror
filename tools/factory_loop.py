@@ -683,6 +683,7 @@ def _cloud_up(fn) -> bool:
 
 LINKS_EVERY_S = 600     # 4.2 (<id>): the owner's journal is linked to backlog rows at most this often, and only when it grew
 SLICE_PARALLEL = 12
+GUARD_REQUEUE_MAX = 3      # W-guard fix1: cards of one guard row sent back to the slicer as already_green, at most so often
 RESLICE_PER_STEP = SLICE_PARALLEL      # W-feed 4: up to SLICE_PARALLEL rows go to the slicer in one step
 RESLICE_SLEEP_S = 5
 SLICE_WAIT_S = 60
@@ -2988,11 +2989,23 @@ class Loop:
             task = tasks.get(tid)
             row = F.row_of(rec.get("backlog_id") or (task.backlog_id if task else "") or tid)
             guard = self._guard_of_row(row, ls)
-            if guard:
+            if not guard:
+                continue
+            if int((ls.get("guard_requeues") or {}).get(row) or 0) >= GUARD_REQUEUE_MAX:
+                continue                     # a row came back too often: the card stays BLOCKED (no endless circle)
+            entry = (ls.get("to_slice") or {}).get(row) or {}
+            try:                             # only when the slicer will know the guard's red ids (a list, may be empty = green)
+                known = Loop._guard_red_ids(self, row, entry if entry.get("guard") or guard == "rel" else {"guard": guard})
+            except Exception as exc:         # noqa: BLE001 - nothing known: the card is left as it was
+                self.err("guard requeue ids", exc)
+                known = None
+            if known is not None:
                 picked.append((tid, row, guard))
         if not picked:
             return 0
+        counts = ls.setdefault("guard_requeues", {})
         for tid, row, guard in picked:       # the row keeps the guard: the packet of the new slice carries the red test
+            counts[row] = int(counts.get(row) or 0) + 1
             if guard != "rel":
                 entry = ls.setdefault("to_slice", {}).setdefault(row, {"at": self.clock(), "hints": [], "priority": 0})
                 if not entry.get("guard"):

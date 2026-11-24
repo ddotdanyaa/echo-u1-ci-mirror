@@ -5002,6 +5002,8 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                         on_wait=lambda n: events.append('review_window_wait_%d' % n))
                 except (channels.ChannelUnavailable, ChannelFault) as error:
                     kind = error.info.get('kind') if isinstance(error, ChannelFault) else None
+                    # W-guard fix1 3: what ends a review call is now in the telemetry (the reason, not only "short chain")
+                    events.append('review_end_%s' % re.sub(r'[^a-z0-9_]', '_', str(kind or getattr(error, 'reason', '') or 'unknown').lower())[:30])
                     if number >= tries or (kind is not None and kind not in DRY_REVIEW_RETRY_KINDS) or (
                             isinstance(error, channels.ChannelUnavailable) and error.reason in INFRA_CHANNEL_REASONS):
                         raise
