@@ -1568,7 +1568,7 @@ class Loop:
         free = 1 if (self.pool.workers and not self._capacity(None)) else 0
         eligible = self._resliceable(tasks, state, ls, now) if self.slice_fn else {}
         waits = [until - now for until in ls.get("slice_wait", {}).values() if until > now]
-        skip = self.pool.tids() | self._dry_blocked(tasks, state)
+        skip = self.pool.tids() | self._dry_blocked(tasks, state) | self._prio_blocked(tasks, state, ls, now)
         later = self._bisect_later(tasks, state)        # W-bisect 4: never_green debt cards wait while there is other work
 
         def ask(hold):
@@ -2674,6 +2674,10 @@ class Loop:
                     self._guard_red_tick(now, AF)
                 except Exception as e:      # W-echo 1: the invariant never stops the sweep
                     self.err("guard red", e)
+                try:
+                    self._outdated_tick(now)
+                except Exception as e:      # W-prio 3: an aid, it never stops the sweep
+                    self.err("outdated tests", e)
             if self.sweep_fn is None or self._sw is not None or self._ending():
                 return
             ls = self.ls()
@@ -3150,6 +3154,8 @@ class Loop:
             except OSError as e:
                 self.err("release: regressions", e)
         for debt in res.get("debt_rows") or ():          # the red baseline, one row per test file (a line of its own, after the owner's)
+            if str(debt.get("key")) in (ls.get("outdated_tests") or {}):
+                continue                                 # W-prio 3: an outdated test gets no row
             try:
                 names = [str(t).split("::", 1)[-1] for t in debt["tests"][:5]]
                 ls.setdefault("to_slice", {}).setdefault(str(debt["key"]), {
@@ -3618,12 +3624,62 @@ class Loop:
                     asks[engine] = lambda system, user, _root=root: A.ask_agent(system, user, cwd=_root)
         return asks
 
-    SMALL_SLICE_MAX = 3        # W-gslice 3: slicing ensembles of the small tier at one time
+    SMALL_SLICE_MAX = 6        # W-gslice 3 / W-prio 1: slicing ensembles of the small tier at one time (was 3)
+    SMALL_503_S = 300          # W-prio 1: the small tier answered 503 this long with no answer between: slicing cannot start, the pool is not held
+
+    @staticmethod
+    def _is_base_tid(tid) -> bool:
+        """W-prio 1: a card of the old baseline debt rel-base-<n> (its task id is bl_rel_base_<n>...)."""
+        return str(tid or "").startswith("bl_rel_base_")
+
+    def _slice_waiting(self, ls, tasks=None, state=None, now=0) -> bool:
+        """W-prio 1: a row that is not baseline debt (ECHO, rel-<sha8>, guard) waits for slicing.  Only a row that _resliceable would
+        let through counts: not quarantined/outdated, not private/only_opus, not out of reslices, not running, not in slice_wait."""
+        quarantine, outdated = ls.get("quarantine") or {}, ls.get("outdated_tests") or {}
+        by_row, running = {}, set()
+        for tid, t in (tasks or {}).items():
+            row_id = F.row_of(t.backlog_id or tid)
+            by_row.setdefault(row_id, []).append(t)
+            if ((state or {}).get("tasks", {}).get(tid) or {}).get("status") in ("RUNNING", "REVIEW"):
+                running.add(row_id)
+        for bid, entry in (ls.get("to_slice") or {}).items():
+            if F.is_base_debt(bid) or bid in quarantine or bid in outdated or bid in running:
+                continue
+            entry = entry if isinstance(entry, dict) else {}
+            if entry.get("private") or entry.get("only_opus") or F.is_private_text(str(entry.get("text", ""))):
+                continue
+            if any(t.only_opus or not t.privacy_safe or F.is_private_text(t.title + " " + (t.goal or "")) for t in by_row.get(bid, [])):
+                continue
+            if (ls.get("slice_wait") or {}).get(bid, 0) > now:
+                continue
+            rec = (ls.get("reslices") or {}).get(bid) or {}
+            if rec.get("version") == F.slicer_version() and rec.get("used", 0) >= F.MAX_RESLICES and not rec.get("stale"):
+                continue
+            return True
+        return False
+
+    def _slice_cannot_start(self, now) -> bool:
+        """W-prio 1: all the places of the small ensembles are taken, or the small tier answered 503 to everyone for SMALL_503_S."""
+        sem = self.__dict__.get("_small_sem")
+        if sem is not None and getattr(sem, "_value", 1) <= 0:
+            return True
+        since = self.__dict__.get("_small_503_since")
+        return since is not None and now - since >= self.SMALL_503_S
+
+    def _prio_blocked(self, tasks, state, ls, now) -> set:
+        """W-prio 1: while a non-base row waits for slicing, the READY rel-base cards are not admitted (running ones finish); when
+        slicing cannot start the pool takes them as before."""
+        if "free_small" not in (self.cfg.architect_rungs or ()) or not self._slice_waiting(ls, tasks, state, now) or self._slice_cannot_start(now):
+            return set()
+        return {tid for tid, task in tasks.items() if state["tasks"].get(tid, {}).get("status") == "READY"
+                and F.is_base_debt(task.backlog_id or tid)}
     SMALL_YIELD_S = 20         # a card that waits for the small tier longer than this goes before the slicing
 
     def _small_wait_note(self, tid, now):
         """W-gslice 3: a card was deferred by the minute limit of its channel: the editors wait for the small tier from ``now``."""
         waits = self.__dict__.setdefault("_small_waits", {})
+        if self._is_base_tid(tid):
+            return      # W-prio 1: the slicing does not give way to the rel-base cards
         if tid and (tid not in waits or now - waits[tid] > 300):
             waits[tid] = now
 
@@ -3661,10 +3717,13 @@ class Loop:
                 quotas=loop._arch_quotas, max_tokens=A.SMALL_MAX_TOKENS, role="review", only_tier="small",
                 only_model=channel or "", temperature=0.2 if temperature is None else temperature)
             if status == "ok":
+                loop.__dict__["_small_503_since"] = None
                 if not answer.strip():
                     raise ENS.ChannelRefused("empty answer", kind="other")
                 return answer
             if status == "http_503":
+                if loop.__dict__.get("_small_503_since") is None:
+                    loop.__dict__["_small_503_since"] = loop.clock()      # W-prio 1: the streak of 503 with no answer between
                 raise ENS.ChannelRefused(status, kind="overload")
             if status == "http_429":
                 raise ENS.ChannelRefused(status, kind="minute", wait_s=20)
@@ -4454,6 +4513,8 @@ class Loop:
             entry = ls.get("to_slice", {}).get(bid, {})
             if entry.get("private") or entry.get("only_opus") or F.is_private_text(str(entry.get("text", ""))):
                 continue
+            if bid in (ls.get("outdated_tests") or {}):
+                continue                # W-prio 3: the test names what the product no longer has: no cards, no slicing
             if bid in ls.get("quarantine", {}) or ls.get("slice_wait", {}).get(bid, 0) > now:
                 continue
             if bid in running:
@@ -5026,6 +5087,76 @@ class Loop:
             return found.group(1) + ("-" if found.group(2).startswith("0") else ".") + found.group(2)
         return tail if re.match(r"^[A-Za-z]+\d+([._-]\d+)?$", tail) else ""
 
+    OD_BUDGET_S = 15.0         # W-prio fix2: all `git log -S` calls of one outdated tick together
+
+    def _outdated_tick(self, now) -> int:
+        """W-prio 3: once per base sha, every open red baseline row rel-base-<n> is checked before slicing: when every red test of the row
+        names (a settings key, a setattr/setitem target, a getattr, an import from the product) something that is nowhere in the product
+        tree, the row is outdated_test: no cards, READY cards superseded:outdated_test, the test stays in the red list.  A row whose names
+        came back goes to to_slice again.  Returns the number of rows that changed."""
+        sha = self.base_sha
+        if not sha:
+            return 0
+        from tools import factory_outdated as OD, factory_release as REL
+        by_row = {}
+        for file, rec in REL.debt(self.cfg.state_dir).items():
+            if not rec.get("closed") and rec.get("tests") and rec.get("n"):
+                by_row["rel-base-%d" % int(rec["n"])] = [str(t) for t in rec["tests"]]
+        od_key = (sha, tuple(sorted(by_row)))       # W-prio fix2: a row that appears/reopens at the same sha is checked too
+        if od_key == getattr(self, "_od_key", None):
+            return 0
+        index = OD.Index(self.mirror)
+        verdict = {}
+        for bid, tests in by_row.items():
+            found = [OD.missing_names(self.mirror, t, index) for t in tests]
+            if found and all(found):
+                verdict[bid] = (tests[0], found[0])
+        ls = self.ls()
+        book = ls.setdefault("outdated_tests", {})
+        new, back = [], []
+        deadline = time.monotonic() + self.OD_BUDGET_S      # W-prio fix2: one budget for all git log -S of this tick
+        def last_seen(name):
+            left = deadline - time.monotonic()
+            return OD.last_seen(self.cfg.repo, name, timeout=min(8.0, left)) if left > 0.5 else ""
+        for bid in sorted(set(verdict) - set(book)):
+            names = [{"kind": k, "name": n, "last": last_seen(n)} for k, n in verdict[bid][1][:6]]
+            book[bid] = {"test": verdict[bid][0], "names": names, "at": now, "sha": sha[:12]}
+            for key in ("to_slice", "slice_wait", "reslices", "quarantine"):
+                if isinstance(ls.get(key), dict):
+                    ls[key].pop(bid, None)
+            new.append(bid)
+        for bid in sorted(set(book) - set(verdict)):
+            if bid in by_row:                       # the names are back in the tree: the row is a live red row again
+                entry = self._rel_entry_back(ls, bid)
+                if entry:
+                    ls.setdefault("to_slice", {}).setdefault(bid, entry)
+            book.pop(bid, None)                     # (a row that left the debt book leaves this one)
+            back.append(bid)
+        self._od_key = od_key
+        if not (new or back):
+            return 0
+        self.save_ls(ls)
+        if new:
+            def supersede(st):
+                for tid, row in st["tasks"].items():
+                    bid = F.row_of(row.get("backlog_id") or tid)
+                    if bid in new and row.get("status") == "READY":
+                        row.update(status="FAILED", reason="superseded:outdated_test")
+            try:
+                self._tx(supersede)
+            except Exception as e:      # noqa: BLE001 - a busy plan: the cards are no longer admitted anyway (no slicing, no new ones)
+                self.err("outdated tests: supersede", e)
+        try:
+            (self.cfg.state_dir / "outdated_tests.md").write_text(OD.report_md(ls["outdated_tests"]), encoding="utf-8")
+        except OSError as e:
+            self.err("outdated tests: report", e)
+        for bid in new:
+            self.event("supply", status="outdated_test", backlog_id=bid,
+                       reason="outdated_test: %s names %s" % (self.rs(book[bid]["test"], 120), ", ".join(n["name"] for n in book[bid]["names"][:4])))
+        for bid in back:
+            self.event("supply", status="outdated_test_lifted", backlog_id=bid, reason="the names are back in the product tree")
+        return len(new) + len(back)
+
     def _guard_red_tick(self, now, AF) -> None:
         """W-echo 1: on every NEW record of the sweep (its file or its modification changed) the red-guard invariant runs once."""
         latest = AF.latest_sweep(self._sweep_dir())
@@ -5186,7 +5317,7 @@ class Loop:
         order = {s: i for i, s in enumerate(self.RECONCILE_ORDER)}
         # what speaks for a row: the answer of the architect or the slicer's queue beat tasks that were superseded; a PROMOTED code task
         # of the row's LAST generation (..._r<n>) is the row, whatever the older generations ended as
-        spoken = {b for b, r in (ls.get("arch_decision") or {}).items() if isinstance(r, dict)} | set(ls.get("to_slice") or {}) | set(ls.get("split") or {})
+        spoken = {b for b, r in (ls.get("arch_decision") or {}).items() if isinstance(r, dict)} | set(ls.get("to_slice") or {}) | set(ls.get("split") or {}) | set(ls.get("outdated_tests") or {})
         live, last_gen = set(), {}
         for tid, row in state["tasks"].items():
             t = tasks.get(tid)
@@ -5235,6 +5366,10 @@ class Loop:
         def put(bid, state_name, reason, until=None):
             if bid and bid not in rows:
                 rows[bid] = {"state": state_name, "reason": self.rs(reason or state_name, 200), "until": until}
+        for bid, rec in (ls.get("outdated_tests") or {}).items():    # W-prio 3: the test names what the product no longer has
+            if isinstance(rec, dict):
+                put(bid, "outdated_test", "устаревший тест %s: нет в продукте %s" % (
+                    rec.get("test"), ", ".join(str(n.get("name")) for n in (rec.get("names") or [])[:4])))
         for bid, rec in (ls.get("arch_decision") or {}).items():     # the architect's own answer, in its own word
             if isinstance(rec, dict):
                 kind = str(rec.get("decision") or "")
@@ -6705,6 +6840,7 @@ class Loop:
                 stats["vgs"] = factory_metrics.vgs_report(self.dir, now=self.ts())
             except Exception as e:      # statistics never stop the loop
                 stats["vgs"] = {"error": F.redact(type(e).__name__)}
+            stats["outdated"] = len(ls.get("outdated_tests") or {})      # W-prio 4: red tests that name what the product no longer has
             stats["queues"] = {"to_slice": len(ls.get("to_slice", {})),
                 "slicing": len(ls.get("slicing", {})),
                 "slice_wait": sum(until > self.clock() for until in ls.get("slice_wait", {}).values()),

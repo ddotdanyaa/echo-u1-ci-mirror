@@ -623,8 +623,24 @@ def validate(contract, root, *, bid='', title='', known_ids=None, named_ok=False
     return faults
 
 
-def ladder(rung, *, rungs, red=False, dry=False, base_debt=False):
-    """W-base0: a row of the old baseline debt (base_debt) is sliced by the free steps only, always: no paid, no agent."""
+def no_money():
+    """W-prio 2: the set of the paid steps whose money is gone now (credit dead): they are left out of the ladder quietly, no event per pass."""
+    gone = set()
+    try:
+        if PK.credit_dead():
+            gone |= {'paid', 'agent'}
+        elif PK.agent_credit_dead():
+            gone.add('agent')
+    except Exception:       # an aid: on any doubt the ladder stands as it was
+        return set()
+    return gone
+
+
+def ladder(rung, *, rungs, red=False, dry=False, base_debt=False, gone=()):
+    """W-base0: a row of the old baseline debt (base_debt) is sliced by the free steps only, always: no paid, no agent.
+    W-prio 2: ``gone`` = the paid steps without money: they are skipped (no unavailable fault each pass); the order of the remaining steps is the usual one (dry/red/rung)."""
+    if gone:
+        rungs = tuple(e for e in rungs if e not in gone)
     if base_debt:
         order = ('free', 'free_main', 'free_small')
     elif dry and not red:      # W-dry 1: the edit channels are dry: agent, then paid give the finished code; the free steps last
@@ -1203,7 +1219,7 @@ def contract_for(packet, *, rung, root, asks, named_ok=False, red_given=None, sk
     cache = dict(skip)
     dry = bool(packet.get('edit_dry'))
     base_debt = bool(packet.get('base_debt')) or F.is_base_debt(str(packet.get('bid', '')))
-    for engine in [e for e in ladder(rung, rungs=tuple(asks), red=red, dry=dry, base_debt=base_debt) if e not in skip]:
+    for engine in [e for e in ladder(rung, rungs=tuple(asks), red=red, dry=dry, base_debt=base_debt, gone=no_money()) if e not in skip]:
         user, rounds, shrunk, fixed, idle = initial, 0, False, False, 0
         dry_asked = False
         replied, raw = False, ''
