@@ -109,7 +109,10 @@ def run_steps(loop, n, env=None, tids=None):
 
 
 def test_runs_disjoint_tasks_together_and_never_two_that_share_a_test(tmp_path, monkeypatch):
-    env = pool_env(tmp_path, monkeypatch, [task_row(1), task_row(2), task_row(3, tests=["tests/test_x1.py"])])
+    # W-optim replacement: a shared EXISTING test file holds nothing any more; only the same NEW test file (test.new) does
+    same_new = json.dumps({"test": {"new": {"path": "tests/test_shared_new.py"}}})
+    env = pool_env(tmp_path, monkeypatch, [task_row(1, contract=same_new), task_row(2),
+                                           task_row(3, contract=same_new)])
     monkeypatch.setenv("POOL_SLEEP", "1.0")
     monkeypatch.setenv("POOL_STATUS", "DONE")
     loop = env.make_loop()
@@ -117,7 +120,7 @@ def test_runs_disjoint_tasks_together_and_never_two_that_share_a_test(tmp_path, 
     s = spans(env)
     assert set(s) == {"T1", TID2, "T3"}
     assert overlap(env, "T1", TID2)                       # disjoint: together
-    assert not overlap(env, "T1", "T3") and not overlap(env, "T3", "T1")   # one test: never together
+    assert not overlap(env, "T1", "T3") and not overlap(env, "T3", "T1")   # one new test file: never together
     assert all(not e["max_tasks"] for e in plog(env) if e["ev"] == "start")   # the loop hands the task and the lease
     assert all(e["lease"] for e in plog(env) if e["ev"] == "start")
 
