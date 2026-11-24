@@ -214,7 +214,7 @@ def test_a_rig_card_with_file_text_changes_the_file_in_the_work_copy(tmp_path):
     (work / "tests" / "test_x.py").write_bytes(b"def test_a():\r\n    assert 1\r\n")
     new = "def helper():\r\n    return 2\r\n\r\ndef test_a():\r\n    assert 1\r\n"
     part = {"file": "tests/test_x.py", "file_text": new, "instruction": "Replace the whole file.", "stage": 1}
-    task = F.read_plan([task_row(1, touch_files=["tests/test_x.py"])])["T1"]
+    task = F.read_plan([task_row(1, touch_files=["tests/test_x.py"], contract=json.dumps({"row": "B1", "decision": "fix", "rig": True}))])["T1"]
     rc, _, err = R.edit_parts(task, [part], work, lambda *a: pytest.fail("a model was asked"), use_code=True)
     assert rc == 0, err
     assert (work / "tests" / "test_x.py").read_bytes() == new.encode("utf-8")
@@ -229,7 +229,7 @@ def test_a_rig_card_with_file_text_is_written_on_a_retry_too(tmp_path):
     (work / "tests" / "test_x.py").write_bytes(b"def test_a():\r\n    assert 1\r\n")
     new = "def test_a():\r\n    assert 1\r\n\r\ndef test_b():\r\n    assert 2\r\n"
     part = {"file": "tests/test_x.py", "file_text": new, "instruction": "Replace the whole file.", "stage": 1}
-    task = F.read_plan([task_row(1, touch_files=["tests/test_x.py"])])["T1"]
+    task = F.read_plan([task_row(1, touch_files=["tests/test_x.py"], contract=json.dumps({"row": "B1", "decision": "fix", "rig": True}))])["T1"]
     rc, _, err = R.edit_parts(task, [part], work, lambda *a: pytest.fail("a model was asked"), use_code=False)
     assert rc == 0, err
     assert (work / "tests" / "test_x.py").read_bytes() == new.encode("utf-8")

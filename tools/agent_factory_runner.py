@@ -2740,7 +2740,7 @@ def edit_parts(task: Task, parts: list, workdir: Path, call, failing: str = '', 
             shutil.copytree(workdir, folder)
         try:
             try:
-                if isinstance(part.get('file_text'), str):
+                if gate.is_rig_task(task) and isinstance(part.get('file_text'), str):
                     # W-rig fix2: a rig card carries the whole verified file; it is written as it is (bytes: CRLF stays)
                     blocks = None
                 elif file.endswith('.py'):
@@ -2886,7 +2886,7 @@ def edit_parts(task: Task, parts: list, workdir: Path, call, failing: str = '', 
                 info['context_chars'] = info.get('context_chars', 0) + len(pack)
                 info['context_sections'] = sorted(set(info.get('context_sections', [])) | set(K.context_sections(pack)))
         reason, more = '', ''
-        ready_file = isinstance(part.get('file_text'), str)
+        ready_file = gate.is_rig_task(task) and isinstance(part.get('file_text'), str)
         # a rig card with a ready file has ONE path, writing that file: on a retry, with feedback or for a parallel
         # candidate it is applied too, and an unapplied one is refused (never handed to a model, which would invent the file)
         if ready_file or (use_code and isinstance(part.get('code'), str) and part['code'].strip()):
