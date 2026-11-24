@@ -73,7 +73,7 @@ CLOUD_TRIAL_S = 60                    # a cloud that does not answer is asked ag
 FAST_LOCAL_SHARE = 0.20               # more of the gate time than this spent on local runs: new workers send every test to the cloud
 FAST_LOCAL_HOLD_S = 3600
 WAIT_PULSE_S = 60.0                   # a wait for live workers writes a short event at least this often (the watcher's quiet limit is 300 s)
-WAIT_BG_S = 0.1                      # the same look while a background triage / hold pick runs: a ready task is admitted within 0.1 s of its card
+WAIT_BG_S = 0.03                     # the same look while a background triage / hold pick runs: a ready task is admitted within ~0.03 s of its card (the runner's own boot is on top of it)
 WAIT_CHUNK_S = 3.0                  # real seconds between two looks at the pool while workers run
 STALE_INDEX_LOCK_S = 120
 ES_CONTINUOUS = 0x80000000
@@ -450,15 +450,24 @@ def _fixture_def_faults(node, reserved) -> bool:
     return not all(_safe_annotation(a.annotation) for a in every) or not _safe_annotation(node.returns)
 
 
-def _conftest_faults(name: str, text: str, reserved=frozenset()) -> list[str]:
+def _conftest_faults(name: str, text: str, reserved=frozenset(), old: str = "") -> list[str]:
     """W-pack: tests/conftest.py by AST allow-list: imports, constants (literals), docstring, and `def` fixtures decorated with
     pytest.fixture without autouse. No hooks, no pytest_* names, no module-level code, no session/items access."""
     try:
         tree = ast.parse(text)
     except (SyntaxError, ValueError, RecursionError):
         return [name + ": conftest does not parse"]
+    try:  # a top-level node that stood there before is not the package's: only what it adds or changes is judged
+        stood = ast.parse(old).body
+        before = {ast.dump(n) for n in stood}
+    except (SyntaxError, ValueError, RecursionError):
+        stood, before = [], set()
     bad = name + ": conftest allows only imports, constants and pytest.fixture functions (no hooks, plugins, autouse)"
-    for node in tree.body:
+    fresh = [n for n in tree.body if ast.dump(n) not in before]
+    reserved = frozenset(reserved) | {n.name for n in stood if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))}
+    if before - {ast.dump(n) for n in tree.body}:
+        return [name + ": conftest drops or changes what stood there"]
+    for node in fresh:
         if isinstance(node, ast.Import):
             if any(a.name.split(".")[-1].startswith("pytest_") or (a.asname or "").startswith("pytest_") for a in node.names):
                 return [bad]
@@ -479,7 +488,7 @@ def _conftest_faults(name: str, text: str, reserved=frozenset()) -> list[str]:
                 return [bad]
         else:
             return [bad]
-    for node in ast.walk(tree):
+    for node in (x for top in fresh for x in ast.walk(top)):
         if (isinstance(node, ast.Attribute) and node.attr in ("items", "session", "hookimpl", "hookspec")) \
                 or (isinstance(node, ast.Name) and node.id in ("items", "session", "pytest_plugins")):
             return [name + ": conftest touches session/items/hooks"]
@@ -3680,7 +3689,7 @@ class Loop:
                 if not is_conftest and factory_gate.is_forbidden(name, "code", named=list(files), rig=True):
                     faults.append(name + ": forbidden")
                 if is_conftest:
-                    faults += _conftest_faults(name, text, _project_fixture_names(wt))
+                    faults += _conftest_faults(name, text, _project_fixture_names(wt), old)
                 if F.is_private_text(text) and not F.is_private_text(old):
                     faults.append(name + ": private text")
         if faults:
