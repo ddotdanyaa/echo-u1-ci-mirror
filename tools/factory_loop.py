@@ -414,15 +414,43 @@ def _drop_stale_lock(cwd: Path) -> bool:
 
 
 def _is_fixture_deco(d) -> bool:
-    """pytest.fixture or pytest.fixture(<keywords without autouse>), no positional args."""
+    """pytest.fixture or pytest.fixture(scope=<str literal>): no positional args; only `scope`, its value a literal
+    (name=, params=, autouse=, ids= and any computed value are refused: they run at import or rename a fixture)."""
     if isinstance(d, ast.Call):
-        if d.args or any(k.arg is None or k.arg == "autouse" for k in d.keywords):
+        if d.args or any(k.arg != "scope" or not (isinstance(k.value, ast.Constant) and isinstance(k.value.value, str))
+                         for k in d.keywords):
             return False
         d = d.func
     return isinstance(d, ast.Attribute) and d.attr == "fixture" and isinstance(d.value, ast.Name) and d.value.id == "pytest"
 
 
-def _conftest_faults(name: str, text: str) -> list[str]:
+_BUILTIN_FIXTURES = frozenset((
+    "tmp_path", "tmp_path_factory", "tmpdir", "tmpdir_factory", "monkeypatch", "capsys", "capfd", "capsysbinary", "capfdbinary",
+    "caplog", "request", "pytestconfig", "recwarn", "cache", "doctest_namespace", "record_property", "record_xml_attribute",
+    "record_testsuite_property", "testdir", "pytester", "env", "event_loop", "anyio_backend", "mocker"))
+
+
+def _safe_annotation(a) -> bool:
+    return a is None or all(isinstance(n, (ast.Name, ast.Attribute, ast.Constant, ast.Load, ast.Subscript, ast.Tuple, ast.BinOp, ast.BitOr))
+                            for n in ast.walk(a))
+
+
+def _fixture_def_faults(node, reserved) -> bool:
+    """True when the def is unsafe at import: non-literal defaults/annotations, or a reserved (builtin/project) fixture name."""
+    if node.name in _BUILTIN_FIXTURES or node.name in reserved:
+        return True
+    args = node.args
+    defaults = list(args.defaults) + [x for x in args.kw_defaults if x is not None]
+    for dflt in defaults:
+        try:
+            ast.literal_eval(dflt)
+        except (ValueError, SyntaxError, TypeError, MemoryError, RecursionError):
+            return True
+    every = args.posonlyargs + args.args + args.kwonlyargs + [x for x in (args.vararg, args.kwarg) if x is not None]
+    return not all(_safe_annotation(a.annotation) for a in every) or not _safe_annotation(node.returns)
+
+
+def _conftest_faults(name: str, text: str, reserved=frozenset()) -> list[str]:
     """W-pack: tests/conftest.py by AST allow-list: imports, constants (literals), docstring, and `def` fixtures decorated with
     pytest.fixture without autouse. No hooks, no pytest_* names, no module-level code, no session/items access."""
     try:
@@ -446,7 +474,8 @@ def _conftest_faults(name: str, text: str) -> list[str]:
             except (ValueError, SyntaxError, TypeError, MemoryError, RecursionError):
                 return [bad]
         elif isinstance(node, ast.FunctionDef):
-            if node.name.startswith("pytest_") or not node.decorator_list or not all(_is_fixture_deco(d) for d in node.decorator_list):
+            if node.name.startswith("pytest_") or not node.decorator_list or not all(_is_fixture_deco(d) for d in node.decorator_list) \
+                    or _fixture_def_faults(node, reserved):
                 return [bad]
         else:
             return [bad]
@@ -455,6 +484,21 @@ def _conftest_faults(name: str, text: str) -> list[str]:
                 or (isinstance(node, ast.Name) and node.id in ("items", "session", "pytest_plugins")):
             return [name + ": conftest touches session/items/hooks"]
     return []
+
+
+def _project_fixture_names(wt: Path) -> frozenset:
+    """Names of fixtures defined in other conftest files of the project (tests/conftest.py itself may be updated)."""
+    names = set()
+    for p in Path(wt).rglob("conftest.py"):
+        try:
+            if p.relative_to(wt).as_posix().casefold() == "tests/conftest.py" or ".git" in p.parts:
+                continue
+            for n in ast.walk(ast.parse(p.read_text(encoding="utf-8"))):
+                if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    names.add(n.name)
+        except (OSError, ValueError, SyntaxError, RecursionError):
+            continue
+    return frozenset(names)
 
 
 def package_digest(files: dict) -> str:
@@ -3603,8 +3647,15 @@ class Loop:
         base = str(verdict.get("base") or "")
         if not files or verdict.get("digest") != package_digest(files):
             raise F.InvalidPlan("package: the digest is not the one that was built")
-        if verdict.get("new_red") != [] or not verdict.get("green") or len(verdict.get("runs") or []) < 2 \
-                or (verdict.get("review") or {}).get("verdict") != "approve":
+        if not isinstance(verdict, dict):
+            raise F.InvalidPlan("package: verdict.json must be an object")
+        runs, review, green = verdict.get("runs"), verdict.get("review"), verdict.get("green")
+        try:
+            green = int(green) if isinstance(green, (int, str)) and not isinstance(green, bool) else 0
+        except ValueError:
+            green = 0
+        if verdict.get("new_red") != [] or green <= 0 or not isinstance(runs, list) or len(runs) < 2 \
+                or not all(isinstance(r, (dict, int)) and not isinstance(r, bool) for r in runs) or not isinstance(review, dict) or review.get("verdict") != "approve":
             raise F.InvalidPlan("package: needs green > 0, new_red [], two full runs and an approving review")
         faults = factory_gate.rig_touch_faults(list(files))
         if not re.fullmatch(r"[0-9a-f]{40}", base) or subprocess.run(
@@ -3629,7 +3680,7 @@ class Loop:
                 if not is_conftest and factory_gate.is_forbidden(name, "code", named=list(files), rig=True):
                     faults.append(name + ": forbidden")
                 if is_conftest:
-                    faults += _conftest_faults(name, text)
+                    faults += _conftest_faults(name, text, _project_fixture_names(wt))
                 if F.is_private_text(text) and not F.is_private_text(old):
                     faults.append(name + ": private text")
         if faults:
@@ -3649,7 +3700,7 @@ class Loop:
             except Exception as e2:
                 self.err("package restore", e2)
             raise F.InvalidPlan("package: write or commit failed (%s), the tree is restored" % type(e).__name__) from e
-        self.event("promote", task_id=key, backlog_id=key, status="promoted", reason="package", commit=sha, green=int(verdict["green"]))
+        self.event("promote", task_id=key, backlog_id=key, status="promoted", reason="package", commit=sha, green=green)
         return {"task_id": None, "backlog_id": key, "reason": "package " + sha[:8]}
 
     def _revert_answer(self, tid, bid, state, note, ls) -> dict:
