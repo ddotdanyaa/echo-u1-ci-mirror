@@ -1,0 +1,8 @@
+tests/test_ack_commands.py
+tests/test_c25_a_veto.py
+tests/test_cl2_resume.py
+tests/test_g23_old_answer.py
+tests/test_g3_arbiter.py
+tests/test_partial_quiet.py
+tests/test_turn_policy.py
+tests/test_u19_gate.py

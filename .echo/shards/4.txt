@@ -1,0 +1,7 @@
+tests/registry/test_fn_1_02.py
+tests/registry/test_fn_5_05b.py
+tests/test_c8b_owner_call_2010.py
+tests/test_d0811_a_asleep.py
+tests/test_t_classes.py
+tests/test_u17_half_duplex.py
+tests/test_x_tick_order.py
