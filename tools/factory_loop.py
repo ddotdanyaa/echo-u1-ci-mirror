@@ -3027,8 +3027,8 @@ class Loop:
         for tid, rec in state["tasks"].items():
             task = tasks.get(tid)
             row = F.row_of(rec.get("backlog_id") or (task.backlog_id if task else "") or tid)
-            # W-optim 4: a READY debt card (rel-base) is passed too, but only when its guard is PROVEN green on this base
-            waiting = rec.get("status") == "READY" and not rec.get("lease") and str(row).startswith("rel-")
+            # W-optim 4 (fix3): a READY or RUNNING debt card (rel-...) is passed too, but only when its guard is PROVEN green on this base
+            waiting = rec.get("status") in ("READY", "RUNNING") and str(row).startswith("rel-")
             if not waiting and (rec.get("status") != "BLOCKED" or "already_green" not in str(rec.get("blocked_reason") or rec.get("reason") or "")):
                 continue
             guard = self._guard_of_row(row, ls)
@@ -3050,9 +3050,11 @@ class Loop:
         with self.txn() as (_tasks, st):
             for tid, row, guard in picked:
                 cur = st["tasks"].get(tid, {})
-                if cur.get("status") == "BLOCKED" or (cur.get("status") == "READY" and not cur.get("lease")):
+                if cur.get("status") in ("BLOCKED", "RUNNING") or (cur.get("status") == "READY" and not cur.get("lease")):
+                    # a RUNNING debt card loses its lease: the worker's next write under the old token is refused and its pass ends
                     st["tasks"][tid].update(status="FAILED", reason="reslice:stale")
                     st["tasks"][tid].pop("blocked_reason", None)
+                    st["tasks"][tid].update(lease=None, deadline=None)
                     done.append((tid, row))
         if done:                             # the count and the guard are booked only for cards that really went back
             ls = self.ls()
@@ -6799,7 +6801,11 @@ class Loop:
             self.save_ls(ls)
             self._park(tid, "promote_failed", "the merge conflicted %d times in a row: %s" % (n - 1, note))
             return finish("parked", "merge_conflict")
-        hint = note if n < 2 else note + " (repeat %d: the previous edit is a hint, apply it onto the fresh code)" % n
+        # the package is deleted below, so the previous edit travels in the feedback: a diff of the candidate against its base
+        edit = self._edit_hint(src, ls["bases"].get(tid), room=F.FEEDBACK_MAX_CHARS - len(note) - 160)
+        hint = note + (" (repeat %d)" % n if n >= 2 else "")
+        if edit:
+            hint += "; the previous edit is a hint, apply it onto the fresh code:\n" + edit
         now = self.clock()
         def back(st):
             F.requeue(st, tid, hint)
@@ -6809,6 +6815,23 @@ class Loop:
         ls["bases"].pop(tid, None)
         self.save_ls(ls)
         return finish("requeued", "merge_conflict", retry=n)
+
+    def _edit_hint(self, src, base, room=1200) -> str:
+        """W-optim fix3: the candidate's edit as a unified diff against its base (cut to ``room`` chars); '' when unknown."""
+        if not base or room < 200:
+            return ""
+        import difflib
+        parts = []
+        try:
+            for p in sorted(q for q in Path(src).rglob("*") if q.is_file()):
+                name = p.relative_to(src).as_posix()
+                old = self._blob(self.cfg.repo, base, name).splitlines()
+                new = self._read_exact(p).splitlines()
+                parts.extend(difflib.unified_diff(old, new, "a/" + name, "b/" + name, n=1, lineterm=""))
+        except Exception:
+            return ""
+        text = "\n".join(parts)
+        return text if len(text) <= room else text[:room] + "\n...(cut)"
 
     @staticmethod
     def _lease_and_fail(state, tid) -> str:

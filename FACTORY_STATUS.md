@@ -1,9 +1,10 @@
 # Factory status (generated, structured data only)
 
-Generated: 2026-11-24T07:06:15Z
-Source commit: sha3dc95f4a0edb
+Generated: 2026-11-24T07:15:33Z
+Source commit: shaa3f487e5927d
 
 ## Commits (sha, time)
+- shaa3f487e5 2026-11-24T10:13:37+03:00
 - sha3dc95f4a 2026-11-24T10:04:50+03:00
 - shabeebd30b 2026-11-24T09:54:48+03:00
 - shae424845b 2026-11-24T09:49:55+03:00
@@ -23,28 +24,27 @@ Source commit: sha3dc95f4a0edb
 - sha3e683cb2 2026-11-24T05:32:36+03:00
 - shac3311953 2026-11-24T05:25:58+03:00
 - shafd6fc201 2026-11-24T04:28:32+03:00
-- sha51589267 2026-11-24T04:24:26+03:00
 
 ## Funnel
 | step | count |
 |---|---|
 | accepted | 22 |
-| claimed | 637 |
+| claimed | 638 |
 | coded | 185 |
 | found_in_backlog | unknown |
 | gate_pass | 74 |
 | known_to_loop | 543 |
 | promoted | 70 |
-| ready | 60 |
+| ready | 71 |
 | reviewed | 191 |
 | triaged | 366 |
 
 Side counters: blocked=0, parked=0, requeued=7
-Tasks now: DONE=68, FAILED=657, PROMOTED=46, READY=60, RUNNING=9
+Tasks now: DONE=68, FAILED=657, PROMOTED=46, READY=71
 Accepted: 22
 Promoted: 70
-Free RAM, GB: 3.57
-Telemetry rows: 53306 recognised, 0 unrecognised
+Free RAM, GB: 3.96
+Telemetry rows: 53410 recognised, 0 unrecognised
 
 ## Spend per model
 | model | calls | tokens_in | tokens_out | usage_unknown | http_429 | errors |
@@ -61,8 +61,8 @@ Telemetry rows: 53306 recognised, 0 unrecognised
 | google/gemini-3.7-flash | 26 | 9121 | 14 | 25 | 14 | 25 |
 | google/gemini-3.8-flash | 28 | 21237 | 15 | 25 | 13 | 25 |
 | google/gemini-4-hydrogen | 1 | 0 | 0 | 1 | 0 | 1 |
-| google/gemma-4-26b-a4b-it | 2305 | 1941786 | 354934 | 1547 | 9 | 1547 |
-| google/gemma-4-31b-it | 1718 | 876485 | 91483 | 1400 | 7 | 1400 |
+| google/gemma-4-26b-a4b-it | 2311 | 1941786 | 354934 | 1553 | 9 | 1553 |
+| google/gemma-4-31b-it | 1727 | 876485 | 91483 | 1409 | 7 | 1409 |
 | openrouter/nvidia/nemotron-3-ultra-550b-a55b:free | 130 | 715529 | 156330 | 2 | 2 | 2 |
 | other | 65 | 1154192 | 66710 | 6 | 0 | 7 |
 
@@ -70,14 +70,14 @@ Telemetry rows: 53306 recognised, 0 unrecognised
 | span | rows | calls |
 |---|---|---|
 | answer | 536 | 0 |
-| gate | 7453 | 0 |
-| infra | 1347 | 0 |
-| loop | 8005 | 0 |
-| other | 15589 | 0 |
+| gate | 7455 | 0 |
+| infra | 1352 | 0 |
+| loop | 8021 | 0 |
+| other | 15630 | 0 |
 | promote | 86 | 0 |
-| review | 3062 | 1460 |
-| run | 16801 | 6973 |
-| triage | 427 | 0 |
+| review | 3072 | 1460 |
+| run | 16830 | 6988 |
+| triage | 428 | 0 |
 
 ## Channels (model ids)
 - 1db4ab-gemini-3-8-flash
@@ -128,7 +128,7 @@ Telemetry rows: 53306 recognised, 0 unrecognised
 ## Published files
 Modules: 33
 Tests in the cloud: 104
-Tests not in the cloud: 125
+Tests not in the cloud: 126
 - tests/test_agent_factory.py (backlog-id, call-word, env-path, long-run, pid-port)
 - tests/test_factory_503.py (backlog-id, long-run)
 - tests/test_factory_architect.py (backlog-id, email, env-path, path)
@@ -202,6 +202,7 @@ Tests not in the cloud: 125
 - tests/test_factory_neighbours.py (dependency)
 - tests/test_factory_no_effect.py (dependency)
 - tests/test_factory_optimistic.py (backlog-id)
+- tests/test_factory_optimistic_fix3.py (dependency)
 - tests/test_factory_other_model.py (dependency)
 - tests/test_factory_owner_list.py (backlog-id, call-word, long-run)
 - tests/test_factory_paid_critic.py (long-run)
