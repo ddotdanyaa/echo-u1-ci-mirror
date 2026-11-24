@@ -1293,6 +1293,8 @@ class Loop:
         for ev in F.LOCK_EVENTS:
             if ev.get("event") == "stale_lock_removed" and ev.get("lock") == mine:
                 self.event("infra", status="cleared", reason="stale_lockdir", holder=ev.get("holder", "old"))
+            elif ev.get("event") == "lock_held" and ev.get("lock") in (mine, str(self.plan_path.with_suffix(self.plan_path.suffix + ".lockdir"))):   # W-ask 4: held over 500 ms: how long, and where
+                self.event("infra", status="lock_held", reason="state lock held %s ms at %s" % (ev.get("held_ms"), ev.get("where")))
             else:
                 keep.append(ev)
         F.LOCK_EVENTS[:] = keep
@@ -1785,11 +1787,12 @@ class Loop:
             if not tid or tid in self.pool.tids() or tid in declined:
                 continue
             t0 = self.clock()
-            refused = self._capacity(tasks.get(tid))
+            refused = self._capacity(tasks.get(tid), state)       # W-tick 4: the state of the pass, no load() per card
             self._lap("fill.capacity", t0)
             if refused:
                 break
             t0 = self.clock()
+            self._claimed_state = None                        # W-tick 6: set by this _admit's claim only, never a leftover (tasks stay the pass's plan: the claim does not change the plan)
             got = self._admit(tid, tasks, ls)
             self._lap("fill.admit", t0)
             if isinstance(got, Outcome):
@@ -1803,11 +1806,20 @@ class Loop:
             if not got:
                 declined.add(tid)
                 continue
-            t0 = self.clock()
-            tasks, state = self.load()          # the claim changed the state: nothing stale is kept
-            self._lap("fill.load", t0)
+            # W-tick 4: the state the claim itself wrote (no read per start). Known trade-off: began/booked written by _admit
+            # after the claim are seen only by the one read at the end of the pass; the claim re-checks every card under the lock
+            claimed = getattr(self, "_claimed_state", None)
+            self._claimed_state = None
+            if isinstance(claimed, dict):
+                state = claimed
+            else:
+                t0 = self.clock()
+                tasks, state = self.load()
+                self._lap("fill.load", t0)
         if admitted:
             t0 = self.clock()
+            tasks, state = self.load()          # the claims changed the state: ONE fresh read for the next act
+            self._lap("fill.load", t0)
             ls = self.ls()
             act = self._act(state, tasks, ls, now, eligible=getattr(self, "_last_eligible", None))
             self._lap("fill.act", t0)
@@ -2748,20 +2760,21 @@ class Loop:
             sw_dir = self._sweep_dir()
             if now - self._sw_refresh_at >= 60 and sw_dir.is_dir() and AF.latest_sweep(sw_dir) is not None:
                 self._sw_refresh_at = now
-                try:
-                    tasks, state = self.load()
-                except Exception as e:      # a busy plan lock: the refresh waits for the next minute, it is no fault
-                    if type(e).__name__ != "LockBusy":
-                        raise
-                    return
-                rows = {tid: {"status": r.get("status"), "tests": list(tasks[tid].tests) if tid in tasks else [],
-                              "base_red": r.get("base_red")} for tid, r in state["tasks"].items()}
                 swat = float((self.ls().get("sweep") or {}).get("at") or 0)
                 mt = self.ls().get("merged_at") or {}
                 newer = [t for t, v in mt.items() if isinstance(v, (int, float)) and swat and v > swat] if isinstance(mt, dict) else []
-                got = AF.refresh_from_tasks(self._sweep_dir(), rows, merged_after=newer)     # W-refresh 1: red only from the cloud sweep
-                if got and (got["green"] or got["red"]):
-                    self.event("sweep", status="refreshed", reason="green=%d red=%d" % (len(got["green"]), len(got["red"])))
+                if newer:       # W-tick 3: with nothing merged since the sweep there is nothing to refresh: no state read, no sweep file read
+                    try:
+                        tasks, state = self.load()
+                    except Exception as e:      # a busy plan lock: the refresh waits for the next minute, it is no fault
+                        if type(e).__name__ != "LockBusy":
+                            raise
+                        return
+                    rows = {tid: {"status": r.get("status"), "tests": list(tasks[tid].tests) if tid in tasks else [],
+                                  "base_red": r.get("base_red")} for tid, r in state["tasks"].items()}
+                    got = AF.refresh_from_tasks(self._sweep_dir(), rows, merged_after=newer)     # W-refresh 1: red only from the cloud sweep
+                    if got and (got["green"] or got["red"]):
+                        self.event("sweep", status="refreshed", reason="green=%d red=%d" % (len(got["green"]), len(got["red"])))
             if not self._ending():
                 try:
                     self._guard_red_tick(now, AF)
@@ -3372,6 +3385,11 @@ class Loop:
                     "text": "тест %s красный на базе %s: %s" % (debt["file"], sha[:8], ", ".join(names))})
             except (KeyError, TypeError, IndexError):
                 self.err("release: debt row", ValueError(str(debt)[:100]))
+        closed_rows = [str(r) for r in (res.get("closed_rows") or ()) if r]
+        for bid in closed_rows:                          # W-part 1: green in the two last full builds: out of the queues
+            for key in ("to_slice", "slice_wait", "reslices", "quarantine"):
+                if isinstance(ls.get(key), dict):
+                    ls[key].pop(bid, None)
         ls["release"] = {"sha": sha, "at": now, "promoted_total": int(run.get("promoted_total") or 0),
                          "status": status, "new_red": new_red, "tree": run.get("tree") or ""}
         if isinstance(ls.get("release_run"), dict):
@@ -3392,11 +3410,24 @@ class Loop:
         self.event("release", status=status, dur_s=round(job.dur_s, 3), base_sha=sha, reason=str(res.get("reason") or "")[:200],
                    new_red=len(new_red), accepted=len(taken), release_run=(res.get("sweep") or {}).get("run_id"),
                    shards=res.get("shards") or None, longest_s=res.get("longest_s"))
+        if closed_rows:
+            def supersede_green(st):
+                for tid, row in st["tasks"].items():
+                    if F.row_of(row.get("backlog_id") or tid) in closed_rows and row.get("status") == "READY":
+                        row.update(status="FAILED", reason="superseded:already_green")
+            try:
+                self._tx(supersede_green)
+            except Exception as e:      # noqa: BLE001 - a busy plan: the READY card meets the guard check later
+                self.err("release: supersede already_green", e)
+            for bid in closed_rows:
+                self.event("release", status="debt_closed", backlog_id=bid, reason="superseded:already_green (green in two full builds)")
         for tid in taken:
             row, bid = state["tasks"].get(tid) or {}, self._bid(state, tasks, tid)
             self.event("accept", task_id=tid, backlog_id=bid, status="accepted", reason="accepted_by_release")
             try:
-                if REL.close_debt(self.cfg.state_dir, bid):     # a merged and accepted rel-base-<n>: its file leaves the debt
+                task_a = tasks.get(tid)
+                # a card with a non-empty `more` fixed only part of the row (the barrier of _closes_row): the debt closes by two full builds
+                if (task_a is None or not Loop._contract(task_a).get("more")) and REL.close_debt(self.cfg.state_dir, bid):     # a merged and accepted rel-base-<n>: its file leaves the debt
                     self.event("release", status="debt_closed", backlog_id=bid, reason="baseline debt row accepted")
             except Exception as e:
                 self.err("release: debt close", e)
@@ -4189,6 +4220,7 @@ class Loop:
                 self._hypo_pump = HY.Pump(ask, None, channels=names, minute=self._hypo_minute, stats=HY.STATS)
         return HY.Ctx(root=root, ask=ask, cloud=lambda r, ids, files: HY.cloud_batch(r, ids, files, tid="h" + str(packet.get("bid"))),
                       pump=self._hypo_pump, failure_text=lambda ids: failure, trace=lambda ids: trace,
+                      failure_of=self._hypo_failure_of, skip_groups=self._hypo_cooled_groups(),
                       diff_funcs=lambda ids: diff, ranked=ranked, minute=self._hypo_minute, channels=names, sample=sample,
                       event=lambda name, **f: loop.event(name, **f))
 
@@ -4213,8 +4245,56 @@ class Loop:
             except OSError as exc:
                 self.err("hypo samples", exc)
 
-    def _hypo_ids(self, row, packet):
-        """W-hyp 1: the red test ids of the row in the order guard -> rel-<sha> regression -> rel-base-<n> debt (runnable ids only)."""
+    def _red_last_keys(self, ids=()):
+        """W-part 2: the red test keys of the last full verdict when its sha is the base or an ancestor of it, else None (unknown)."""
+        from tools import factory_release as REL
+        rec = REL.red_last(self.cfg.state_dir)
+        sha, base = str(rec.get("sha") or ""), str(self.base_sha or "")
+        if not sha or not base or not isinstance(rec.get("red"), list):
+            return None
+        if sha != base:
+            seen = self.__dict__.setdefault("_ancestor_cache", {})
+            if (sha, base) not in seen:
+                try:
+                    git_run(self.cfg.repo, "merge-base", "--is-ancestor", sha, base)
+                    seen[(sha, base)] = True
+                except subprocess.CalledProcessError as exc:
+                    if exc.returncode != 1:         # not a git answer (a missing sha...): unknown, not cached
+                        return None
+                    seen[(sha, base)] = False
+                except OSError:
+                    return None
+            if not seen[(sha, base)]:
+                return None
+        red = {REL._key(n) for n in rec["red"]}
+        if sha != base:                     # an ancestor: a test red only later is unknown there, so only ids known earlier may be dropped
+            prev = REL.red_pair(REL.release_dir(self.cfg.state_dir)).get("prev") or set()
+            return red | {REL._key(i) for i in ids if REL._key(i) not in prev}
+        return red
+
+    def _hypo_ids(self, row, packet, raw=False):
+        """W-hyp 1: the red test ids of the row in the order guard -> rel-<sha> regression -> rel-base-<n> debt (runnable ids only).
+        W-part 2: the ids that are not red in the last full build (its sha the base or an ancestor) are dropped (``raw``: kept)."""
+        ids = self._hypo_ids_all(row, packet)
+        if raw or not ids:
+            return ids
+        from tools import factory_release as REL
+        red = self._red_last_keys(ids)
+        return ids if red is None else [i for i in ids if REL._key(i) in red]
+
+    def _packet_green_on_row(self, row, packet) -> bool:
+        """W-part 2: the row has runnable ids and none is red in red_last; cached per (row, base, red_last sha) - the loop thread
+        builds packets on every pass."""
+        from tools import factory_release as REL
+        key = (str(row), str(self.base_sha), str(REL.red_last(self.cfg.state_dir).get("sha") or ""))
+        cache = self.__dict__.setdefault("_row_green_cache", {})
+        if key not in cache:
+            if len(cache) > 500:
+                cache.clear()
+            cache[key] = bool(self._hypo_ids_all(row, packet) and not self._hypo_ids(row, packet))
+        return cache[key]
+
+    def _hypo_ids_all(self, row, packet):
         from tools import factory_hypo as HY, factory_release as REL
         rel = base = None
         try:
@@ -4259,14 +4339,58 @@ class Loop:
             return "off", []
         ids = self._hypo_ids(row, packet)
         if not ids:
-            return "none", []
+            return ("already_green" if self._hypo_ids(row, packet, raw=True) else "none"), []
         keep = self.ls()
         rec = (keep.get("hypo_spare") or {}).get(row)
         if isinstance(rec, dict) and rec.get("base") == str(self.base_sha) and rec.get("contracts"):
             return "spare", ids
-        if HY.cooled(keep.get("hypo_seen", {}), str(self.base_sha), ids[0], time.time()):
+        sigs = self._hypo_sigs(row, ids)     # W-part 5: the cooldown is of (base, group signature)
+        if all(HY.cooled(keep.get("hypo_seen", {}), str(self.base_sha), s, time.time()) for s in sigs):
             return "cooled", ids
         return "search", ids
+
+    def _hypo_sigs(self, row, ids) -> list:
+        """Group signatures of the row's ids. The failures book is read once per change of the file (stat key), the grouping is
+        cached per (row, base, red_last sha, ids): the feeder asks about many rows on every pass."""
+        from tools import factory_hypo as HY, factory_release as REL
+        state_dir = self.cfg.state_dir
+        key = (str(row), str(self.base_sha), str(REL.red_last(state_dir).get("sha") or ""), tuple(ids))
+        cache = self.__dict__.setdefault("_hypo_sig_cache", {})
+        if key not in cache:
+            if len(cache) > 500:
+                cache.clear()
+            try:
+                st = (REL.release_dir(state_dir) / REL.FAILURES_FILE).stat()
+                stamp = (st.st_mtime_ns, st.st_size)
+            except OSError:
+                stamp = None
+            held = self.__dict__.get("_hypo_book")
+            if held is None or held[0] != stamp:
+                held = self.__dict__["_hypo_book"] = (stamp, REL.failures(state_dir))
+            book = held[1]
+
+            def failure_of(test_id):
+                try:
+                    return REL.failure_of(state_dir, test_id, book)
+                except Exception:       # noqa: BLE001  an aid
+                    return ""
+            cache[key] = [s for s, _g in HY.group_ids(ids, failure_of)]
+        return list(cache[key])
+
+    def _hypo_cooled_groups(self) -> set:
+        """W-part 5: the failure signatures searched on this base less than ROW_COOLDOWN_S ago (the key is (base sha, signature))."""
+        from tools import factory_hypo as HY
+        prefix, now = str(self.base_sha) + "|", time.time()
+        table = self.ls().get("hypo_seen") or {}
+        return {k[len(prefix):] for k in table if k.startswith(prefix) and HY.cooled(table, str(self.base_sha), k[len(prefix):], now)}
+
+    def _hypo_failure_of(self, test_id):
+        """W-part 4: the failure text kept by the builds for one red test ('' when none)."""
+        from tools import factory_release as REL
+        try:
+            return REL.failure_of(self.cfg.state_dir, test_id)
+        except Exception:       # noqa: BLE001  an aid
+            return ""
 
     def _hypo_post(self, row, packet, root, ids, found):
         """W-feed2 2: what the loop thread does with a finished search: the event, the searched mark, the spares, the evidence
@@ -4274,14 +4398,14 @@ class Loop:
         from tools import factory_hypo as HY, factory_architect as A
         try:
             self.event("hypo", backlog_id=row, status=found["status"], greens=len(found["green"]), tried=len(found["tried"]),
-                       why=found.get("why") or None)
-            if found["status"] in ("green", "red"):     # a cloud failure or no hypothesis at all: no run happened, no penalty
+                       why=found.get("why") or None, group_ids=len(found.get("ids") or ()) or None)
+            if found["status"] in ("green", "red", "already_green"):     # a cloud failure or no hypothesis at all: no run, no penalty
                 fresh = self.ls()
-                HY.mark_searched(fresh.setdefault("hypo_seen", {}), str(self.base_sha), ids[0], time.time())
+                HY.mark_searched(fresh.setdefault("hypo_seen", {}), str(self.base_sha), found.get("group") or ids[0], time.time())
                 self.save_ls(fresh)
             contracts = []
             for cand in found["green"]:
-                contract = HY.to_contract(row, ids, cand)
+                contract = HY.to_contract(row, ids, cand, group=found.get("group"), rep=(found.get("ids") or ids)[0])
                 if not A.validate(contract, root, bid=row, known_ids=packet.get("known_ids")):
                     contracts.append(contract)
             if contracts:
@@ -4413,6 +4537,8 @@ class Loop:
                 else:
                     result = None
                     self._hypo_skip[row] = (base, now)
+                    if kind == "already_green":     # W-part 2: the row's tests are green in the last full build: nothing to search
+                        self.event("hypo", backlog_id=row, status="already_green", greens=0, tried=0, why="not red in the last full build")
                 if result is not None:
                     self._hypo_adopt(row, packet, result)
             except Exception as exc:            # noqa: BLE001  one search never stops the loop
@@ -4441,7 +4567,15 @@ class Loop:
         priority = int(str(packet["priority"]).removeprefix("P"))
         portion = dict(engine=engine, rung=0, tasks=A.to_tasks(contract, bid=row, base_id=base_id, gen=gen, priority=priority,
                                                                  title=packet["title"], author=A.author_model(engine)))
-        added = self._apply_portion(row, gen, portion, "first")
+        try:
+            added = self._apply_portion(row, gen, portion, "first")
+        except F.LockBusy:          # W-ask 4c: the state is locked: the green candidate is kept as a spare, not lost
+            keep = self.ls()
+            rec = (keep.get("hypo_spare") or {}).get(row)
+            old = list(rec.get("contracts") or ()) if isinstance(rec, dict) and rec.get("base") == str(self.base_sha) else []
+            keep.setdefault("hypo_spare", {})[row] = dict(base=str(self.base_sha), contracts=[contract] + old)
+            self.save_ls(keep)
+            return 0
         fresh = self.ls()
         fresh.setdefault("contracts_by_engine", {}).setdefault(engine, {"made": 0, "merged": 0})["made"] += 1
         self.save_ls(fresh)
@@ -4661,6 +4795,9 @@ class Loop:
                 extra = {"named_ok": True} if self.cfg.self_repo else {}      # 8.1: the factory's own files are the contract's subject
                 if cached:      # W-pay 2: the steps that already answered this row (or refused it) on this version and sha
                     extra["skip"] = cached
+                if not packet.get("guard_green") and str(row).startswith("rel-") and not self.cfg.self_repo \
+                        and self._packet_green_on_row(row, packet):
+                    packet["guard_green"] = True    # W-part 2: no test of the row is red in the last full build (red_last): already_fixed
                 if packet.get("guard_green"):       # W-guard 1: no red id on this base (the proof = a sweep of the current base, _guard_red_ids): no card
                     self.event("guard_green", backlog_id=row, reason="guard %s is green on base %s" % (
                         self.rs(str(packet.get("guard_test") or row), 120), str(self.base_sha)[:12]))
@@ -5230,6 +5367,8 @@ class Loop:
                 valid = ids <= set(tasks)
                 if not valid:
                     why = "portion tasks were skipped"
+            except F.LockBusy:      # W-ask 4c: a busy lock is not an invalid portion: the caller keeps it for the next step
+                raise
             except F.InvalidPlan as exc:
                 valid, why = False, str(exc)
         ls = self.ls()
@@ -5314,6 +5453,35 @@ class Loop:
                    reason="no slice started or ended for %d s; startable=%d slots=%d/%d holder=%s waiting=%d" % (
                        now - act, len(self._startable(tasks, state, now)), len(self._slicers), SLICE_PARALLEL, holders[0], len(holders)))
 
+    PARKED_TRIES = 20       # W-ask 4c: a portion that meets a busy state lock this many steps in a row is given up (event)
+
+    def _park_portion(self, bid, gen, portion, cause) -> None:
+        parked = self.__dict__.setdefault("_parked_portions", {})
+        old = parked.get(bid)
+        parked[bid] = dict(gen=gen, portion=portion, cause=cause, tries=(old["tries"] + 1) if old else 1)
+        self.event("reslice", status="lock_busy", backlog_id=bid, cause=cause, reason="state locked: the portion is applied on the next step")
+
+    def _apply_parked(self) -> int:
+        """W-ask 4c: the portions the state lock refused are applied first (the slicer's work is not lost, the slicer is not asked again)."""
+        parked = self.__dict__.get("_parked_portions")
+        count = 0
+        for bid in list(parked or ()):
+            rec = parked[bid]
+            try:
+                count += self._apply_portion(bid, rec["gen"], rec["portion"], rec["cause"])
+            except F.LockBusy:
+                rec["tries"] += 1
+                if rec["tries"] >= self.PARKED_TRIES:
+                    del parked[bid]
+                    self.event("reslice", status="error", backlog_id=bid, reason="state locked %d steps: the portion is dropped" % rec["tries"])
+                continue
+            except Exception as exc:
+                parked.pop(bid, None)
+                self.event("reslice", status="error", backlog_id=bid, reason=F.redact(str(exc)))
+                continue
+            del parked[bid]
+        return count
+
     def _reslice_tick(self, tasks, state, ls, now) -> int:
         if self.slice_fn is None:
             return 0
@@ -5327,7 +5495,10 @@ class Loop:
             self.event("reslice", status="error", reason="quarantine pass: " + F.redact(str(exc)))
         tasks, state = self.load()
         ls = self.ls()
-        count = 0
+        count = self._apply_parked()
+        if count:
+            tasks, state = self.load()
+            ls = self.ls()
         if self.cfg.architect_rungs:
             changed = False
             for bid, rec in list(ls.get("quarantine", {}).items()):
@@ -5348,8 +5519,12 @@ class Loop:
             tier = (2 if F.is_base_debt(bid) else 1 if bid.startswith("rel-") else 0) if eligible.get(bid) == "dry" else 0
             return (F.row_rank(bid), tier, self._bisect_rank(bid), int(entry.get("lane") or 0), int(str(priority).removeprefix("P")), not bool(entry.get("guard")), bid)
         first_waits = any(c == "first" and b not in self._slicers for b, c in eligible.items())
+        tasks, state = self.load()                # W-tick2 2: one fresh read right before the rows (a tick of this step may have moved the plan)
+        moved = False
         for bid in sorted(eligible, key=order)[:RESLICE_PER_STEP]:
             cause = eligible[bid]
+            if bid in self.__dict__.get("_parked_portions", {}):
+                continue                # its finished portion waits for the lock: the slicer is not asked again
             if cause == "dry" and bid not in self._slicers and sum(
                     j.ctx["cause"] == "dry" for j in self._slicers.values()) >= DRY_SLICE_MAX:
                 continue                # W-dry 1: at most DRY_SLICE_MAX rows at once go to the slicer for code
@@ -5357,7 +5532,9 @@ class Loop:
                     j.ctx["cause"] != "first" for j in self._slicers.values()) >= SLICE_PARALLEL // 3:
                 continue
             try:
-                tasks, state = self.load()        # the previous row moved the plan: evidence is read fresh
+                if moved:                         # W-tick 4: read anew only after a row moved the plan (not once per row)
+                    tasks, state = self.load()
+                    moved = False
                 ls = self.ls()
                 rec = ls.get("reslices", {}).get(bid, {})
                 used = rec.get("used", 0)
@@ -5383,12 +5560,17 @@ class Loop:
                 portion = self.slice_fn(bid, cause, rung, evidence, gen=rec.get("n", 0) + 1,
                                        tasks=tasks, state=state, ls=ls, now=now)
                 if portion is not None:
+                    moved = True
                     if rung == 0 and cause == "first" and self.slice_fn == self._slice:
                         fresh = self.ls()
                         fresh.setdefault("row_hist", {}).setdefault(bid, {})["free_first"] = True
                         self.save_ls(fresh)
-                    count += self._apply_portion(bid, rec.get("n", 0) + 1, portion, cause)
+                    try:
+                        count += self._apply_portion(bid, rec.get("n", 0) + 1, portion, cause)
+                    except F.LockBusy:      # W-ask 4c: the slicer's finished portion is kept and applied on the next step
+                        self._park_portion(bid, rec.get("n", 0) + 1, portion, cause)
             except Exception as exc:
+                moved = True
                 ls = self.ls()
                 rec = self._wait_record(ls, bid, create=True)
                 pause = SLICE_PAUSES[min(rec["waits"], len(SLICE_PAUSES) - 1)]
@@ -5736,7 +5918,9 @@ class Loop:
         for key in ("holds", "not_code", "closed", "quarantine", "to_slice", "parents", "split"):
             placed |= set(cur.get(key) or {})
         placed |= set(getattr(self, "_slicers", {}) or {})
-        disp = self._dispositions(now)
+        disp = self._dispositions(now, strict=True)
+        if disp is None:                                 # W-tick2 1: unknown, not empty: no tick, nothing written
+            return None
         mem = cur.setdefault("supply_returned", {})
         returned = []
         for bid, rows in sorted(by_row.items()):
@@ -5835,7 +6019,9 @@ class Loop:
             if F.is_private_text(str(rec.get("text") or "")):
                 private.add(bid)
         cur = self.ls()
-        disp = self._dispositions(now)
+        disp = self._dispositions(now, strict=True)
+        if disp is None:                                 # W-tick2 1: unknown, not empty: no tick, no version mark written
+            return None
         placed = set()
         for key in ("to_slice", "closed", "split", "outdated_tests", "arch_decision", "deferred", "head_scope", "holds"):
             placed |= {F.row_of(b) for b in (cur.get(key) or {})}
@@ -6122,22 +6308,43 @@ class Loop:
             self.err("reconcile", e)
         return ls
 
-    def _dispositions(self, now) -> dict:
-        """imp.row_dispositions of the live backlog, kept for 10 minutes per backlog edit (it reads git); {} on a failure."""
+    def _dispositions(self, now, strict=False):
+        """imp.row_dispositions of the live backlog, kept for 10 minutes per backlog edit (it reads git).
+        W-tick fix3: never computed in the calling (main) thread: the pass runs in the background.
+        W-tick2 1: strict=True (the state-changing ticks) answers None while there is no answer for the CURRENT backlog
+        (first call, backlog edited, failed pass): the tick is skipped and writes nothing. strict=False (the report) gets
+        the last known answer or {}. A ValueError (no bounded section 4) is a known empty answer."""
         try:
             mtime = self.cfg.backlog.stat().st_mtime
-            cache = getattr(self, "_disp_cache", None)
-            if cache and cache[0] == mtime and now - cache[1] < 600:
+            cache = getattr(self, "_disp_cache", None)       # (mtime, at, answer, known)
+            job = getattr(self, "_disp_job", None)
+            if job is not None and job.done.is_set():       # W-tick 3: the finished background pass is booked here, in one step
+                self._disp_job = None
+                if job.error is None:
+                    cache = self._disp_cache = (job.ctx["mtime"], now, job.result, True)
+                elif isinstance(job.error, ValueError):
+                    cache = self._disp_cache = (job.ctx["mtime"], now, {}, True)
+                else:
+                    self.err("reconcile: dispositions", job.error)
+                    cache = self._disp_cache = (job.ctx["mtime"], now, cache[2] if cache else {}, False)   # W-tick 5: back-off, no thread per tick; the old answer is for the report only
+                job = None
+            known = bool(cache and cache[0] == mtime and cache[3])
+            fresh = bool(cache and cache[0] == mtime and now - cache[1] < 600)     # a pass (even a failed one) is not repeated within its term
+            if known and fresh:
                 return cache[2]
-            from tools import agent_factory_import as imp
-            disp = imp.row_dispositions(self.cfg.backlog, self.cfg.worktree, self_repo=bool(self.cfg.self_repo))
-            self._disp_cache = (mtime, now, disp)
-            return disp
+            if job is None and not fresh:
+                from tools import agent_factory_import as imp
+                backlog, wt, own = self.cfg.backlog, self.cfg.worktree, bool(self.cfg.self_repo)
+                self._disp_job = Prefetch("dispositions", lambda: imp.row_dispositions(backlog, wt, self_repo=own), {"mtime": mtime})
+                self._disp_job.thread.start()
+            if strict:
+                return cache[2] if known else None           # same backlog, term over: the answer stands while it is refreshed
+            return cache[2] if cache else {}
         except ValueError:                           # a backlog with no bounded section 4: no dispositions, not an error
             return {}
         except Exception as e:
             self.err("reconcile: dispositions", e)
-            return {}
+            return None if strict else {}
 
     def _write_reconcile_now(self, tasks, state, ls, now) -> None:
         from tools import factory_requeue
@@ -6364,7 +6571,7 @@ class Loop:
         seen = []
         for w in live:
             try:
-                got = (w.owned.peak_bytes() if w.owned is not None else None) or 0
+                got = (w.owned.current_bytes() if w.owned is not None else None) or 0
             except Exception:
                 got = 0
             seen.append(int(got))
@@ -6375,7 +6582,7 @@ class Loop:
                         if float(getattr(w, "t_start", 0.0) or 0.0) > 0
                         and 0 <= now - float(w.t_start) < YOUNG_S)
         peak = self._estimate()
-        burst = int(max(peak, BURST_SHARE * len(live) * peak))
+        burst = int(max(peak, BURST_SHARE * len(live) * max(0, peak - med)))   # med is already booked
         return med, burst, shortfall
 
     @staticmethod
@@ -6389,7 +6596,7 @@ class Loop:
             return MIN_FREE_RAM
         return LIGHT_FLOOR if _engine_for("code", SimpleNamespace(touch_files=tuple(files))) == "light" else MIN_FREE_RAM
 
-    def _capacity(self, task) -> str:
+    def _capacity(self, task, state=None) -> str:
         """'' when one more worker may start now, else the reason. K is nothing but this: free RAM (the floor, plus what
         the live workers have not used yet, plus one more estimate) and free quota (first calls that can still be
         booked beyond those the live workers have not booked). With no live worker only today's rules count. While the cloud
@@ -6436,7 +6643,8 @@ class Loop:
         if task is not None and Loop._has_code(task) and self._edit_dry():
             return ""                            # W-dry 1: a card with the code of all its parts needs no edit channel: no headroom
         try:
-            state = self.load()[1]
+            if not isinstance(state, dict):
+                state = self.load()[1]           # (W-tick 4: _fill hands the state it already read)
             unbooked = sum(1 for w in live if not (state["tasks"].get(w.tid, {}).get("began") or {}).get("booked"))
             self._headroom_seen = self._headroom(task, state)
         except (OSError, ValueError, KeyError, TypeError):
@@ -6586,6 +6794,7 @@ class Loop:
                     with self.txn(self.CLAIM_WAIT_S) as (tasks2, state):
                         state["max_model_calls"] = budget     # the day's capacity: the loop claims, so the loop writes it
                         token = F.acquire(tasks2, state, tid, now=self.clock(), charge=False)
+                    self._claimed_state = state
                     break
                 except F.LockBusy:
                     if attempt + 1 >= self.CLAIM_RETRIES:

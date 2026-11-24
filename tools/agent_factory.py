@@ -1281,6 +1281,28 @@ def _drop_lock(lock: Path) -> None:
             time.sleep(0.01)
 
 
+LOCK_HELD_NOTE_S = 0.5      # W-ask 4: a lock held longer than this is a lock_held event with the place of the call
+LOCK_EVENTS_MAX = 200
+
+
+def _note_lock_held(lock: Path, held_s: float) -> None:
+    """Journal one slow hold: how long and where (the nearest frames of the caller outside this module's lock code)."""
+    import traceback
+    where = []
+    for fr in reversed(traceback.extract_stack()[:-1]):
+        name = Path(fr.filename).name
+        if fr.name in ("_dir_lock", "_note_lock_held", "__exit__", "__enter__", "txn", "snapshot") and name in (
+                "agent_factory.py", "contextlib.py"):
+            continue
+        if name == "contextlib.py":
+            continue
+        where.append("%s:%d %s" % (name, fr.lineno, fr.name))
+        if len(where) == 3:
+            break
+    LOCK_EVENTS.append({"event": "lock_held", "lock": str(lock), "held_ms": round(held_s * 1000), "where": " < ".join(where)})
+    del LOCK_EVENTS[:-LOCK_EVENTS_MAX]
+
+
 @contextlib.contextmanager
 def _dir_lock(path: Path, timeout_s: float):
     """Same lockdir convention as the checkpoint: <file>.lockdir, exclusive mkdir. The holder writes its pid into it:
@@ -1316,9 +1338,13 @@ def _dir_lock(path: Path, timeout_s: float):
             time.sleep(0.05)
     with contextlib.suppress(OSError):
         (lock / LOCK_OWNER).write_text(str(os.getpid()), encoding="ascii")
+    held_from = time.monotonic()
     try:
         yield
     finally:
+        held = time.monotonic() - held_from
+        if held > LOCK_HELD_NOTE_S:
+            _note_lock_held(lock, held)
         try:
             _drop_lock(lock)
         except OSError as e:
@@ -1348,12 +1374,35 @@ def read_plan_file(plan: Path) -> dict[str, Task]:
     return dict(tasks)
 
 
+def _plan_known_valid(plan: Path) -> bool:
+    """True when the plan file is exactly the one the cache parsed (mtime, size) and it was not written just now."""
+    try:
+        stat = Path(plan).stat()
+    except OSError:
+        return False
+    hit = _PLAN_CACHE.get(str(Path(plan)))
+    return bool(hit and hit[0] == stat.st_mtime_ns and hit[1] == stat.st_size and time.time() - stat.st_mtime > PLAN_FRESH_S)
+
+
+def _warm_plan(plan: Path) -> None:
+    """Parse the plan BEFORE the lock is taken, so the read under the lock is a cache hit (the plan grows rarely, the parse is
+    0.3 s on the big one). An aid: any error is left to the read under the lock."""
+    try:
+        if time.time() - Path(plan).stat().st_mtime <= PLAN_FRESH_S:
+            return      # written just now: the read under the lock never takes it from the cache, a warm-up would be a second parse
+        if not _plan_known_valid(plan):
+            read_plan_file(plan)
+    except Exception:       # noqa: BLE001
+        pass
+
+
 @contextlib.contextmanager
 def txn(checkpoint: Path, plan: Path, timeout_s: float = LOCK_STALE_S + 10):
     """One short transaction on the checkpoint: lock it, read the plan and the state FRESH (the plan grows while a pass
     works), hand them to the block, validate and save on a normal exit. A block that raises writes nothing. Passes
     change the state only through this: the lease protects the task, the lock only the commit."""
     checkpoint, plan = Path(checkpoint), Path(plan)
+    _warm_plan(plan)
     with _dir_lock(checkpoint, timeout_s):
         tasks = read_plan_file(plan)
         state = load_state(checkpoint, tasks)
@@ -1377,6 +1426,7 @@ def snapshot(checkpoint: Path, plan: Path, timeout_s: float = LOCK_STALE_S + 10)
     """(tasks, state) read FRESH under the lock and handed out as private copies, nothing saved. Readers go through
     the lock too: on Windows a lock-free read makes the writer's os.replace fail."""
     checkpoint, plan = Path(checkpoint), Path(plan)
+    _warm_plan(plan)
     with _dir_lock(checkpoint, timeout_s):
         tasks = read_plan_file(plan)
         return tasks, load_state(checkpoint, tasks)
@@ -1422,7 +1472,8 @@ def append_tasks(plan_path: Path, tasks: list[dict], *,
                 rows = list(data)
             else:
                 raise InvalidPlan("plan must contain a tasks list")
-            read_plan(rows)
+            if not _plan_known_valid(plan_path):     # W-ask 4: the plan the cache already parsed is not parsed again under the lock
+                read_plan(rows)
         known_ids = {r.get("id") for r in rows}
         known_backlog = {(r.get("backlog_id"), r.get("kind", "code")) for r in rows if r.get("backlog_id")}
         result = AppendResult()
@@ -1441,13 +1492,16 @@ def append_tasks(plan_path: Path, tasks: list[dict], *,
                 result.skipped.append({"id": rid, "backlog_id": bid,
                                        "reason": "duplicate backlog_id"})
                 continue
-            read_plan(rows + [row])  # same rules as the plan reader; raises InvalidPlan
+            deps = row.get("depends_on", [])    # a row may lean on the rows before it only (the whole plan is checked once below)
+            if isinstance(deps, list) and any(isinstance(d, str) and (d not in known_ids or d == rid) for d in deps):
+                raise InvalidPlan("missing/self dependency")
             rows.append(row)
             known_ids.add(rid)
             if bid:
                 known_backlog.add((bid, row.get("kind", "code")))
             result.append(rid)
         if result:
+            read_plan(rows)     # same rules as the plan reader, ONE parse of the whole plan (was one per new row); raises InvalidPlan
             save_atomic(plan_path, dict(extra, tasks=rows))
         return result
 
@@ -1606,6 +1660,28 @@ def grouped_failures(xml_text: str) -> list[dict]:
     return sorted(groups.values(), key=lambda x: x["id"])
 
 
+REPLACE_RETRY_S = 2.0       # W-ask 4: a reader holds the file open on Windows: os.replace is repeated this long
+
+
+def replace_retry(src, dst, *, retry_s: float = None, sleep=None, clock=time.monotonic) -> None:
+    """``os.replace`` that repeats on PermissionError (the reader of the target holds it open) for up to ``retry_s``
+    (default REPLACE_RETRY_S: the clock or the sum of the pauses, whichever is first) with a short growing pause; the
+    last error is raised."""
+    limit = REPLACE_RETRY_S if retry_s is None else retry_s
+    deadline = clock() + limit
+    pause, waited = 0.01, 0.0
+    while True:
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if clock() >= deadline or waited >= limit:
+                raise
+            (sleep or time.sleep)(pause)
+            waited += pause
+            pause = min(0.1, pause * 2)
+
+
 def save_atomic(path: Path, state: dict) -> None:
     """Fsync then atomic replace; bounded retry for transient Windows WinError 5.
 
@@ -1621,15 +1697,8 @@ def save_atomic(path: Path, state: dict) -> None:
             json.dump(state, f, ensure_ascii=False, sort_keys=True, indent=2)
             f.flush()
             os.fsync(f.fileno())
-        for attempt in range(4):
-            try:
-                os.replace(tmp, path)
-                tmp = None
-                break
-            except PermissionError:
-                if attempt == 3:
-                    raise
-                time.sleep(0.04 * (2 ** attempt))
+        replace_retry(tmp, path)
+        tmp = None
     finally:
         if tmp is not None:
             try:

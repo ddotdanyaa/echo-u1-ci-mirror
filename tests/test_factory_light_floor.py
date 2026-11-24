@@ -59,18 +59,17 @@ def test_light_workers_are_admitted_up_to_the_measured_estimate():
             admitted = live
         else:
             break
-    # W-mem: the floor (768) plus one median (100) plus ONE shared burst reserve max(100, 0.15 x live x 100): live workers
-    # are not booked at their peak each, so all eleven fit; the shared reserve outgrows the room only at ~45 live
+    # W-mem2: the floor (768) plus one median (100) plus ONE shared burst reserve max(100, 0.15 x live x (100 - 100)):
+    # the median is already booked, so with peak == median the reserve stays flat and all eleven (and many more) fit
     assert admitted == 11
-    assert capacity(LIGHT, free=free, live=44, peaks=peaks) == ''
-    assert capacity(LIGHT, free=free, live=46, peaks=peaks) == 'low_ram'
+    assert capacity(LIGHT, free=free, live=46, peaks=peaks) == ''
 
 
 def test_with_the_unmeasured_default_estimate_one_and_a_half_gb_holds_many_light_workers():
-    # median 100 (unmeasured), est_peak 300 (default): 768 >= 100 + max(300, 45 x live) up to 14 live
+    # median 100 (unmeasured), est_peak 300 (default): 768 >= 100 + max(300, 0.15 x live x 200) up to 22 live
     assert capacity(LIGHT, free=1536 * MB, live=2) == ''
-    assert capacity(LIGHT, free=1536 * MB, live=14) == ''
-    assert capacity(LIGHT, free=1536 * MB, live=15) == 'low_ram'
+    assert capacity(LIGHT, free=1536 * MB, live=22) == ''
+    assert capacity(LIGHT, free=1536 * MB, live=23) == 'low_ram'
 
 
 def test_a_kilo_second_worker_keeps_the_old_rule_and_an_unknown_task_the_light_floor():

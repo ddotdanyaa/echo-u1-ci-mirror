@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import contextlib
 import os
 import unicodedata
 import time
@@ -624,8 +625,22 @@ def _closing_ids(subject: str) -> list[str]:
     return parts if parts and all(id_query.TOKEN.fullmatch(p) for p in parts) else []
 
 
+_HEAD_PIN: dict = {}     # W-tick 3: (thread, root) -> HEAD sha read ONCE for a whole pass (parse_open_rows): no git call per row
+                         # keyed by thread: a pass in the background slot and one in the main thread never unpin each other
+
+
+def _pin_key(root) -> tuple:
+    import threading
+    return (threading.get_ident(), str(Path(root)))
+
+
+def _head_of(root) -> str:
+    pinned = _HEAD_PIN.get(_pin_key(root))
+    return pinned if pinned else _git(root, "rev-parse", "HEAD").strip()
+
+
 def _closed_set(root) -> set:
-    head = _git(root, "rev-parse", "HEAD").strip()
+    head = _head_of(root)
     key = str(Path(root))
     cached = _CLOSED_CACHE.get(key)
     if cached is None or cached[0] != head:
@@ -694,7 +709,29 @@ def _safe_title(r: dict) -> str:
     return r["backlog_id"] if not t or r["private"] else t
 
 
+@contextlib.contextmanager
+def _head_pinned(root):
+    """W-tick 3: HEAD is read once for the pass below (one ``git rev-parse``, not one per row); nested passes share it."""
+    key = _pin_key(root)
+    if key in _HEAD_PIN:
+        yield
+        return
+    try:
+        _HEAD_PIN[key] = _git(root, "rev-parse", "HEAD").strip()
+    except ClosedCheckError:
+        pass                          # no HEAD: every caller raises/handles it as before
+    try:
+        yield
+    finally:
+        _HEAD_PIN.pop(key, None)
+
+
 def parse_open_rows(backlog_path, repo_root, include_closed: bool = False) -> list[dict]:
+    with _head_pinned(repo_root):
+        return _parse_open_rows(backlog_path, repo_root, include_closed)
+
+
+def _parse_open_rows(backlog_path, repo_root, include_closed: bool = False) -> list[dict]:
     """Open rows of BACKLOG_ECHO.md section 4, ordered <id> -> <id> -> no priority, then by ID.
 
     Each item: {backlog_id, priority, state, text, mentioned_files, mentioned_tests, private}
@@ -734,6 +771,11 @@ def parse_open_rows(backlog_path, repo_root, include_closed: bool = False) -> li
 
 
 def row_dispositions(backlog_path, repo_root, self_repo=False) -> dict:
+    with _head_pinned(repo_root):
+        return _row_dispositions(backlog_path, repo_root, self_repo)
+
+
+def _row_dispositions(backlog_path, repo_root, self_repo=False) -> dict:
     """{backlog_id: (state, reason)} for the OPEN rows the triage leaves out for a LEGAL reason, so the reconciliation
     names them instead of calling them «untriaged»: closed at HEAD / in the closures table, private (only_opus), a
     coordinator's or another owner's row, a documentation-only row. The rest (no file named, few data, old file
@@ -1179,7 +1221,7 @@ def _scope_index(root) -> dict:
     from collections import Counter
     root = Path(root)
     try:
-        head = _git(root, "rev-parse", "HEAD").strip()
+        head = _head_of(root)
     except ClosedCheckError:
         head = ""
     cached = _SCOPE_CACHE.get(str(root))

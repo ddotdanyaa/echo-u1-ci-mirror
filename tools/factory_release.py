@@ -268,7 +268,7 @@ def run(*, sha, snapshot, state_dir, sweep_fn, known=(), open_ids=(), open_tests
         absorb(res)
     results = dict(rec["good"])
     out = {"sha": sha, "sweep": {"red": 0, "new_red": [], "flaky": [], "run_id": run_id}, "status": "", "reason": "", "debt_rows": [],
-           "runs": [r.get("run_id") for r in rec["runs"] if r.get("run_id")], **_shard_report(rec, results)}
+           "closed_rows": [], "runs": [r.get("run_id") for r in rec["runs"] if r.get("run_id")], **_shard_report(rec, results)}
     missing = sorted(rec["missing"])
     if missing:
         (rel / RUN_FILE).unlink(missing_ok=True)                # the budget is spent: the next try is a new run
@@ -286,6 +286,7 @@ def run(*, sha, snapshot, state_dir, sweep_fn, known=(), open_ids=(), open_tests
         keep_failures(state_dir, results, names, sha)
     except OSError:
         pass
+    last_red = keep_red_last(rel, sha, names)           # W-part 1: the full verdict is the evidence of two builds
     base_file = rel / "baseline_red.json"
     if not base_file.is_file():
         _write_json(base_file, sorted({red_ratchet.cut(red_ratchet.norm(n)) for n in names}))
@@ -307,9 +308,13 @@ def run(*, sha, snapshot, state_dir, sweep_fn, known=(), open_ids=(), open_tests
     out["reason"] = ("%d new red test(s)" % len(new)) if new else "no new red test"
     try:                                # the debt is a convenience of the build: it never takes the verdict away
         out["debt_rows"] = _debt_step(rel, names, baseline, results, known_path, env_path, set(known), set(open_ids),
-                                      set(open_tests), green=out["status"] == "green")
+                                      set(open_tests), green=out["status"] == "green", closed_out=out["closed_rows"])
     except OSError:
         out["debt_rows"] = []
+    try:
+        out["closed_rows"] += close_regressions(rel, last_red)
+    except OSError:
+        pass
     return out
 
 
@@ -342,9 +347,11 @@ def keep_failures(state_dir, results, names, sha) -> int:
     return written
 
 
-def failure_of(state_dir, name):
-    """The kept failure text of a test (an exact name, else the same test name in the same file), or ''."""
-    book = failures(state_dir)
+def failure_of(state_dir, name, book=None):
+    """The kept failure text of a test (an exact name, else the same test name in the same file), or ''.
+    ``book``: the already read failures book (a grouping reads the file once)."""
+    if book is None:
+        book = failures(state_dir)
     rec = book.get(str(name))
     if rec is None:
         key = red_ratchet.cut(red_ratchet.norm(name))
@@ -392,12 +399,68 @@ def _next_n(rel, book) -> int:
     return n
 
 
-def _debt_step(rel, names, baseline, results, known_path, env_path, known, open_ids, open_tests, *, green) -> list:
+RED_LAST = "red_last.json"      # {"sha", "at", "red": [names]}: the red tests of the last full verdict
+RED_PREV = "red_prev.json"      # the same of the full verdict before it
+
+
+def _key(name) -> str:
+    return red_ratchet.cut(red_ratchet.norm(name))
+
+
+def keep_red_last(rel, sha, names) -> dict:
+    """Writes release/red_last.json (atomic) for a full verdict; the record it replaces (of another SHA) becomes red_prev.json.
+    -> {"last": {keys}, "prev": {keys} or None}."""
+    rel = Path(rel)
+    old = _read_json(rel / RED_LAST, {})
+    if old and str(old.get("sha")) != str(sha):
+        _write_json(rel / RED_PREV, old)
+    _write_json(rel / RED_LAST, {"sha": str(sha), "at": time.time(), "red": sorted(str(n) for n in names)})
+    return red_pair(rel)
+
+
+def red_pair(rel) -> dict:
+    prev = _read_json(Path(rel) / RED_PREV, {})
+    last = _read_json(Path(rel) / RED_LAST, {})
+    return {"last": {_key(n) for n in last.get("red") or ()},
+            "prev": {_key(n) for n in prev.get("red") or ()} if prev.get("red") is not None and prev else None}
+
+
+def red_last(state_dir) -> dict:
+    """The last full verdict's record ``{"sha", "at", "red"}`` ({} when none)."""
+    return _read_json(release_dir(state_dir) / RED_LAST, {})
+
+
+def _green_twice(tests, pair) -> bool:
+    return bool(tests) and pair["prev"] is not None and not any(_key(t) in pair["last"] or _key(t) in pair["prev"] for t in tests)
+
+
+def close_regressions(rel, pair) -> list:
+    """The regression rows (rel-<sha>-<n>) whose tests are red in neither of the two last full builds leave regressions.json.
+    -> the row ids closed."""
+    rel = Path(rel)
+    book = _read_json(rel / "regressions.json", {})
+    out = []
+    for name, rec in list(book.items()):
+        if _green_twice([name], pair):
+            out.append(str((rec or {}).get("row") or ""))
+            del book[name]
+    if out:
+        _write_json(rel / "regressions.json", book)
+    return [r for r in out if r]
+
+
+def _debt_step(rel, names, baseline, results, known_path, env_path, known, open_ids, open_tests, *, green, closed_out=None) -> list:
     """Builds the debt of the red baseline from this full sweep and hands out the files not yet queued (once each).
     A debt test is red NOW (a test green on the last full run is no debt), in the baseline, on no known / cloud-env list (nor
     the 'no module in the cloud' auto label) and is not the guard of an open row or a test of an unfinished task.  On a green
     build the tests of a closed file that are green leave baseline_red.json (it only shrinks)."""
     book = debt(rel.parent)
+    pair = red_pair(rel)
+    for f, rec in book.items():             # W-part 1: no test of the file red in the two last full builds: the row is done
+        if not rec.get("closed") and f in results and _green_twice(rec.get("tests"), pair):
+            rec["closed"] = True
+            if closed_out is not None and rec.get("n"):
+                closed_out.append("rel-base-%d" % int(rec["n"]))
     red_now = {}
     for n in names:
         key = red_ratchet.cut(red_ratchet.norm(n))
@@ -433,7 +496,8 @@ def _debt_step(rel, names, baseline, results, known_path, env_path, known, open_
     for f, rec in book.items():
         if f in new_book or f in by_file or not rec.get("queued") or rec.get("closed"):
             continue
-        if any(_queued_work(t, open_ids, open_tests) for t in rec.get("tests") or ()) or f not in results:
+        pending_green = f in results and not any(_key(t) in pair["last"] for t in rec.get("tests") or ())    # waits for the 2nd green build
+        if any(_queued_work(t, open_ids, open_tests) for t in rec.get("tests") or ()) or f not in results or pending_green:
             new_book[f] = rec                       # queued and in work (or not run): the entry stays, or its row is lost
     for f in sorted(new_book, key=lambda k: new_book[k]["n"]):
         rec = new_book[f]

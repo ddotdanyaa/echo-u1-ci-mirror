@@ -640,6 +640,8 @@ class Ctx:
         self.cloud = None           # (root, ids, {n: {file: text}}) -> {n: {passed, failed, text}}; raises CloudFail
         self.clock, self.sleep = time.monotonic, time.sleep
         self.failure_text = lambda ids: ""      # the failure of the red test on the base
+        self.failure_of = lambda test_id: ""    # W-part 4: the kept failure text of ONE red id (the groups' signatures)
+        self.skip_groups = ()                   # W-part 5: signatures of the groups searched less than ROW_COOLDOWN_S ago
         self.trace = lambda ids: ()             # ((file, name, line), ...) the functions the test ran
         self.diff_funcs = lambda ids: []        # functions of the guilty commit's diff
         self.ranked = lambda ids: []            # repomap order of the rest
@@ -692,13 +694,83 @@ def _note_outcome(env, why, answer):
             pass
 
 
+CONTROL = "ctl"         # W-part 3: the zero candidate of every batch = the tree of the base, unchanged
+FILE_RUN = "@"          # an id line '@<file>': the cloud runs the whole file (its green tests are the 'no new red' proof)
+SIG_CAP = 100
+
+
+def failure_sig(text: str):
+    """W-part 4: the signature of a failure = exception type | top product frame (file::function) | the assert text without
+    numbers. None when there is no failure text."""
+    text = str(text or "")
+    if not text.strip():
+        return None
+    elines = [l.strip()[1:].strip() for l in text.splitlines() if l.lstrip().startswith("E ")]
+    head = elines[0] if elines else text.strip().splitlines()[-1]
+    kind = re.match(r"([A-Za-z_][\w.]*(?:Error|Exception|Exit|Warning))\b", head)
+    kind = kind.group(1) if kind else ("AssertionError" if head.startswith("assert") else "")
+    frame = next(("%s::%s" % f for f in stack_from_failure(text) if _product(f[0])), "")
+    said = re.sub(r"\s+", " ", re.sub(r"0x[0-9a-fA-F]+|\d+(?:\.\d+)?", "#", " ".join(elines) or head)).strip()
+    return "%s|%s|%s" % (kind, frame, said[:SIG_CAP])
+
+
+def group_ids(ids, failure_of) -> list:
+    """W-part 4: ``[(signature, [ids])]``, the biggest group first (a tie: the one met first). An id with no failure text takes the
+    group of the ids with no text (its signature is its first id)."""
+    order, by_sig, textless = [], {}, []
+    for i in ids:
+        try:
+            sig = failure_sig(failure_of(i))
+        except Exception:       # noqa: BLE001  an aid
+            sig = None
+        if sig is None:
+            textless.append(i)
+            continue
+        if sig not in by_sig:
+            order.append(sig)
+            by_sig[sig] = []
+        by_sig[sig].append(i)
+    groups = [(s, by_sig[s]) for s in order]
+    if textless:
+        groups.append((textless[0], textless))
+    return sorted(groups, key=lambda g: -len(g[1]))
+
+
+def judge(res, ctl_pass, ids):
+    """W-part 3/4: ``(greens, new_red)`` of one verdict against the control: the ids of the group that passed and did not pass at
+    the control; the ids that passed at the control and failed with the candidate."""
+    if not isinstance(res, dict):
+        return [], []
+    passed, failed = set(res.get("passed") or ()), set(res.get("failed") or ())
+    return [i for i in ids if i in passed and i not in ctl_pass], sorted(i for i in ctl_pass if i not in passed)
+
+
+def _control_files(root, cands) -> dict:
+    """The zero candidate: a file of the first candidate rewritten with its OWN text (bytes of the base), so the tree stays
+    unchanged; {} when the file does not read."""
+    try:
+        rel = cands[0]["file"]
+        return {rel: (Path(root) / rel).read_bytes().decode("utf-8")}
+    except (OSError, ValueError, KeyError, IndexError):
+        return {}
+
+
+def _cloud_ids(ids) -> list:
+    return list(ids) + [FILE_RUN + f for f in sorted({str(i).split("::", 1)[0] for i in ids})]
+
+
 def _batch(env, ids, cands):
-    """One cloud verdict per candidate; a failed cloud is repeated (no penalty). Raises CloudFail after CLOUD_TRIES."""
+    """One cloud verdict per candidate and the control (key CONTROL); a failed cloud is repeated (no penalty). Raises CloudFail
+    after CLOUD_TRIES."""
     last = None
     for attempt in range(CLOUD_TRIES):
         try:
-            got = env.cloud(env.root, ids, batch_files(cands))
-            if isinstance(got, dict):
+            files = batch_files(cands)
+            files[CONTROL] = _control_files(env.root, cands)
+            got = env.cloud(env.root, _cloud_ids(ids), files)
+            if isinstance(got, dict) and not isinstance(got.get(CONTROL), dict):
+                last = CloudFail("no control verdict")      # W-part fix3: without the control nothing may be credited
+            elif isinstance(got, dict):
                 env.stats.add("batches")
                 env.stats.add("candidates", len(cands))
                 return got
@@ -709,25 +781,48 @@ def _batch(env, ids, cands):
     raise last or CloudFail("no verdict")
 
 
-def _is_green(res, ids) -> bool:
-    return isinstance(res, dict) and not res.get("failed") and set(ids) <= set(res.get("passed") or ())
+def _ctl_pass(verdicts) -> set:
+    return set((verdicts.get(CONTROL) or {}).get("passed") or ()) if isinstance(verdicts.get(CONTROL), dict) else set()
+
+
+def _score(cands, verdicts, ids, row_ids) -> list:
+    """The candidates that make >= 1 id of the group green against the control with no id of the file that was green at the
+    control going red; each gets ``greens`` and ``left`` (the row's ids still red). Biggest gain first."""
+    ctl = _ctl_pass(verdicts)
+    good = []
+    for c in cands:
+        greens, new_red = judge(verdicts.get(str(c["n"])), ctl, ids)
+        c["new_red"] = new_red
+        if greens and not new_red:
+            c["greens"] = greens
+            c["left"] = [i for i in row_ids if i not in greens]
+            good.append(c)
+    return good
 
 
 def search(row, ids, env, base_failure: str = ""):
-    """The whole search of one row. Returns {'green': [cand, ...] (smallest diff first), 'tried': [...], 'evidence': [...],
-    'status': 'green'|'red'|'none'|'cloud'}. Never raises."""
+    """The whole search of one row. Returns {'green': [cand, ...] (most ids made green first, then the smaller diff), 'tried': [...],
+    'evidence': [...], 'status': 'green'|'red'|'none'|'cloud'|'already_green', 'group': signature of the group searched, 'ids': the
+    ids of the group}. A row with many red ids is searched by ONE group of one failure signature at a time (the biggest not in
+    ``env.skip_groups`` first). Never raises."""
     env.stats.add("rows")
     tried, cands, seen_fp, answers = [], [], set(), {}
     lock = threading.Lock()
     if not ids:
         return dict(green=[], tried=[], evidence=[], status="none", why="no ids")
-    failure = base_failure or env.failure_text(ids)
+    row_ids = list(ids)
+    failure_of = getattr(env, "failure_of", None) or (lambda i: "")
+    groups = group_ids(row_ids, failure_of)
+    skip = set(getattr(env, "skip_groups", ()) or ())
+    sig, ids = next((g for g in groups if g[0] not in skip), groups[0])
+    failure = base_failure or failure_of(ids[0]) or env.failure_text(ids)
     funcs = rank_functions(env.root, stack=stack_from_failure(failure), diff=env.diff_funcs(ids), trace=env.trace(ids),
                            ranked=env.ranked(ids))
     if not funcs:       # no trace and no rank: the product functions the test itself imports or calls
         funcs = rank_functions(env.root, ranked=test_functions(env.root, ids[0]))
     if not funcs:       # the order of the checks: no failure first, then no functions
-        return dict(green=[], tried=[], evidence=[], status="none", why="no failure" if not failure else "no functions")
+        return dict(green=[], tried=[], evidence=[], status="none", why="no failure" if not failure else "no functions",
+                    group=sig, ids=ids)
     cls = row_class(row)
     items, by_key = [], {}
     for i, fn in enumerate(funcs):
@@ -757,30 +852,35 @@ def search(row, ids, env, base_failure: str = ""):
             cands.append(cand)
             answers[cand["n"]] = fn
     finished = _run_pump(env, row, items, collect)
+    more = dict(group=sig, ids=ids)
     if not cands:
         if not finished:
-            return dict(green=[], tried=tried, evidence=[], status="cloud", why="pump timeout")
-        return dict(green=[], tried=tried, evidence=_evidence(tried, {}), status="red")
+            return dict(green=[], tried=tried, evidence=[], status="cloud", why="pump timeout", **more)
+        return dict(green=[], tried=tried, evidence=_evidence(tried, {}), status="red", **more)
     try:
         verdicts = {}
         for part in chunks(cands):
             verdicts.update(_batch(env, ids, part))
-        green = [c for c in cands if _is_green(verdicts.get(str(c["n"])), ids)]
+        ctl = _ctl_pass(verdicts)
+        if ctl and set(ids) <= ctl:     # W-part 3: the unchanged tree already passes every id: nothing to fix, nothing to credit
+            return dict(green=[], tried=tried, evidence=[], status="already_green", why="control is green", **more)
+        green = _score(cands, verdicts, ids, row_ids)
         if not green:
-            green = _repair(env, row, ids, cands, verdicts, answers, failure, by_key, tried, seen_fp, lock)
+            green = _repair(env, row, ids, cands, verdicts, answers, failure, by_key, tried, seen_fp, lock, row_ids)
     except CloudFail as exc:
-        return dict(green=[], tried=tried, evidence=[], status="cloud", why=str(exc)[:120])
+        return dict(green=[], tried=tried, evidence=[], status="cloud", why=str(exc)[:120], **more)
     if green:
-        green.sort(key=lambda c: (diff_size(env.root, c), c["n"]))
+        green.sort(key=lambda c: (-len(c["greens"]), diff_size(env.root, c), c["n"]))
         env.stats.add("green_rows")
-        return dict(green=green, tried=tried, evidence=[], status="green")
+        return dict(green=green, tried=tried, evidence=[], status="green", **more)
     for c in cands:
         v = verdicts.get(str(c["n"])) or {}
-        tried.append(dict(file=c["file"], symbol=c["symbol"], outcome="red: " + str(v.get("text") or "")[:120]))
-    return dict(green=[], tried=tried, evidence=_evidence(tried, verdicts), status="red")
+        why = ("new red: " + ", ".join(c["new_red"][:2]) + " ") if c.get("new_red") else ""
+        tried.append(dict(file=c["file"], symbol=c["symbol"], outcome="red: " + why + str(v.get("text") or "")[:120]))
+    return dict(green=[], tried=tried, evidence=_evidence(tried, verdicts), status="red", **more)
 
 
-def _repair(env, row, ids, cands, verdicts, answers, failure, by_key, tried, seen_fp, lock):
+def _repair(env, row, ids, cands, verdicts, answers, failure, by_key, tried, seen_fp, lock, row_ids=None):
     """One repair circle: the 3 candidates whose failure text changed against the base's get it and 2 more answers each."""
     base = re.sub(r"\s+", " ", assert_text(failure)).strip()
     changed = [c for c in cands if (verdicts.get(str(c["n"])) or {}).get("text")
@@ -817,7 +917,7 @@ def _repair(env, row, ids, cands, verdicts, answers, failure, by_key, tried, see
     got = _batch(env, ids, new)
     verdicts.update(got)
     cands.extend(new)
-    return [c for c in new if _is_green(got.get(str(c["n"])), ids)]
+    return _score(new, verdicts, ids, row_ids or ids)
 
 
 def _evidence(tried, verdicts) -> list:
@@ -832,17 +932,29 @@ def _evidence(tried, verdicts) -> list:
     return out[:12]
 
 
-def to_contract(row, ids, cand, why="a hypothesis of the batch verifier made the red test green"):
+def to_contract(row, ids, cand, why="a hypothesis of the batch verifier made the red test green", group=None, rep=None):
     """The contract of a green candidate: a fix with a part that carries the code (applied without a model, W-dry) and
     test.use = the red id; the other red ids go to ``also``."""
-    test = {"use": ids[0]}
-    if len(ids) > 1:
-        test["also"] = list(ids[1:])
-    return dict(row=row, decision="fix", why=why, test=test,
-                parts=[dict(file=cand["file"], symbols=[cand["symbol"]], code=cand["code"],
-                            instruction="Replace %s with the verified text from code: the cloud batch made the red test green with it."
-                            % cand["symbol"],
-                            keep="the signature")])
+    greens = list(cand.get("greens") or ())
+    if greens:      # W-part 4: only the ids the candidate made green; the rest of the row's red ids go to ``more``
+        test = {"use": greens[0]}
+        if len(greens) > 1:
+            test["also"] = greens[1:]
+    else:
+        test = {"use": ids[0]}
+        if len(ids) > 1:
+            test["also"] = list(ids[1:])
+    if group:       # the card shows the representative of the group that was searched
+        why = "%s [группа: %s; представитель: %s]" % (why, str(group)[:120], rep or ids[0])
+    out = dict(row=row, decision="fix", why=why, test=test,
+               parts=[dict(file=cand["file"], symbols=[cand["symbol"]], code=cand["code"],
+                           instruction="Replace %s with the verified text from code: the cloud batch made the red test green with it."
+                           % cand["symbol"],
+                           keep="the signature")])
+    left = [i for i in ids if i not in greens] if greens else []
+    if left:
+        out["more"] = "остались красные: " + ", ".join(left[:6]) + (" (+%d)" % (len(left) - 6) if len(left) > 6 else "")
+    return out
 
 
 # --------------------------------------------------------------------------------------- cloud (real batch run)

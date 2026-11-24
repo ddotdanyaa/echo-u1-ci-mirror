@@ -3817,6 +3817,21 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                                          error_type=report.get('cloud_error_type') or '', error=report.get('cloud_error') or '')
                 except Exception:       # noqa: BLE001  the alarm never changes the release
                     pass
+                try:        # W-noxml 2: more than 3x the alarm streak while other cards still get the cloud's answers: not a dead cloud
+                    from . import factory_cloud_gate as cloud_gate
+                    stuck = streak > cloud_gate.CLOUD_DOWN_STREAK * 3 and cloud_gate.alive()
+                except Exception:       # noqa: BLE001
+                    stuck = False
+                if stuck:
+                    why = ('cloud_down %d times in a row for this card while the cloud answers other cards (%s): '
+                           'the candidate or its tests keep the run from giving a result' % (streak, report.get('cloud_error') or 'no cause'))
+                    events.append('cloud_down_reslice')
+
+                    def stuck_fail(state, row):
+                        factory_env(state)['cloud_down'].pop(tid, None)
+                        add_feedback(state, tid, 'gate', '[no strike] ' + why)
+                        return fail_row(state, tid, token, 'reslice'), None
+                    return end(stuck_fail, reason='reslice', reason_detail=scrub(redact(why))[:300])
             return release(reason, 60)
         events.append('env_shortage')
 

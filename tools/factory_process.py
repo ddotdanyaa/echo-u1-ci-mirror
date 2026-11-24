@@ -68,6 +68,51 @@ class Owned:
                                                     ctypes.byref(got))
         return int(info.job_peak) if ok else None
 
+    def current_bytes(self) -> int | None:
+        """The working set of the job's processes right now (Windows: JobObjectBasicProcessIdList +
+        GetProcessMemoryInfo), None when unknown (POSIX, closed job, any error)."""
+        if self.job is None or os.name != 'nt':
+            return None
+        try:
+            import ctypes
+            from ctypes import wintypes as W
+            slots = 256
+
+            class IdList(ctypes.Structure):
+                _fields_ = [('assigned', W.DWORD), ('listed', W.DWORD), ('ids', ctypes.c_size_t * slots)]
+
+            class Counters(ctypes.Structure):
+                _fields_ = [('cb', W.DWORD), ('page_faults', W.DWORD), ('peak_ws', ctypes.c_size_t),
+                            ('ws', ctypes.c_size_t), ('qpp', ctypes.c_size_t), ('qp', ctypes.c_size_t),
+                            ('qnpp', ctypes.c_size_t), ('qnp', ctypes.c_size_t), ('pf', ctypes.c_size_t),
+                            ('peak_pf', ctypes.c_size_t)]
+
+            info = IdList()
+            if not self._kernel.QueryInformationJobObject(self.job, 3, ctypes.byref(info), ctypes.sizeof(info), None):
+                return None
+            opener = ctypes.WinDLL('kernel32', use_last_error=True)
+            opener.OpenProcess.argtypes = [W.DWORD, W.BOOL, W.DWORD]
+            opener.OpenProcess.restype = W.HANDLE
+            opener.CloseHandle.argtypes = [W.HANDLE]
+            psapi = ctypes.WinDLL('psapi', use_last_error=True)
+            psapi.GetProcessMemoryInfo.argtypes = [W.HANDLE, ctypes.POINTER(Counters), W.DWORD]
+            total, seen = 0, 0
+            for i in range(min(int(info.listed), slots)):
+                handle = opener.OpenProcess(0x1000 | 0x0010, False, int(info.ids[i]))
+                if not handle:
+                    continue
+                try:
+                    counters = Counters()
+                    counters.cb = ctypes.sizeof(counters)
+                    if psapi.GetProcessMemoryInfo(handle, ctypes.byref(counters), counters.cb):
+                        total += int(counters.ws)
+                        seen += 1
+                finally:
+                    opener.CloseHandle(handle)
+            return total if seen else None
+        except Exception:
+            return None
+
     def kill(self):
         """The whole tree dies: the job is closed (Windows) / the group is killed (POSIX)."""
         self.close()
