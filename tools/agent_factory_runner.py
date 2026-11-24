@@ -4931,6 +4931,16 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
             if not files or sorted(files) != sorted(g['changed']) or gates_diff_hash(files) != g['diff']:
                 return None
             events.append('gates_kept')
+            # the side effects of run_gates() the critics read are restored from the note (same as a full run)
+            ctx['hollow'] = tuple(str(x) for x in (g.get('hollow') or ()))
+            ctx['extra_names'] = tuple(str(x) for x in (g.get('extra_names') or ()))
+            ctx['red_evidence'] = g.get('red_evidence') or ''
+            kept_counts = g.get('counts')
+            if isinstance(kept_counts, dict):
+                from types import SimpleNamespace
+                ctx['counts'] = SimpleNamespace(collected=kept_counts.get('collected', 0), passed=kept_counts.get('passed', 0),
+                                                failed=kept_counts.get('failed', 0), errors=0,
+                                                skipped=kept_counts.get('skipped', 0))
             return files, g['receipt']
         if decision is None:
             decision = kept_gates() or run_gates()   # the standing candidate (or the kept one of a pending review)
@@ -4956,7 +4966,9 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
         # 4. Independent reviewer: another model, reasons go back as feedback.
         ck.commit(lambda s, r: set_pending(s, r))
         if ctx['baseline'] is not None:              # W-rev 2: the green gates stay with the candidate
-            gates_note = dict(diff=gates_diff_hash(changed), changed=list(changed), receipt=receipt, base_sha=base_sha)
+            gates_note = dict(diff=gates_diff_hash(changed), changed=list(changed), receipt=receipt, base_sha=base_sha,
+                              hollow=list(ctx.get('hollow') or ()), extra_names=list(ctx.get('extra_names') or ()),
+                              red_evidence=ctx.get('red_evidence') or '', counts=_counts(ctx.get('counts')))
             ck.commit(lambda s, r: r['pending_review'].__setitem__('gates', gates_note)
                       if isinstance(r.get('pending_review'), dict) else None)
 
