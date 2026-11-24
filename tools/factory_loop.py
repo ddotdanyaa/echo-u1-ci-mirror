@@ -8569,10 +8569,10 @@ def rig_main(argv) -> int:
     for path in sorted(a.cand.rglob("*")):
         if path.is_file():
             rel = path.relative_to(a.cand).as_posix()
+            if "__pycache__" in rel or rel.endswith((".pyc", ".pyo")):
+                continue            # a cache is never a card file, wherever it lies
             if not rel.startswith(RIG_ROOTS):
                 p.error("%s: a rig card carries only tests/** and echo_sync/**" % rel)
-            if "__pycache__" in rel or rel.endswith((".pyc", ".pyo")):
-                continue
             try:
                 files[rel] = path.read_bytes().decode("utf-8")      # bytes: CRLF stays CRLF (the card text and its hash are the file's own)
             except (OSError, UnicodeDecodeError) as exc:
@@ -8587,6 +8587,8 @@ def rig_main(argv) -> int:
     contract = dict(row=bid, decision="fix", rig=True, why=F.redact(a.why)[:500], test=test,
                     parts=[dict(file=name, file_text=text, instruction="Replace the whole file with the text verified in the cloud run of the rig candidate.")
                            for name, text in files.items()])
+    # engine="coordinator" is deliberate: this submission is made by the coordinator, so the strong-engine check always
+    # passes here; the engine check bites where the card is validated again for the engine that really runs it
     faults = A.validate(contract, Path(a.repo), bid=bid, engine="coordinator")
     if faults:
         print("rig refused: " + "; ".join(faults[:5]), file=sys.stderr)

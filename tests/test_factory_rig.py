@@ -218,3 +218,18 @@ def test_a_rig_card_with_file_text_changes_the_file_in_the_work_copy(tmp_path):
     rc, _, err = R.edit_parts(task, [part], work, lambda *a: pytest.fail("a model was asked"), use_code=True)
     assert rc == 0, err
     assert (work / "tests" / "test_x.py").read_bytes() == new.encode("utf-8")
+
+
+def test_a_rig_card_with_file_text_is_written_on_a_retry_too(tmp_path):
+    """W-rig fix3: use_code False (a retry, feedback, a parallel candidate) does not hand the card to a model."""
+    from tools import agent_factory as F, agent_factory_runner as R
+    from test_factory_loop import task_row
+    work = tmp_path / "work"
+    (work / "tests").mkdir(parents=True)
+    (work / "tests" / "test_x.py").write_bytes(b"def test_a():\r\n    assert 1\r\n")
+    new = "def test_a():\r\n    assert 1\r\n\r\ndef test_b():\r\n    assert 2\r\n"
+    part = {"file": "tests/test_x.py", "file_text": new, "instruction": "Replace the whole file.", "stage": 1}
+    task = F.read_plan([task_row(1, touch_files=["tests/test_x.py"])])["T1"]
+    rc, _, err = R.edit_parts(task, [part], work, lambda *a: pytest.fail("a model was asked"), use_code=False)
+    assert rc == 0, err
+    assert (work / "tests" / "test_x.py").read_bytes() == new.encode("utf-8")

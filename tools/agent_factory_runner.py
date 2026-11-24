@@ -2886,14 +2886,18 @@ def edit_parts(task: Task, parts: list, workdir: Path, call, failing: str = '', 
                 info['context_chars'] = info.get('context_chars', 0) + len(pack)
                 info['context_sections'] = sorted(set(info.get('context_sections', [])) | set(K.context_sections(pack)))
         reason, more = '', ''
-        if use_code and (isinstance(part.get('code'), str) and part['code'].strip()
-                         or isinstance(part.get('file_text'), str)):
+        ready_file = isinstance(part.get('file_text'), str)
+        # a rig card with a ready file has ONE path, writing that file: on a retry, with feedback or for a parallel
+        # candidate it is applied too, and an unapplied one is refused (never handed to a model, which would invent the file)
+        if ready_file or (use_code and isinstance(part.get('code'), str) and part['code'].strip()):
             why_not = apply_code(index, part)
             if not why_not:
                 if info is not None:
                     with lock:
                         info['code_applied'] = info.get('code_applied', 0) + 1
                 return ''
+            if ready_file:
+                return '%s: the ready file could not be written (%s)' % (file, why_not[:300])
             more = ('\nThe architect wrote code for this part; it could not be applied (%s). Make the change the '
                     'instruction asks for.\n' % why_not[:300])
         if vgs is not None and vgs.k:
