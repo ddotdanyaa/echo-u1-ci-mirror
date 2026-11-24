@@ -4267,7 +4267,7 @@ class Loop:
         red = self._red_last_keys(ids)
         return ids if red is None else [i for i in ids if REL._key(i) in red]
 
-    def _hypo_row_green(self, row, packet) -> bool:
+    def _packet_green_on_row(self, row, packet) -> bool:
         """W-part 2: the row has runnable ids and none is red in red_last; cached per (row, base, red_last sha) - the loop thread
         builds packets on every pass."""
         from tools import factory_release as REL
@@ -4745,7 +4745,7 @@ class Loop:
                 if cached:      # W-pay 2: the steps that already answered this row (or refused it) on this version and sha
                     extra["skip"] = cached
                 if not packet.get("guard_green") and str(row).startswith("rel-") and not self.cfg.self_repo \
-                        and self._hypo_row_green(row, packet):
+                        and self._packet_green_on_row(row, packet):
                     packet["guard_green"] = True    # W-part 2: no test of the row is red in the last full build (red_last): already_fixed
                 if packet.get("guard_green"):       # W-guard 1: no red id on this base (the proof = a sweep of the current base, _guard_red_ids): no card
                     self.event("guard_green", backlog_id=row, reason="guard %s is green on base %s" % (
