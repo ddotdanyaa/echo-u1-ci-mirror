@@ -1,9 +1,11 @@
 # Factory status (generated, structured data only)
 
-Generated: 2026-11-24T19:37:45Z
-Source commit: sha8a1e7eeac346
+Generated: 2026-11-24T20:10:47Z
+Source commit: sha09a6f45053f8
 
 ## Commits (sha, time)
+- sha09a6f450 2026-11-24T23:07:09+03:00
+- sha0e7b82a2 2026-11-24T23:06:56+03:00
 - sha8a1e7eea 2026-11-24T22:35:23+03:00
 - sha424752e0 2026-11-24T22:02:33+03:00
 - shabf85c6fe 2026-11-24T21:57:05+03:00
@@ -22,29 +24,27 @@ Source commit: sha8a1e7eeac346
 - sha51e2da77 2026-11-24T13:53:13+03:00
 - sha3fb5bd78 2026-11-24T13:40:12+03:00
 - shad38146df 2026-11-24T13:36:59+03:00
-- sha518ae90a 2026-11-24T13:24:49+03:00
-- shaba80191e 2026-11-24T13:12:08+03:00
 
 ## Funnel
 | step | count |
 |---|---|
-| accepted | 29 |
-| claimed | 787 |
+| accepted | 31 |
+| claimed | 795 |
 | coded | 189 |
 | found_in_backlog | unknown |
 | gate_pass | 86 |
-| known_to_loop | 571 |
+| known_to_loop | 576 |
 | promoted | 81 |
-| ready | 17 |
+| ready | 32 |
 | reviewed | 211 |
-| triaged | 387 |
+| triaged | 392 |
 
-Side counters: blocked=2, parked=0, requeued=9
-Tasks now: BLOCKED=2, DONE=68, FAILED=869, PROMOTED=57, READY=17, RUNNING=4
-Accepted: 29
+Side counters: blocked=4, parked=0, requeued=9
+Tasks now: BLOCKED=4, DONE=68, FAILED=872, PROMOTED=57, READY=32, RUNNING=6
+Accepted: 31
 Promoted: 81
-Free RAM, GB: 2.15
-Telemetry rows: 64674 recognised, 0 unrecognised
+Free RAM, GB: 2.05
+Telemetry rows: 65126 recognised, 0 unrecognised
 
 ## Spend per model
 | model | calls | tokens_in | tokens_out | usage_unknown | http_429 | errors |
@@ -54,7 +54,7 @@ Telemetry rows: 64674 recognised, 0 unrecognised
 | cohere/north-mini-code-1.0 | 7 | 10515 | 346 | 3 | 0 | 3 |
 | google/gemini-3-flash-preview | 39 | 42084 | 7471 | 20 | 19 | 20 |
 | google/gemini-3.1-flash-lite | 1684 | 8748062 | 614855 | 131 | 8 | 131 |
-| google/gemini-3.1-flash-lite-preview | 448 | 804552 | 139744 | 105 | 16 | 105 |
+| google/gemini-3.1-flash-lite-preview | 454 | 822246 | 142503 | 106 | 16 | 106 |
 | google/gemini-3.5-flash | 35 | 30545 | 1824 | 25 | 23 | 25 |
 | google/gemini-3.5-flash-lite | 1992 | 11070268 | 651486 | 49 | 13 | 49 |
 | google/gemini-3.6-flash | 135 | 414079 | 20196 | 57 | 12 | 57 |
@@ -62,8 +62,8 @@ Telemetry rows: 64674 recognised, 0 unrecognised
 | google/gemini-3.8-flash | 28 | 21237 | 15 | 25 | 13 | 25 |
 | google/gemini-4-hydrogen | 3 | 0 | 0 | 3 | 0 | 3 |
 | google/gemini-robotics-er-2-preview | 2 | 5373 | 134 | 0 | 0 | 0 |
-| google/gemma-4-26b-a4b-it | 3745 | 2843744 | 507459 | 2623 | 14 | 2623 |
-| google/gemma-4-31b-it | 3096 | 1311619 | 145186 | 2580 | 8 | 2580 |
+| google/gemma-4-26b-a4b-it | 3807 | 2876458 | 513744 | 2669 | 15 | 2669 |
+| google/gemma-4-31b-it | 3132 | 1313445 | 145513 | 2614 | 10 | 2614 |
 | openrouter/nvidia/nemotron-3-ultra-550b-a55b:free | 130 | 715529 | 156330 | 2 | 2 | 2 |
 | other | 65 | 1154192 | 66710 | 6 | 0 | 7 |
 
@@ -71,14 +71,14 @@ Telemetry rows: 64674 recognised, 0 unrecognised
 | span | rows | calls |
 |---|---|---|
 | answer | 537 | 0 |
-| gate | 8544 | 0 |
-| infra | 2555 | 0 |
-| loop | 9147 | 0 |
-| other | 18982 | 0 |
+| gate | 8573 | 0 |
+| infra | 2698 | 0 |
+| loop | 9165 | 0 |
+| other | 19117 | 0 |
 | promote | 99 | 0 |
-| review | 3437 | 1591 |
-| run | 20933 | 9901 |
-| triage | 440 | 0 |
+| review | 3439 | 1592 |
+| run | 21057 | 10004 |
+| triage | 441 | 0 |
 
 ## Channels (model ids)
 - 1db4ab-gemini-3-8-flash
@@ -129,7 +129,7 @@ Telemetry rows: 64674 recognised, 0 unrecognised
 ## Published files
 Modules: 35
 Tests in the cloud: 109
-Tests not in the cloud: 139
+Tests not in the cloud: 138
 - tests/test_agent_factory.py (backlog-id, call-word, env-path, long-run, pid-port)
 - tests/test_factory_503.py (backlog-id, long-run)
 - tests/test_factory_architect.py (backlog-id, email, env-path, path)
@@ -234,7 +234,6 @@ Tests not in the cloud: 139
 - tests/test_factory_reject_note.py (dependency)
 - tests/test_factory_release.py (backlog-id)
 - tests/test_factory_release_run.py (dependency)
-- tests/test_factory_revert.py (email)
 - tests/test_factory_review_wait.py (backlog-id, long-run)
 - tests/test_factory_round7.py (backlog-id, call-word, owner-name, path, phone, user-path)
 - tests/test_factory_router_wiring.py (dependency)
