@@ -686,7 +686,9 @@ RESLICE_PER_STEP = SLICE_PARALLEL      # W-feed 4: up to SLICE_PARALLEL rows go 
 RESLICE_SLEEP_S = 5
 SLICE_WAIT_S = 60
 SLICE_PAUSES = (60, 120, 300, 600)        # W-pay 2: the pause of a row's repeated wait grows
-SLICE_HOPELESS_S = 600                    # W-gemma2 4: a row without a step (no money, no main channel) waits at least this
+SLICE_STARVED_S = 600                    # W-prio2 2: no slice started or ended this long while a fresh row waits -> infra slicer_starved
+SLICE_STALE_S = 900                      # W-prio2 3: a slicer older than this is dropped (its result is ignored)
+SLICE_HOPELESS_S = 600                   # W-gemma2 4: a row without a step (no money, no main channel) waits at least this
 QUARANTINE_TTL_S = 21600
 DRY_SLICE_MAX = 8           # W-dry 1: rows of cards without code that go to the slicer for code at the same time
 STATE_LOCKED_SLEEP_S = 3    # W-gemma5 3: a busy state lock lives milliseconds: WAIT state_locked sleeps this long
@@ -4029,7 +4031,10 @@ class Loop:
         if job is None:
             if len(self._slicers) >= SLICE_PARALLEL:
                 return None
-            if len(self._startable(tasks, state, now)) >= 2 * self._slice_pool_cap():
+            my_rank = F.row_rank(row)       # W-prio2 1: "ahead of time" counts only the cards of the row's own rank or higher
+            ahead = [t for t in self._startable(tasks, state, now)
+                     if F.row_rank(F.row_of(tasks[t].backlog_id or t)) <= my_rank]
+            if len(ahead) >= 2 * self._slice_pool_cap():
                 return None
             if self._arch_quotas is None:
                 self._arch_quotas = copy.deepcopy(ls.get("architect_quotas") or {})
@@ -4078,10 +4083,12 @@ class Loop:
                 return packet, result
             ctx["small"] = asks.get("free_small")       # W-gslice 4: its ``vgs`` (the ensemble's stats) goes to the slice event
             job = self._slicers[row] = Prefetch("slice", work, ctx)
+            self._slice_act = now
             job.thread.start()
             return None
         if not job.done.is_set():
             return None
+        self._slice_act = now
         del self._slicers[row]
         fresh = self.ls()
         with self._ask_lock:
@@ -4626,9 +4633,37 @@ class Loop:
         self.event("reslice", status="applied", backlog_id=row, gen=gen, added=len(added), cause=cause)
         return len(added)
 
+    def _slice_watch(self, tasks, state, ls, now) -> None:
+        """W-prio2 2-3: a slicer older than SLICE_STALE_S is dropped (event, place freed, its result ignored); fresh rows
+        (rank above rel-base) with an expired wait and no slice started or ended for SLICE_STARVED_S -> infra slicer_starved
+        once per SLICE_STARVED_S, with the reason (startable, slots, holder)."""
+        for row, job in list(self._slicers.items()):
+            age = time.monotonic() - job.t0
+            if age > SLICE_STALE_S:
+                del self._slicers[row]
+                job.ctx["dropped"] = True
+                self._slice_act = now
+                self.event("slice", backlog_id=row, status="stale", age_s=round(age), reason="slicer older than %d s dropped, result ignored" % SLICE_STALE_S)
+        waits = ls.get("slice_wait", {})
+        holders = sorted(b for b in ls.get("to_slice", {}) if F.row_rank(b) < 2 and waits.get(b, 0) <= now and b not in self._slicers)
+        act = getattr(self, "_slice_act", None)
+        if act is None or not holders:
+            self._slice_act = now if act is None else act
+            return
+        if now - act < SLICE_STARVED_S or now - getattr(self, "_starved_at", -SLICE_STARVED_S) < SLICE_STARVED_S:
+            return
+        self._starved_at = now
+        self.event("infra", status="slicer_starved",
+                   reason="no slice started or ended for %d s; startable=%d slots=%d/%d holder=%s waiting=%d" % (
+                       now - act, len(self._startable(tasks, state, now)), len(self._slicers), SLICE_PARALLEL, holders[0], len(holders)))
+
     def _reslice_tick(self, tasks, state, ls, now) -> int:
         if self.slice_fn is None:
             return 0
+        try:
+            self._slice_watch(tasks, state, ls, now)
+        except Exception as exc:
+            self.event("reslice", status="error", reason="slice watch: " + F.redact(str(exc)))
         try:
             self._quarantine_rows(tasks, state, ls, now)
         except Exception as exc:                  # a failure of the quarantine pass is an event, not a brake
