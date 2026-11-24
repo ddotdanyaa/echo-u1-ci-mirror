@@ -1,0 +1,35 @@
+{
+ "id": "science_tech-light",
+ "split": "dev",
+ "area": "science_tech",
+ "kind": "qa",
+ "source": {
+  "name": "authored for ECHO (this repository), general knowledge, no external text copied",
+  "license": "CC0-1.0",
+  "kind": "authored",
+  "url": null
+ },
+ "turns": [
+  {
+   "user": "С какой скоростью летит свет?",
+   "expected": "около трёхсот тысяч километров в секунду",
+   "length": "short",
+   "kind": "question",
+   "gap_s": 6.0
+  },
+  {
+   "user": "А звук в воздухе?",
+   "expected": "около трёхсот сорока метров в секунду",
+   "length": "short",
+   "kind": "question",
+   "gap_s": 6.0
+  },
+  {
+   "user": "Почему мы видим молнию раньше, чем слышим гром?",
+   "expected": "свет летит быстрее звука",
+   "length": "long",
+   "kind": "question",
+   "gap_s": 6.0
+  }
+ ]
+}
