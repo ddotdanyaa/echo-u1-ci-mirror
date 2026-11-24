@@ -1,0 +1,5 @@
+@tests/test_m5_late_cue.py
+@tests/test_m5_repeat_arm.py
+@tests/test_m5_tick.py
+@tests/test_never_silent.py
+@tests/test_one_readback_job.py
