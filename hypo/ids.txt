@@ -1,0 +1,2 @@
+tests/test_v5_gate_same.py::test_off_is_the_same_as_before_the_replay_gives_the_same_actions_with_either_rule
+tests/test_g23_old_answer.py::test_no_old_answer_after_a_newer_question
