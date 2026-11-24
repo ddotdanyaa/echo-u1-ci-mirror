@@ -1792,6 +1792,7 @@ class Loop:
             if refused:
                 break
             t0 = self.clock()
+            self._claimed_state = None                        # W-tick 6: set by this _admit's claim only, never a leftover (tasks stay the pass's plan: the claim does not change the plan)
             got = self._admit(tid, tasks, ls)
             self._lap("fill.admit", t0)
             if isinstance(got, Outcome):
@@ -6197,7 +6198,7 @@ class Loop:
                 elif isinstance(job.error, ValueError):
                     cache = self._disp_cache = (job.ctx["mtime"], now, {})
                 else:
-                    self.err("reconcile: dispositions", job.error)
+                    self.err("reconcile: dispositions", job.error); cache = self._disp_cache = (job.ctx["mtime"], now, cache[2] if cache else {})   # W-tick 5: back-off, the old answer for the term (no thread per tick)
             if cache and cache[0] == mtime and now - cache[1] < 600:
                 return cache[2]
             if job is not None and not job.done.is_set():
