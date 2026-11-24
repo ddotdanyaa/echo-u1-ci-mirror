@@ -1844,6 +1844,7 @@ class Loop:
         """Workers are live: wait for the next one to end (a short look every WAIT_CHUNK_S: a cooled channel or freed
         RAM may admit one more). STOP, the deadline or a due brake: no admission, drain every live worker."""
         self._pulse_at = self.clock()
+        look_sig, look_at = None, 0.0
         while True:
             if self._ending() or self._brake_due is not None:
                 return self._drain()
@@ -1856,7 +1857,14 @@ class Loop:
             if late:
                 return self._account_done(late[0], timed_out=True)
             self._bg_poll()                     # a finished portion becomes tasks now, not after the next worker ends
-            self._head_holds()                  # the gate decides; a pick runs in the background
+            # the short look (WAIT_BG_S) only stats the plan and the state: the full pass (capacity, quota files, the
+            # searches) runs when either changed or WAIT_CHUNK_S passed, so a ready card never queues behind a pass
+            sig = self._look_sig()
+            mono = time.monotonic()
+            if sig is not None and sig == look_sig and mono - look_at < WAIT_CHUNK_S:
+                continue
+            look_sig, look_at = sig, mono
+            self._head_holds()                # the gate decides; a pick runs in the background
             self._tick("hypo_feed", self._hypo_feed, self.clock())     # W-feed2 2: the searches go on while the workers work
             tasks, state = self.load()
             ls = self.ls()
@@ -1868,6 +1876,13 @@ class Loop:
                 out, act, tasks, state, ls = self._fill(act, tasks, state, ls, now)
                 if out is not None:
                     return out
+
+    def _look_sig(self):
+        """What a cheap look at the plan and the state shows (mtime, size); None when a file cannot be read."""
+        try:
+            return tuple((s.st_mtime_ns, s.st_size) for s in (self.plan_path.stat(), self.ckpt.stat()))
+        except OSError:
+            return None
 
     def _wait_pulse(self) -> None:
         """The wait for live workers writes one short event at least every WAIT_PULSE_S: a worker may wait for the cloud for

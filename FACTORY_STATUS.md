@@ -1,9 +1,10 @@
 # Factory status (generated, structured data only)
 
-Generated: 2026-11-24T10:38:29Z
-Source commit: shad38146df2c2c
+Generated: 2026-11-24T10:56:15Z
+Source commit: shaa44f9888ee89
 
 ## Commits (sha, time)
+- shaa44f9888 2026-11-24T13:54:14+03:00
 - shad38146df 2026-11-24T13:36:59+03:00
 - shaf3375ccf 2026-11-24T12:12:37+03:00
 - sha1e231616 2026-11-24T12:00:18+03:00
@@ -23,7 +24,6 @@ Source commit: shad38146df2c2c
 - shadf8595e0 2026-11-24T10:07:23+03:00
 - sha3dc95f4a 2026-11-24T10:04:50+03:00
 - sha9924928a 2026-11-24T10:02:30+03:00
-- sha6e3e9175 2026-11-24T10:02:14+03:00
 
 ## Funnel
 | step | count |
@@ -32,19 +32,19 @@ Source commit: shad38146df2c2c
 | claimed | 699 |
 | coded | 188 |
 | found_in_backlog | unknown |
-| gate_pass | 82 |
-| known_to_loop | 551 |
+| gate_pass | 83 |
+| known_to_loop | 552 |
 | promoted | 77 |
-| ready | 61 |
-| reviewed | 199 |
-| triaged | 375 |
+| ready | 71 |
+| reviewed | 200 |
+| triaged | 376 |
 
-Side counters: blocked=6, parked=0, requeued=9
-Tasks now: BLOCKED=6, DONE=68, FAILED=715, PROMOTED=53, READY=61, RUNNING=8
+Side counters: blocked=7, parked=0, requeued=9
+Tasks now: BLOCKED=7, DONE=68, FAILED=728, PROMOTED=53, READY=71, REVIEW=1
 Accepted: 28
 Promoted: 77
-Free RAM, GB: 2.69
-Telemetry rows: 56215 recognised, 0 unrecognised
+Free RAM, GB: 4.64
+Telemetry rows: 56449 recognised, 0 unrecognised
 
 ## Spend per model
 | model | calls | tokens_in | tokens_out | usage_unknown | http_429 | errors |
@@ -53,17 +53,17 @@ Telemetry rows: 56215 recognised, 0 unrecognised
 | cohere/command-a-plus-05-2026 | 12 | 5678 | 452 | 8 | 0 | 8 |
 | cohere/north-mini-code-1.0 | 7 | 10515 | 346 | 3 | 0 | 3 |
 | google/gemini-3-flash-preview | 39 | 42084 | 7471 | 20 | 19 | 20 |
-| google/gemini-3.1-flash-lite | 1642 | 8724535 | 612702 | 99 | 8 | 99 |
-| google/gemini-3.1-flash-lite-preview | 378 | 711082 | 132036 | 63 | 16 | 63 |
+| google/gemini-3.1-flash-lite | 1645 | 8730579 | 613417 | 99 | 8 | 99 |
+| google/gemini-3.1-flash-lite-preview | 392 | 751315 | 135479 | 64 | 16 | 64 |
 | google/gemini-3.5-flash | 35 | 30545 | 1824 | 25 | 23 | 25 |
-| google/gemini-3.5-flash-lite | 1965 | 10992287 | 643428 | 48 | 13 | 48 |
+| google/gemini-3.5-flash-lite | 1973 | 11017702 | 645083 | 48 | 13 | 48 |
 | google/gemini-3.6-flash | 135 | 414079 | 20196 | 57 | 12 | 57 |
 | google/gemini-3.7-flash | 26 | 9121 | 14 | 25 | 14 | 25 |
 | google/gemini-3.8-flash | 28 | 21237 | 15 | 25 | 13 | 25 |
 | google/gemini-4-hydrogen | 3 | 0 | 0 | 3 | 0 | 3 |
 | google/gemini-robotics-er-2-preview | 2 | 5373 | 134 | 0 | 0 | 0 |
-| google/gemma-4-26b-a4b-it | 2708 | 2154080 | 397101 | 1847 | 9 | 1847 |
-| google/gemma-4-31b-it | 2126 | 969554 | 99725 | 1758 | 7 | 1758 |
+| google/gemma-4-26b-a4b-it | 2723 | 2158738 | 398594 | 1860 | 9 | 1860 |
+| google/gemma-4-31b-it | 2143 | 971116 | 99992 | 1774 | 7 | 1774 |
 | openrouter/nvidia/nemotron-3-ultra-550b-a55b:free | 130 | 715529 | 156330 | 2 | 2 | 2 |
 | other | 65 | 1154192 | 66710 | 6 | 0 | 7 |
 
@@ -71,13 +71,13 @@ Telemetry rows: 56215 recognised, 0 unrecognised
 | span | rows | calls |
 |---|---|---|
 | answer | 536 | 0 |
-| gate | 7777 | 0 |
-| infra | 1456 | 0 |
-| loop | 8270 | 0 |
-| other | 16516 | 0 |
+| gate | 7816 | 0 |
+| infra | 1458 | 0 |
+| loop | 8287 | 0 |
+| other | 16602 | 0 |
 | promote | 95 | 0 |
-| review | 3193 | 1519 |
-| run | 17943 | 7827 |
+| review | 3202 | 1524 |
+| run | 18024 | 7879 |
 | triage | 429 | 0 |
 
 ## Channels (model ids)
