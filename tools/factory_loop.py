@@ -4491,6 +4491,16 @@ class Loop:
         since = self._review_since
         return since is not None and time.monotonic() - since < self.HYPO_REVIEW_HOLD_S
 
+    HYPO_GATE_S = 2.0           # the review gate re-reads the state at most this often (bounds a stale _review_since)
+
+    def _hypo_gate_tick(self) -> bool:
+        """W-hypo3 fix1: the review gate on every feed tick (rate-limited), whatever the search limit or scan timer say."""
+        mono = time.monotonic()
+        if mono - self.__dict__.get("_hypo_gate_at", -1e9) >= self.HYPO_GATE_S:
+            self._hypo_gate_at = mono
+            self._hypo_gate_on = self._hypo_review_gate(self.load()[1])
+        return bool(self.__dict__.get("_hypo_gate_on"))
+
     def _hypo_limit(self) -> int:
         """W-hypo3 1: searches at once from the answer rate of the last 5 minutes (1 below 2 answers a minute, up to HYPO_PARALLEL)."""
         from tools import factory_hypo as HY
@@ -4512,13 +4522,13 @@ class Loop:
             return
         try:
             self._hypo_collect(now)
+            if self._hypo_gate_tick():          # W-hypo3 fix1: the gate looks at the state, not at the scan moment (also while the limit is full)
+                return
             limit = self._hypo_limit()
             if len(self._hypers) >= limit or now - getattr(self, "_hypo_scan_at", -1e9) < self.HYPO_SCAN_S:
                 return
             self._hypo_scan_at = now
             tasks, state = self.load()
-            if self._hypo_review_gate(state):
-                return
             ls = self.ls()
             copies = None
             looked = 0
@@ -4580,8 +4590,11 @@ class Loop:
                     result = dict(contract=spare, engine="hypo", faults=[], repaired=[]) if spare is not None else None
                 elif kind == "search":
                     result = self._hypo_post(row, packet, job.ctx["root"], ids, found)
-                    if result is None and found.get("status") == "cloud" and self._hypo_kept_for(base):
-                        pass        # W-hypo3 1: answers are kept: the row is searched again at once and finishes to a batch
+                    again = self.__dict__.setdefault("_hypo_again", {})
+                    mine = any(k[0] == str(ids[0]) for k in self._hypo_kept_for(base)) if ids else False
+                    if result is None and found.get("status") == "cloud" and mine and again.get((row, base), 0) < 3:
+                        again[(row, base)] = again.get((row, base), 0) + 1
+                        pass       # W-hypo3 1: answers are kept: the row is searched again at once and finishes to a batch
                     elif result is None:
                         self._hypo_skip[row] = (base, now)      # red or no result: the row goes the usual way, evidence kept
                 else:
