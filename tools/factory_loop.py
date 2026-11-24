@@ -44,6 +44,7 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from tools import agent_factory as F  # noqa: <id>
+from tools import factory_review_wait as RW  # noqa: <id>
 from tools import factory_channels as CH  # noqa: <id>
 try:                                   # the public mirror (factory_mirror.MODULES) does not carry the cloud gate: there is no cloud route
     from tools import factory_cloud_gate  # noqa: <id>
@@ -1606,6 +1607,7 @@ class Loop:
         if freed:
             self.event("infra", status="released", reason="lease_expired:" + ",".join(freed))
         self._unburn_no_answer()
+        self._unblock_short_chain()
         self._book_fixture_private()
         tasks, state = self.load()
         ls = self.ls()
@@ -2935,6 +2937,20 @@ class Loop:
         self.save_ls(ls)
         for tid, bid in done:
             self.event("supply", status="unburned", task_id=tid, backlog_id=bid, reason="no answer of the ensemble: back to READY")
+        return len(done)
+
+    def _unblock_short_chain(self) -> int:
+        """W-rev 2: once at the start (event supply status=unblocked, id of the card): cards a short review chain BLOCKED
+        (blocked_reason review_chain_short, 24.11) go back to READY -- a short chain is a wait now. A second start changes nothing."""
+        if self.ls().get("unblocked_short_chain"):
+            return 0
+        with self.txn() as (_tasks, st):
+            done = RW.unblock_short_chain(st, F.unblock)
+        ls = self.ls()
+        ls["unblocked_short_chain"] = True
+        self.save_ls(ls)
+        for tid in done:
+            self.event("supply", status="unblocked", task_id=tid, reason="review_chain_short: a short chain is a wait now")
         return len(done)
 
     def _book_fixture_private(self) -> int:

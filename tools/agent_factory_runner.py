@@ -56,6 +56,7 @@ from . import factory_tree
 from . import factory_quota as quota_ledger
 from . import factory_paid_critic as paid_critic
 from . import factory_ensemble as ENS
+from . import factory_review_wait as RW
 _log = logging.getLogger(__name__)
 ENV_ALLOW = ("PATH", "PATHEXT", "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC", "LANG")
 POLICY_FILE = "kilo.jsonc"
@@ -3187,6 +3188,8 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
         if old.get('workdir') == str(ctx['workdir']) and isinstance(old.get('votes'), list) and old.get('votes_diff'):
             row['pending_review']['votes'] = old['votes']    # W-review 2: the critics' voices of this very diff stay
             row['pending_review']['votes_diff'] = old['votes_diff']
+        if old.get('workdir') == str(ctx['workdir']) and isinstance(old.get('gates'), dict):
+            row['pending_review']['gates'] = old['gates']    # W-rev 2: the green gates of this very diff stay
 
     def keep_votes(row, log, diff_hash) -> None:
         """W-review 2: the critics' voices on the candidate (its diff hash is the key); dropped with pending_review."""
@@ -3358,8 +3361,9 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
     def call(role: str, call_task: Task, directory_for, preferred: str, prompt: str,
              *, exclude_model: str | None = None, skip_tiers: tuple = (), later: bool = False,
              candidate: int | None = None, models_out: set | None = None, on_booked=None,
-             temperature: float | None = None, fast_retry: bool = False) -> tuple[int, bytes, bytes]:
-        """W-vgs2 1-2: ``fast_retry`` (an ensemble branch): a 503 is handed back at once as ChannelFault (the ensemble
+             temperature: float | None = None, fast_retry: bool | str = False) -> tuple[int, bytes, bytes]:
+        """W-rev: ``fast_retry='small'`` hands a 503 back at once only on the small tier (the review call asks again itself,
+        RW.retry_overload); other tiers keep their own retry. W-vgs2 1-2: ``fast_retry`` (an ensemble branch): a 503 is handed back at once as ChannelFault (the ensemble
         retries the branch itself), the probe-mode fuse does not stop the call, and a channel's failure cooling is
         applied once per pass. One real model call with reservation, charging, classification, one transient retry. ``skip_tiers``:
         channel tiers this call may not use (factory_channels.route_order). ``candidate``: the number of the candidate
@@ -3425,7 +3429,7 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                     charge_call(state, tid)   # BEFORE booking: an exhausted budget must leave no reservation behind
                     when = channels.reserve(quota, pick, tokens, requests=booked,
                                            affinity=affinity)   # exactly what choose() checked
-                    if not fast_retry:
+                    if fast_retry is not True and not (fast_retry == 'small' and channels.tier_of(pick) == 'small'):
                         channels.breaker_claim(quota, pick)   # W-flow 2: a probe of a channel in probe mode: nobody else for 45 s
                     if ledger is not None:
                         quota_ledger.publish(ledger, str(checkpoint), quota)
@@ -3437,7 +3441,8 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                     # W-gemma2 2 (live 19:11:36, three sends, no cool_reason, 'transient'): checked and excluded: the call budget
                     # (refunded on every big 503), a deadline (none in call()), the same-channel ban (hopped is filled by the
                     # non-big path only), group cooling (a big 503 marks nothing). The cause: big['skip'] held the refusing channels
-                    if last_info is not None and not fast_retry and channels.breaker_open(live_state, order):
+                    if (last_info is not None and fast_retry is not True and not (fast_retry == 'small' and order and all(
+                            channels.tier_of(c) == 'small' for c in order)) and channels.breaker_open(live_state, order)):
                         raise ChannelFault(last_info)     # W-flow 2: probe mode: no pauses, no pounding; the pass is deferred (no strike)
                     if big['skip']:               # while the others were not free: the ones that answered 503 are asked again,
                         big['skip'].clear()       # no pause spent
@@ -3586,7 +3591,7 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                 raise ChannelFault(info)
             overload_503 = (kind == 'transient' and selected is not None
                             and info.get('status') in channels.OVERLOAD_STATUSES)
-            if fast_retry and overload_503:
+            if overload_503 and (fast_retry is True or (fast_retry == 'small' and channels.tier_of(selected) == 'small')):
                 with ctx['lock']:
                     first_time = selected['id'] not in ctx.setdefault('penalised', set())
                     ctx['penalised'].add(selected['id'])
@@ -3599,7 +3604,7 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                         quota_ledger.publish(ledger, str(checkpoint), state['channel_quotas'])
                 ck.commit(refused_503)
                 last_info = info
-                raise ChannelFault(info)
+                raise ChannelFault(dict(info, fast_retry=True))     # W-rev: the caller may ask again (RW.retry_overload)
             if selected is not None:
                 def failure(state, row):
                     if ledger is not None:      # a success of another process ends our series of 503s too
@@ -4866,13 +4871,25 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
             order = call_order('review', review_model, base_tokens, authors() + voted, (), (), False, live_state, light, steps,
                                scratch_events)
             if not order:
+                ctx['review_left'] = False           # W-rev 2: no reviewer channel at all
                 return 0.0, '', kept, kept           # without a voice the call's own NoIndependentReviewer path decides
             seen = live_state                        # already the merged view
             try:
                 call_pick(order, seen, base_tokens, booked, call_affinity('review'))
             except channels.ChannelUnavailable as error:
+                ctx['review_left'] = RW.channel_left(order, error.reason or 'unknown')   # no reason: not a known open-today case
                 return float(error.wait_s or 0), str(error.reason or ''), [], kept
+            ctx['review_left'] = True
             return 0.0, '', [], kept
+
+        def review_left() -> bool:
+            """W-rev 2: some reviewer channel (not an author, not a model that already voted) can still answer today."""
+            ctx['review_left'] = None
+            try:
+                reviewers_wait()
+            except Exception:                        # noqa: BLE001 - unknown: the old rule (the term) stands
+                return False
+            return ctx.get('review_left') is True
         if decision is None and pending:             # a standing candidate: no cloud gates while no reviewer is free
             hold, why_hold, short_chain, kept_now = reviewers_wait()
             # rule 4 of 21.11: with a kept voice the paid critic is the insurance second voice, so while it can be asked
@@ -4895,8 +4912,38 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                 events.append('review_deferred_before_gates')
                 report['pending_review'] = True
                 return _wait(release, report, 'channel_wait', hold, status='WAITING_CHANNEL', channel_reason=why_hold or None)
+        def gates_diff_hash(files) -> str:
+            return sha256(diff_of(files).encode('utf-8', 'replace')).hexdigest() if ctx['baseline'] is not None else ''
+
+        def kept_gates():
+            """W-rev 2: the standing candidate whose gates were green on THIS diff (same base, same files) is not gated again:
+            the next pass only asks the missing reviewer."""
+            g = (ck.read()['tasks'][tid].get('pending_review') or {}).get('gates')
+            if not (pending and isinstance(g, dict) and isinstance(g.get('receipt'), str) and g.get('diff')
+                    and isinstance(g.get('changed'), list)):
+                return None
+            try:
+                files = inspect_changes(task, ctx['workdir'], ctx['baseline']) if ctx['baseline'] is not None else ()
+            except Exception:                        # noqa: BLE001 - the gates will name it
+                return None
+            if g.get('base_sha') != base_sha:        # the base moved (or was never noted): the gates run again
+                return None
+            if not files or sorted(files) != sorted(g['changed']) or gates_diff_hash(files) != g['diff']:
+                return None
+            events.append('gates_kept')
+            # the side effects of run_gates() the critics read are restored from the note (same as a full run)
+            ctx['hollow'] = tuple(str(x) for x in (g.get('hollow') or ()))
+            ctx['extra_names'] = tuple(str(x) for x in (g.get('extra_names') or ()))
+            ctx['red_evidence'] = g.get('red_evidence') or ''
+            kept_counts = g.get('counts')
+            if isinstance(kept_counts, dict):
+                from types import SimpleNamespace
+                ctx['counts'] = SimpleNamespace(collected=kept_counts.get('collected', 0), passed=kept_counts.get('passed', 0),
+                                                failed=kept_counts.get('failed', 0), errors=0,
+                                                skipped=kept_counts.get('skipped', 0))
+            return files, g['receipt']
         if decision is None:
-            decision = run_gates()                   # the standing candidate (or the kept one of a pending review)
+            decision = kept_gates() or run_gates()   # the standing candidate (or the kept one of a pending review)
             if isinstance(decision, _GateRetry):
                 red_on(ctx.get('coder_model'))
                 if 'tournament' in report:
@@ -4918,17 +4965,35 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
 
         # 4. Independent reviewer: another model, reasons go back as feedback.
         ck.commit(lambda s, r: set_pending(s, r))
+        if ctx['baseline'] is not None:              # W-rev 2: the green gates stay with the candidate
+            gates_note = dict(diff=gates_diff_hash(changed), changed=list(changed), receipt=receipt, base_sha=base_sha,
+                              hollow=list(ctx.get('hollow') or ()), extra_names=list(ctx.get('extra_names') or ()),
+                              red_evidence=ctx.get('red_evidence') or '', counts=_counts(ctx.get('counts')))
+            ck.commit(lambda s, r: r['pending_review'].__setitem__('gates', gates_note)
+                      if isinstance(r.get('pending_review'), dict) else None)
 
         kept_log = []     # the voices of this candidate (the telemetry reads it on every exit)
         critics = []      # the models that reviewed this candidate: the next critic is none of them, nor the coder
         told = rejected_for(ck.read(), tid)
 
+        pass_wait = [RW.PASS_WAIT_S]               # W-rev: the 503 sleeps of ALL tries of this pass share it (the lease lives 1800 s)
+
+        def pass_sleep(seconds):
+            pass_wait[0] -= seconds
+            time.sleep(seconds)
+
         def invoke(call_task, directory, preferred, **kwargs):
             tries = DRY_REVIEW_TRIES if dry_now() else 1     # W-dry 2: Gemma again and again while the edit channels are dry
             for number in range(1, tries + 1):
                 try:
-                    return call('review', call_task, lambda _retry: directory, preferred,
-                                kwargs['prompt_override'], exclude_model=authors() + critics)
+                    # W-rev 1: a 503 of the small tier is asked again round its channels (2, 4, 8, 12, 12 ... s, 120 s per
+                    # call, at most PASS_WAIT_S of sleeping in the whole pass)
+                    return RW.retry_overload(
+                        lambda: call('review', call_task, lambda _retry: directory, preferred,
+                                     kwargs['prompt_override'], exclude_model=authors() + critics, fast_retry='small'),
+                        lambda err: isinstance(err, ChannelFault) and bool((err.info or {}).get('fast_retry')),
+                        total_s=max(0.0, min(RW.RETRY_TOTAL_S, pass_wait[0])), sleep=pass_sleep,
+                        on_retry=lambda n: events.append('review_503_retry_%d' % n) if n <= 3 else None)
                 except (channels.ChannelUnavailable, ChannelFault) as error:
                     kind = error.info.get('kind') if isinstance(error, ChannelFault) else None
                     if number >= tries or (kind is not None and kind not in DRY_REVIEW_RETRY_KINDS) or (
@@ -4998,6 +5063,9 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                     report['pending_review'] = True
                     if dry:                        # W-dry 2: no failure of the card while the edit channels are dry
                         return release('review_chain_short', INFRA_DEFER_S)
+                    if review_left():              # W-rev 2: a channel can still answer today: 120 s, no strike, no block
+                        events.append('review_chain_wait')
+                        return release('review_chain_short', RW.RECHECK_S)
                     if ck.commit(chain_short) >= ESCALATE_AFTER:   # the term of the candidate, whatever came between
                         return block('review_chain_short', 'review chain cut short %d times' % ESCALATE_AFTER)
                     return release_or_block('review_chain_short', INFRA_DEFER_S)
