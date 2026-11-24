@@ -3542,13 +3542,16 @@ class Loop:
         """W-pack: a root package (one root cause, many files) is merged by the cycle after a FULL cloud build of base and base+package:
         ``folder/files/**`` + ``folder/verdict.json`` {base, digest, runs [2], green, new_red [], review {"verdict": "approve"}}. All is
         checked again here: the digest, the paths (rig_touch_faults), the AST lock (rig_weakens), the calls (factory_calls), the touched
-        files unchanged since the verdict's base. One commit, the worktree lock of the cycle, like _revert_answer."""
+        files unchanged since the verdict's base. One commit, the worktree lock of the cycle, like _revert_answer.
+        Trust: verdict.json is NOT signed; the answers folder is a trusted source (whoever can put a folder there is the owner).
+        The two full cloud runs and the review are claimed by the verdict, the cycle cannot confirm them. A conftest is limited to
+        fixtures (hooks, plugins, autouse refused by regex). A failed write/add/commit restores the package paths."""
         from tools import factory_calls, factory_gate
         wt = Path(self.cfg.worktree)
         try:
             verdict = json.loads((folder / "verdict.json").read_text(encoding="utf-8"))
             files = {x.relative_to(folder / "files").as_posix(): x.read_bytes() for x in sorted((folder / "files").rglob("*"))
-                     if x.is_file() and "__pycache__" not in x.parts}
+                     if x.is_file() and not x.is_symlink() and "__pycache__" not in x.parts}
             texts = {n: raw.decode("utf-8") for n, raw in files.items()}
         except (OSError, ValueError) as e:
             raise F.InvalidPlan("package unreadable: %s" % type(e).__name__) from e
@@ -3576,18 +3579,27 @@ class Loop:
                     faults += factory_calls.new_bad_calls(name, old, text, wt)
                 if name != "tests/conftest.py" and factory_gate.is_forbidden(name, "code", named=list(files), rig=True):
                     faults.append(name + ": forbidden")
+                if name == "tests/conftest.py" and re.search(r"def\s+pytest_|pytest_plugins|\bitems\s*[\[.]|autouse", text):
+                    faults.append(name + ": conftest hooks/autouse are not allowed, fixtures only")
                 if F.is_private_text(text) and not F.is_private_text(old):
                     faults.append(name + ": private text")
         if faults:
             raise F.InvalidPlan("package refused: " + "; ".join(faults[:6]))
         key = bid or "rel-pack-" + verdict["digest"][:8]
-        for name, raw in files.items():
-            (wt / name).parent.mkdir(parents=True, exist_ok=True)
-            (wt / name).write_bytes(raw)
-        git_run(wt, "add", "--", *files)
-        git_run(wt, "-c", "user.name=agent-factory", "-c", "user.email=agent-factory@localhost", "commit", "-q", "-m",
-                "factory-package(%s): %s" % (key, self._scrub(F.redact(note))[:300]))
-        sha = git_run(wt, "rev-parse", "HEAD").strip()
+        try:
+            for name, raw in files.items():
+                (wt / name).parent.mkdir(parents=True, exist_ok=True)
+                (wt / name).write_bytes(raw)
+            git_run(wt, "add", "--", *files)
+            git_run(wt, "-c", "user.name=agent-factory", "-c", "user.email=agent-factory@localhost", "commit", "-q", "-m",
+                    "factory-package(%s): %s" % (key, self._scrub(F.redact(note))[:300]))
+            sha = git_run(wt, "rev-parse", "HEAD").strip()
+        except Exception as e:  # a failed write/add/commit must not leave the package in the tree or the index
+            try:
+                self._restore(wt, list(files))
+            except Exception as e2:
+                self.err("package restore", e2)
+            raise F.InvalidPlan("package: write or commit failed (%s), the tree is restored" % type(e).__name__) from e
         self.event("promote", task_id=key, backlog_id=key, status="promoted", reason="package", commit=sha, green=int(verdict["green"]))
         return {"task_id": None, "backlog_id": key, "reason": "package " + sha[:8]}
 
