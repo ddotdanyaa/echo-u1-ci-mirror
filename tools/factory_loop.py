@@ -6188,7 +6188,9 @@ class Loop:
         return ls
 
     def _dispositions(self, now) -> dict:
-        """imp.row_dispositions of the live backlog, kept for 10 minutes per backlog edit (it reads git); {} on a failure."""
+        """imp.row_dispositions of the live backlog, kept for 10 minutes per backlog edit (it reads git); {} on a failure.
+        W-tick fix3: never computed in the calling (main) thread: the first call starts the background pass and answers {}
+        (the report gets the dispositions on a later tick)."""
         try:
             mtime = self.cfg.backlog.stat().st_mtime
             cache = getattr(self, "_disp_cache", None)
@@ -6200,16 +6202,13 @@ class Loop:
                 elif isinstance(job.error, ValueError):
                     cache = self._disp_cache = (job.ctx["mtime"], now, {})
                 else:
-                    self.err("reconcile: dispositions", job.error); cache = self._disp_cache = (job.ctx["mtime"], now, cache[2] if cache else {})   # W-tick 5: back-off, the old answer for the term (no thread per tick)
+                    self.err("reconcile: dispositions", job.error)
+                    cache = self._disp_cache = (job.ctx["mtime"], now, cache[2] if cache else {})   # W-tick 5: back-off, the old answer for the term (no thread per tick)
             if cache and cache[0] == mtime and now - cache[1] < 600:
                 return cache[2]
             if job is not None and not job.done.is_set():
                 return cache[2] if cache else {}            # a pass is running: the old answer meanwhile
             from tools import agent_factory_import as imp
-            if not cache:                                   # the very first answer is waited for once (the report is whole from the start)
-                disp = imp.row_dispositions(self.cfg.backlog, self.cfg.worktree, self_repo=bool(self.cfg.self_repo))
-                self._disp_cache = (mtime, now, disp)
-                return disp
             backlog, wt, own = self.cfg.backlog, self.cfg.worktree, bool(self.cfg.self_repo)
             self._disp_job = Prefetch("dispositions", lambda: imp.row_dispositions(backlog, wt, self_repo=own), {"mtime": mtime})
             self._disp_job.thread.start()
