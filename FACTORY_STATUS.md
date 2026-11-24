@@ -1,6 +1,6 @@
 # Factory status (generated, structured data only)
 
-Generated: 2026-11-24T05:22:06Z
+Generated: 2026-11-24T05:27:31Z
 Source commit: shac889599a68c1
 
 ## Commits (sha, time)
@@ -40,11 +40,11 @@ Source commit: shac889599a68c1
 | triaged | 365 |
 
 Side counters: blocked=1, parked=0, requeued=7
-Tasks now: BLOCKED=1, DONE=68, FAILED=617, PROMOTED=46, READY=80, RUNNING=9
+Tasks now: BLOCKED=1, DONE=68, FAILED=620, PROMOTED=46, READY=80, RUNNING=6
 Accepted: 21
 Promoted: 70
-Free RAM, GB: 3.89
-Telemetry rows: 51091 recognised, 0 unrecognised
+Free RAM, GB: 4.79
+Telemetry rows: 51203 recognised, 0 unrecognised
 
 ## Spend per model
 | model | calls | tokens_in | tokens_out | usage_unknown | http_429 | errors |
@@ -60,8 +60,8 @@ Telemetry rows: 51091 recognised, 0 unrecognised
 | google/gemini-3.6-flash | 135 | 414079 | 20196 | 57 | 12 | 57 |
 | google/gemini-3.7-flash | 26 | 9121 | 14 | 25 | 14 | 25 |
 | google/gemini-3.8-flash | 28 | 21237 | 15 | 25 | 13 | 25 |
-| google/gemma-4-26b-a4b-it | 2036 | 1772620 | 329195 | 1354 | 3 | 1354 |
-| google/gemma-4-31b-it | 1514 | 784823 | 83067 | 1228 | 2 | 1228 |
+| google/gemma-4-26b-a4b-it | 2051 | 1787692 | 331252 | 1365 | 3 | 1365 |
+| google/gemma-4-31b-it | 1534 | 797872 | 84611 | 1242 | 2 | 1242 |
 | openrouter/nvidia/nemotron-3-ultra-550b-a55b:free | 130 | 715529 | 156330 | 2 | 2 | 2 |
 | other | 65 | 1154192 | 66710 | 6 | 0 | 7 |
 
@@ -69,13 +69,13 @@ Telemetry rows: 51091 recognised, 0 unrecognised
 | span | rows | calls |
 |---|---|---|
 | answer | 536 | 0 |
-| gate | 7328 | 0 |
-| infra | 1281 | 0 |
-| loop | 7771 | 0 |
-| other | 14644 | 0 |
+| gate | 7338 | 0 |
+| infra | 1283 | 0 |
+| loop | 7788 | 0 |
+| other | 14661 | 0 |
 | promote | 86 | 0 |
-| review | 2900 | 1422 |
-| run | 16125 | 6537 |
+| review | 2914 | 1426 |
+| run | 16177 | 6568 |
 | triage | 420 | 0 |
 
 ## Channels (model ids)
