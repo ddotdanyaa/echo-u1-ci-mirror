@@ -2971,7 +2971,7 @@ class Loop:
             sweep = AF.read_sweep(latest) if latest is not None else {}
             for name in sorted(k for k, red in sweep.items() if red is True):
                 path = str(name).partition("::")[0]
-                if self.GUARD_FILE.search(path) and (self._guard_id_guess(path) == row or row in Path(path).stem.replace("_", ".")):
+                if self.GUARD_FILE.search(path) and (self._guard_id_guess(path) == row):
                     return name
         except Exception as exc:                    # noqa: BLE001 - no guard found: the card is left as it was
             self.err("guard of row", exc)
@@ -3003,14 +3003,6 @@ class Loop:
                 picked.append((tid, row, guard))
         if not picked:
             return 0
-        counts = ls.setdefault("guard_requeues", {})
-        for tid, row, guard in picked:       # the row keeps the guard: the packet of the new slice carries the red test
-            counts[row] = int(counts.get(row) or 0) + 1
-            if guard != "rel":
-                entry = ls.setdefault("to_slice", {}).setdefault(row, {"at": self.clock(), "hints": [], "priority": 0})
-                if not entry.get("guard"):
-                    entry["guard"] = guard
-        self.save_ls(ls)
         done = []
         with self.txn() as (_tasks, st):
             for tid, row, guard in picked:
@@ -3018,6 +3010,17 @@ class Loop:
                     st["tasks"][tid].update(status="FAILED", reason="reslice:stale")
                     st["tasks"][tid].pop("blocked_reason", None)
                     done.append((tid, row))
+        if done:                             # the count and the guard are booked only for cards that really went back
+            ls = self.ls()
+            counts = ls.setdefault("guard_requeues", {})
+            guards = {t: g for t, _r, g in picked}
+            for tid, row in done:            # the row keeps the guard: the packet of the new slice carries the red test
+                counts[row] = int(counts.get(row) or 0) + 1
+                if guards[tid] != "rel":
+                    entry = ls.setdefault("to_slice", {}).setdefault(row, {"at": self.clock(), "hints": [], "priority": 0})
+                    if not entry.get("guard"):
+                        entry["guard"] = guards[tid]
+            self.save_ls(ls)
         for tid, row in done:
             self.event("supply", status="guard_requeue", task_id=tid, backlog_id=row,
                        reason="already_green on a row with a guard: back to the slicer (reslice:stale)")
