@@ -20,7 +20,9 @@ def _defs(tree, rel, out, alias):
             names = set(pos) | {x.arg for x in a.kwonlyargs}
             out.setdefault(node.name, {}).setdefault(rel, []).append((node.lineno, len(pos), names, a.vararg is not None,
                                                                        a.kwarg is not None, ast.unparse(a)))
-        elif isinstance(node, ast.Assign):
+        elif isinstance(node, ast.Assign) and (isinstance(node.value, (ast.Name, ast.Attribute, ast.Lambda)) or (
+                isinstance(node.value, ast.Call) and _tail(node.value.func) in ('staticmethod', 'classmethod', 'property',
+                                                                                'partial', 'wraps'))):
             alias.update(t.id for t in node.targets if isinstance(t, ast.Name))
 
 
@@ -47,14 +49,30 @@ def _index(root: Path, file: str, new_text: str):
     return out, alias
 
 
+def _external_names(tree) -> set:
+    """Names bound by imports of modules outside the project (echo_sync/tools, relative imports are the project's)."""
+    out = set()
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Import):
+            for a in n.names:
+                if a.name.split('.')[0] not in ('echo_sync', 'tools'):
+                    out.add((a.asname or a.name).split('.')[0])
+        elif isinstance(n, ast.ImportFrom) and not n.level and (n.module or '').split('.')[0] not in ('echo_sync', 'tools'):
+            out.update(a.asname or a.name for a in n.names)
+    return out
+
+
 def _calls(text: str) -> Counter:
     c: Counter = Counter()
     try:
         tree = ast.parse(text)
     except SyntaxError:
         return c
+    ext = _external_names(tree)
     for n in ast.walk(tree):
         if isinstance(n, ast.Call):
+            if isinstance(n.func, ast.Attribute) and isinstance(n.func.value, ast.Name) and n.func.value.id in ext:
+                continue        # shutil.which(...): the receiver is an imported module that is not the project's
             name = n.func.id if isinstance(n.func, ast.Name) else n.func.attr if isinstance(n.func, ast.Attribute) else ''
             pos = -1 if any(isinstance(a, ast.Starred) for a in n.args) else len(n.args)
             if name:

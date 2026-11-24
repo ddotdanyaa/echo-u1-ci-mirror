@@ -1,9 +1,10 @@
 # Factory status (generated, structured data only)
 
-Generated: 2026-11-24T19:05:24Z
-Source commit: sha424752e06b56
+Generated: 2026-11-24T19:37:45Z
+Source commit: sha8a1e7eeac346
 
 ## Commits (sha, time)
+- sha8a1e7eea 2026-11-24T22:35:23+03:00
 - sha424752e0 2026-11-24T22:02:33+03:00
 - shabf85c6fe 2026-11-24T21:57:05+03:00
 - shad36c2241 2026-11-24T21:53:45+03:00
@@ -23,28 +24,27 @@ Source commit: sha424752e06b56
 - shad38146df 2026-11-24T13:36:59+03:00
 - sha518ae90a 2026-11-24T13:24:49+03:00
 - shaba80191e 2026-11-24T13:12:08+03:00
-- sha0d45d329 2026-11-24T13:10:31+03:00
 
 ## Funnel
 | step | count |
 |---|---|
 | accepted | 29 |
-| claimed | 784 |
+| claimed | 787 |
 | coded | 189 |
 | found_in_backlog | unknown |
 | gate_pass | 86 |
-| known_to_loop | 569 |
+| known_to_loop | 571 |
 | promoted | 81 |
-| ready | 18 |
+| ready | 17 |
 | reviewed | 211 |
-| triaged | 385 |
+| triaged | 387 |
 
-Side counters: blocked=6, parked=0, requeued=9
-Tasks now: BLOCKED=6, DONE=68, FAILED=863, PROMOTED=57, READY=18, RUNNING=2
+Side counters: blocked=2, parked=0, requeued=9
+Tasks now: BLOCKED=2, DONE=68, FAILED=869, PROMOTED=57, READY=17, RUNNING=4
 Accepted: 29
 Promoted: 81
-Free RAM, GB: 2.6
-Telemetry rows: 64356 recognised, 0 unrecognised
+Free RAM, GB: 2.15
+Telemetry rows: 64674 recognised, 0 unrecognised
 
 ## Spend per model
 | model | calls | tokens_in | tokens_out | usage_unknown | http_429 | errors |
@@ -53,7 +53,7 @@ Telemetry rows: 64356 recognised, 0 unrecognised
 | cohere/command-a-plus-05-2026 | 12 | 5678 | 452 | 8 | 0 | 8 |
 | cohere/north-mini-code-1.0 | 7 | 10515 | 346 | 3 | 0 | 3 |
 | google/gemini-3-flash-preview | 39 | 42084 | 7471 | 20 | 19 | 20 |
-| google/gemini-3.1-flash-lite | 1682 | 8746413 | 614728 | 130 | 8 | 130 |
+| google/gemini-3.1-flash-lite | 1684 | 8748062 | 614855 | 131 | 8 | 131 |
 | google/gemini-3.1-flash-lite-preview | 448 | 804552 | 139744 | 105 | 16 | 105 |
 | google/gemini-3.5-flash | 35 | 30545 | 1824 | 25 | 23 | 25 |
 | google/gemini-3.5-flash-lite | 1992 | 11070268 | 651486 | 49 | 13 | 49 |
@@ -62,8 +62,8 @@ Telemetry rows: 64356 recognised, 0 unrecognised
 | google/gemini-3.8-flash | 28 | 21237 | 15 | 25 | 13 | 25 |
 | google/gemini-4-hydrogen | 3 | 0 | 0 | 3 | 0 | 3 |
 | google/gemini-robotics-er-2-preview | 2 | 5373 | 134 | 0 | 0 | 0 |
-| google/gemma-4-26b-a4b-it | 3716 | 2812328 | 504582 | 2601 | 14 | 2601 |
-| google/gemma-4-31b-it | 3072 | 1304813 | 144217 | 2559 | 8 | 2559 |
+| google/gemma-4-26b-a4b-it | 3745 | 2843744 | 507459 | 2623 | 14 | 2623 |
+| google/gemma-4-31b-it | 3096 | 1311619 | 145186 | 2580 | 8 | 2580 |
 | openrouter/nvidia/nemotron-3-ultra-550b-a55b:free | 130 | 715529 | 156330 | 2 | 2 | 2 |
 | other | 65 | 1154192 | 66710 | 6 | 0 | 7 |
 
@@ -71,14 +71,14 @@ Telemetry rows: 64356 recognised, 0 unrecognised
 | span | rows | calls |
 |---|---|---|
 | answer | 537 | 0 |
-| gate | 8523 | 0 |
-| infra | 2459 | 0 |
-| loop | 9127 | 0 |
-| other | 18884 | 0 |
+| gate | 8544 | 0 |
+| infra | 2555 | 0 |
+| loop | 9147 | 0 |
+| other | 18982 | 0 |
 | promote | 99 | 0 |
-| review | 3428 | 1589 |
-| run | 20862 | 9848 |
-| triage | 437 | 0 |
+| review | 3437 | 1591 |
+| run | 20933 | 9901 |
+| triage | 440 | 0 |
 
 ## Channels (model ids)
 - 1db4ab-gemini-3-8-flash
@@ -129,7 +129,7 @@ Telemetry rows: 64356 recognised, 0 unrecognised
 ## Published files
 Modules: 35
 Tests in the cloud: 109
-Tests not in the cloud: 138
+Tests not in the cloud: 139
 - tests/test_agent_factory.py (backlog-id, call-word, env-path, long-run, pid-port)
 - tests/test_factory_503.py (backlog-id, long-run)
 - tests/test_factory_architect.py (backlog-id, email, env-path, path)
@@ -234,6 +234,7 @@ Tests not in the cloud: 138
 - tests/test_factory_reject_note.py (dependency)
 - tests/test_factory_release.py (backlog-id)
 - tests/test_factory_release_run.py (dependency)
+- tests/test_factory_revert.py (email)
 - tests/test_factory_review_wait.py (backlog-id, long-run)
 - tests/test_factory_round7.py (backlog-id, call-word, owner-name, path, phone, user-path)
 - tests/test_factory_router_wiring.py (dependency)

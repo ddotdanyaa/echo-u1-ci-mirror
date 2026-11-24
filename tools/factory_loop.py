@@ -3526,23 +3526,30 @@ class Loop:
             raise F.InvalidPlan("merge worktree is dirty: the revert waits")
         if subprocess.run(["git", "-C", str(wt), "merge-base", "--is-ancestor", sha, self.cfg.branch]).returncode != 0:
             raise F.InvalidPlan("commit %s is not on %s: nothing to revert" % (sha[:8], self.cfg.branch))
-        why = ""
-        proc = subprocess.run(["git", "-C", str(wt), "revert", "--no-commit", sha], capture_output=True, text=True)
-        if proc.returncode != 0:
-            why = "revert of %s conflicts: %s" % (sha[:8], F.redact((proc.stdout + proc.stderr).strip())[:200])
-        elif subprocess.run(["git", "-C", str(wt), "diff", "--cached", "--quiet"]).returncode == 0:
-            why = "revert of %s changes nothing (already undone)" % sha[:8]
-        if why:
-            subprocess.run(["git", "-C", str(wt), "revert", "--abort"], capture_output=True)
-            left = self._dirty_paths(wt)
-            if left:
-                self._restore(wt, left)
-            raise F.InvalidPlan(why)
         text = self._scrub(F.redact(note))[:300]
-        git_run(wt, "-c", "user.name=agent-factory", "-c", "user.email=agent-factory@localhost", "commit", "-q", "-m",
-                "factory-revert(%s): %s" % (tid, text))
-        new_sha = git_run(wt, "rev-parse", "HEAD").strip()
-        ls.setdefault("rejected", {}).setdefault(tid, []).append(sha)     # the recovered path of _promote never takes it again
+        # a retry after a failed state write: the revert commit of this cycle is already in the branch, go on to the records
+        done = git_run(wt, "log", "-1", "--format=%H", "--fixed-strings", "--grep", "factory-revert(%s):" % tid,
+                       "%s..%s" % (sha, self.cfg.branch)).strip()
+        if done:
+            new_sha = done
+        else:
+            why = ""
+            proc = subprocess.run(["git", "-C", str(wt), "revert", "--no-commit", sha], capture_output=True, text=True)
+            if proc.returncode != 0:
+                why = "revert of %s conflicts: %s" % (sha[:8], F.redact((proc.stdout + proc.stderr).strip())[:200])
+            elif subprocess.run(["git", "-C", str(wt), "diff", "--cached", "--quiet"]).returncode == 0:
+                why = "revert of %s changes nothing (already undone)" % sha[:8]
+            if why:
+                subprocess.run(["git", "-C", str(wt), "revert", "--abort"], capture_output=True)
+                if self._dirty_paths(wt):
+                    why += "; the worktree is not clean after the abort, needs a look"
+                raise F.InvalidPlan(why)
+            git_run(wt, "-c", "user.name=agent-factory", "-c", "user.email=agent-factory@localhost", "commit", "-q", "-m",
+                    "factory-revert(%s): %s" % (tid, text))
+            new_sha = git_run(wt, "rev-parse", "HEAD").strip()
+        seen = ls.setdefault("rejected", {}).setdefault(tid, [])     # the recovered path of _promote never takes it again
+        if sha not in seen:
+            seen.append(sha)
         bid = bid or row.get("backlog_id")
         task = self.load()[0].get(tid)
         entry = ls.setdefault("to_slice", {}).setdefault(F.row_of(bid or tid), {"at": self.clock(), "hints": [], "guard": ""})
