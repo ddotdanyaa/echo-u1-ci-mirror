@@ -1,0 +1,79 @@
+"""Admission floors of the loop: a light worker (one HTTP call, peak 40-120 MB) is admitted on a 3 GB machine, a Kilo
+worker keeps the gate's 2 GB floor; the triage takes up to 12 tasks per pass."""
+from types import SimpleNamespace
+
+import pytest
+
+from tools import factory_gate as G
+from tools import factory_loop as L
+
+MB = 2 ** 20
+LIGHT = {'touch_files': ['calc.py']}
+KILO = {'touch_files': ['f%d.py' % i for i in range(11)]}      # over LIGHT_MAX_FILES (10)
+
+
+@pytest.fixture(autouse=True)
+def _no_reserves(tmp_path, monkeypatch):
+    monkeypatch.setattr(L, 'MEM_RESERVE_DIR', tmp_path / 'no_reserves')      # the build's real bookings never leak into a test
+
+
+def _loop(free, live=0, peaks=(), headroom=99):
+    stub = SimpleNamespace(
+        free_ram_fn=lambda: free,
+        pool=SimpleNamespace(workers={i: SimpleNamespace(owned=None, tid='T%d' % i) for i in range(live)}),
+        _ending=lambda: False, _brake_due=None, cfg=SimpleNamespace(once=False),
+        ls=lambda: {}, _peaks=list(peaks), err=lambda *a: None,
+        load=lambda: (None, {'tasks': {}}), _headroom=lambda task, state: headroom, _headroom_seen=None)
+    stub._estimate = lambda: L.Loop._estimate(stub)
+    stub._mem_plan = lambda live=None: L.Loop._mem_plan(stub, live)
+    stub._floor = L.Loop._floor
+    return stub
+
+
+def capacity(task, **kw):
+    stub = _loop(**kw)
+    return L.Loop._capacity(stub, task)
+
+
+def test_the_light_floor_is_below_the_gate_floor_and_triage_takes_twelve():
+    assert L.LIGHT_FLOOR == 768 * MB < G.MIN_FREE_RAM
+    assert L.Config.triage_limit == 12
+
+
+def test_a_light_worker_starts_with_one_and_a_half_gb_free_and_a_kilo_worker_does_not():
+    assert capacity(LIGHT, free=1536 * MB) == ''
+    assert capacity(KILO, free=1536 * MB) == 'low_ram'
+    assert capacity(KILO, free=2100 * MB) == ''             # the old floor still admits Kilo above 2 GB
+
+
+def test_below_the_light_floor_nothing_starts():
+    assert capacity(LIGHT, free=700 * MB) == 'low_ram'
+
+
+def test_light_workers_are_admitted_up_to_the_measured_estimate():
+    peaks = [100 * MB] * 5                                   # measured: a worker needs about 100 MB
+    free = 1536 * MB
+    admitted = 0
+    for live in range(1, 12):
+        if capacity(LIGHT, free=free, live=live, peaks=peaks) == '':
+            admitted = live
+        else:
+            break
+    # W-mem: the floor (768) plus one median (100) plus ONE shared burst reserve max(100, 0.15 x live x 100): live workers
+    # are not booked at their peak each, so all eleven fit; the shared reserve outgrows the room only at ~45 live
+    assert admitted == 11
+    assert capacity(LIGHT, free=free, live=44, peaks=peaks) == ''
+    assert capacity(LIGHT, free=free, live=46, peaks=peaks) == 'low_ram'
+
+
+def test_with_the_unmeasured_default_estimate_one_and_a_half_gb_holds_many_light_workers():
+    # median 100 (unmeasured), est_peak 300 (default): 768 >= 100 + max(300, 45 x live) up to 14 live
+    assert capacity(LIGHT, free=1536 * MB, live=2) == ''
+    assert capacity(LIGHT, free=1536 * MB, live=14) == ''
+    assert capacity(LIGHT, free=1536 * MB, live=15) == 'low_ram'
+
+
+def test_a_kilo_second_worker_keeps_the_old_rule_and_an_unknown_task_the_light_floor():
+    assert capacity(KILO, free=2400 * MB, live=1) == 'low_ram'          # 2400 - 300 < 2048 + 300
+    assert capacity(None, free=1536 * MB) == ''
+    assert capacity({'title': 'no files listed'}, free=1536 * MB) == 'low_ram'
