@@ -101,6 +101,25 @@ def rank_functions(root, *, stack=(), diff=(), trace=(), ranked=(), k=HYPO_FUNCS
     return out
 
 
+def diff_funcs_of(diff_text: str) -> list:
+    """[(file, name)] of the functions a diff touches: the function of a hunk header and the ``def`` lines it adds or removes."""
+    out, file = [], ""
+    for line in str(diff_text or "").splitlines():
+        if line.startswith("diff --git "):
+            file = line.split(" b/")[-1].strip()
+            continue
+        if not file:
+            continue
+        found = None
+        if line.startswith("@@"):
+            found = re.search(r"@@.*?@@\s*(?:async\s+)?def\s+(\w+)", line)
+        elif line[:1] in "+-" and not line.startswith(("+++", "---")):
+            found = re.match(r"[+-]\s*(?:async\s+)?def\s+(\w+)", line)
+        if found and (file, found.group(1)) not in out:
+            out.append((file, found.group(1)))
+    return out
+
+
 def _signature(node) -> str:
     try:
         return "def %s(%s)" % (node.name, ast.unparse(node.args))

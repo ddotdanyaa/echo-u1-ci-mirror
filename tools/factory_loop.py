@@ -4047,9 +4047,59 @@ class Loop:
         marker = "FAILURE OF THE RED TEST (assert, message, last frames):\n"
         failure = evidence.partition(marker)[2][:4000] if marker in evidence else ""
         trace = [(t[0], t[1], 0) for t in packet.get("trace_path") or ()]
+        diff = HY.diff_funcs_of(packet.get("bisect_clue"))      # the functions of the guilty commit's diff (the bisect proof of the packet)
+        title = str(packet.get("title") or "")
+
+        def ranked(ids):        # the rest in the repomap order of the row's own words
+            try:
+                from tools import repomap
+                return [(r[0], r[1]) for r in repomap.rank(root, title)] if title else []
+            except (ImportError, OSError, ValueError):
+                return []
+        if getattr(self, "_hypo_minute", None) is None:     # ONE booking of the input tokens for all searches of the loop
+            self._hypo_minute = HY.Minute()
         return HY.Ctx(root=root, ask=ask, cloud=lambda r, ids, files: HY.cloud_batch(r, ids, files, tid="h" + str(packet.get("bid"))),
                       live=live, failure_text=lambda ids: failure, trace=lambda ids: trace,
+                      diff_funcs=lambda ids: diff, ranked=ranked, minute=self._hypo_minute,
                       event=lambda name, **f: loop.event(name, **f))
+
+    def _hypo_ids(self, row, packet):
+        """W-hyp 1: the red test ids of the row in the order guard -> rel-<sha> regression -> rel-base-<n> debt (runnable ids only)."""
+        from tools import factory_hypo as HY, factory_release as REL
+        rel = base = None
+        try:
+            if str(row).startswith("rel-base-"):
+                from tools import factory_bisect as BIS
+                base = BIS.row_tests(self.cfg.state_dir, row)
+            elif str(row).startswith("rel-"):
+                rel = [n for n, r in REL.regressions(self.cfg.state_dir).items() if r.get("row") == row]
+        except Exception as exc:        # noqa: BLE001  an aid: no ids, no search
+            self.err("hypo ids", exc)
+        return [i for i in HY.pick_red(packet.get("guard_red"), rel, base) if "::" in i]
+
+    def _hypo_take_spare(self, row, root, packet):
+        """W-hyp 4: the next green candidate kept from the search of this base (the smaller diff went first), None when none is left."""
+        from tools import factory_architect as A
+        keep = self.ls()
+        rec = (keep.get("hypo_spare") or {}).get(row)
+        if not isinstance(rec, dict):
+            return None
+        left = list(rec.get("contracts") or ()) if rec.get("base") == str(self.base_sha) else []
+        while left:
+            contract = left.pop(0)
+            if not A.validate(contract, root, bid=row, known_ids=packet.get("known_ids")):
+                break
+            contract = None
+        else:
+            contract = None
+        if left:
+            keep["hypo_spare"][row] = dict(base=str(self.base_sha), contracts=left)
+        else:
+            keep["hypo_spare"].pop(row, None)
+        self.save_ls(keep)
+        if contract is not None:
+            self.event("hypo", backlog_id=row, status="spare", greens=1, tried=0)
+        return contract
 
     def _hypo_row(self, row, packet, root):
         """W-hyp: the hypotheses search for a row that has a ready red test on the current base. A contract result (green
@@ -4058,22 +4108,25 @@ class Loop:
         from tools import factory_hypo as HY, factory_architect as A
         if self.cfg.self_repo or os.environ.get("FACTORY_HYPO", "1") == "0":
             return None
-        ids = HY.pick_red(packet.get("guard_red"))
+        ids = self._hypo_ids(row, packet)
         if not ids:
             return None
         try:
-            fresh = self.ls()
-            table = fresh.setdefault("hypo_seen", {})
-            now = time.time()
-            if HY.cooled(table, str(self.base_sha), ids[0], now):
+            spare = self._hypo_take_spare(row, root, packet)
+            if spare is not None:       # a green candidate of the earlier search of this base, the first one went red: no new search
+                return dict(contract=spare, engine="hypo", faults=[], repaired=[])
+            table = self.ls().get("hypo_seen", {})
+            if HY.cooled(table, str(self.base_sha), ids[0], time.time()):
                 return None
-            HY.mark_searched(table, str(self.base_sha), ids[0], now)
-            self.save_ls(fresh)
             env = self._hypo_env(root, packet)
             if env is None:
                 return None
             found = HY.search(row, ids, env)
             self.event("hypo", backlog_id=row, status=found["status"], greens=len(found["green"]), tried=len(found["tried"]))
+            if found["status"] in ("green", "red"):     # a cloud failure or no hypothesis at all: no run happened, no penalty
+                fresh = self.ls()
+                HY.mark_searched(fresh.setdefault("hypo_seen", {}), str(self.base_sha), ids[0], time.time())
+                self.save_ls(fresh)
             contracts = []
             for cand in found["green"]:
                 contract = HY.to_contract(row, ids, cand)
@@ -4081,8 +4134,8 @@ class Loop:
                     contracts.append(contract)
             if contracts:
                 keep = self.ls()
-                if len(contracts) > 1:      # the smaller diff goes first, the rest are spares
-                    keep.setdefault("hypo_spare", {})[row] = contracts[1:]
+                if len(contracts) > 1:      # the smaller diff goes first, the rest are spares for this base
+                    keep.setdefault("hypo_spare", {})[row] = dict(base=str(self.base_sha), contracts=contracts[1:])
                 self.save_ls(keep)
                 return dict(contract=contracts[0], engine="hypo", faults=[], repaired=[])
             if found["evidence"]:
@@ -4301,7 +4354,7 @@ class Loop:
                         self.rs(str(packet.get("guard_test") or row), 120), str(self.base_sha)[:12]))
                     return packet, dict(contract=dict(decision="already_fixed", why="guard_green: the red test of the guard is green on the base"),
                                         engine="guard", faults=[], repaired=[])
-                if packet.get("red_given") and packet.get("guard_red"):     # W-hyp: many hypotheses -> one batch verifier
+                if packet.get("red_given"):     # W-hyp: many hypotheses -> one batch verifier (ids: guard, rel-<sha>, rel-base)
                     hypo = self._hypo_row(row, packet, root)
                     if hypo is not None:
                         return packet, hypo
