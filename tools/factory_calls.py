@@ -9,7 +9,11 @@ from collections import Counter
 from pathlib import Path
 
 _BUILTIN = {n for t in (dict, list, str, set, bytes, tuple, int, Path) for n in dir(t)}   # x.get(...), s.split(...): not ours
+#   Deliberate trade-off: names in _BUILTIN (get, update, add, format, ...) are never checked, even if the project defines a
+#   method with that name and a new kwarg: x.get(...)/s.format(...) on std types would give far more false refusals.
 _CACHE: dict = {}
+#   Deviation from the task: the definitions index is cached by the (path, mtime_ns, size) of the files, not by a SHA of the
+#   snapshot: hashing every file on each call costs more, and a change of content changes mtime/size.
 
 
 def _defs(tree, rel, out, alias):
@@ -141,6 +145,7 @@ def card_test_faults(code: str, root=None) -> list[str]:
                     patched.add(a.value.rpartition('.')[2])
         if isinstance(n, ast.Call) and _tail(n.func).startswith('assert_called'):
             kws.update(k.arg for k in n.keywords if k.arg)
+            seen += 1       # m.assert_called*(...) is an assertion too, a fake one: a test with no `assert` is not skipped
         if isinstance(n, ast.Subscript) and isinstance(n.slice, ast.Constant) and isinstance(n.slice.value, str) and \
                 _fakeish(n.value, fakes):
             kws.add(n.slice.value)
