@@ -29,8 +29,13 @@ REPAIR_TOP = 3
 BATCH_MAX = 24
 ROW_COOLDOWN_S = 12 * 3600      # the same base+test is not searched again sooner
 TPM = 16000                     # input tokens a minute per channel
-CHANNELS = ("fast-a", "fast-b", "slow")    # the faster model of both keys first, the slower one in parallel
+DEFAULT_CHANNELS = ("default",)  # a bare pump (no loop): one anonymous channel; the loop names the real ones (channels.json ids)
+FAILS_MAX = 12                  # network refusals of one hypothesis before it is dropped
+WAIT_MAX_S = 5.0                # a worker waits at most this long for a closed channel
+SHUT_MAX_S = 1.0                # a channel that said 'no_channel' takes no booking from its other workers for at most this long
+SAMPLES_MAX = 20                # kept first answers of each bad / invalid kind (hypo_samples.json)
 RETRY_REFUSED_S = 30.0             # a refused hypothesis waits this long for the SAME channel (others take it at once)
+PER_CHANNEL = 4                 # concurrent requests of the pump on one channel
 CLOUD_TRIES = 3
 FAIL_TEXT = 400
 ASK_TERM_S = 120.0
@@ -98,6 +103,47 @@ def rank_functions(root, *, stack=(), diff=(), trace=(), ranked=(), k=HYPO_FUNCS
         add(item[0], item[1], "trace")
     for f, n in ranked:
         add(f, n, "rank")
+    return out
+
+
+def test_functions(root, test_id: str) -> list:
+    """[(file, name)] of the product functions the test file imports (``from m import f``) or calls (``m.f(...)``): the last
+    resort when neither the failure, the diff, the trace nor the repomap named a function."""
+    file = str(test_id).partition("::")[0]
+    try:
+        tree = ast.parse((Path(root) / file).read_text(encoding="utf-8-sig"))
+    except (OSError, SyntaxError, ValueError, UnicodeError):
+        return []
+    modules, wanted = {}, []        # alias -> product file; (file, name) in order of appearance
+
+    def product_file(dotted):
+        rel = str(dotted).replace(".", "/")
+        for cand in (rel + ".py", rel + "/__init__.py"):
+            if (Path(root) / cand).is_file() and _product(cand):
+                return cand
+        return None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module and not node.level:
+            target = product_file(node.module)
+            for a in node.names:
+                sub = product_file(node.module + "." + a.name)
+                if sub:
+                    modules[a.asname or a.name] = sub
+                elif target and a.name != "*":
+                    wanted.append((target, a.name))
+        elif isinstance(node, ast.Import):
+            for a in node.names:
+                target = product_file(a.name)
+                if target:
+                    modules[a.asname or a.name.split(".")[0]] = target
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name) \
+                and node.func.value.id in modules:
+            wanted.append((modules[node.func.value.id], node.func.attr))
+    out = []
+    for item in wanted:
+        if item not in out:
+            out.append(item)
     return out
 
 
@@ -278,6 +324,14 @@ def diff_size(root, cand: dict) -> int:
 
 
 # ------------------------------------------------------------------------------------------------------ 2. pump
+OUTCOMES = ("cannot", "bad", "invalid", "no_effect", "undefined", "dup")
+
+
+def outcome_of(why: str) -> str:
+    """The outcome name of a check_candidate reason ('bad: ...' -> 'bad', 'no effect: ...' -> 'no_effect')."""
+    return re.sub(r"\W+", "_", str(why).split(":")[0].strip().lower()).strip("_")
+
+
 class Stats:
     """stats.json['hypo']: counters of the search (thread safe) and the Gemma request times of the last 10 minutes."""
     NAMES = ("rows", "hypotheses", "answers", "valid", "batches", "candidates", "green_rows", "calls", "tokens")
@@ -286,16 +340,33 @@ class Stats:
         self.lock = threading.Lock()
         self.c = collections.Counter()
         self.times = collections.deque()
+        self.refused = collections.Counter()        # status of a refused request -> n
+        self.outcomes = collections.Counter()       # cannot / bad / invalid / no_effect / undefined / dup -> n
+        self.chan = {}                              # channel id -> {'sent': n, 'ok': n}
 
     def add(self, name, n=1):
         with self.lock:
             self.c[name] += n
 
-    def request(self, now, tokens):
+    def request(self, now, tokens, chan=None):
         with self.lock:
             self.c["calls"] += 1
             self.c["tokens"] += int(tokens)
             self.times.append(now)
+            if chan is not None:
+                self.chan.setdefault(str(chan), dict(sent=0, ok=0))["sent"] += 1
+
+    def refuse(self, status):
+        with self.lock:
+            self.refused[str(status)] += 1
+
+    def outcome(self, name):
+        with self.lock:
+            self.outcomes[str(name)] += 1
+
+    def answered(self, chan):
+        with self.lock:
+            self.chan.setdefault(str(chan), dict(sent=0, ok=0))["ok"] += 1
 
     def snapshot(self, now) -> dict:
         with self.lock:
@@ -307,6 +378,9 @@ class Stats:
             out["calls_per_green"] = round(c["calls"] / c["green_rows"], 1) if c["green_rows"] else None
             out["gemma_rpm"] = round(len(self.times) / 10.0, 2)
             out["tokens_per_call"] = round(c["tokens"] / c["calls"], 1) if c["calls"] else 0
+            out["refused"] = dict(self.refused)
+            out["outcomes"] = {n: int(self.outcomes.get(n, 0)) for n in OUTCOMES}
+            out["channels"] = {k: dict(v) for k, v in self.chan.items()}
             return out
 
 
@@ -316,8 +390,10 @@ STATS = Stats()      # the process-wide counters of the loop (stats.json['hypo']
 class Minute:
     """The input tokens booked per channel in the last 60 s. A refused request (503) is booked too and NEVER returned."""
 
-    def __init__(self, limit=TPM, clock=time.monotonic):
+    def __init__(self, limit=TPM, clock=time.monotonic, limits=None, rpms=None):
         self.limit, self.clock = limit, clock
+        self.limits = dict(limits or {})        # channel -> its tpm (channels.json); absent: ``limit``
+        self.rpms = dict(rpms or {})            # channel -> its rpm (channels.json); absent: no request limit
         self.rows = collections.defaultdict(collections.deque)
         self.lock = threading.Lock()
 
@@ -330,10 +406,27 @@ class Minute:
 
     def book(self, chan, tokens) -> bool:
         with self.lock:
-            if self.used(chan) + tokens > self.limit:
+            if self.used(chan) + tokens > self.limits.get(chan, self.limit):
+                return False
+            if self.rpms.get(chan) and len(self.rows[chan]) >= self.rpms[chan]:
                 return False
             self.rows[chan].append((self.clock(), tokens))
             return True
+
+    def refund(self, chan, tokens) -> None:
+        """The booking of a request that never went out (no channel answered): the tokens come back."""
+        with self.lock:
+            q = self.rows[chan]
+            for i in range(len(q) - 1, -1, -1):
+                if q[i][1] == tokens:
+                    del q[i]
+                    return
+
+    def charge(self, chan, tokens) -> None:
+        """A request that already goes (the slicer's live one) takes its tokens first, whatever the minute holds: the pump gets the rest."""
+        with self.lock:
+            self.used(chan)
+            self.rows[chan].append((self.clock(), int(tokens)))
 
 
 class Item:
@@ -363,12 +456,14 @@ def row_class(row: str) -> int:
 class Pump:
     """Background workers (threads of the loop, one per channel) that keep asking while hypotheses wait. ``ask(chan, text,
     temp)`` -> ``(status, answer, tokens)``; status 'ok' | 'http_503' | 'http_429' | 'no_channel' | other. A live request of the
-    slicer (``live()`` true) goes first: the pump waits. A refusal sends the same item to ANOTHER channel at once."""
+    slicer takes its input tokens from the SAME minute first (``Minute.charge``), the pump takes the rest: up to PER_CHANNEL
+    requests of the pump at once per channel, only the minute (tpm, rpm of the channel) limits them. A refusal sends the same
+    item to ANOTHER channel at once."""
 
-    def __init__(self, ask, on_answer, *, channels=CHANNELS, clock=time.monotonic, sleep=time.sleep, live=lambda: False,
+    def __init__(self, ask, on_answer, *, channels=DEFAULT_CHANNELS, clock=time.monotonic, sleep=time.sleep,
                  minute=None, stats=None):
         self.ask, self.on_answer, self.channels = ask, on_answer, tuple(channels)
-        self.clock, self.sleep, self.live = clock, sleep, live
+        self.clock, self.sleep = clock, sleep
         self.minute = minute or Minute(clock=clock)
         self.stats = stats or Stats()
         self.q: list = []
@@ -378,6 +473,7 @@ class Pump:
         self.refused = collections.Counter()
         self.threads = {}           # channel -> its live worker (one pump serves every search of the loop at once)
         self.until = 0.0
+        self.shut = {}              # channel -> the time before which it books and asks nothing (it answered 'no_channel')
 
     def submit(self, items, on_answer=None) -> Group:
         """Queue the items of one search (its own ``on_answer``; default the pump's). One queue for all searches: the lowest
@@ -417,21 +513,30 @@ class Pump:
             self._work(chan)
         finally:
             with self.lock:
-                if self.threads.get(chan) is threading.current_thread():
-                    del self.threads[chan]
+                self._forget(chan)
+
+    def _forget(self, chan):
+        """Drop the current thread from the channel's list (under self.lock)."""
+        mine = [t for t in self.threads.get(chan, ()) if t is not threading.current_thread()]
+        if mine:
+            self.threads[chan] = mine
+        else:
+            self.threads.pop(chan, None)
 
     def _call(self, chan, item):
         """One ask; an exception of the model call is a refusal 'other', never the end of the channel's thread."""
         try:
-            return self.ask(chan, item.text, item.temp)
+            got = self.ask(chan, item.text, item.temp)
+            wait = float(got[3]) if len(got) > 3 and got[3] else 0.0       # the 4th: the wait a closed channel names
+            return got[0], got[1], got[2], wait
         except Exception:       # noqa: BLE001
-            return "other", "", 0
+            return "other", "", 0, 0.0
 
     def _work(self, chan):
         while not self.stop.is_set() and self.clock() < self.until:
             with self.lock:
                 if not self.q and not self.inflight:
-                    del self.threads[chan]          # decided under the lock: a submit after this starts a new thread
+                    self._forget(chan)              # decided under the lock: a submit after this starts a new thread
                     return
             item = self._take(chan)
             if item is None:
@@ -440,7 +545,7 @@ class Pump:
             if item.group is not None and item.group.cancelled:
                 self._done(item)
                 continue
-            if self.live():                       # the slicer's live request first (ECHO), the pump gives way
+            if self.clock() < self.shut.get(chan, 0.0):     # the channel just said 'no channel': no booking, no ask until it may open
                 self._back(item)
                 self.sleep(0.05)
                 continue
@@ -448,10 +553,22 @@ class Pump:
                 self._back(item)
                 self.sleep(0.2)
                 continue
-            self.stats.request(self.clock(), item.tokens)
-            status, answer, _tokens = self._call(chan, item)
+            status, answer, _tokens, wait = self._call(chan, item)
+            if status == "no_channel":
+                # no request went out: the booking comes back, no call, no fail; the worker waits what the channel names;
+                # the channel's other workers book nothing while it is shut (the window stays free for real sends)
+                self.minute.refund(chan, item.tokens)
+                if wait > 0:
+                    self.shut[chan] = self.clock() + min(SHUT_MAX_S, wait)
+                self.refused["no_channel"] += 1
+                self.stats.refuse("no_channel")
+                self._back(item)
+                self.sleep(min(WAIT_MAX_S, wait) if wait > 0 else 0.2)
+                continue
+            self.stats.request(self.clock(), item.tokens, chan)
             if status == "ok":
                 self.stats.add("answers")
+                self.stats.answered(chan)
                 try:
                     if item.group is None or not item.group.cancelled:
                         (item.group.on_answer if item.group is not None else self.on_answer)(item, answer)
@@ -461,20 +578,23 @@ class Pump:
                     self._done(item)
                 continue
             self.refused[status] += 1             # the tokens of the refusal stay booked
+            self.stats.refuse(status)
             item.fails += 1
             item.avoid, item.avoid_until = chan, self.clock() + RETRY_REFUSED_S
-            if item.fails >= 6:
+            if item.fails >= FAILS_MAX:
                 self._done(item)
             else:
                 self._back(item)
-            self.sleep(0.05)
+            if len(self.channels) < 2:      # with another channel the item goes there at once, no pause
+                self.sleep(0.05)
 
     def _spawn(self):
         with self.lock:
             for chan in self.channels:
-                if chan not in self.threads:
+                mine = self.threads.setdefault(chan, [])
+                while len(mine) < PER_CHANNEL:
                     t = threading.Thread(target=self._worker, args=(chan,), daemon=True)
-                    self.threads[chan] = t
+                    mine.append(t)
                     t.start()
 
     def run(self, timeout_s=600.0, group=None) -> bool:
@@ -518,13 +638,13 @@ class Ctx:
         self.root = None
         self.ask = None             # (chan, text, temp) -> (status, answer, tokens)
         self.cloud = None           # (root, ids, {n: {file: text}}) -> {n: {passed, failed, text}}; raises CloudFail
-        self.live = lambda: False
         self.clock, self.sleep = time.monotonic, time.sleep
         self.failure_text = lambda ids: ""      # the failure of the red test on the base
         self.trace = lambda ids: ()             # ((file, name, line), ...) the functions the test ran
         self.diff_funcs = lambda ids: []        # functions of the guilty commit's diff
         self.ranked = lambda ids: []            # repomap order of the rest
         self.stats = STATS
+        self.sample = lambda why, answer: None      # the first bad / invalid answer of each kind (the loop redacts and files it)
         self.minute = None
         self.pump = None            # the loop's shared Pump (None: the search makes its own)
         self.event = lambda name, **f: None
@@ -555,9 +675,21 @@ def mark_searched(table: dict, base_sha: str, test: str, now: float) -> None:
 def _run_pump(env, row, items, collect):
     pump = getattr(env, "pump", None)       # the loop's ONE pump: every search of the loop queues into it (ECHO < rel < base)
     if pump is None:
-        pump = Pump(env.ask, collect, clock=env.clock, sleep=env.sleep, live=env.live, minute=env.minute, stats=env.stats)
+        pump = Pump(env.ask, collect, clock=env.clock, sleep=env.sleep, minute=env.minute, stats=env.stats,
+                    channels=getattr(env, "channels", None) or DEFAULT_CHANNELS)
     group = pump.submit(items, collect)
     return pump.run(env.timeout_s, group)
+
+
+def _note_outcome(env, why, answer):
+    """The count of a refused answer by kind; a bad / invalid one is offered as a sample (the loop keeps the first of each kind)."""
+    name = outcome_of(why)
+    env.stats.outcome(name)
+    if name in ("bad", "invalid"):
+        try:
+            env.sample(str(why), answer)
+        except Exception:       # noqa: BLE001  an aid
+            pass
 
 
 def _batch(env, ids, cands):
@@ -587,11 +719,15 @@ def search(row, ids, env, base_failure: str = ""):
     env.stats.add("rows")
     tried, cands, seen_fp, answers = [], [], set(), {}
     lock = threading.Lock()
+    if not ids:
+        return dict(green=[], tried=[], evidence=[], status="none", why="no ids")
     failure = base_failure or env.failure_text(ids)
     funcs = rank_functions(env.root, stack=stack_from_failure(failure), diff=env.diff_funcs(ids), trace=env.trace(ids),
                            ranked=env.ranked(ids))
-    if not funcs:
-        return dict(green=[], tried=[], evidence=[], status="none")
+    if not funcs:       # no trace and no rank: the product functions the test itself imports or calls
+        funcs = rank_functions(env.root, ranked=test_functions(env.root, ids[0]))
+    if not funcs:       # the order of the checks: no failure first, then no functions
+        return dict(green=[], tried=[], evidence=[], status="none", why="no failure" if not failure else "no functions")
     cls = row_class(row)
     items, by_key = [], {}
     for i, fn in enumerate(funcs):
@@ -610,9 +746,11 @@ def search(row, ids, env, base_failure: str = ""):
         with lock:
             if cand is None:
                 tried.append(dict(fn, outcome=why))
+                _note_outcome(env, why, answer)
                 return
             env.stats.add("valid")
             if cand["fp"] in seen_fp:
+                env.stats.outcome("dup")
                 return
             seen_fp.add(cand["fp"])
             cand.update(n=len(cands), temp=item.temp, answer=answer)
@@ -663,7 +801,11 @@ def _repair(env, row, ids, cands, verdicts, answers, failure, by_key, tried, see
         fn = by_key[item.key]
         cand, why = check_candidate(env.root, fn, answer)
         with lock:
-            if cand is None or cand["fp"] in seen_fp:
+            if cand is None:
+                _note_outcome(env, why, answer)
+                return
+            if cand["fp"] in seen_fp:
+                env.stats.outcome("dup")
                 return
             seen_fp.add(cand["fp"])
             env.stats.add("valid")
