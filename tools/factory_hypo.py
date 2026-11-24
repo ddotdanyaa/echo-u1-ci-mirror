@@ -742,7 +742,7 @@ def judge(res, ctl_pass, ids):
     if not isinstance(res, dict):
         return [], []
     passed, failed = set(res.get("passed") or ()), set(res.get("failed") or ())
-    return [i for i in ids if i in passed and i not in ctl_pass], sorted(i for i in ctl_pass if i in failed)
+    return [i for i in ids if i in passed and i not in ctl_pass], sorted(i for i in ctl_pass if i not in passed)
 
 
 def _control_files(root, cands) -> dict:

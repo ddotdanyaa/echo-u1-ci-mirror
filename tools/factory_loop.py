@@ -4230,7 +4230,7 @@ class Loop:
             except OSError as exc:
                 self.err("hypo samples", exc)
 
-    def _red_last_keys(self):
+    def _red_last_keys(self, ids=()):
         """W-part 2: the red test keys of the last full verdict when its sha is the base or an ancestor of it, else None (unknown)."""
         from tools import factory_release as REL
         rec = REL.red_last(self.cfg.state_dir)
@@ -4251,7 +4251,11 @@ class Loop:
                     return None
             if not seen[(sha, base)]:
                 return None
-        return {REL._key(n) for n in rec["red"]}
+        red = {REL._key(n) for n in rec["red"]}
+        if sha != base:                     # an ancestor: a test red only later is unknown there, so only ids known earlier may be dropped
+            prev = REL.red_pair(REL.release_dir(self.cfg.state_dir)).get("prev") or set()
+            return red | {REL._key(i) for i in ids if REL._key(i) not in prev}
+        return red
 
     def _hypo_ids(self, row, packet, raw=False):
         """W-hyp 1: the red test ids of the row in the order guard -> rel-<sha> regression -> rel-base-<n> debt (runnable ids only).
@@ -4260,8 +4264,20 @@ class Loop:
         if raw or not ids:
             return ids
         from tools import factory_release as REL
-        red = self._red_last_keys()
+        red = self._red_last_keys(ids)
         return ids if red is None else [i for i in ids if REL._key(i) in red]
+
+    def _hypo_row_green(self, row, packet) -> bool:
+        """W-part 2: the row has runnable ids and none is red in red_last; cached per (row, base, red_last sha) - the loop thread
+        builds packets on every pass."""
+        from tools import factory_release as REL
+        key = (str(row), str(self.base_sha), str(REL.red_last(self.cfg.state_dir).get("sha") or ""))
+        cache = self.__dict__.setdefault("_row_green_cache", {})
+        if key not in cache:
+            if len(cache) > 500:
+                cache.clear()
+            cache[key] = bool(self._hypo_ids_all(row, packet) and not self._hypo_ids(row, packet))
+        return cache[key]
 
     def _hypo_ids_all(self, row, packet):
         from tools import factory_hypo as HY, factory_release as REL
@@ -4729,7 +4745,7 @@ class Loop:
                 if cached:      # W-pay 2: the steps that already answered this row (or refused it) on this version and sha
                     extra["skip"] = cached
                 if not packet.get("guard_green") and str(row).startswith("rel-") and not self.cfg.self_repo \
-                        and self._hypo_ids_all(row, packet) and not self._hypo_ids(row, packet):
+                        and self._hypo_row_green(row, packet):
                     packet["guard_green"] = True    # W-part 2: no test of the row is red in the last full build (red_last): already_fixed
                 if packet.get("guard_green"):       # W-guard 1: no red id on this base (the proof = a sweep of the current base, _guard_red_ids): no card
                     self.event("guard_green", backlog_id=row, reason="guard %s is green on base %s" % (
