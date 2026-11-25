@@ -5870,7 +5870,7 @@ class Loop:
         gens: dict = {}
         for tid, _ in mine:
             rec = state["tasks"].get(tid, {})
-            if rec.get("status") == "FAILED" and rec.get("reason") == "reslice" and tid not in hist["seen"]:
+            if rec.get("status") == "FAILED" and rec.get("reason") == "reslice" and tid not in hist.setdefault("seen", []):
                 hist["seen"].append(tid)
                 m = re.search(r"_r(\d+)$", tid)
                 gens.setdefault(m.group(1) if m else "0", []).append(str(rec.get("engine") or ""))
@@ -5879,7 +5879,7 @@ class Loop:
             engine = next((e for e in engines if e), "")
             if engine:
                 hist["red"][engine] = hist["red"].get(engine, 0) + F.RESLICE_AFTER
-        hist["seen"] = hist["seen"][-200:]
+        hist["seen"] = hist.get("seen", [])[-200:]
         return hist
 
     @staticmethod
