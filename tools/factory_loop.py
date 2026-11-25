@@ -5271,6 +5271,29 @@ class Loop:
                               if (s := safe(x))], evidence="\n".join([s for x in clues if (s := safe(x))] + ([str(entry["rule"])] if entry.get("rule") else [])),
                     known_ids=list(ls.get("to_slice", {})) + list({t.backlog_id for t in tasks.values()}))
 
+    DONE_READ_S = 300.0
+
+    def _done_rows(self) -> set:
+        """Rows of the closures table whose own guard file (test_v_<ID>.py) is green in a sweep of the current base: nothing is left
+        to slice for them, whatever old failed cards they have. Read at most once per DONE_READ_S."""
+        now = time.monotonic()
+        if now - self.__dict__.get("_done_at", -1e9) < self.DONE_READ_S:
+            return self.__dict__.get("_done", set())
+        self._done_at, done = now, set()
+        try:
+            from tools import factory_autofeed as AF
+            latest = AF.latest_sweep(self._sweep_dir())
+            files = {str(k).partition("::")[0] for k in (AF.read_sweep(latest) if latest is not None else {})}
+            by_name = {f.rsplit("/", 1)[-1]: f for f in files}
+            for bid in factory_closures.table_ids(self.cfg.backlog):
+                file = by_name.get("test_v_%s.py" % re.sub(r"[^A-Za-z0-9]", "_", bid))
+                if file and self._guard_red_ids(bid, {"guard": file}) == []:
+                    done.add(bid)
+        except Exception as exc:        # noqa: BLE001  an aid: the rows stay as they were
+            self.err("done rows", exc)
+        self._done = done
+        return done
+
     def _box_rows(self) -> set:
         """W-box: rows with a ready contract in ``<state>/contracts/<row>.json``: the architect's answer given as a file. It takes the
         place of the model calls of the ladder only; validation, gates, cloud and reviews are those of every contract."""
@@ -5867,7 +5890,7 @@ class Loop:
             if state["tasks"][tid]["status"] in ("RUNNING", "REVIEW"):
                 running.add(row_id)
         dry_rows = {F.row_of(tasks[t].backlog_id or t) for t in self._dry_blocked(tasks, state)}   # W-dry 1: code, not a channel
-        boxed = self._box_rows()
+        boxed, done = self._box_rows(), self._done_rows()
         for bid in sorted(set(stuck) | set(ls.get("to_slice", {})) | dry_rows | boxed):
             related = by_row.get(bid, [])
             if any(t.only_opus or not t.privacy_safe or F.is_private_text(t.title + " " + (t.goal or "")) for t in related):
@@ -5879,6 +5902,8 @@ class Loop:
                 if bid not in running:
                     out[bid] = "first"
                 continue
+            if bid in done:
+                continue                # closed, and its own guard is green: old failed cards are no reason to slice it
             if bid in (ls.get("outdated_tests") or {}):
                 continue                # W-prio 3: the test names what the product no longer has: no cards, no slicing
             if bid in ls.get("quarantine", {}) or ls.get("slice_wait", {}).get(bid, 0) > now:

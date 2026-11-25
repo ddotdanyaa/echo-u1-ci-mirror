@@ -2600,14 +2600,14 @@ _CANNOT_NOT_THERE = re.compile(r'CANNOT:.*does not contain', re.S | re.I)
 UNDEF_RETRIES = 1      # re-asks of one part for a new undefined name that cost no PART_RETRIES try (W-see 4)
 
 
-def part_undefined(file: str, old_text: str, new_text: str) -> str:
+def part_undefined(file: str, old_text: str, new_text: str, root=None) -> str:
     """W-see 4: '' when the edit of ``file`` brings no new undefined name (ruff, the undefined-name rules: names the base
     did not have; no ruff: no check), else the note for the part's next ask."""
     if not file.endswith('.py'):
         return ''
     names = K.new_undefined_names(old_text, new_text)
     if not names:      # W-true2 1: a NEW call no definition of its name accepts (the same re-ask path, no strike)
-        bad = FC.new_bad_calls(file, old_text, new_text)
+        bad = FC.new_bad_calls(file, old_text, new_text, root)     # the definitions of the tree the file belongs to (the product snapshot)
         return 'your edit has a call the project does not accept: ' + ' | '.join(bad[:4]) if bad else ''
     return K.UNDEFINED_NOTE % (file, ', '.join(names[:8]))
 
@@ -2646,7 +2646,7 @@ class VgsPlan:
             self.stats['votes_top'] = max(self.stats['votes_top'], int(stats.get('votes_top') or 0))
 
 
-def part_verifier(parts: list, file: str):
+def part_verifier(parts: list, file: str, root=None):
     """W-vgs 2: the code plugin of the ensemble: ``verify(answer)`` -> ``(ok, why, key)`` over the answer of one call
     (``rc``, ``note``, ``raw``/``new`` = the file after the blocks, ``old_raw``/``old`` = before). The blocks were parsed
     for the allowed file only and applied by the light engine; here: the part is applied, compiles, brings no new
@@ -2664,7 +2664,7 @@ def part_verifier(parts: list, file: str):
                 why = 'its edit of %s does not compile (%s)' % (file, error)
         if not why:
             try:
-                why = part_off_contract(parts, file, old, new) or part_undefined(file, old, new)
+                why = part_off_contract(parts, file, old, new) or part_undefined(file, old, new, root)
             except (OSError, ValueError, SyntaxError):
                 why = ''
         return (False, why, '') if why else (True, '', ENS.fingerprint(new, file))
@@ -2686,7 +2686,7 @@ def vgs_alternates(per_part: dict) -> list:
 
 def edit_parts(task: Task, parts: list, workdir: Path, call, failing: str = '', use_code: bool = False,
                gemma_first=None, on_cut=None, trace=(), fail_ids=(), info=None, on_event=None,
-               who=None, vgs: VgsPlan | None = None) -> tuple[int, str, str]:
+               who=None, vgs: VgsPlan | None = None, root=None) -> tuple[int, str, str]:
     """Edit the parts of the contract in ``workdir``: one call per part (``call(part_task, directory, prompt)`` ->
     ``(rc, stdout, stderr)``), the parts of one stage at once (one thread and one HTTP call per part), the next stage
     when all parts of the previous one are applied. Each part works in its own copy ``<workdir>-p<i>-<try>``; its
@@ -2782,7 +2782,7 @@ def edit_parts(task: Task, parts: list, workdir: Path, call, failing: str = '', 
             if not reason:
                 try:
                     reason = part_undefined(file, before.read_text(encoding='utf-8-sig', errors='replace')
-                                            if before.is_file() else '', target.read_text(encoding='utf-8-sig', errors='replace'))
+                                            if before.is_file() else '', target.read_text(encoding='utf-8-sig', errors='replace'), root)
                 except (OSError, ValueError):
                     reason = ''
             if reason:
@@ -2828,7 +2828,7 @@ def edit_parts(task: Task, parts: list, workdir: Path, call, failing: str = '', 
             finally:
                 shutil.rmtree(folder, ignore_errors=True)
 
-        ens = ENS.Ensemble(vgs.k, ask, part_verifier(parts, file), channels=vgs.channels)
+        ens = ENS.Ensemble(vgs.k, ask, part_verifier(parts, file, root), channels=vgs.channels)
         found = ens.run()
         vgs.record(ens.stats)
         if not found and not ens.stats.get('answered') and not ens.rejected:
@@ -2938,7 +2938,7 @@ def edit_parts(task: Task, parts: list, workdir: Path, call, failing: str = '', 
                 if rc == 0 and not reason:      # a name the edit uses and nothing defines: the part is asked again, no strike
                     try:
                         reason = part_undefined(file, before.read_text(encoding='utf-8-sig', errors='replace')
-                                                if before.is_file() else '', target.read_text(encoding='utf-8-sig', errors='replace'))
+                                                if before.is_file() else '', target.read_text(encoding='utf-8-sig', errors='replace'), root)
                     except (OSError, ValueError):
                         reason = ''
                     undefined = bool(reason)
@@ -4684,7 +4684,7 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                                                       trace=part_trace, fail_ids=part_fail_ids, info=see,
                                                       on_event=events.append,
                                                       who=lambda f, k=k: last_model.get((k, f)),
-                                                      vgs=vgs if not k else None)
+                                                      vgs=vgs if not k else None, root=root)
                         if vgs is not None and vgs.winners and not k:
                             models[0] = set(vgs.winners)    # only the models whose text stands are the authors
                     finally:
