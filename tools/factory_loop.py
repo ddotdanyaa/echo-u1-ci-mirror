@@ -5271,16 +5271,46 @@ class Loop:
                               if (s := safe(x))], evidence="\n".join([s for x in clues if (s := safe(x))] + ([str(entry["rule"])] if entry.get("rule") else [])),
                     known_ids=list(ls.get("to_slice", {})) + list({t.backlog_id for t in tasks.values()}))
 
+    def _box_rows(self) -> set:
+        """W-box: rows with a ready contract in ``<state>/contracts/<row>.json``: the architect's answer given as a file. It takes the
+        place of the model calls of the ladder only; validation, gates, cloud and reviews are those of every contract."""
+        box = self.cfg.state_dir / "contracts"
+        rows = {row for row, job in self._slicers.items() if job.ctx.get("boxed")}      # at work: its result must be collected
+        return rows | ({p.stem for p in box.glob("*.json")} if box.is_dir() else set())
+
+    def _box_contract(self, row, root):
+        """The valid contract of the box, or None; the file goes to used/ or (with its faults) to refused/: it is read once."""
+        from tools import factory_architect as A
+        path = self.cfg.state_dir / "contracts" / (row + ".json")
+        try:
+            contract = json.loads(path.read_text(encoding="utf-8"))
+            faults = A.validate(contract, root, bid=row, engine=A.BOX_ENGINE)
+            if not faults and contract.get("decision") != "fix":
+                faults = ["only a fix goes through the box"]
+        except FileNotFoundError:
+            return None
+        except (OSError, ValueError) as exc:
+            contract, faults = None, ["unreadable: %s" % type(exc).__name__]
+        dest = path.parent / ("refused" if faults else "used")
+        dest.mkdir(exist_ok=True)
+        retry_fs(os.replace, path, dest / path.name)
+        if faults:
+            (dest / (path.name + ".faults.txt")).write_text("\n".join(map(str, faults)), encoding="utf-8")
+            self.event("slice", backlog_id=row, status="box_refused", engine=A.BOX_ENGINE, reason=F.redact("; ".join(map(str, faults)))[:300])
+            return None
+        return contract
+
     def _slice(self, row, cause, rung, evidence, *, gen, tasks, state, ls, now):
         from tools import factory_architect as A
         job = self._slicers.get(row)
         if job is None:
-            if len(self._slicers) >= self._slice_parallel():
+            boxed = row in self._box_rows()
+            if len(self._slicers) >= self._slice_parallel() and not boxed:
                 return None
             my_rank = F.row_rank(row)       # W-prio2 1: "ahead of time" counts only the cards of the row's own rank or higher
             ahead = [t for t in self._startable(tasks, state, now)
                      if F.row_rank(F.row_of(tasks[t].backlog_id or t)) <= my_rank]
-            if len(ahead) >= 2 * self._slice_pool_cap():
+            if len(ahead) >= 2 * self._slice_pool_cap() and not boxed:
                 return None
             if self._arch_quotas is None:
                 self._arch_quotas = copy.deepcopy(ls.get("architect_quotas") or {})
@@ -5291,7 +5321,7 @@ class Loop:
                 left = {k: v for k, v in asks.items() if k not in barred}
                 self.event("slice", backlog_id=row, status="barred", engine=",".join(sorted(barred & set(asks))),
                            rung=rung, ladder=",".join(left))
-                if not left:
+                if not left and not boxed:
                     raise SliceWait()
                 asks = left
             base_debt = F.is_base_debt(row)
@@ -5308,12 +5338,15 @@ class Loop:
                     raise SliceWait()
                 asks = left
             cached = dict(self._wait_record(ls, row).get("engines") or {})
-            ctx = dict(root=root, gen=gen, rung=rung, cause=cause, ladder=",".join(asks))
+            ctx = dict(root=root, gen=gen, rung=rung, cause=cause, ladder=",".join(asks), boxed=boxed)
             task_copy, state_copy, ls_copy = copy.deepcopy((tasks, state, ls))
             dry_now = self._edit_dry(state)       # W-dry 1: with the edit channels dry the contract asks for finished code
             def work():
                 packet = self._row_packet(row, cause, evidence, tasks=task_copy, state=state_copy, ls=ls_copy, root=root,
                                          rung=rung)
+                ready = self._box_contract(row, root) if boxed else None
+                if ready is not None:
+                    return packet, dict(contract=ready, engine=A.BOX_ENGINE, faults=[], repaired=[])
                 if dry_now:
                     packet["edit_dry"] = True
                 if base_debt:
@@ -5834,12 +5867,17 @@ class Loop:
             if state["tasks"][tid]["status"] in ("RUNNING", "REVIEW"):
                 running.add(row_id)
         dry_rows = {F.row_of(tasks[t].backlog_id or t) for t in self._dry_blocked(tasks, state)}   # W-dry 1: code, not a channel
-        for bid in sorted(set(stuck) | set(ls.get("to_slice", {})) | dry_rows):
+        boxed = self._box_rows()
+        for bid in sorted(set(stuck) | set(ls.get("to_slice", {})) | dry_rows | boxed):
             related = by_row.get(bid, [])
             if any(t.only_opus or not t.privacy_safe or F.is_private_text(t.title + " " + (t.goal or "")) for t in related):
                 continue
             entry = ls.get("to_slice", {}).get(bid, {})
             if entry.get("private") or entry.get("only_opus") or F.is_private_text(str(entry.get("text", ""))):
+                continue
+            if bid in boxed:            # W-box: a ready contract: no wait, no quarantine, no budget; a card of the row at work is finished first
+                if bid not in running:
+                    out[bid] = "first"
                 continue
             if bid in (ls.get("outdated_tests") or {}):
                 continue                # W-prio 3: the test names what the product no longer has: no cards, no slicing
@@ -6040,13 +6078,14 @@ class Loop:
             if changed:
                 self.save_ls(ls)
         eligible = self._resliceable(tasks, state, ls, now)
+        boxed = self._box_rows()
         def order(bid):
             entry = ls.get("to_slice", {}).get(bid, {})
             priority = entry.get("priority")
             if priority is None:
                 priority = min((t.priority for t in tasks.values() if F.row_of(t.backlog_id or t.id) == bid), default=9)
             tier = (2 if F.is_base_debt(bid) else 1 if bid.startswith("rel-") else 0) if eligible.get(bid) == "dry" else 0
-            return (F.row_rank(bid), tier, self._bisect_rank(bid), int(entry.get("lane") or 0), int(str(priority).removeprefix("P")), not bool(entry.get("guard")), bid)
+            return (bid not in boxed, F.row_rank(bid), tier, self._bisect_rank(bid), int(entry.get("lane") or 0), int(str(priority).removeprefix("P")), not bool(entry.get("guard")), bid)
         first_waits = any(c == "first" and b not in self._slicers for b, c in eligible.items())
         tasks, state = self.load()                # W-tick2 2: one fresh read right before the rows (a tick of this step may have moved the plan)
         moved = False
