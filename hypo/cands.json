@@ -1,0 +1,1 @@
+{"0": {"echo_sync/__init__.py": "\"\"\"ECHO-SYNCHRON Hermes plugin.\"\"\"\nfrom . import build_info\nfrom .build_info import _build_id_at, _code_digest, build_id, fingerprint      # noqa: F401 - W13 item 10: they live in build_info (deployed)\nfrom .plugin import register\n\n__all__ = ['register', 'build_id', 'fingerprint']\n"}}
