@@ -2747,7 +2747,7 @@ def edit_parts(task: Task, parts: list, workdir: Path, call, failing: str = '', 
                 if gate.is_rig_task(task) and isinstance(part.get('file_text'), str):
                     # W-rig fix2: a rig card carries the whole verified file; it is written as it is (bytes: CRLF stays)
                     blocks = None
-                elif file.endswith('.py'):
+                elif file.endswith('.py') and '<<<<<<< SEARCH' not in part['code']:
                     # W-optim 3: a function that moved since the architect's read is not a refusal and not a reslice: the
                     # replacement is applied by name onto the fresh snapshot and the gates judge it
                     blocks = [(file, _FuncTarget(symbol), text)

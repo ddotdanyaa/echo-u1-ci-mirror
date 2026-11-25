@@ -4,8 +4,8 @@ hypotheses search). Bench 25.11: 8 of 19 red tests green on the free Flash-Lite 
 The model sees the test, its failure and the suspect functions; it reads and greps the snapshot of the base, edits files of the
 product in an in-memory overlay and the tests run in the cloud after every edit (``ctx.cloud``: the batch of factory_hypo). The
 tools are plain python over the snapshot + the overlay: no shell, tests are never edited. A reply that cannot be read is not a
-failure but a hint with the format. The result carries the overlay and parts of whole functions for the contract (engine
-'solver'); a green overlay that cannot be shipped as whole functions is sent back to the model as an observation."""
+failure but a hint with the format. The result carries the overlay as SEARCH/REPLACE blocks of any place of a file for the part of the contract (engine
+'solver')."""
 import ast
 import difflib
 import os
@@ -13,7 +13,6 @@ import re
 import time
 from pathlib import Path
 
-from tools import factory_cards as K
 from tools import factory_hypo as HY
 
 STEPS = 16                      # answered replies of one solve (a refusal of the channel is not a step)
@@ -41,7 +40,7 @@ exact old lines
 new lines
 >>>>>>> REPLACE
 DONE                           (only after the tests passed)
-Rules: find the ROOT cause first by reading the test, its helper and the product code it calls. Fix the product (echo_sync/); tests are never edited. Never change, remove or weaken any assert, never skip, never special-case the test. SEARCH text must match exactly once. Small edits. Write only YOUR next step: never write a RESULT yourself, the result comes in the next message. The result is shipped as whole new versions of the functions you changed: change bodies of existing functions (a new module-level definition, constant or import is not shipped; a local import inside the function is fine).'''
+Rules: find the ROOT cause first by reading the test, its helper and the product code it calls. Fix the product (echo_sync/); tests are never edited. Never change, remove or weaken any assert, never skip, never special-case the test. SEARCH text must match exactly once. Small edits. Write only YOUR next step: never write a RESULT yourself, the result comes in the next message.'''
 
 FORMAT_HINT = ("I could not find a command in your reply. Reply with 1-3 sentences and then exactly one of: up to 4 lines "
                "READ path start end / GREP regex :: path_prefix / DEF name, or one block\nEDIT path\n<<<<<<< SEARCH\nold lines\n"
@@ -333,55 +332,142 @@ def do_edit(tree, reply):
     return "edited " + ", ".join(sorted(staged)), True
 
 
-# ----------------------------------------------------------------------------------------- what can be shipped
+# ----------------------------------------------------------------------------------------- what is shipped
+SEARCH_MARK, SEP_MARK, REPLACE_MARK = "<<<<<<< SEARCH", "=======", ">>>>>>> REPLACE"
+
+
+def parse_blocks(code):
+    """[(search, replace)] of a code made of SEARCH/REPLACE blocks (the reading of the runner's parse_edit_blocks: the marker lines
+    are whole lines, the text between them is kept as it is)."""
+    lines, out, i = str(code).replace("\r\n", "\n").split("\n"), [], 0
+    while i < len(lines):
+        s = lines[i].strip()
+        if s.startswith("<<<<<<<") and "SEARCH" in s:
+            j = i + 1
+            while j < len(lines) and lines[j].strip() != SEP_MARK:
+                j += 1
+            k = j + 1
+            while k < len(lines) and lines[k].strip() != REPLACE_MARK:
+                k += 1
+            if k >= len(lines):
+                break
+            out.append(("\n".join(lines[i + 1:j]), "\n".join(lines[j + 1:k])))
+            i = k + 1
+            continue
+        i += 1
+    return out
+
+
+def _hits(lines, want):
+    n = len(want)
+    return [i for i in range(len(lines) - n + 1) if lines[i:i + n] == want]
+
+
+def apply_blocks(old, code):
+    """The text after the blocks of ``code`` are applied in order to ``old`` (each SEARCH must stand exactly once, whole lines),
+    or None."""
+    text = str(old).replace("\r\n", "\n")
+    blocks = parse_blocks(code)
+    if not blocks:
+        return None
+    for search, replace in blocks:
+        lines = text.split("\n")
+        at = _hits(lines, search.split("\n"))
+        if len(at) != 1:
+            return None
+        n = len(search.split("\n"))
+        text = "\n".join(lines[:at[0]] + replace.split("\n") + lines[at[0] + n:])
+    return text
+
+
+def block_code(old, new):
+    """(code, '') : SEARCH/REPLACE blocks that turn ``old`` into ``new`` exactly (difflib over lines, context grown until each
+    SEARCH stands once in ``old``, overlapping blocks merged); ('', why) when that cannot be done. The result is verified by
+    applying it (this module's reading and, when the runner imports, the runner's own parse_edit_blocks / apply_edit_blocks)."""
+    old, new = str(old).replace("\r\n", "\n"), str(new).replace("\r\n", "\n")
+    if old == new:
+        return "", "no change"
+    if old.endswith("\n") != new.endswith("\n"):
+        return "", "the end of the file changed (a final newline)"
+    a, b = old.rstrip("\n").split("\n"), new.rstrip("\n").split("\n")
+    if old.endswith("\n") and (old.endswith("\n\n") or new.endswith("\n\n")):
+        return "", "blank lines at the end of the file changed"
+    n = len(a)
+    groups = [[i1, i2, j1, j2] for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, a, b, autojunk=False).get_opcodes() if tag != "equal"]
+    for _round in range(60):
+        moved = False
+        for g in groups:
+            while True:
+                lo, hi, nlo, nhi = g
+                edge_blank = (lo < hi and not a[lo].strip() and lo > 0) or (lo < hi and not a[hi - 1].strip() and hi < n)
+                if hi > lo and nhi > nlo and len(_hits(a, a[lo:hi])) == 1 and not edge_blank:     # an empty REPLACE cannot be told from one blank line
+                    break
+                if lo == 0 and hi == n:
+                    return "", "no unique place for a block"
+                if lo > 0:
+                    g[0] -= 1
+                    g[2] -= 1
+                if hi < n:
+                    g[1] += 1
+                    g[3] += 1
+                moved = True
+        groups.sort()
+        merged = []
+        for g in groups:
+            if merged and g[0] < merged[-1][1]:
+                m = merged[-1]
+                m[:] = [min(m[0], g[0]), max(m[1], g[1]), min(m[2], g[2]), max(m[3], g[3])]
+                moved = True
+            else:
+                merged.append(list(g))
+        groups = merged
+        if not moved:
+            break
+    else:
+        return "", "blocks do not settle"
+    blocks = ["%s\n%s\n%s\n%s\n%s" % (SEARCH_MARK, "\n".join(a[lo:hi]), SEP_MARK, "\n".join(b[nlo:nhi]), REPLACE_MARK)
+              for lo, hi, nlo, nhi in groups]
+    code = "\n\n".join(blocks)
+    if apply_blocks(old, code) != new:
+        return "", "the blocks do not give the new text back"
+    try:                    # the runner's own reading and writing of the blocks (a marker-like line inside the text breaks it)
+        import tempfile
+        from tools import agent_factory_runner as R
+        got, outside = R.parse_edit_blocks(code, ("f.py",))
+        if outside or getattr(got, "problems", None) or len(got) != len(groups):
+            return "", "the runner reads the blocks differently"
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, "f.py").write_bytes(old.encode("utf-8"))
+            done, failed = R.apply_edit_blocks(Path(tmp), got)
+            if failed or Path(tmp, "f.py").read_bytes().decode("utf-8") != new:
+                return "", "the runner does not give the new text back"
+    except ImportError:
+        pass
+    return code, ""
+
+
 def parts_of(root, overlay):
-    """([part], '') for an overlay whose every change is a change of existing functions; ([], why) when something else changed.
-    A part = one file: ``symbols`` + ``code`` = the whole new text of each changed function."""
+    """([part], '') : one part per changed file, its ``code`` = SEARCH/REPLACE blocks of any place of the file (constants, imports,
+    new functions, several functions), ``symbols`` empty (the whole file may change), ``anchor`` = the first line of the first
+    block; ([], why) when the blocks cannot be made."""
     parts = []
     for path in sorted(overlay):
-        if not path.endswith(".py"):
-            return [], "%s is not a python file" % path
         try:
-            old = (Path(root) / path).read_bytes().decode("utf-8-sig").replace("\r\n", "\n")
-            new = overlay[path]
-            so, sn = K._symbols(ast.parse(old)), K._symbols(ast.parse(new))
-        except (OSError, SyntaxError, ValueError) as exc:
+            old = (Path(root) / path).read_bytes().decode("utf-8-sig")
+        except (OSError, ValueError) as exc:
             return [], "%s does not read: %s" % (path, str(exc)[:80])
-        funcs_o = {k for k, v in so.items() if K._is_function(v)}
-        funcs_n = {k for k, v in sn.items() if K._is_function(v)}
-        if funcs_o != funcs_n:
-            return [], "%s: functions were added or removed (%s)" % (path, ", ".join(sorted(funcs_o ^ funcs_n)[:4]))
-        changed = [k for k in funcs_o if K.region_sha(old, [k]) != K.region_sha(new, [k])]
-        top = [k for k in changed if not any(k.startswith(o + ".") for o in changed if o != k and o in funcs_o
-                                             and K._is_function(so[o]))]
-        if not top:
-            return [], "%s: the change is outside of function bodies (a constant, an import or a definition line)" % path
-        texts = {}
-        for k in top:
-            node = sn[k]
-            texts[k] = "\n".join(new.split("\n")[K._node_start(node) - 1:node.end_lineno])
-        rebuilt = old
-        try:
-            for k in sorted(top, key=lambda k: -K._node_start(sn[k])):       # from the bottom: the lines above do not move
-                rebuilt = HY.apply_function(rebuilt, k, texts[k])
-        except ValueError as exc:
-            return [], "%s: %s" % (path, exc)
-        if rebuilt != new:
-            return [], "%s: the change reaches outside of the function bodies (a constant, an import or a decorator)" % path
-        code = "\n\n".join(texts[k] for k in sorted(top, key=lambda k: K._node_start(sn[k])))
-        try:
-            K.split_part_code(code, sorted(top))
-        except ValueError as exc:
-            return [], "%s: %s" % (path, str(exc)[:100])
-        parts.append(dict(file=path, symbols=sorted(top), code=code,
-                          instruction="Replace %s with the verified text from code: the cloud run made the red test green with it."
-                          % ", ".join(sorted(top)), keep="the signature"))
+        code, why = block_code(old, overlay[path])
+        if why:
+            return [], "%s: %s" % (path, why)
+        anchor = parse_blocks(code)[0][0].split("\n")[0]
+        parts.append(dict(file=path, symbols=[], anchor=anchor, code=code,
+                          instruction="Apply the SEARCH/REPLACE blocks of code to %s: the cloud run made the red test green with exactly them." % path))
     return parts, ""
 
 
 def to_contract(row, ids, res, root, group=None, rep=None, why="the solver made the red test green in the cloud"):
     """The contract of a green result (engine 'solver'): a fix whose parts carry the verified code; ``test.use`` = a green id.
-    None when the overlay cannot be shipped as whole functions."""
+    None when the blocks cannot be made."""
     parts, problem = parts_of(root, res.overlay)
     if problem:
         return None
@@ -559,7 +645,7 @@ def _test(ctx, tree, ids, res):
         return "FAILED\n" + res.last_fail
     parts, problem = parts_of(ctx.root, tree.overlay)
     if problem:
-        return "PASSED, but it cannot be shipped: %s. Make the same fix using only changes inside the bodies of existing functions." % problem
+        return "PASSED, but it cannot be written as blocks: %s. Make the same fix with a smaller change." % problem
     try:
         verdict = _final(ctx, tree, ids, res)
     except HY.CloudFail as exc:

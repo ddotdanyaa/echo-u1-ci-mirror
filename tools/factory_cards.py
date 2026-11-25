@@ -47,6 +47,7 @@ def _node_start(node) -> int:
 
 
 PART_CODE_MAX = 8000        # parts[].code of one part (W-hard 3)
+SOLVER_CODE_MAX = 60000      # parts[].code of the solver: SEARCH/REPLACE blocks of any place of the file (the green overlay as it is)
 
 
 def split_part_code(code, symbols) -> list:
