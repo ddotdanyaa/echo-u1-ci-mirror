@@ -1702,6 +1702,7 @@ class Loop:
         self._last_eligible = eligible
         waits = [until - now for until in ls.get("slice_wait", {}).values() if until > now]
         skip = self.pool.tids() | self._dry_blocked(tasks, state)
+        ready_code = {t for t, task in tasks.items() if state["tasks"].get(t, {}).get("status") == "READY" and self._has_code(task)}
         if self._hypers:        # W-feed2 2: a row under the hypotheses search does not start with a card
             skip = skip | {t for t, task in tasks.items() if F.row_of(task.backlog_id or t) in self._hypers}
         if first := self._solver_first(tasks, state, ls, now):      # a red row is solved first; its own card (engine solver) is not held
@@ -1710,7 +1711,9 @@ class Loop:
         if self._hypers:        # the same model minutes: the solves (bench 25.11: 40-50 % green) go before the cards of red rows (3.4 %)
             skip = skip | {t for t, task in tasks.items() if str(task.backlog_id or t).startswith("rel-")
                            and state["tasks"].get(t, {}).get("engine") != "solver" and not self._has_candidate(state, t)}
-        later = self._bisect_later(tasks, state)        # W-bisect 4: never_green debt cards wait while there is other work
+        # a card with finished code spends no minute of the models: no search and no order of the rows holds it back
+        skip = (skip - ready_code) | self.pool.tids()
+        later = self._bisect_later(tasks, state) - ready_code        # W-bisect 4: never_green debt cards wait while there is other work
 
         def ask(hold):
             return F.next_action(state, now, wait_s, self._has_more(ls, now), tasks, free=free, skip=skip | hold,
@@ -1718,6 +1721,8 @@ class Loop:
         act = ask(later)
         if later and act["action"] in ("DONE", "HOLD"):  # the queue is otherwise empty: the way out of the deferral
             act = ask(set())
+        if act.get("task_ids"):
+            act["task_ids"] = sorted(act["task_ids"], key=lambda t: t not in ready_code)
         return act
 
     def _lap(self, name, t0) -> None:
@@ -4081,7 +4086,7 @@ class Loop:
             return bool(isinstance(new, dict) and isinstance(new.get("code"), str) and new["code"].strip())
         parts = contract.get("parts")
         return bool(isinstance(parts, list) and parts and all(
-            isinstance(p, dict) and isinstance(p.get("code"), str) and p["code"].strip() for p in parts))
+            isinstance(p, dict) and any(isinstance(p.get(k), str) and p[k].strip() for k in ("code", "file_text")) for p in parts))
 
     def _dry_blocked(self, tasks, state, state_for_dry=None) -> set:
         """W-dry 1: the READY cards without code while the edit channels are dry: the pool does not start them and they hold
