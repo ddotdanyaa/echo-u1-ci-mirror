@@ -1,6 +1,6 @@
 {
  "accepted": 33,
- "free_ram_gb": 4.3,
+ "free_ram_gb": 4.79,
  "funnel": {
   "accepted": 33,
   "claimed": 936,
@@ -202,7 +202,7 @@
   }
  },
  "promoted": 87,
- "rows_recognized": 72902,
+ "rows_recognized": 72908,
  "schema": 3,
  "side": {
   "blocked": 0,
@@ -210,7 +210,7 @@
   "requeued": 9
  },
  "skipped_files": 0,
- "source_sha": "sha31a30a474284",
+ "source_sha": "shac4361161458a",
  "span": {
   "answer": {
    "calls": 0,
@@ -264,7 +264,7 @@
    "calls_usage_unknown": 0,
    "errors": {},
    "http_429": 0,
-   "rows": 9819,
+   "rows": 9825,
    "status": {
     "BLOCKED": 543,
     "FAILED": 723,
@@ -277,7 +277,7 @@
     "empty": 94,
     "infra": 27,
     "ok": 2870,
-    "other": 548,
+    "other": 554,
     "refused": 1,
     "requeued": 9,
     "stop": 131
@@ -399,7 +399,7 @@
   "hold_dropped": 3,
   "infra": 27,
   "ok": 23832,
-  "other": 24046,
+  "other": 24052,
   "parked": 18,
   "refused": 2,
   "rejected": 41,

@@ -1,9 +1,10 @@
 # Factory status (generated, structured data only)
 
-Generated: 2026-11-25T06:12:17Z
-Source commit: sha31a30a474284
+Generated: 2026-11-25T06:18:34Z
+Source commit: shac4361161458a
 
 ## Commits (sha, time)
+- shac4361161 2026-11-25T09:17:43+03:00
 - sha31a30a47 2026-11-25T09:11:04+03:00
 - shacde0f539 2026-11-25T09:08:21+03:00
 - shaaee228a4 2026-11-25T09:07:03+03:00
@@ -23,7 +24,6 @@ Source commit: sha31a30a474284
 - shacf569268 2026-11-25T02:19:55+03:00
 - sha7ed74397 2026-11-25T02:10:13+03:00
 - sha5afc9948 2026-11-25T01:57:05+03:00
-- shabdc73abf 2026-11-25T01:15:14+03:00
 
 ## Funnel
 | step | count |
@@ -43,8 +43,8 @@ Side counters: blocked=0, parked=0, requeued=9
 Tasks now: DONE=68, FAILED=1032, PROMOTED=57, READY=7, RUNNING=1
 Accepted: 33
 Promoted: 87
-Free RAM, GB: 4.3
-Telemetry rows: 72902 recognised, 0 unrecognised
+Free RAM, GB: 4.79
+Telemetry rows: 72908 recognised, 0 unrecognised
 
 ## Spend per model
 | model | calls | tokens_in | tokens_out | usage_unknown | http_429 | errors |
@@ -73,7 +73,7 @@ Telemetry rows: 72902 recognised, 0 unrecognised
 | answer | 546 | 0 |
 | gate | 9403 | 0 |
 | infra | 3863 | 0 |
-| loop | 9819 | 0 |
+| loop | 9825 | 0 |
 | other | 21582 | 0 |
 | promote | 105 | 0 |
 | review | 3676 | 1701 |
@@ -129,7 +129,7 @@ Telemetry rows: 72902 recognised, 0 unrecognised
 ## Published files
 Modules: 35
 Tests in the cloud: 111
-Tests not in the cloud: 141
+Tests not in the cloud: 142
 - tests/test_agent_factory.py (backlog-id, call-word, env-path, long-run, pid-port)
 - tests/test_factory_503.py (backlog-id, long-run)
 - tests/test_factory_architect.py (backlog-id, email, env-path, path)
@@ -222,7 +222,7 @@ Tests not in the cloud: 141
 - tests/test_factory_paid_critic_span.py (key)
 - tests/test_factory_part2.py (email)
 - tests/test_factory_part2b.py (dependency)
-- tests/test_factory_path.py (email, long-run)
+- tests/test_factory_path.py (backlog-id)
 - tests/test_factory_pool_runner.py (dependency)
 - tests/test_factory_port_wiring.py (dependency)
 - tests/test_factory_prio.py (dependency)
@@ -269,6 +269,7 @@ Tests not in the cloud: 141
 - tests/test_factory_vgs.py (dependency)
 - tests/test_factory_vgs3.py (backlog-id, path)
 - tests/test_factory_w_free.py (dependency)
+- tests/test_factory_w_path.py (email, long-run)
 - tests/test_factory_wiring.py (dependency)
 - tests/test_factory_worker_exception_return.py (backlog-id)
 
