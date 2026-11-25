@@ -1,0 +1,2 @@
+tests/verify/kind_a/test_v_E08_1.py::test_the_words_to_a_named_other_person_end_in_the_limited_action
+@tests/verify/kind_a/test_v_E08_1.py
