@@ -60,10 +60,13 @@ class Exhausted(ContractFault):
         super().__init__('architect ladder exhausted')
 
 
+FREE_NEEDS = 3         # W-need2: a free step reads the code it fixes; live 25.11: every answer of Gemma was a source request, and all were thrown away
+
+
 def need_rounds(rung, engine=''):
     """Counted source requests one engine may spend: the strong steps (paid, agent) get 2 on any rung. The request that
     meets the limit is answered with LAST_NEED and one more request is still served, so the real count is this + 1."""
-    return 2 if engine in ('paid', 'agent') or rung >= 2 else 1
+    return 2 if engine in ('paid', 'agent') else FREE_NEEDS
 
 
 LAST_NEED = 'This was the last source request, answer with the contract now.'
@@ -336,16 +339,63 @@ def normalize_decision(data):
     return data
 
 
+NEED_WORDS = ('need', 'needs', 'request', 'request_source', 'need_source', 'source')
+_NEED_FILE = re.compile(r'((?:echo_sync|tests|tools)/[\w/]+\.py)')
+_NEED_NAME = re.compile(r'[`\']([A-Za-z_][\w.]*)[`\']')
+
+
+def clean_need(need):
+    """W-need2: the entries of a source request in the shape _need_source takes (a bare path, a placeholder anchor, a long list)."""
+    out = []
+    for part in need if isinstance(need, list) else [need]:
+        if isinstance(part, str) and part.strip():
+            file, _, symbol = part.strip().partition('::')
+            part = dict(file=file, symbols=[symbol] if symbol else [])
+        if not isinstance(part, dict) or not isinstance(part.get('file'), str):
+            continue
+        part = dict(part)
+        if isinstance(part.get('symbols'), str):
+            part['symbols'] = [part['symbols']]
+        if str(part.get('anchor', '')).strip().lower() in ('exact line', '', 'none') or part.get('symbols'):
+            part.pop('anchor', None)
+        out.append(part)
+    return out[:MAX_PARTS]
+
+
+def _asked_need(data, others):
+    """W-need2: the source request inside an answer that says {"decision": "need"}: its own list, the list of another JSON object of
+    the same answer, else the files and the quoted names of its prose. [] when it names no file."""
+    for item in [data] + others:
+        if got := clean_need(item.get('need') or []):
+            return got
+    said = ' '.join(str(data.get(k, '')) for k in ('why', 'more'))
+    files = list(dict.fromkeys(_NEED_FILE.findall(said)))[:3]
+    names = [n for n in dict.fromkeys(_NEED_NAME.findall(said)) if not n.endswith('.py')][:4]
+    return [dict(file=f, symbols=names) for f in files]
+
+
 def parse(text):
     decoder = json.JSONDecoder()
+    found, end = [], 0
     for match in re.finditer(r'\{', text):
+        if match.start() < end:
+            continue
         try:
-            data, _ = decoder.raw_decode(text[match.start():])
+            data, size = decoder.raw_decode(text[match.start():])
         except ValueError:
             continue
         if isinstance(data, dict) and ('decision' in data or 'need' in data or _valid_parts(data)):
-            return normalize_decision(_redact(data))
-    raise ContractFault('no contract JSON')
+            found.append(data)
+            end = match.start() + size
+    if not found:
+        raise ContractFault('no contract JSON')
+    first = found[0]
+    word = str(first.get('decision', '')).strip().lower().replace(' ', '_').replace('-', '_')
+    if not _valid_parts(first) and (word in NEED_WORDS or ('need' in first and not word)):
+        if need := _asked_need(first, found[1:]):
+            return _redact(dict(need=need))
+        raise ContractFault('a source request without a file')
+    return normalize_decision(_redact(first))
 
 
 TITLE_MAX = 200
@@ -1308,10 +1358,16 @@ def _small_vote(ask, system, user, *, packet, root, named_ok=False, k=SMALL_K):
             contract = parse(raw)
         except Exception:                                   # the verifier names the flaw
             return raw
-        if 'need' in contract:                              # ONE extra request inside the branch
+        rounds = 0
+        while 'need' in contract and rounds < FREE_NEEDS:   # W-need2: up to FREE_NEEDS requests inside the branch (was one)
+            rounds += 1
             answer = _need_source(contract['need'], root, named_ok, [])
-            text += '\nRequested source:\n' + answer + '\n' + LAST_NEED
+            text += '\nRequested source:\n' + answer + ('\n' + LAST_NEED if rounds >= FREE_NEEDS else '')
             raw = ask(system, text, temperature=temperature, channel=channel)
+            try:
+                contract = parse(raw)
+            except Exception:
+                return raw
         return raw
 
     def verify(raw):
