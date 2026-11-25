@@ -79,6 +79,22 @@ def load(state_dir) -> dict:
     return book
 
 
+_BOOK: dict = {}
+
+
+def load_shared(state_dir) -> dict:
+    """``load`` for readers only, parsed once per (mtime, size): row_key asks it for every debt row of a tick."""
+    try:
+        st = bisect_path(state_dir).stat()
+        stamp = (st.st_mtime_ns, st.st_size)
+    except OSError:
+        return load(state_dir)
+    hit = _BOOK.get(str(state_dir))
+    if hit is None or hit[0] != stamp:
+        hit = _BOOK[str(state_dir)] = (stamp, load(state_dir))
+    return hit[1]
+
+
 def save(state_dir, book) -> None:
     REL._write_json(bisect_path(state_dir), book)
 
@@ -462,7 +478,7 @@ def clue(state_dir, tests, *, trace=(), contracts=()):
     """The evidence of the row for the slicer: {"key": "<green>..<red>", "text": ...} for the first regression among ``tests``
     (a settled one), else None.  ``trace`` = the functions of the guard's trace ((file, name, line) or names), ``contracts`` = the
     contracts of the row's earlier cards: the hunks that touch their functions come first.  Files and diff together fit DIFF_CHARS."""
-    book = load(state_dir)
+    book = load_shared(state_dir)
     for t in tests:
         res = book["result"].get(key_of(t))
         if not (isinstance(res, dict) and res.get("kind") == "regression"):

@@ -5347,7 +5347,7 @@ class Loop:
         """Baseline debt rows whose test file reads a top directory of the tree that is never published (echo_cloud.blind): it is
         red in the cloud whatever the product does. Once per base sha."""
         cached = self.__dict__.get("_blind")
-        if cached and cached[0] == self.base_sha:
+        if cached and (cached[0] == self.base_sha or time.monotonic() - cached[2] < self.OD_EVERY_S):
             return cached[1]
         rows = set()
         try:
@@ -5357,7 +5357,7 @@ class Loop:
                     if not rec.get("closed") and EC.blind(root, file)}
         except Exception as exc:        # noqa: BLE001  an aid: the rows stay as they were
             self.err("blind rows", exc)
-        self._blind = (self.base_sha, rows)
+        self._blind = (self.base_sha, rows, time.monotonic())
         return rows
 
     DONE_READ_S = 300.0
@@ -6830,6 +6830,8 @@ class Loop:
 
     OD_BUDGET_S = 15.0         # W-prio fix2: all `git log -S` calls of one outdated tick together
 
+    OD_EVERY_S = 1800.0
+
     def _outdated_tick(self, now) -> int:
         """W-prio 3: once per base sha, every open red baseline row rel-base-<n> is checked before slicing: when every red test of the row
         names (a settings key, a setattr/setitem target, a getattr, an import from the product) something that is nowhere in the product
@@ -6846,6 +6848,9 @@ class Loop:
         od_key = (sha, tuple(sorted(by_row)))       # W-prio fix2: a row that appears/reopens at the same sha is checked too
         if od_key == getattr(self, "_od_key", None):
             return 0
+        if time.monotonic() - getattr(self, "_od_at", -1e9) < self.OD_EVERY_S:
+            return 0                    # 20-60 s of parsing; a merge every few minutes rarely changes the verdict
+        self._od_at = time.monotonic()
         index = OD.Index(self.mirror)
         verdict = {}
         for bid, tests in by_row.items():
