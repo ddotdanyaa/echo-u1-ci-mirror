@@ -794,6 +794,7 @@ LINKS_EVERY_S = 600     # 4.2 (<id>): the owner's journal is linked to backlog r
 SLICE_PARALLEL = 12
 AWAIT_STEP_S = 20                     # W-await: workers are waited for this long, then a full step (slicing, merges, answers) runs beside them
 GUARD_REQUEUE_MAX = 3      # W-guard fix1: cards of one guard row sent back to the slicer as already_green, at most so often
+RESLICE_STEP_S = 5.0
 RESLICE_PER_STEP = SLICE_PARALLEL      # W-feed 4: up to SLICE_PARALLEL rows go to the slicer in one step
 RESLICE_SLEEP_S = 5
 SLICE_WAIT_S = 60
@@ -845,7 +846,7 @@ class Loop:
     CLAIM_WAIT_S = 2.0      # the claim waits less: a held lock is WAIT state_locked, not a stalled loop
     CLAIM_RETRIES = 5       # W-feed2 4g: a LockBusy of the claim is retried this many times (CLAIM_PAUSE_S apart), then the next card
     CLAIM_PAUSE_S = 0.3
-    TICK_MIN_S = 60.0       # W-feed2 4c: the ticks whose data change rarely run at most once in this time
+    TICK_MIN_S = 300.0       # W-feed2 4c: the ticks whose data change rarely run at most once in this time
 
     def __init__(self, cfg: Config, *, triage_fn=None, runner_cmd=None, clock=time.time,
                  sleep=time.sleep, power_fn=set_execution_state, free_ram_fn=free_ram_bytes,
@@ -5271,6 +5272,23 @@ class Loop:
                               if (s := safe(x))], evidence="\n".join([s for x in clues if (s := safe(x))] + ([str(entry["rule"])] if entry.get("rule") else [])),
                     known_ids=list(ls.get("to_slice", {})) + list({t.backlog_id for t in tasks.values()}))
 
+    def _blind_rows(self) -> set:
+        """Baseline debt rows whose test file reads a top directory of the tree that is never published (echo_cloud.blind): it is
+        red in the cloud whatever the product does. Once per base sha."""
+        cached = self.__dict__.get("_blind")
+        if cached and cached[0] == self.base_sha:
+            return cached[1]
+        rows = set()
+        try:
+            from tools import echo_cloud as EC, factory_release as REL
+            root = Path(self._snapshot(self.base_sha))
+            rows = {"rel-base-%d" % rec["n"] for file, rec in REL.debt(self.cfg.state_dir).items()
+                    if not rec.get("closed") and EC.blind(root, file)}
+        except Exception as exc:        # noqa: BLE001  an aid: the rows stay as they were
+            self.err("blind rows", exc)
+        self._blind = (self.base_sha, rows)
+        return rows
+
     DONE_READ_S = 300.0
 
     def _done_rows(self) -> set:
@@ -5891,6 +5909,7 @@ class Loop:
                 running.add(row_id)
         dry_rows = {F.row_of(tasks[t].backlog_id or t) for t in self._dry_blocked(tasks, state)}   # W-dry 1: code, not a channel
         boxed, done = self._box_rows(), self._done_rows()
+        blind = self._blind_rows() - boxed
         for bid in sorted(set(stuck) | set(ls.get("to_slice", {})) | dry_rows | boxed):
             related = by_row.get(bid, [])
             if any(t.only_opus or not t.privacy_safe or F.is_private_text(t.title + " " + (t.goal or "")) for t in related):
@@ -5898,6 +5917,8 @@ class Loop:
             entry = ls.get("to_slice", {}).get(bid, {})
             if entry.get("private") or entry.get("only_opus") or F.is_private_text(str(entry.get("text", ""))):
                 continue
+            if bid in blind:
+                continue                # its tests read what the cloud does not get: red there is no defect, no gate could turn it green
             if bid in boxed:            # W-box: a ready contract: no wait, no quarantine, no budget; a card of the row at work is finished first
                 if bid not in running:
                     out[bid] = "first"
@@ -6114,7 +6135,10 @@ class Loop:
         first_waits = any(c == "first" and b not in self._slicers for b, c in eligible.items())
         tasks, state = self.load()                # W-tick2 2: one fresh read right before the rows (a tick of this step may have moved the plan)
         moved = False
+        begun = time.monotonic()
         for bid in sorted(eligible, key=order)[:RESLICE_PER_STEP]:
+            if time.monotonic() - begun > RESLICE_STEP_S:
+                break                   # the rest goes on with the next step: merges and starts do not wait for the slicer's bookkeeping
             cause = eligible[bid]
             if bid in self.__dict__.get("_parked_portions", {}):
                 continue                # its finished portion waits for the lock: the slicer is not asked again
