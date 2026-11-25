@@ -1,0 +1,28 @@
+{
+ "id": "humanities-rus",
+ "split": "dev",
+ "area": "humanities",
+ "kind": "qa",
+ "source": {
+  "name": "authored for ECHO (this repository), general knowledge, no external text copied",
+  "license": "CC0-1.0",
+  "kind": "authored",
+  "url": null
+ },
+ "turns": [
+  {
+   "user": "В каком году крестили Русь?",
+   "expected": "в девятьсот восемьдесят восьмом году",
+   "length": "short",
+   "kind": "question",
+   "gap_s": 6.0
+  },
+  {
+   "user": "Какой князь это сделал?",
+   "expected": "князь Владимир",
+   "length": "short",
+   "kind": "question",
+   "gap_s": 6.0
+  }
+ ]
+}

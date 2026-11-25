@@ -1,0 +1,2 @@
+@tests/test_factory_e07_2_s2_tts.py
+tests/test_factory_e07_2_s2_tts.py::test_tts_metadata_in_cue
