@@ -18,6 +18,7 @@ from . import factory_quota as Q
 PRIORITY = {'review': 0, 'repair': 1, 'edit': 2, 'code': 2}        # slice / keywords / the rest: 3
 OVERLOAD = (500, 502, 503, 504)
 STATE_NAME, DEADLINE_S = 'head.json', 240    # next to channels.json; the longest a caller waits (5-minute rule)
+REVIEW_KEEP = 4500       # tokens of every minute window only a review may take: 100 queued edits never shut a finished candidate out
 PER_CHANNEL = 3          # calls in flight on one channel
 ROUND_PAUSE_S = 1.5      # every allowed channel refused: the circle again after this
 ANSWER_WAIT_S, DOWN_REST_S = 5.0, 30.0     # no accept in 5 s = a dead host: the old path; it is not asked again for 30 s
@@ -125,7 +126,7 @@ class Head:
                         holds.append((1.0, cid, 'flight'))
                     else:
                         try:
-                            C.choose([ch], seen, t.tokens, self.keys, now=now)
+                            C.choose([ch], seen, max(t.tokens, min(ch['tpm'], t.tokens + (REVIEW_KEEP if t.prio else 0))), self.keys, now=now)
                         except C.ChannelUnavailable as error:
                             holds.append((float(error.wait_s), cid, error.reason))
                             continue
