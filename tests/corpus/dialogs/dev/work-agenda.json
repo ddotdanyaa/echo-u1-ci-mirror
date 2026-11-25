@@ -1,0 +1,28 @@
+{
+ "id": "work-agenda",
+ "split": "dev",
+ "area": "work",
+ "kind": "qa",
+ "source": {
+  "name": "authored for ECHO (this repository), general knowledge, no external text copied",
+  "license": "CC0-1.0",
+  "kind": "authored",
+  "url": null
+ },
+ "turns": [
+  {
+   "user": "Как составить повестку встречи?",
+   "expected": "цель, вопросы, время и ответственные",
+   "length": "short",
+   "kind": "question",
+   "gap_s": 6.0
+  },
+  {
+   "user": "А как закончить встречу?",
+   "expected": "подвести итоги, кто что делает и к какому сроку",
+   "length": "short",
+   "kind": "question",
+   "gap_s": 6.0
+  }
+ ]
+}
