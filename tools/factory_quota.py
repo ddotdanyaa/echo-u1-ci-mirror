@@ -1,6 +1,7 @@
 """<id> foundation: one shared ledger of key usage per channel registry folder. Each task state publishes its own channel quotas as one section file (one writer per state: its checkpoint lock); a call chooses on the union of its own quotas and the other sections; old sections stop counting; an unreadable file is skipped, never a crash."""
 import contextlib
 import copy
+import functools
 import hashlib
 import json
 import os
@@ -27,6 +28,7 @@ def publish(folder, section, quotas, *, now=None) -> None:
     os.replace(tmp, target)
 
 
+@functools.lru_cache(maxsize=4096)
 def _same_section(a, b) -> bool:
     """Two section names that are one path spelled differently (the section is the state file's path)."""
     if not isinstance(a, str) or not a or not b:
@@ -35,6 +37,21 @@ def _same_section(a, b) -> bool:
         return os.path.normcase(os.path.realpath(a)) == os.path.normcase(os.path.realpath(str(b)))
     except (OSError, ValueError):
         return False
+
+
+_SECTIONS: dict = {}
+
+
+def _read_section(path) -> dict:
+    """The section file, parsed once per content (mtime, size); a private copy. A file older than STALE_S is not read at all."""
+    stat = path.stat()
+    if time.time() - stat.st_mtime > STALE_S:
+        return {}
+    key = (stat.st_mtime_ns, stat.st_size)
+    kept = _SECTIONS.get(str(path))
+    if kept is None or kept[0] != key:
+        kept = _SECTIONS[str(path)] = (key, json.loads(path.read_text(encoding='utf-8')))
+    return copy.deepcopy(kept[1])
 
 
 def others(folder, section, *, now=None) -> list:
@@ -48,7 +65,7 @@ def others(folder, section, *, now=None) -> list:
         if path.name == mine:
             continue
         try:
-            data = json.loads(path.read_text(encoding='utf-8'))
+            data = _read_section(path)
         except Exception:
             continue
         if not isinstance(data, dict) or not isinstance(data.get('quotas'), dict):

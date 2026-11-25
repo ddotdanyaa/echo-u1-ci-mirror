@@ -2646,6 +2646,20 @@ class VgsPlan:
             self.stats['votes_top'] = max(self.stats['votes_top'], int(stats.get('votes_top') or 0))
 
 
+DAY_HOPS = 8
+
+
+def past_day_limit(ask):
+    """``ask()``, again at once while a channel refuses with its DAY limit: the refusal closed that channel (its mark is set), so the
+    next ask takes another one. A day limit of one channel is not the end of the review or of the edit."""
+    for n in range(DAY_HOPS):
+        try:
+            return ask()
+        except ChannelFault as error:
+            if (error.info or {}).get('kind') != 'rate_day' or n + 1 >= DAY_HOPS:
+                raise
+
+
 def part_verifier(parts: list, file: str, root=None):
     """W-vgs 2: the code plugin of the ensemble: ``verify(answer)`` -> ``(ok, why, key)`` over the answer of one call
     (``rc``, ``note``, ``raw``/``new`` = the file after the blocks, ``old_raw``/``old`` = before). The blocks were parsed
@@ -4599,8 +4613,8 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                         extra = dict(skip_tiers=skip, later=bool(k), candidate=k, models_out=models[k], on_booked=booked)
                         try:
                             try:
-                                return call('edit', part_task, lambda _retry: directory, chosen, text,
-                                            exclude_model=out or None, **extra)
+                                return past_day_limit(lambda: call('edit', part_task, lambda _retry: directory, chosen, text,
+                                                                   exclude_model=out or None, **extra))
                             except (channels.ChannelUnavailable, NoIndependentReviewer):
                                 if len(out) <= len(mine):
                                     raise
@@ -5038,8 +5052,8 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                     # W-guard 3: a channel shut only by its own minute window (rpm / tpm_window / cool, <= 60 s) is waited for
                     return RW.retry_own_window(
                         lambda: RW.retry_overload(
-                            lambda: call('review', call_task, lambda _retry: directory, preferred,
-                                         kwargs['prompt_override'], exclude_model=authors() + critics, fast_retry='small'),
+                            lambda: past_day_limit(lambda: call('review', call_task, lambda _retry: directory, preferred,
+                                         kwargs['prompt_override'], exclude_model=authors() + critics, fast_retry='small')),
                             lambda err: isinstance(err, ChannelFault) and bool((err.info or {}).get('fast_retry')),
                             total_s=max(0.0, min(RW.RETRY_TOTAL_S, pass_wait[0])), sleep=pass_sleep,
                             on_retry=lambda n: events.append('review_503_retry_%d' % n) if n <= 3 else None),
