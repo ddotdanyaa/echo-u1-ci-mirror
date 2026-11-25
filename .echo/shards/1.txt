@@ -1,0 +1,2 @@
+tests/test_probe_c24.py::test_p1_noise
+tests/test_probe_c24.py::test_p1_silence
