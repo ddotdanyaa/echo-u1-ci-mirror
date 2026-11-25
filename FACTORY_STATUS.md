@@ -1,9 +1,14 @@
 # Factory status (generated, structured data only)
 
-Generated: 2026-11-25T05:53:29Z
-Source commit: shaf0699e040232
+Generated: 2026-11-25T06:12:17Z
+Source commit: sha31a30a474284
 
 ## Commits (sha, time)
+- sha31a30a47 2026-11-25T09:11:04+03:00
+- shacde0f539 2026-11-25T09:08:21+03:00
+- shaaee228a4 2026-11-25T09:07:03+03:00
+- sha226297a8 2026-11-25T09:05:03+03:00
+- sha82dbd550 2026-11-25T08:56:31+03:00
 - shaf0699e04 2026-11-25T08:52:26+03:00
 - shae3b9ec19 2026-11-25T08:48:00+03:00
 - sha18b7cc34 2026-11-25T08:43:07+03:00
@@ -19,32 +24,27 @@ Source commit: shaf0699e040232
 - sha7ed74397 2026-11-25T02:10:13+03:00
 - sha5afc9948 2026-11-25T01:57:05+03:00
 - shabdc73abf 2026-11-25T01:15:14+03:00
-- sha92b6c690 2026-11-25T01:10:01+03:00
-- shad6f694b3 2026-11-25T01:02:36+03:00
-- shaccf7b51e 2026-11-25T00:54:16+03:00
-- sha4ddc8124 2026-11-25T00:31:03+03:00
-- sha5a6053b5 2026-11-25T00:30:28+03:00
 
 ## Funnel
 | step | count |
 |---|---|
-| accepted | 32 |
+| accepted | 33 |
 | claimed | 936 |
 | coded | 189 |
 | found_in_backlog | unknown |
 | gate_pass | 89 |
-| known_to_loop | 758 |
+| known_to_loop | 687 |
 | promoted | 87 |
 | ready | 7 |
 | reviewed | 230 |
 | triaged | 495 |
 
-Side counters: blocked=2, parked=0, requeued=9
-Tasks now: BLOCKED=2, DONE=68, FAILED=1030, PROMOTED=57, READY=7, RUNNING=1
-Accepted: 32
+Side counters: blocked=0, parked=0, requeued=9
+Tasks now: DONE=68, FAILED=1032, PROMOTED=57, READY=7, RUNNING=1
+Accepted: 33
 Promoted: 87
-Free RAM, GB: 2.93
-Telemetry rows: 72821 recognised, 0 unrecognised
+Free RAM, GB: 4.3
+Telemetry rows: 72902 recognised, 0 unrecognised
 
 ## Spend per model
 | model | calls | tokens_in | tokens_out | usage_unknown | http_429 | errors |
@@ -71,14 +71,14 @@ Telemetry rows: 72821 recognised, 0 unrecognised
 | span | rows | calls |
 |---|---|---|
 | answer | 546 | 0 |
-| gate | 9399 | 0 |
-| infra | 3856 | 0 |
-| loop | 9793 | 0 |
-| other | 21546 | 0 |
+| gate | 9403 | 0 |
+| infra | 3863 | 0 |
+| loop | 9819 | 0 |
+| other | 21582 | 0 |
 | promote | 105 | 0 |
-| review | 3674 | 1701 |
-| run | 23435 | 11771 |
-| triage | 467 | 0 |
+| review | 3676 | 1701 |
+| run | 23438 | 11771 |
+| triage | 470 | 0 |
 
 ## Channels (model ids)
 - 1db4ab-gemini-3-8-flash
@@ -222,7 +222,7 @@ Tests not in the cloud: 141
 - tests/test_factory_paid_critic_span.py (key)
 - tests/test_factory_part2.py (email)
 - tests/test_factory_part2b.py (dependency)
-- tests/test_factory_path.py (backlog-id)
+- tests/test_factory_path.py (email, long-run)
 - tests/test_factory_pool_runner.py (dependency)
 - tests/test_factory_port_wiring.py (dependency)
 - tests/test_factory_prio.py (dependency)

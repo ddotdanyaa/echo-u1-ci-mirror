@@ -799,6 +799,9 @@ SLICE_WAIT_S = 60
 SLICE_PAUSES = (60, 120, 300, 600)        # W-pay 2: the pause of a row's repeated wait grows
 SLICE_STARVED_S = 600                    # W-prio2 2: no slice started or ended this long while a fresh row waits -> infra slicer_starved
 SLICE_STALE_S = 900                      # W-prio2 3: a slicer older than this is dropped (its result is ignored)
+SLICE_WAIT_CALL_S = 120.0                # W-path A: the longest wait of one slicing call for a channel
+SLICE_WAIT_JOB_S = 400.0                 # W-path A: the sum of the waits of one slicing job (under SLICE_STALE_S)
+SLICE_HOPS = 4                           # W-path A: channels of one step tried at once after 429/500/503, then a wait
 SLICE_HOPELESS_S = 600                   # W-gemma2 4: a row without a step (no money, no main channel) waits at least this
 QUARANTINE_TTL_S = 21600
 DRY_SLICE_MAX = 8           # W-dry 1: rows of cards without code that go to the slicer for code at the same time
@@ -4106,15 +4109,50 @@ class Loop:
         except (ValueError, TypeError):
             return {}
 
+    def _slice_light(self, budget, text, *, max_tokens, role):
+        """W-path A: one slicing call that does not give up at the first refusal. 429/500/503: the channel is cooled by
+        _light_ask, so the next call takes another channel of the step at once (up to SLICE_HOPS, then a short wait). no_channel:
+        wait the time the booking names (``why``), outside _ask_lock, within SLICE_WAIT_CALL_S per call and the job's
+        ``budget`` (SLICE_WAIT_JOB_S); a channel closed for the day is not waited for; STOP ends the waiting."""
+        waited, hops = 0.0, 0
+        while True:
+            why = {}
+            result = self._light_ask(text, attempt=1, section="loop-architect", quotas=self._arch_quotas,
+                                     max_tokens=max_tokens, role=role, why=why)
+            status = result[0]
+            if status == "ok":
+                return result
+            if status in ("http_429", "http_500", "http_503"):
+                hops += 1
+                if hops <= SLICE_HOPS:
+                    continue
+                hops, wait = 0, 5.0
+            elif status == "no_channel":
+                if why.get("reason") == "rpd":
+                    return result               # closed for the day: nothing to wait for
+                wait = float(why.get("wait_s") or 0) or 5.0
+            else:
+                return result
+            wait = min(wait, SLICE_WAIT_CALL_S - waited, budget["left"])
+            if wait <= 0 or self.stop.exists():
+                return result
+            slept = 0.0
+            while slept < wait and not self.stop.exists():
+                step = min(5.0, wait - slept)
+                self._sleep(step)
+                slept += step
+            waited += slept
+            budget["left"] -= slept
+
     def _asks(self, root=None) -> dict:
         from tools import factory_architect as A, factory_paid_critic as PK
         asks = {}
+        budget = {"left": SLICE_WAIT_JOB_S}       # W-path A: the waits of ONE slicing job (one _asks per job) share this
         for engine in self.cfg.architect_rungs:
             if engine in ("free", "free_main"):
                 role = "architect" if engine == "free" else "code"
                 def ask(system, user, role=role):
-                    status, _, answer, _ = self._light_ask(system + "\n\n" + user, attempt=1,
-                        section="loop-architect", quotas=self._arch_quotas, max_tokens=12000, role=role)
+                    status, _, answer, _ = self._slice_light(budget, system + "\n\n" + user, max_tokens=12000, role=role)
                     if status != "ok":
                         raise A.ContractFault(status)
                     return answer
@@ -4290,10 +4328,19 @@ class Loop:
             body = diff.read_text(encoding="utf-8", errors="replace") if diff.is_file() else ""
             out.append("RED FIX %s: failure:\n%s\ndiff:\n%s" % (
                 task.id, safe("\n".join(map(str, rec.get("feedback", [])[-2:])), 3000), safe(body, 4000) or "(no diff kept)"))
+        if len(reds) >= 2:      # W-path D: two red fixes of product code with the same failure: the stand itself may be out of date
+            ends = [" ".join(str((state["tasks"].get(t.id, {}).get("feedback") or [""])[-1]).split())[:200] for t in reds[-2:]]
+            if ends[0] and ends[0] == ends[1]:
+                out.append(self.STAND_HINT)
         for task in sorted(previous, key=lambda t: t.id)[-6:]:
             if task.contract and (text := safe(task.contract, 4000)):
                 out.append("CONTRACT OF AN EARLIER GENERATION (%s):\n%s" % (task.id, text))
         return "\n\n".join(out)[:self.DOSSIER_CHARS]
+
+    STAND_HINT = ("CHECK WHETHER THE STAND IS OUT OF DATE: two fixes of the product code failed with the same failure. If the "
+                  "test, its fixture or conftest is what is broken (a parameter or attribute that does not exist, an expectation "
+                  "of a setting that was changed), answer a rig contract (rig: true, ready code or file_text of the stand, the "
+                  "checks themselves untouched) instead of a third product fix.")
 
     # ---- W-redrow 1, 2: a row with a ready red test carries the proof of the red --------------------------------------
     RED_SOURCE_CHARS = 6000

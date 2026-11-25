@@ -108,13 +108,22 @@ def test_exact_a_red_row_is_asked_for_it_too(root):
     assert len(seen) == 2 and "vague: " in seen[1] and got["contract"]["parts"][0]["instruction"] == EXACT
 
 
-def test_split_gemma_edits_first_and_main_only_while_most_of_its_day_is_left():
-    import time
+def test_path_main_edits_by_tempo_not_by_a_fixed_floor():
+    """W-path C (replaces the fixed 70 % floor of W-split): the main channel takes a short edit only while its unused share
+    of the day is not below the share of the quota day that is left."""
     from tools import factory_channels as CH
-    now = time.time()
-    fresh = [c["id"] for c in CH.route_order(_pool(), "edit", 1, 3000, state={}, now=now)]
-    assert fresh == ["s1", "m1"]
     main = next(c for c in _pool() if c["id"] == "m1")
-    used = {main["group"]: {"request_times": [now] * (main["rpd"] * 4 // 10)}}
-    assert [c["id"] for c in CH.route_order(_pool(), "edit", 1, 3000, state=used, now=now)] == ["s1"]
-    assert "m1" in [c["id"] for c in CH.route_order(_pool(), "architect", 1, 3000, state=used, now=now)]
+    start, end = CH.quota_day(main["model"], 1_800_000_000)
+
+    def ids(at, used_share):
+        state = {main["group"]: {"request_times": [at] * int(main["rpd"] * used_share)}}
+        return [c["id"] for c in CH.route_order(_pool(), "edit", 1, 3000, state=state, now=at)]
+    noon = start + 0.5 * (end - start)
+    assert ids(noon, 0.0) == ["s1", "m1"]                 # nothing used: the surplus is spent
+    assert ids(noon, 0.4) == ["s1", "m1"]                 # 60 % left, 50 % of the day left: ahead of the tempo, still takes edits
+    assert ids(noon, 0.6) == ["s1"]                       # 40 % left < 50 %: behind, Gemma only
+    early = start + 0.1 * (end - start)
+    assert ids(early, 0.2) == ["s1"] and ids(early, 0.05) == ["s1", "m1"]
+    late = start + 0.95 * (end - start)
+    assert ids(late, 0.9) == ["s1", "m1"]                 # 10 % left, 5 % of the day left: the leftover is used, not kept
+    assert "m1" in [c["id"] for c in CH.route_order(_pool(), "architect", 1, 3000, state={}, now=noon)]

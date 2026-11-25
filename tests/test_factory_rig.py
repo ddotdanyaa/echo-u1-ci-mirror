@@ -55,8 +55,8 @@ def test_rig_refuses_other_dirs_and_more_than_three_echo_files(root):
 
 
 def test_rig_only_for_strong_engines(root):
-    assert any("only paid/agent" in f for f in A.validate(contract(), root, bid="B1", engine="free"))
-    for engine in ("paid", "agent", "hypo", "coordinator"):
+    assert any("only paid/agent" in f for f in A.validate(contract(), root, bid="B1", engine="banana"))   # W-path D (was "free"): the free steps may give a rig now
+    for engine in ("paid", "agent", "hypo", "coordinator", "free", "free_main", "free_small"):
         assert A.validate(contract(), root, bid="B1", engine=engine) == []
 
 
@@ -179,7 +179,7 @@ def test_rig_command_refuses_foreign_paths(root, tmp_path):
 # ---- fix1
 def test_rig_without_engine_or_free_engine_is_refused(root):
     assert any("only paid/agent" in f for f in A.validate(contract(), root, bid="B1"))
-    assert any("only paid/agent" in f for f in A.validate(contract(), root, bid="B1", engine="free_small"))
+    assert any("only paid/agent" in f for f in A.validate(contract(), root, bid="B1", engine="the_editor"))   # W-path D: free_small is no longer refused
 
 
 def test_lock_refuses_new_assert_inside_old_test_function(root):     # stricter than the task: pinned
