@@ -1,0 +1,10 @@
+tests/test_h7.py::test_a_new_question_cancels_both
+tests/test_h7.py::test_the_answer_in_play_was_not_the_suspect[finished-ear_tempo]
+tests/test_h7.py::test_the_answer_in_play_was_not_the_suspect[finished-no_ear]
+tests/test_h7.py::test_the_answer_in_play_was_not_the_suspect[first_portion-ear_tempo]
+tests/test_h7.py::test_the_answer_in_play_was_not_the_suspect[first_portion-no_ear]
+tests/test_h7.py::test_the_answer_in_play_was_not_the_suspect[second_portion-ear_tempo]
+tests/test_h7.py::test_the_answer_in_play_was_not_the_suspect[second_portion-no_ear]
+tests/test_h7.py::test_the_whole_call_with_the_setting_and_the_job_late[3.5]
+tests/test_h3_tempo.py::test_there_is_no_switch_for_the_tempo_of_the_ear
+tests/test_h3_tempo.py::test_in_this_mode_the_default_wait_is_two_seconds_and_a_profile_may_say_otherwise
