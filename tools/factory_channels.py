@@ -278,7 +278,7 @@ _ROLE_TIERS = {   # candidate order of tiers for a call; a tier that is not list
 }
 
 
-EDIT_MAIN_FLOOR = 0.7   # W-split (owner): Flash-Lite cuts, Gemma edits: a main channel takes edit calls only while this share of its day is left
+# W-path C: no fixed floor: a main channel takes an edit only while its unused share of the day is at least the share of the quota day that is left (day_left_share >= time_left_share): surplus is spent, nothing is left over at the end of the day
 
 
 def note_edit_outcome(state, tier, green, seconds, now=None):
@@ -437,7 +437,8 @@ def route_order(channels, role, attempt, tokens, *, preferred=None, exclude_mode
                 continue
         if state is not None and missing_for_good(state, channel):
             continue
-        if state is not None and role == 'edit' and tier == 'main' and tokens <= small_cap                 and day_left_share(state, channel, now=now) < EDIT_MAIN_FLOOR:
+        if (state is not None and role == 'edit' and tier == 'main' and tokens <= small_cap
+                and day_left_share(state, channel, now=now) < time_left_share(channel, now=now)):
             continue
         picked.append(channel)
     if state is None:
@@ -843,6 +844,13 @@ def note_sent(state, channel, *, now=None, count=1) -> float:
     group['rpm_times'] = minute_times + [now] * n
     group['requests'] = group.get('requests', 0) + n
     return now
+
+
+def time_left_share(channel, *, now=None) -> float:
+    """W-path C: the share of the provider's quota day that is still ahead (1.0 at its start, 0.0 at its end)."""
+    now = time.time() if now is None else now
+    start, end = quota_day(channel['model'], now)
+    return max(0.0, min(1.0, (end - now) / (end - start)))
 
 
 def day_left_share(state, channel, *, now=None) -> float:

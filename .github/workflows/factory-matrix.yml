@@ -52,23 +52,23 @@ jobs:
           - shard: 19
             files: 'tests/test_factory_loop_run.py tests/test_factory_mem2.py tests/test_factory_metrics_span.py tests/test_factory_near_merge.py'
           - shard: 20
-            files: 'tests/test_factory_new_file_search.py tests/test_factory_parse_cache.py tests/test_factory_part1.py tests/test_factory_patterns.py'
+            files: 'tests/test_factory_need2.py tests/test_factory_new_file_search.py tests/test_factory_parse_cache.py tests/test_factory_part1.py'
           - shard: 21
-            files: 'tests/test_factory_pool_k1.py tests/test_factory_pool_loop.py tests/test_factory_pool_state.py tests/test_factory_port.py'
+            files: 'tests/test_factory_patterns.py tests/test_factory_pool_k1.py tests/test_factory_pool_loop.py tests/test_factory_pool_state.py'
           - shard: 22
-            files: 'tests/test_factory_port_triage.py tests/test_factory_profile.py tests/test_factory_promote_merge.py tests/test_factory_providers.py'
+            files: 'tests/test_factory_port.py tests/test_factory_port_triage.py tests/test_factory_profile.py tests/test_factory_promote_merge.py'
           - shard: 23
-            files: 'tests/test_factory_quota.py tests/test_factory_red_by_assert.py tests/test_factory_reject_cli.py tests/test_factory_reject_promote.py'
+            files: 'tests/test_factory_providers.py tests/test_factory_quota.py tests/test_factory_red_by_assert.py tests/test_factory_reject_cli.py'
           - shard: 24
-            files: 'tests/test_factory_requeue.py tests/test_factory_reslice.py tests/test_factory_revive.py tests/test_factory_rig.py'
+            files: 'tests/test_factory_reject_promote.py tests/test_factory_requeue.py tests/test_factory_reslice.py tests/test_factory_revive.py'
           - shard: 25
-            files: 'tests/test_factory_route_d.py tests/test_factory_router.py tests/test_factory_row_text.py tests/test_factory_selfgate_own_tests.py'
+            files: 'tests/test_factory_rig.py tests/test_factory_route_d.py tests/test_factory_router.py tests/test_factory_row_text.py'
           - shard: 26
-            files: 'tests/test_factory_selfgate_sync.py tests/test_factory_test_card.py tests/test_factory_tick2.py tests/test_factory_triage_candidates.py'
+            files: 'tests/test_factory_selfgate_own_tests.py tests/test_factory_selfgate_sync.py tests/test_factory_test_card.py tests/test_factory_tick2.py'
           - shard: 27
-            files: 'tests/test_factory_triage_state.py tests/test_factory_undefined_names.py tests/test_factory_unit_rules_async.py tests/test_factory_unit_test_rules.py'
+            files: 'tests/test_factory_triage_candidates.py tests/test_factory_triage_state.py tests/test_factory_undefined_names.py tests/test_factory_unit_rules_async.py'
           - shard: 28
-            files: 'tests/test_factory_vgs_stats.py tests/test_factory_view_fill.py'
+            files: 'tests/test_factory_unit_test_rules.py tests/test_factory_vgs_stats.py tests/test_factory_view_fill.py'
     name: shard ${{ matrix.shard }}
     runs-on: windows-latest
     timeout-minutes: 25
