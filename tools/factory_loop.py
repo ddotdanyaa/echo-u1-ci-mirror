@@ -4881,7 +4881,7 @@ class Loop:
             self._first_rows = set()
         return self._first_rows
 
-    HYPO_REVIEW_HOLD_S = 180.0      # W-hypo3 3: the longest the search yields to a waiting review (a stuck card must not starve it)
+    HYPO_REVIEW_HOLD_S = 900.0      # W-hypo3 3: the longest the search yields to a waiting review (a stuck card must not starve it)
     _review_since = None
 
     @staticmethod

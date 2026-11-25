@@ -1179,9 +1179,12 @@ def review_candidate(task: Task, workdir: Path, model: str, invoke, *,
         lessons = paid_critic.lessons_for(task, rejected or '')   # owner: catches of the paid critic that free critics missed
         goal = getattr(task, 'goal', '') or ''
         said_goal = ('Task text (what the coder was asked):\n' + redact(scrub_paths(goal))[:1500] + '\n') if goal else ''
+        restate = K.restate_note(task)
+        rubric = rubric and not restate      # the cited line of the old test is gone on purpose
+        said_goal += restate
         spec = K.test_spec(task)      # W-critic 1: a test card's critics get the contract the test must meet
         said_goal += ('Contract of the new test:\n' + redact(spec)[:1500] + '\n') if spec else ''
-        head = ('Review this patch task: ' + redact(task.title) + '.\n' + said_goal + checks + GATE_PASSED + '\n' + told +
+        head = ('Review this patch task: ' + redact(task.title) + '.\n' + said_goal + ('' if restate else checks) + GATE_PASSED + '\n' + told +
                 (lessons + '\n' if lessons else '') +
                 (' The task files are below: small files whole, a large file as its outline and the parts that '
                  'matter. Judge the candidate by its diff and the code shown; never reject it only because some '
