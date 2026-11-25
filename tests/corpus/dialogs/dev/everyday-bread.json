@@ -1,0 +1,35 @@
+{
+ "id": "everyday-bread",
+ "split": "dev",
+ "area": "everyday",
+ "kind": "qa",
+ "source": {
+  "name": "authored for ECHO (this repository), general knowledge, no external text copied",
+  "license": "CC0-1.0",
+  "kind": "authored",
+  "url": null
+ },
+ "turns": [
+  {
+   "user": "Как хранить хлеб, чтобы он не черствел?",
+   "expected": "в закрытой ёмкости при комнатной температуре, не в холодильнике",
+   "length": "short",
+   "kind": "question",
+   "gap_s": 6.0
+  },
+  {
+   "user": "Ну понятно. Спасибо.",
+   "expected": null,
+   "length": "short",
+   "kind": "ack",
+   "gap_s": 6.0
+  },
+  {
+   "user": "А если он уже зачерствел, что с ним сделать?",
+   "expected": "слегка сбрызнуть водой и прогреть в духовке",
+   "length": "short",
+   "kind": "question",
+   "gap_s": 7
+  }
+ ]
+}
