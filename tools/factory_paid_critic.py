@@ -567,18 +567,19 @@ def _control(task, diff, failure, exclude_model, baseline, workdir, key):
     except (ValueError, TypeError, AttributeError):
         multifile = False
     approvals, total_usd, total_in, total_out = [], 0.0, 0, 0
+    barred = {str(m).rpartition('/')[2] for m in (exclude_model if isinstance(exclude_model, (list, tuple, set, frozenset)) else [exclude_model])}
+    wanted = min(2, sum(m not in barred for m in MODELS)) if multifile else 1      # an author among the two never made a second paid voice possible
     for model in MODELS:
         try:
             refuse_opus(model)
         except ValueError:
             continue
-        if model in ({str(m).rpartition('/')[2] for m in exclude_model} if isinstance(exclude_model, (list, tuple, set, frozenset))
-                     else {str(exclude_model).rpartition('/')[2]}):
+        if model in barred:
             continue
         body = dict(model=model, max_tokens=2000, output_config=dict(effort='medium'),
                     messages=[dict(role='user', content=prompt)])
         headers = {'content-type': 'application/json', 'anthropic-version': API_VERSION, 'x-api-key': key}
-        estimate = (len(prompt.encode('utf-8')) * 2 + 2000 * 10) / 1e6 * 1.3
+        estimate = usd_for(model, len(prompt.encode('utf-8')), 2000) * 1.3      # the price of THIS model: a Haiku vote booked as Sonnet was refused on money it does not need
         if not reserve(estimate, critic=True):
             return None
         usd = 0.0
@@ -605,7 +606,7 @@ def _control(task, diff, failure, exclude_model, baseline, workdir, key):
         total_out += tout
         if multifile and answer['verdict'] == 'approve':
             approvals.append(model)
-            if len(approvals) < 2:
+            if len(approvals) < wanted:
                 continue
         return dict(verdict=answer['verdict'], reason=str(answer.get('reason') or '')[:600],
                     **{'class': _slug(answer.get('class') or '')}, symptom=str(answer.get('symptom') or '')[:300],
