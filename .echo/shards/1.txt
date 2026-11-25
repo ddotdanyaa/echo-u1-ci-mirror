@@ -1,0 +1,25 @@
+tests/test_c22_speed.py::test_a_statement_of_the_cloud_opens_nothing
+tests/test_c22_speed.py::test_the_ear_s_negation_the_other_way_round_waits_for_the_final
+tests/test_c25_b_latency.py::test_a_word_problem_opens_its_job_on_the_ear_s_text[2]
+tests/test_c25_b_latency.py::test_a_word_problem_opens_its_job_on_the_ear_s_text[3]
+tests/test_followup_real.py::test_the_cloud_final_5_s_later_says_nothing_twice
+tests/test_followup_real.py::test_the_ear_opens_the_followup_before_the_cloud_final[\u0430 \u041a\u041e-2 \u044d\u0442\u043e \u0447\u0442\u043e]
+tests/test_followup_real.py::test_the_ear_opens_the_followup_before_the_cloud_final[\u0442\u0430\u043a \u0430 \u043f\u044f\u0442\u044c\u0434\u0435\u0441\u044f\u0442 \u0434\u0432\u0430 \u044d\u0442\u043e \u043a\u0430\u043a\u043e\u0439 \u0443 \u043d\u0430\u0441 \u0441\u0447\u0451\u0442]
+tests/test_followup_real.py::test_the_ear_opens_the_followup_before_the_cloud_final[\u0442\u0430\u043a \u0447\u0442\u043e \u044d\u0442\u043e \u0437\u0430 \u0443\u043a\u0430\u0437\u0430\u043d\u0438\u0435]
+tests/test_h2_brain.py::test_a_declined_lookup_question_says_nothing
+tests/test_h2_brain.py::test_a_final_said_before_the_job_of_the_one_before_has_ruled_goes_to_the_job_with_it
+tests/test_h2_brain.py::test_a_job_the_sources_of_the_open_question_replaced_is_asked_again
+tests/test_h2_brain.py::test_a_question_the_classifier_opened_and_the_job_declined_gives_the_plan_back[\u041d\u0443 \u0447\u0442\u043e, \u0434\u0430\u0432\u0430\u0439\u0442\u0435 \u0437\u0430\u0434\u0430\u0432\u0430\u0439\u0442\u0435 \u043b\u044e\u0431\u043e\u0439 \u0432\u043e\u043f\u0440\u043e\u0441, \u0441\u043e\u0431\u0441\u0442\u0432\u0435\u043d\u043d\u043e, \u0433\u043e\u0442\u043e\u0432]
+tests/test_h2_brain.py::test_a_sentence_that_ends_in_digits_is_a_sentence_for_the_talk_after_it[\u041e\u0442\u0432\u0435\u0442 25. \u0425\u043e\u0447\u0435\u0448\u044c \u0435\u0449\u0451 \u043f\u0440\u0438\u043c\u0435\u0440?-\u041e\u0442\u0432\u0435\u0442 25.]
+tests/test_h2_brain.py::test_the_answer_to_a_question_the_classifier_saw_is_not_judged_again_at_publication
+tests/test_h2_brain.py::test_the_clouds_text_is_set_aside_while_a_job_runs
+tests/test_h2_brain.py::test_the_final_of_a_long_turn_a_stable_partial_took_at_its_start_is_judged
+tests/test_h2_brain.py::test_the_remarks_of_the_call_say_nothing_whatever_the_cloud_replies[\u041d\u0443 \u0447\u0442\u043e, \u0434\u0430\u0432\u0430\u0439\u0442\u0435 \u0437\u0430\u0434\u0430\u0432\u0430\u0439\u0442\u0435 \u043b\u044e\u0431\u043e\u0439 \u0432\u043e\u043f\u0440\u043e\u0441, \u0441\u043e\u0431\u0441\u0442\u0432\u0435\u043d\u043d\u043e, \u0433\u043e\u0442\u043e\u0432]
+tests/test_short_followups.py::ShortFollowupClassifierTests::test_exact_current_chunk_stays_ack_and_partial_phrase_stays_attempt
+tests/test_short_followups.py::ShortFollowupClassifierTests::test_partial_overlap_replay_precedes_matching_prepared_bank_question
+tests/test_short_followups.py::ShortFollowupEngineTests::test_partial_followup_overlap_does_not_use_prepared_bank
+tests/test_short_followups.py::ShortFollowupEngineTests::test_partial_portion_overlap_replays_without_replacing_turn
+tests/test_w5_instant_wiring.py::test_the_cue_said_is_the_first_portion_the_cache_was_filled_with[a07]
+tests/test_w5_instant_wiring.py::test_the_cue_said_is_the_first_portion_the_cache_was_filled_with[l15]
+tests/test_w5_instant_wiring.py::test_the_cue_said_is_the_first_portion_the_cache_was_filled_with[n05]
+tests/test_w5_instant_wiring.py::test_with_the_ears_tempo_the_ready_answer_waits_for_the_end_and_the_ears_text_of_it
