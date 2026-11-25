@@ -7,6 +7,7 @@ fenced with lease tokens and always require independent acceptance.
 from __future__ import annotations
 
 import contextlib
+import functools
 import logging
 from dataclasses import dataclass
 from hashlib import sha1, sha256
@@ -165,7 +166,12 @@ PRIVATE_CLASS = re.compile(
 
 def is_private_text(text: str) -> bool:
     """The text names the owner's private class (PRIVATE_CLASS): such a task never goes to a free model."""
-    return bool(PRIVATE_CLASS.search(str(text or "")[:20_000]))
+    return _private_class(str(text or "")[:20_000])
+
+
+@functools.lru_cache(maxsize=8192)      # the same 1200 goals are asked on every read of the plan
+def _private_class(text: str) -> bool:
+    return bool(PRIVATE_CLASS.search(text))
 
 
 WINDOWS_DEVICE = re.compile(r"^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?$", re.I)
