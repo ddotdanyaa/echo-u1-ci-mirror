@@ -3580,6 +3580,9 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                     if info['kind'] == 'network' and 'timeout' not in str(info.get('message') or '').lower():
                         fact = 0         # no HTTP answer (refused, no route): the request never reached the provider's quota;
                         # a TIMEOUT did reach it (W-dry 3: Google counted 500, we 177-234) and stays counted
+                    if info['kind'] == 'transient' and info.get('status') in channels.OVERLOAD_STATUSES and not summary['steps']:
+                        charged = fact = 0      # refused by an overloaded model: nothing was read or written (25.11: three 503s of one second
+                        # each held a Gemma channel's whole 16K minute, so a channel that answers every second call was asked 3 times a minute)
                     channels.reconcile(state['channel_quotas'], selected, at, tokens, charged,
                                        requests=booked, actual_requests=fact)
                     # the series of failed calls of this channel: 'ok' with the whole output limit spent and no word

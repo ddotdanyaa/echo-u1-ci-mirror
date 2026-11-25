@@ -1496,8 +1496,9 @@ def close_big(state, channel, *, now=None) -> dict:
     return out
 
 
-BREAKER_FAILS = 2          # W-flow 2: 503s in a row that put a big channel in probe mode
-BREAKER_PROBE_S = 45       # ... one send per channel per this many seconds from ALL cards (the mark is cool_channel's)
+BREAKER_FAILS = 12         # W-flow 2: 503s in a row that put a big channel in probe mode (25.11: a Gemma that answers every second call was
+# shut for 45 s by two refusals of one second each: about 5 sends a minute for the whole pool; a refusal costs nothing)
+BREAKER_PROBE_S = 10       # ... one send per channel per this many seconds from ALL cards (the mark is cool_channel's)
 BREAKER_FORGET_S = 600     # a run of 503s older than this says nothing (nobody probed: the mode ends)
 
 
