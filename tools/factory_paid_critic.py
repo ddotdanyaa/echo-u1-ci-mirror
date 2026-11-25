@@ -525,6 +525,15 @@ def available() -> bool:
         return False
 
 
+def agent_card(task) -> bool:
+    """The contract's code was written by the agent model (MODELS[0]): that model is excluded as its reviewer, the next one votes."""
+    try:
+        contract = json.loads(getattr(task, 'contract', '') or '{}')
+    except (ValueError, TypeError):
+        return False
+    return isinstance(contract, dict) and contract.get('author') == MODELS[0]
+
+
 def control(task, diff: str, failure: str = '', exclude_model: str = '', *, baseline=None, workdir=None) -> dict | None:
     """One paid judgement of a candidate, or None (no key, no budget, a refused model, any fault). The free verdict
     stands when None. The dict never holds the key. ``exclude_model``: the coder's model never judges its own
@@ -532,7 +541,7 @@ def control(task, diff: str, failure: str = '', exclude_model: str = '', *, base
     if os.environ.get('PYTEST_CURRENT_TEST') and not os.environ.get('FACTORY_PAID_ENV'):
         return None                                     # a test never spends the real key
     from tools import agent_factory as F
-    if F.is_base_debt(task):
+    if F.is_base_debt(task) and not agent_card(task):      # a finished card of the agent step needs one cent for its last vote, not a search
         return None                                     # W-base0: the old baseline debt never spends the paid money (the free panel stays)
     try:
         key = load_env(env_path()).get('ANTHROPIC_API_KEY', '')
