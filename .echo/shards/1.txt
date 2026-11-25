@@ -1,0 +1,10 @@
+tests/test_h6.py::test_a_fallback_that_is_no_whole_answer_is_refused[Что такое инерция-Да, конечно.]
+tests/test_h6.py::test_a_fallback_that_is_no_whole_answer_is_refused[Что такое инерция-Да.]
+tests/test_h6.py::test_a_fallback_that_is_no_whole_answer_is_refused[Что такое инерция-Конечно.]
+tests/test_h6.py::test_a_fallback_that_is_no_whole_answer_is_refused[Что такое инерция-Нет.]
+tests/test_h6.py::test_a_fallback_that_talks_about_itself_is_refused[Давай ещё вопрос, попробуем в таком темпе.]
+tests/test_h6.py::test_a_fallback_that_talks_about_itself_is_refused[Понял, сейчас уточню и отвечу подробнее.]
+tests/test_h6.py::test_a_fallback_that_talks_about_itself_is_refused[Хочешь, разберём это на примере?]
+tests/test_h6.py::test_a_fallback_that_talks_about_itself_is_refused[Я постараюсь отвечать быстрее.]
+tests/test_h6.py::test_r10_speech_begun_at_the_portion_before_holds_the_timer_too
+tests/test_h7.py::test_a_job_leaves_a_line_when_it_is_over
