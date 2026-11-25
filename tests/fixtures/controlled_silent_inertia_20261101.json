@@ -1,0 +1,1660 @@
+{
+ "silent_inertia": {
+  "evidence": "REAL_SUBSCRIPTION_EXISTING_NATIVE_WS_SYNTHETIC_PCM_NOT_IPHONE",
+  "persistent_mode_changed": false,
+  "events": [
+   {
+    "type": "session.updated",
+    "code": null,
+    "ms": 4203
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 4432,
+    "client_pcm_seen": true,
+    "ready": true,
+    "prefetch_enabled": false,
+    "fresh_lookup": false,
+    "session_context_fallback": true,
+    "lookup_policy": "required",
+    "first_useful_gate": true,
+    "coalesce_seconds": 3.2
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 5772,
+    "kind": "e",
+    "bytes": 148,
+    "ready": true,
+    "provider_type": "input_transcript.added"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 5793,
+    "kind": "e",
+    "bytes": 132,
+    "ready": true,
+    "provider_type": "turn.created",
+    "role": "user",
+    "chars": 3
+   },
+   {
+    "type": "output_audio_buffer.clear",
+    "ms": 5811
+   },
+   {
+    "type": "conduit.echo.stage",
+    "ms": 5828,
+    "stage": "partial_received",
+    "chars": 3,
+    "eligible": false,
+    "source": "subscription_provider_turn"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 6177,
+    "kind": "e",
+    "bytes": 153,
+    "ready": true,
+    "provider_type": "input_transcript.added"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 6192,
+    "kind": "e",
+    "bytes": 112,
+    "ready": true,
+    "provider_type": "turn.delta"
+   },
+   {
+    "type": "conduit.echo.stage",
+    "ms": 6207,
+    "stage": "partial_received",
+    "chars": 9,
+    "eligible": false,
+    "source": "subscription_provider_turn"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 6994,
+    "kind": "e",
+    "bytes": 157,
+    "ready": true,
+    "provider_type": "input_transcript.added"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 7009,
+    "kind": "e",
+    "bytes": 152,
+    "ready": true,
+    "provider_type": "output_transcript.added"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 7022,
+    "kind": "e",
+    "bytes": 116,
+    "ready": true,
+    "provider_type": "turn.delta"
+   },
+   {
+    "type": "conduit.echo.stage",
+    "ms": 7036,
+    "stage": "partial_received",
+    "chars": 17,
+    "eligible": false,
+    "source": "subscription_provider_turn"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 7210,
+    "kind": "e",
+    "bytes": 150,
+    "ready": true,
+    "provider_type": "output_transcript.added"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 7473,
+    "kind": "e",
+    "bytes": 148,
+    "ready": true,
+    "provider_type": "output_transcript.added"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 7678,
+    "kind": "e",
+    "bytes": 151,
+    "ready": true,
+    "provider_type": "output_transcript.added"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 7905,
+    "kind": "e",
+    "bytes": 161,
+    "ready": true,
+    "provider_type": "output_transcript.added"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 7921,
+    "kind": "e",
+    "bytes": 155,
+    "ready": true,
+    "provider_type": "turn.done",
+    "role": "user",
+    "chars": 17
+   },
+   {
+    "type": "conversation.item.input_audio_transcription.completed",
+    "ms": 7935,
+    "item_id": "turn_EfUMK80wzBMpWTcowaxT6",
+    "transcript": "Что такое инерция",
+    "boundary": "provider_turn_done"
+   },
+   {
+    "type": "conduit.echo.stage",
+    "ms": 7950,
+    "stage": "final_received",
+    "source": "subscription_provider_turn.done",
+    "chars": 17
+   },
+   {
+    "type": "output_audio_buffer.clear",
+    "ms": 7965
+   },
+   {
+    "type": "conduit.echo.stage",
+    "ms": 7980,
+    "stage": "content_route",
+    "route": "model_knowledge"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 7995,
+    "kind": "e",
+    "bytes": 156,
+    "ready": true,
+    "provider_type": "turn.created",
+    "role": "assistant",
+    "chars": 13
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 8011,
+    "kind": "e",
+    "bytes": 118,
+    "ready": true,
+    "provider_type": "turn.delta"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 8411,
+    "kind": "e",
+    "bytes": 153,
+    "ready": true,
+    "provider_type": "output_transcript.added"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 8427,
+    "kind": "e",
+    "bytes": 110,
+    "ready": true,
+    "provider_type": "turn.delta"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 8796,
+    "kind": "e",
+    "bytes": 163,
+    "ready": true,
+    "provider_type": "output_transcript.added"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 8812,
+    "kind": "e",
+    "bytes": 120,
+    "ready": true,
+    "provider_type": "turn.delta"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 9255,
+    "kind": "e",
+    "bytes": 153,
+    "ready": true,
+    "provider_type": "output_transcript.added"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 9270,
+    "kind": "e",
+    "bytes": 110,
+    "ready": true,
+    "provider_type": "turn.delta"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 9471,
+    "kind": "e",
+    "bytes": 163,
+    "ready": true,
+    "provider_type": "output_transcript.added"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 9487,
+    "kind": "e",
+    "bytes": 120,
+    "ready": true,
+    "provider_type": "turn.delta"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 10079,
+    "kind": "e",
+    "bytes": 161,
+    "ready": true,
+    "provider_type": "output_transcript.added"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 10094,
+    "kind": "e",
+    "bytes": 118,
+    "ready": true,
+    "provider_type": "turn.delta"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 10668,
+    "kind": "e",
+    "bytes": 151,
+    "ready": true,
+    "provider_type": "output_transcript.added"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 10682,
+    "kind": "e",
+    "bytes": 108,
+    "ready": true,
+    "provider_type": "turn.delta"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 11104,
+    "kind": "e",
+    "bytes": 155,
+    "ready": true,
+    "provider_type": "output_transcript.added"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 11322,
+    "kind": "e",
+    "bytes": 112,
+    "ready": true,
+    "provider_type": "turn.delta"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 11337,
+    "kind": "e",
+    "bytes": 145,
+    "ready": true,
+    "provider_type": "output_transcript.added"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 11353,
+    "kind": "e",
+    "bytes": 102,
+    "ready": true,
+    "provider_type": "turn.delta"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 11687,
+    "kind": "e",
+    "bytes": 153,
+    "ready": true,
+    "provider_type": "output_transcript.added"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 11702,
+    "kind": "e",
+    "bytes": 110,
+    "ready": true,
+    "provider_type": "turn.delta"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 12048,
+    "kind": "e",
+    "bytes": 159,
+    "ready": true,
+    "provider_type": "output_transcript.added"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 12063,
+    "kind": "e",
+    "bytes": 116,
+    "ready": true,
+    "provider_type": "turn.delta"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 12452,
+    "kind": "e",
+    "bytes": 153,
+    "ready": true,
+    "provider_type": "output_transcript.added"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 12836,
+    "kind": "e",
+    "bytes": 110,
+    "ready": true,
+    "provider_type": "turn.delta"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 12914,
+    "kind": "e",
+    "bytes": 149,
+    "ready": true,
+    "provider_type": "output_transcript.added"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 12929,
+    "kind": "e",
+    "bytes": 106,
+    "ready": true,
+    "provider_type": "turn.delta"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 13143,
+    "kind": "e",
+    "bytes": 161,
+    "ready": true,
+    "provider_type": "output_transcript.added"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 13160,
+    "kind": "e",
+    "bytes": 118,
+    "ready": true,
+    "provider_type": "turn.delta"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 13597,
+    "kind": "e",
+    "bytes": 151,
+    "ready": true,
+    "provider_type": "output_transcript.added"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 13612,
+    "kind": "e",
+    "bytes": 108,
+    "ready": true,
+    "provider_type": "turn.delta"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 13811,
+    "kind": "e",
+    "bytes": 151,
+    "ready": true,
+    "provider_type": "output_transcript.added"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 13827,
+    "kind": "e",
+    "bytes": 108,
+    "ready": true,
+    "provider_type": "turn.delta"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 13983,
+    "kind": "e",
+    "bytes": 161,
+    "ready": true,
+    "provider_type": "output_transcript.added"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 13998,
+    "kind": "e",
+    "bytes": 118,
+    "ready": true,
+    "provider_type": "turn.delta"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 14609,
+    "kind": "e",
+    "bytes": 145,
+    "ready": true,
+    "provider_type": "output_transcript.added"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 14656,
+    "kind": "e",
+    "bytes": 102,
+    "ready": true,
+    "provider_type": "turn.delta"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 15066,
+    "kind": "e",
+    "bytes": 153,
+    "ready": true,
+    "provider_type": "output_transcript.added"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 15082,
+    "kind": "e",
+    "bytes": 110,
+    "ready": true,
+    "provider_type": "turn.delta"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 15275,
+    "kind": "e",
+    "bytes": 159,
+    "ready": true,
+    "provider_type": "output_transcript.added"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 15290,
+    "kind": "e",
+    "bytes": 116,
+    "ready": true,
+    "provider_type": "turn.delta"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 15895,
+    "kind": "e",
+    "bytes": 157,
+    "ready": true,
+    "provider_type": "output_transcript.added"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 15909,
+    "kind": "e",
+    "bytes": 114,
+    "ready": true,
+    "provider_type": "turn.delta"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 16161,
+    "kind": "e",
+    "bytes": 149,
+    "ready": true,
+    "provider_type": "output_transcript.added"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 16176,
+    "kind": "e",
+    "bytes": 106,
+    "ready": true,
+    "provider_type": "turn.delta"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 16444,
+    "kind": "e",
+    "bytes": 155,
+    "ready": true,
+    "provider_type": "output_transcript.added"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 16459,
+    "kind": "e",
+    "bytes": 112,
+    "ready": true,
+    "provider_type": "turn.delta"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 16638,
+    "kind": "e",
+    "bytes": 147,
+    "ready": true,
+    "provider_type": "output_transcript.added"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 16654,
+    "kind": "e",
+    "bytes": 104,
+    "ready": true,
+    "provider_type": "turn.delta"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 16929,
+    "kind": "e",
+    "bytes": 153,
+    "ready": true,
+    "provider_type": "output_transcript.added"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 16945,
+    "kind": "e",
+    "bytes": 110,
+    "ready": true,
+    "provider_type": "turn.delta"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 17124,
+    "kind": "e",
+    "bytes": 161,
+    "ready": true,
+    "provider_type": "output_transcript.added"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 17138,
+    "kind": "e",
+    "bytes": 118,
+    "ready": true,
+    "provider_type": "turn.delta"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 17594,
+    "kind": "e",
+    "bytes": 169,
+    "ready": true,
+    "provider_type": "output_transcript.added"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 17631,
+    "kind": "e",
+    "bytes": 126,
+    "ready": true,
+    "provider_type": "turn.delta"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 18462,
+    "kind": "e",
+    "bytes": 158,
+    "ready": true,
+    "provider_type": "output_transcript.added"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 18475,
+    "kind": "e",
+    "bytes": 115,
+    "ready": true,
+    "provider_type": "turn.delta"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 18623,
+    "kind": "e",
+    "bytes": 144,
+    "ready": true,
+    "provider_type": "session.usage.updated"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 18689,
+    "kind": "e",
+    "bytes": 156,
+    "ready": true,
+    "provider_type": "output_transcript.added"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 18703,
+    "kind": "e",
+    "bytes": 113,
+    "ready": true,
+    "provider_type": "turn.delta"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 18884,
+    "kind": "e",
+    "bytes": 147,
+    "ready": true,
+    "provider_type": "output_transcript.added"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 19270,
+    "kind": "e",
+    "bytes": 104,
+    "ready": true,
+    "provider_type": "turn.delta"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 19527,
+    "kind": "e",
+    "bytes": 153,
+    "ready": true,
+    "provider_type": "output_transcript.added"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 19542,
+    "kind": "e",
+    "bytes": 110,
+    "ready": true,
+    "provider_type": "turn.delta"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 19726,
+    "kind": "e",
+    "bytes": 153,
+    "ready": true,
+    "provider_type": "output_transcript.added"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 19739,
+    "kind": "e",
+    "bytes": 110,
+    "ready": true,
+    "provider_type": "turn.delta"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 19986,
+    "kind": "e",
+    "bytes": 157,
+    "ready": true,
+    "provider_type": "output_transcript.added"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 20001,
+    "kind": "e",
+    "bytes": 114,
+    "ready": true,
+    "provider_type": "turn.delta"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 20206,
+    "kind": "e",
+    "bytes": 161,
+    "ready": true,
+    "provider_type": "output_transcript.added"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 20658,
+    "kind": "e",
+    "bytes": 118,
+    "ready": true,
+    "provider_type": "turn.delta"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 20672,
+    "kind": "e",
+    "bytes": 157,
+    "ready": true,
+    "provider_type": "output_transcript.added"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 20686,
+    "kind": "e",
+    "bytes": 114,
+    "ready": true,
+    "provider_type": "turn.delta"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 20993,
+    "kind": "e",
+    "bytes": 163,
+    "ready": true,
+    "provider_type": "output_transcript.added"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 21008,
+    "kind": "e",
+    "bytes": 120,
+    "ready": true,
+    "provider_type": "turn.delta"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 21656,
+    "kind": "e",
+    "bytes": 150,
+    "ready": true,
+    "provider_type": "output_transcript.added"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 21670,
+    "kind": "e",
+    "bytes": 107,
+    "ready": true,
+    "provider_type": "turn.delta"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 21901,
+    "kind": "e",
+    "bytes": 160,
+    "ready": true,
+    "provider_type": "output_transcript.added"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 21928,
+    "kind": "e",
+    "bytes": 117,
+    "ready": true,
+    "provider_type": "turn.delta"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 22114,
+    "kind": "e",
+    "bytes": 155,
+    "ready": true,
+    "provider_type": "output_transcript.added"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 22129,
+    "kind": "e",
+    "bytes": 112,
+    "ready": true,
+    "provider_type": "turn.delta"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 22317,
+    "kind": "e",
+    "bytes": 152,
+    "ready": true,
+    "provider_type": "output_transcript.added"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 22333,
+    "kind": "e",
+    "bytes": 109,
+    "ready": true,
+    "provider_type": "turn.delta"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 22534,
+    "kind": "e",
+    "bytes": 153,
+    "ready": true,
+    "provider_type": "output_transcript.added"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 22549,
+    "kind": "e",
+    "bytes": 110,
+    "ready": true,
+    "provider_type": "turn.delta"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 22724,
+    "kind": "e",
+    "bytes": 150,
+    "ready": true,
+    "provider_type": "output_transcript.added"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 22739,
+    "kind": "e",
+    "bytes": 107,
+    "ready": true,
+    "provider_type": "turn.delta"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 22929,
+    "kind": "e",
+    "bytes": 155,
+    "ready": true,
+    "provider_type": "output_transcript.added"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 22944,
+    "kind": "e",
+    "bytes": 112,
+    "ready": true,
+    "provider_type": "turn.delta"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 23153,
+    "kind": "e",
+    "bytes": 150,
+    "ready": true,
+    "provider_type": "output_transcript.added"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 23170,
+    "kind": "e",
+    "bytes": 107,
+    "ready": true,
+    "provider_type": "turn.delta"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 23320,
+    "kind": "e",
+    "bytes": 147,
+    "ready": true,
+    "provider_type": "output_transcript.added"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 23360,
+    "kind": "e",
+    "bytes": 104,
+    "ready": true,
+    "provider_type": "turn.delta"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 25410,
+    "kind": "e",
+    "bytes": 588,
+    "ready": true,
+    "provider_type": "turn.done",
+    "role": "assistant",
+    "chars": 252
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 25424,
+    "grounded": false,
+    "commit_marker_seen": false,
+    "published_chars": 0,
+    "source_text_debug": "Инерция — это свойство тела сохранять своё состояние движения или покоя, пока внешняя сила не заставит его это изменить. Чем больше масса у тела, тем сильнее проявляется его инерция. Это как когда автобус резко тормозит, и тебя по инерции тянет вперёд."
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 33626,
+    "kind": "e",
+    "bytes": 144,
+    "ready": true,
+    "provider_type": "session.usage.updated"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 48624,
+    "kind": "e",
+    "bytes": 144,
+    "ready": true,
+    "provider_type": "session.usage.updated"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 63629,
+    "kind": "e",
+    "bytes": 144,
+    "ready": true,
+    "provider_type": "session.usage.updated"
+   }
+  ],
+  "audio_bytes": 0,
+  "closed": true,
+  "prefetch_requested": false,
+  "fresh_lookup_requested": false,
+  "controller_session_id": "native-probe-89bda38fefc348a0821454dfcbf934ea",
+  "deployment_backup": "C:\\Users\\Данил\\AppData\\Local\\hermes-echo\\home\\profiles\\echo-sync\\echo_live_backups\\controlled-binding-20261029_175953",
+  "deployment_manifest_sha256": "886a060a41406d33689d50a511a3bf7a824bc39a8c78ccb1648d061ba0a56bb1",
+  "question_case": "relay_question",
+  "status": {
+   "available": true,
+   "reason": null,
+   "echo_controlled": {
+    "revision": "native-wire-1",
+    "billing": "subscription",
+    "device_verified": false
+   }
+  },
+  "native_handshake_verified": true,
+  "ready_ms": 4220,
+  "input_original_format": [
+   22050,
+   1,
+   2
+  ],
+  "input_start_ms": 4431,
+  "input_end_ms": 6819,
+  "recognized_question": "Что такое инерция",
+  "question_boundary": "provider_turn_done",
+  "controlled_cue_received": false,
+  "config_restored_exactly": true,
+  "first_cue_lexical_check": false,
+  "probe_scope_pass": false
+ },
+ "passing_sublimation": {
+  "evidence": "REAL_SUBSCRIPTION_EXISTING_NATIVE_WS_SYNTHETIC_PCM_NOT_IPHONE",
+  "persistent_mode_changed": false,
+  "events": [
+   {
+    "type": "session.updated",
+    "code": null,
+    "ms": 4530
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 4723,
+    "client_pcm_seen": true,
+    "ready": true,
+    "prefetch_enabled": false,
+    "fresh_lookup": false,
+    "session_context_fallback": true,
+    "lookup_policy": "required",
+    "first_useful_gate": true,
+    "coalesce_seconds": 3.2
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 6095,
+    "kind": "e",
+    "bytes": 148,
+    "ready": true,
+    "provider_type": "input_transcript.added"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 6108,
+    "kind": "e",
+    "bytes": 132,
+    "ready": true,
+    "provider_type": "turn.created",
+    "role": "user",
+    "chars": 3
+   },
+   {
+    "type": "output_audio_buffer.clear",
+    "ms": 6122
+   },
+   {
+    "type": "conduit.echo.stage",
+    "ms": 6134,
+    "stage": "partial_received",
+    "chars": 3,
+    "eligible": false,
+    "source": "subscription_provider_turn"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 6890,
+    "kind": "e",
+    "bytes": 163,
+    "ready": true,
+    "provider_type": "input_transcript.added"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 6907,
+    "kind": "e",
+    "bytes": 122,
+    "ready": true,
+    "provider_type": "turn.delta"
+   },
+   {
+    "type": "conduit.echo.stage",
+    "ms": 6923,
+    "stage": "partial_received",
+    "chars": 14,
+    "eligible": false,
+    "source": "subscription_provider_turn"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 7505,
+    "kind": "e",
+    "bytes": 157,
+    "ready": true,
+    "provider_type": "input_transcript.added"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 7521,
+    "kind": "e",
+    "bytes": 116,
+    "ready": true,
+    "provider_type": "turn.delta"
+   },
+   {
+    "type": "conduit.echo.stage",
+    "ms": 7535,
+    "stage": "partial_received",
+    "chars": 22,
+    "eligible": false,
+    "source": "subscription_provider_turn"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 8154,
+    "kind": "e",
+    "bytes": 159,
+    "ready": true,
+    "provider_type": "input_transcript.added"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 8170,
+    "kind": "e",
+    "bytes": 118,
+    "ready": true,
+    "provider_type": "turn.delta"
+   },
+   {
+    "type": "conduit.echo.stage",
+    "ms": 8184,
+    "stage": "partial_received",
+    "chars": 31,
+    "eligible": false,
+    "source": "subscription_provider_turn"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 8498,
+    "kind": "e",
+    "bytes": 147,
+    "ready": true,
+    "provider_type": "input_transcript.added"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 8513,
+    "kind": "e",
+    "bytes": 106,
+    "ready": true,
+    "provider_type": "turn.delta"
+   },
+   {
+    "type": "conduit.echo.stage",
+    "ms": 8528,
+    "stage": "partial_received",
+    "chars": 34,
+    "eligible": false,
+    "source": "subscription_provider_turn"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 9171,
+    "kind": "e",
+    "bytes": 153,
+    "ready": true,
+    "provider_type": "input_transcript.added"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 9186,
+    "kind": "e",
+    "bytes": 112,
+    "ready": true,
+    "provider_type": "turn.delta"
+   },
+   {
+    "type": "conduit.echo.stage",
+    "ms": 9199,
+    "stage": "partial_received",
+    "chars": 40,
+    "eligible": false,
+    "source": "subscription_provider_turn"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 9317,
+    "kind": "e",
+    "bytes": 148,
+    "ready": true,
+    "provider_type": "input_transcript.added"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 9333,
+    "kind": "e",
+    "bytes": 107,
+    "ready": true,
+    "provider_type": "turn.delta"
+   },
+   {
+    "type": "conduit.echo.stage",
+    "ms": 9347,
+    "stage": "partial_received",
+    "chars": 43,
+    "eligible": false,
+    "source": "subscription_provider_turn"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 9912,
+    "kind": "e",
+    "bytes": 161,
+    "ready": true,
+    "provider_type": "input_transcript.added"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 9926,
+    "kind": "e",
+    "bytes": 120,
+    "ready": true,
+    "provider_type": "turn.delta"
+   },
+   {
+    "type": "conduit.echo.stage",
+    "ms": 9939,
+    "stage": "partial_received",
+    "chars": 53,
+    "eligible": false,
+    "source": "subscription_provider_turn"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 10363,
+    "kind": "e",
+    "bytes": 153,
+    "ready": true,
+    "provider_type": "input_transcript.added"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 10377,
+    "kind": "e",
+    "bytes": 112,
+    "ready": true,
+    "provider_type": "turn.delta"
+   },
+   {
+    "type": "conduit.echo.stage",
+    "ms": 10391,
+    "stage": "partial_received",
+    "chars": 59,
+    "eligible": false,
+    "source": "subscription_provider_turn"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 10488,
+    "kind": "e",
+    "bytes": 145,
+    "ready": true,
+    "provider_type": "input_transcript.added"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 10504,
+    "kind": "e",
+    "bytes": 104,
+    "ready": true,
+    "provider_type": "turn.delta"
+   },
+   {
+    "type": "conduit.echo.stage",
+    "ms": 10517,
+    "stage": "partial_received",
+    "chars": 61,
+    "eligible": false,
+    "source": "subscription_provider_turn"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 11707,
+    "kind": "e",
+    "bytes": 154,
+    "ready": true,
+    "provider_type": "output_transcript.added"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 11722,
+    "kind": "e",
+    "bytes": 237,
+    "ready": true,
+    "provider_type": "turn.done",
+    "role": "user",
+    "chars": 61
+   },
+   {
+    "type": "conversation.item.input_audio_transcription.completed",
+    "ms": 11737,
+    "item_id": "turn_EfUOui4H3POsOHJUplmTm",
+    "transcript": "Как называется переход вещества из твёрдого состояния сразу в",
+    "boundary": "provider_turn_done"
+   },
+   {
+    "type": "conduit.echo.stage",
+    "ms": 11751,
+    "stage": "final_received",
+    "source": "subscription_provider_turn.done",
+    "chars": 61
+   },
+   {
+    "type": "output_audio_buffer.clear",
+    "ms": 11765
+   },
+   {
+    "type": "conduit.echo.stage",
+    "ms": 11781,
+    "stage": "content_route",
+    "route": "model_knowledge"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 11797,
+    "kind": "e",
+    "bytes": 141,
+    "ready": true,
+    "provider_type": "turn.created",
+    "role": "assistant",
+    "chars": 5
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 11853,
+    "kind": "e",
+    "bytes": 167,
+    "ready": true,
+    "provider_type": "input_transcript.added"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 11911,
+    "kind": "e",
+    "bytes": 154,
+    "ready": true,
+    "provider_type": "output_transcript.added"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 11940,
+    "kind": "e",
+    "bytes": 111,
+    "ready": true,
+    "provider_type": "turn.delta"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 11961,
+    "kind": "e",
+    "bytes": 148,
+    "ready": true,
+    "provider_type": "turn.done",
+    "role": "assistant",
+    "chars": 10
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 11976,
+    "grounded": false,
+    "commit_marker_seen": false,
+    "published_chars": 0,
+    "source_text_debug": "Сублимация"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 11994,
+    "kind": "e",
+    "bytes": 151,
+    "ready": true,
+    "provider_type": "turn.created",
+    "role": "user",
+    "chars": 13
+   },
+   {
+    "type": "output_audio_buffer.clear",
+    "ms": 12009
+   },
+   {
+    "type": "conduit.echo.stage",
+    "ms": 12025,
+    "stage": "partial_received",
+    "chars": 13,
+    "eligible": false,
+    "source": "subscription_provider_turn"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 12386,
+    "kind": "e",
+    "bytes": 145,
+    "ready": true,
+    "provider_type": "output_transcript.added"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 12624,
+    "kind": "e",
+    "bytes": 151,
+    "ready": true,
+    "provider_type": "output_transcript.added"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 12836,
+    "kind": "e",
+    "bytes": 159,
+    "ready": true,
+    "provider_type": "output_transcript.added"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 12850,
+    "kind": "e",
+    "bytes": 148,
+    "ready": true,
+    "provider_type": "turn.done",
+    "role": "user",
+    "chars": 13
+   },
+   {
+    "type": "conversation.item.input_audio_transcription.completed",
+    "ms": 12863,
+    "item_id": "turn_EfUOzFNjmWeZ65kDBW4HQ",
+    "transcript": " газообразное",
+    "boundary": "provider_turn_done"
+   },
+   {
+    "type": "conduit.echo.stage",
+    "ms": 12878,
+    "stage": "final_received",
+    "source": "subscription_provider_turn.done",
+    "chars": 13
+   },
+   {
+    "type": "conduit.echo.stage",
+    "ms": 12892,
+    "stage": "question_segments_coalesced",
+    "segments": [
+     "turn_EfUOui4H3POsOHJUplmTm",
+     "turn_EfUOzFNjmWeZ65kDBW4HQ"
+    ]
+   },
+   {
+    "type": "output_audio_buffer.clear",
+    "ms": 12907
+   },
+   {
+    "type": "conduit.echo.stage",
+    "ms": 12923,
+    "stage": "content_route",
+    "route": "model_knowledge"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 12938,
+    "kind": "e",
+    "bytes": 139,
+    "ready": true,
+    "provider_type": "turn.created",
+    "role": "assistant",
+    "chars": 5
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 12955,
+    "kind": "e",
+    "bytes": 116,
+    "ready": true,
+    "provider_type": "turn.delta"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 13316,
+    "kind": "e",
+    "bytes": 151,
+    "ready": true,
+    "provider_type": "output_transcript.added"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 13330,
+    "kind": "e",
+    "bytes": 108,
+    "ready": true,
+    "provider_type": "turn.delta"
+   },
+   {
+    "type": "conduit.echo.stage",
+    "ms": 13348,
+    "stage": "synthesis_start"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 13538,
+    "kind": "e",
+    "bytes": 150,
+    "ready": true,
+    "provider_type": "output_transcript.added"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 13552,
+    "kind": "e",
+    "bytes": 107,
+    "ready": true,
+    "provider_type": "turn.delta"
+   },
+   {
+    "type": "conduit.echo.stage",
+    "ms": 13565,
+    "stage": "synthesis_end",
+    "pcm_bytes": 94056
+   },
+   {
+    "type": "response.created",
+    "ms": 13579
+   },
+   {
+    "type": "response.audio_transcript.delta",
+    "ms": 13593,
+    "text": "Сублимация,",
+    "response_id": "c19539d6a4da45ac98d2ce286d68d0a1"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 13713,
+    "kind": "e",
+    "bytes": 148,
+    "ready": true,
+    "provider_type": "output_transcript.added"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 13725,
+    "kind": "e",
+    "bytes": 105,
+    "ready": true,
+    "provider_type": "turn.delta"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 14148,
+    "kind": "e",
+    "bytes": 145,
+    "ready": true,
+    "provider_type": "output_transcript.added"
+   },
+   {
+    "type": "conduit.echo.observation",
+    "ms": 14161,
+    "kind": "e",
+    "bytes": 102,
+    "ready": true,
+    "provider_type": "turn.delta"
+   },
+   {
+    "type": "response.done",
+    "ms": 15520
+   }
+  ],
+  "audio_bytes": 94056,
+  "closed": true,
+  "prefetch_requested": false,
+  "fresh_lookup_requested": false,
+  "controller_session_id": "native-probe-083db11b51c34f3688b71fe998f857f5",
+  "deployment_backup": "C:\\Users\\Данил\\AppData\\Local\\hermes-echo\\home\\profiles\\echo-sync\\echo_live_backups\\controlled-binding-20261029_175953",
+  "deployment_manifest_sha256": "886a060a41406d33689d50a511a3bf7a824bc39a8c78ccb1648d061ba0a56bb1",
+  "question_case": "prefetch_sublimation",
+  "status": {
+   "available": true,
+   "reason": null,
+   "echo_controlled": {
+    "revision": "native-wire-1",
+    "billing": "subscription",
+    "device_verified": false
+   }
+  },
+  "native_handshake_verified": true,
+  "ready_ms": 4545,
+  "input_original_format": [
+   24000,
+   1,
+   2
+  ],
+  "input_start_ms": 4722,
+  "input_end_ms": 11457,
+  "recognized_question": " газообразное",
+  "question_boundary": "provider_turn_done",
+  "first_cue": "Сублимация,",
+  "first_pcm_ms": 13606,
+  "first_pcm_response_id": "c19539d6a4da45ac98d2ce286d68d0a1",
+  "pcm_after_input_end_ms": 2149,
+  "controlled_cue_received": true,
+  "ack_steps": [
+   {
+    "case": "partial",
+    "input_text": "Субли",
+    "cursor_before": 0,
+    "events": [],
+    "audio_bytes": 0,
+    "input_start_ms": 15697,
+    "input_end_ms": 17121,
+    "recognized_text": "Субли",
+    "asr_final_ms": 18165,
+    "asr_boundary": "provider_turn_done",
+    "cursor_after": 0,
+    "asr_observed": true,
+    "pass": true
+   },
+   {
+    "case": "negative",
+    "input_text": "Не Сублимация,",
+    "cursor_before": 0,
+    "events": [],
+    "audio_bytes": 94056,
+    "input_start_ms": 20126,
+    "pre_asr_audio_bytes": 2880,
+    "input_end_ms": 22214,
+    "recognized_text": " Не сублимация",
+    "asr_final_ms": 23691,
+    "asr_boundary": "provider_turn_done",
+    "output_text": "Сублимация,",
+    "first_pcm_ms": 26878,
+    "cursor_after": 0,
+    "asr_observed": true,
+    "pass": true,
+    "pcm_after_input_end_ms": 4664
+   },
+   {
+    "case": "repeat",
+    "input_text": "Повтори, я не расслышал.",
+    "cursor_before": 0,
+    "events": [],
+    "audio_bytes": 94056,
+    "input_start_ms": 28957,
+    "input_end_ms": 31963,
+    "recognized_text": "Повтори, я не расслышал",
+    "asr_final_ms": 33767,
+    "asr_boundary": "provider_turn_done",
+    "output_text": "Сублимация,",
+    "first_pcm_ms": 33807,
+    "cursor_after": 0,
+    "asr_observed": true,
+    "pass": true,
+    "pcm_after_input_end_ms": 1844
+   },
+   {
+    "case": "full",
+    "input_text": "Сублимация,",
+    "cursor_before": 0,
+    "events": [],
+    "audio_bytes": 126216,
+    "input_start_ms": 35857,
+    "input_end_ms": 37804,
+    "recognized_text": " Сублимация",
+    "asr_final_ms": 39475,
+    "asr_boundary": "provider_turn_done",
+    "output_text": "ещё говорят возгонка.",
+    "first_pcm_ms": 39514,
+    "cursor_after": 1,
+    "asr_observed": true,
+    "pass": true,
+    "pcm_after_input_end_ms": 1710
+   }
+  ],
+  "spoken_ack_contract_pass": true,
+  "final_cursor_state": {
+   "answer": "Сублимация, ещё говорят возгонка.",
+   "question": "Как называется переход вещества из твёрдого состояния сразу в газообразное",
+   "chunk_index": 1,
+   "completed": false,
+   "streaming": false,
+   "chunks": [
+    "Сублимация,",
+    "ещё говорят возгонка."
+   ]
+  },
+  "config_restored_exactly": true,
+  "first_cue_lexical_check": true,
+  "probe_scope_pass": true
+ }
+}
