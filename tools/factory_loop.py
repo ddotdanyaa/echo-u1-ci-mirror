@@ -1313,6 +1313,10 @@ class Loop:
         LEASE_LIFETIME_S (restart check 19.11 17:54: two kills left three tasks RUNNING for 30 minutes). A restart
         is not the task's doing: no expiry is counted and the attempt comes back (orphan=True), so restarts of
         the coordinator never block or fail a healthy task; a pass that hangs still expires by time."""
+        for _ in range(30):         # a holder killed by a forced restart: its lock is stale in a moment (live 25.11 14:11: 15 cards stayed RUNNING)
+            if not self.ckpt.with_suffix(self.ckpt.suffix + ".lockdir").exists():
+                break
+            self._sleep(2.0)
         if self.ckpt.with_suffix(self.ckpt.suffix + ".lockdir").exists():
             # the lock survived clear_stale_lockdir: a live holder is working, its lease is no orphan
             self.event("infra", status="skipped", reason="orphan_leases: state locked")
@@ -4470,7 +4474,31 @@ class Loop:
 
     def _solver_limit(self) -> int:
         """W-solver: as many solves at once as there are free channels (each step of a solve takes one booking of one)."""
-        return len(self._solver_channels())
+        return len(self._open_channels())
+
+    def _open_channels(self) -> list:
+        """The solver's channels without those the day's mark closed: the solves and the slicings at one time are as many as the open
+        channels can answer (live 25.11 14:00: 10 solves and 12 slicings on 4 channels answered nobody)."""
+        from tools import factory_quota as Q
+        channels = self._solver_channels()
+        try:
+            held = Q.gate_closed(Path(self.cfg.channels).resolve().parent / "quota",
+                                 since={c["id"]: CH.quota_day(c["model"], self.clock())[0] for c in channels})
+        except (OSError, ValueError, KeyError, TypeError):
+            held = ()
+        return [c for c in channels if c["id"] not in held] or channels[:1]
+
+    def _slice_parallel(self) -> int:
+        """SLICE_PARALLEL while a main channel is open; else half of the open small channels (the solves have the other half)."""
+        live = self._open_channels()
+        from tools import factory_paid_critic as PK
+        try:
+            money = "paid" in self._asks() and not PK.credit_dead() and PK.left(PK._today()) - PK._external("FACTORY_BUILDERS_WAITING", ("usd",)) > 0.3
+        except Exception:       # noqa: BLE001  unknown money: none
+            money = False
+        if any(CH.tier_of(c) == "main" for c in live) or money:
+            return SLICE_PARALLEL
+        return max(1, len(live) // 2)
 
     def _solver_ctx(self, root, packet, avoid=""):
         """W-solver: the environment of one solve over the loop's own parts: the ask of the free channels (Gemma first on the compact
@@ -5167,7 +5195,7 @@ class Loop:
         from tools import factory_architect as A
         job = self._slicers.get(row)
         if job is None:
-            if len(self._slicers) >= SLICE_PARALLEL:
+            if len(self._slicers) >= self._slice_parallel():
                 return None
             my_rank = F.row_rank(row)       # W-prio2 1: "ahead of time" counts only the cards of the row's own rank or higher
             ahead = [t for t in self._startable(tasks, state, now)
