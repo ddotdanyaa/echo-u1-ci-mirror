@@ -144,6 +144,6 @@ def test_the_feeder_takes_rows_without_a_red_test_after_the_red_ones_and_the_sol
     guard = {'guard': 'tests/t.py::test_a', 'at': 0}
     ls = {'to_slice': {'E1': guard, 'E6': {'at': 0}, 'E7': {'at': 0}, 'fac-3': {'at': 0}, 'rel-ab12-1': {'at': 0}}}
     assert L.Loop._hypo_candidates(stub, {}, {'tasks': {}}, ls, 5.0) == ['E1', 'rel-ab12-1']   # the slicer's rows are not held
-    assert L.Loop._hypo_candidates(stub, {}, {'tasks': {}}, ls, 5.0, tfirst=True) == ['E1', 'rel-ab12-1', 'E6', 'E7']
+    assert L.Loop._hypo_candidates(stub, {}, {'tasks': {}}, ls, 5.0, tfirst=True) == ['E1', 'E6', 'E7', 'rel-ab12-1']   # ECHO before the old reds (was: after them)
     stub._hypers['E6'] = object()                         # a row under a solve is not taken by the slicing (as before)
-    assert L.Loop._hypo_candidates(stub, {}, {'tasks': {}}, ls, 5.0, tfirst=True) == ['E1', 'rel-ab12-1', 'E7']
+    assert L.Loop._hypo_candidates(stub, {}, {'tasks': {}}, ls, 5.0, tfirst=True) == ['E1', 'E7', 'rel-ab12-1']

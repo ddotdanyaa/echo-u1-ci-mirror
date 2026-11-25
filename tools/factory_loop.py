@@ -4528,7 +4528,7 @@ class Loop:
                         return answer
             # a refused minute is waited out, the steps made are never thrown away: the open channels are asked again every few seconds
             while True:
-                for body, tier, role in ((small, "small", "review"), (text, "", "code")):    # owner: Gemma (57 600 calls a day) solves first, Flash-Lite is for slicing
+                for body, tier, role in ((small, "small", "review"), (text, "main", "code")):    # owner: Gemma (57 600 calls a day) solves first, Flash-Lite is for slicing
                     if body is None:
                         continue
                     status, model, answer, _ = loop._light_ask(body, attempt=1, section="loop-architect", quotas=loop._arch_quotas,
@@ -4856,7 +4856,8 @@ class Loop:
                     or any(t.only_opus or not t.privacy_safe for t in related.get(row, [])):
                 continue
             (out if red else first).append(row)
-        return sorted(out, key=lambda r: (HY.row_class(r), r)) + sorted(first)
+        red = sorted(out, key=lambda r: (HY.row_class(r), r))       # owner: ECHO before the old reds, with or without a red test
+        return [r for r in red if not r.startswith("rel-")] + sorted(first) + [r for r in red if r.startswith("rel-")]
 
     def _solver_first(self, tasks, state, ls, now) -> set:
         """Red rows the solver has not tried on the current base (bench 25.11: 4 of 8 and 8 of 19 against 3.4 % of the cards): no card
