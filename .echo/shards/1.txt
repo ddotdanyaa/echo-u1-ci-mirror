@@ -1,0 +1,6 @@
+tests/test_h2_brain.py
+tests/test_h3_tempo.py
+tests/test_p03_kind_ids.py
+tests/test_r05_admission.py
+tests/test_root2_unanswered_context.py
+tests/test_w13_remarks.py
