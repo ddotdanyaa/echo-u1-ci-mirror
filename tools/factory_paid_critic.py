@@ -21,6 +21,7 @@ import urllib.request
 URL = 'https://api.anthropic.com/v1/messages'
 API_VERSION = '2023-06-01'
 MODELS = ('claude-sonnet-5-5', 'claude-haiku-5-5')      # the first is asked, the second is the fallback
+PAIR = ('claude-haiku-5-5', 'claude-haiku-4-5')         # two voices of a finished agent card when no free reviewer answers (neither is its author)
 DEFAULT_ENV = r'C:\agent-factory\secrets\anthropic.env'
 DEFAULT_DIR = r'C:\agent-factory\echo'
 ALLOWANCE_FIRST_USD = 120.0
@@ -39,7 +40,8 @@ LESSONS_MAX = 400
 LESSONS_COUNT = 3
 # USD per million tokens (input, output). Source: the claude-api skill's model table (cached 2026-11-03, Anthropic
 # first-party prices): Sonnet 5.5 $2 / $10; Haiku 5.5 $0.10 / $0.50 for prompts up to 100K tokens, $0.50 / $2.50 above.
-PRICES = {'claude-sonnet-5-5': (2.0, 10.0, 2.5, 0.2), 'claude-haiku-5-5': (0.10, 0.50, 0.125, 0.01)}
+PRICES = {'claude-sonnet-5-5': (2.0, 10.0, 2.5, 0.2), 'claude-haiku-5-5': (0.10, 0.50, 0.125, 0.01),
+          'claude-haiku-4-5': (1.0, 5.0, 1.25, 0.1)}
 HAIKU_LONG = (0.50, 2.50, 0.625, 0.05)
 HAIKU_LONG_FROM = 100_000
 
@@ -534,7 +536,26 @@ def agent_card(task) -> bool:
     return isinstance(contract, dict) and contract.get('author') == MODELS[0]
 
 
-def control(task, diff: str, failure: str = '', exclude_model: str = '', *, baseline=None, workdir=None) -> dict | None:
+def pair(task, diff: str, failure: str = '', exclude_model=(), *, baseline=None, workdir=None) -> dict | None:
+    """Both voices of PAIR on a card of the agent model, for a candidate no free reviewer answered about: the rule of two
+    models stays, the waiting for an overloaded free model does not. One reject decides; a missing voice is None (the free wait)."""
+    if not agent_card(task):
+        return None
+    barred = {str(m).rpartition('/')[2] for m in exclude_model}
+    if barred & set(PAIR):
+        return None
+    got = []
+    for model in PAIR:
+        one = control(task, diff, failure, [m for m in MODELS + PAIR if m != model], baseline=baseline, workdir=workdir, models=(model,))
+        if one is None:
+            return None
+        if one['verdict'] == 'reject':
+            return dict(one, voices=[g['model'] for g in got] + [model])
+        got.append(one)
+    return dict(got[-1], model='+'.join(PAIR), voices=list(PAIR), usd=round(sum(g['usd'] for g in got), 6))
+
+
+def control(task, diff: str, failure: str = '', exclude_model: str = '', *, baseline=None, workdir=None, models=None) -> dict | None:
     """One paid judgement of a candidate, or None (no key, no budget, a refused model, any fault). The free verdict
     stands when None. The dict never holds the key. ``exclude_model``: the coder's model never judges its own
     candidate (a paid coder's Sonnet is judged by Haiku or not at all)."""
@@ -547,12 +568,12 @@ def control(task, diff: str, failure: str = '', exclude_model: str = '', *, base
         key = load_env(env_path()).get('ANTHROPIC_API_KEY', '')
         if not key or credit_dead():
             return None
-        return _control(task, diff, failure, exclude_model, baseline, workdir, key)
+        return _control(task, diff, failure, exclude_model, baseline, workdir, key, models or MODELS)
     except (ValueError, TypeError, OSError, TimeoutError):
         return None                                     # a broken state file or a busy lock: no paid voice, never a fault
 
 
-def _control(task, diff, failure, exclude_model, baseline, workdir, key):
+def _control(task, diff, failure, exclude_model, baseline, workdir, key, models):
     from tools import factory_cards as K
     spec = K.test_spec(task)
     prompt = (((ASK_TEST if spec or getattr(task, 'kind', '') == 'unit_test' else ASK)) + 'Task: %s\nTask text:\n%s\nGuard test failure text (what the tests failed on before the fix):\n%s\n'
@@ -568,8 +589,8 @@ def _control(task, diff, failure, exclude_model, baseline, workdir, key):
         multifile = False
     approvals, total_usd, total_in, total_out = [], 0.0, 0, 0
     barred = {str(m).rpartition('/')[2] for m in (exclude_model if isinstance(exclude_model, (list, tuple, set, frozenset)) else [exclude_model])}
-    wanted = min(2, sum(m not in barred for m in MODELS)) if multifile else 1      # an author among the two never made a second paid voice possible
-    for model in MODELS:
+    wanted = min(2, sum(m not in barred for m in models)) if multifile else 1      # an author among the two never made a second paid voice possible
+    for model in models:
         try:
             refuse_opus(model)
         except ValueError:
@@ -578,6 +599,8 @@ def _control(task, diff, failure, exclude_model, baseline, workdir, key):
             continue
         body = dict(model=model, max_tokens=2000, output_config=dict(effort='medium'),
                     messages=[dict(role='user', content=prompt)])
+        if model.endswith('-4-5'):
+            body.pop('output_config')           # the older model knows no effort
         headers = {'content-type': 'application/json', 'anthropic-version': API_VERSION, 'x-api-key': key}
         estimate = usd_for(model, len(prompt.encode('utf-8')), 2000) * 1.3      # the price of THIS model: a Haiku vote booked as Sonnet was refused on money it does not need
         if not reserve(estimate, critic=True):
