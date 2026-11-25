@@ -1,13 +1,13 @@
 {
  "accepted": 33,
- "free_ram_gb": 4.12,
+ "free_ram_gb": 4.51,
  "funnel": {
   "accepted": 33,
   "claimed": 1009,
   "coded": 189,
   "found_in_backlog": "unknown",
   "gate_pass": 89,
-  "known_to_loop": 753,
+  "known_to_loop": 755,
   "promoted": 87,
   "ready": 35,
   "reviewed": 230,
@@ -202,7 +202,7 @@
   }
  },
  "promoted": 87,
- "rows_recognized": 75980,
+ "rows_recognized": 76227,
  "schema": 3,
  "side": {
   "blocked": 19,
@@ -210,7 +210,7 @@
   "requeued": 9
  },
  "skipped_files": 0,
- "source_sha": "sha1b4aa10e7eb5",
+ "source_sha": "sha6bfe1cd9ea66",
  "span": {
   "answer": {
    "calls": 0,
@@ -244,14 +244,14 @@
    "calls_usage_unknown": 0,
    "errors": {},
    "http_429": 0,
-   "rows": 4084,
+   "rows": 4089,
    "status": {
     "brake": 8,
     "brake_cleared": 1,
     "cleared": 113,
     "deferred": 1398,
-    "error": 542,
-    "other": 1952,
+    "error": 544,
+    "other": 1955,
     "parked": 18,
     "released": 28,
     "run_failed": 24
@@ -264,7 +264,7 @@
    "calls_usage_unknown": 0,
    "errors": {},
    "http_429": 0,
-   "rows": 10387,
+   "rows": 10523,
    "status": {
     "BLOCKED": 556,
     "FAILED": 732,
@@ -274,13 +274,13 @@
     "added": 16,
     "brake": 15,
     "deferred": 1293,
-    "empty": 97,
+    "empty": 100,
     "infra": 27,
-    "ok": 3213,
+    "ok": 3345,
     "other": 691,
     "refused": 1,
     "requeued": 9,
-    "stop": 138
+    "stop": 139
    },
    "tokens_in": 0,
    "tokens_out": 0
@@ -290,14 +290,14 @@
    "calls_usage_unknown": 0,
    "errors": {},
    "http_429": 0,
-   "rows": 22568,
+   "rows": 22668,
    "status": {
     "added": 27,
-    "applied": 1671,
+    "applied": 1683,
     "error": 132,
-    "failed": 59,
-    "ok": 237,
-    "other": 20252,
+    "failed": 60,
+    "ok": 238,
+    "other": 20334,
     "rejected": 23,
     "requeued": 38
    },
@@ -369,10 +369,10 @@
    "calls_usage_unknown": 0,
    "errors": {},
    "http_429": 0,
-   "rows": 494,
+   "rows": 500,
    "status": {
     "added": 92,
-    "empty": 394,
+    "empty": 400,
     "hold_dropped": 3,
     "other": 5
    },
@@ -387,26 +387,26 @@
   "REVIEW": 197,
   "WAITING_CHANNEL": 1706,
   "added": 135,
-  "applied": 2197,
+  "applied": 2209,
   "approved": 102,
   "brake": 23,
   "brake_cleared": 1,
   "cleared": 113,
   "deferred": 2693,
-  "empty": 491,
-  "error": 8193,
-  "failed": 59,
+  "empty": 500,
+  "error": 8195,
+  "failed": 60,
   "hold_dropped": 3,
   "infra": 27,
-  "ok": 24598,
-  "other": 25313,
+  "ok": 24731,
+  "other": 25398,
   "parked": 18,
   "refused": 2,
   "rejected": 41,
   "released": 28,
   "requeued": 56,
   "run_failed": 24,
-  "stop": 138
+  "stop": 139
  },
  "summary": "ok",
  "tasks_now": {

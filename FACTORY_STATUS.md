@@ -1,9 +1,12 @@
 # Factory status (generated, structured data only)
 
-Generated: 2026-11-25T11:48:39Z
-Source commit: sha1b4aa10e7eb5
+Generated: 2026-11-25T12:31:27Z
+Source commit: sha6bfe1cd9ea66
 
 ## Commits (sha, time)
+- sha6bfe1cd9 2026-11-25T15:30:53+03:00
+- sha9115d190 2026-11-25T15:28:37+03:00
+- sha0fb9d5d3 2026-11-25T15:26:55+03:00
 - sha1b4aa10e 2026-11-25T14:47:48+03:00
 - sha08737d0f 2026-11-25T14:44:03+03:00
 - sha7f1c295e 2026-11-25T14:23:43+03:00
@@ -21,9 +24,6 @@ Source commit: sha1b4aa10e7eb5
 - sha334193ae 2026-11-25T12:52:10+03:00
 - shace58d6ae 2026-11-25T12:43:55+03:00
 - sha807cfc03 2026-11-25T12:36:17+03:00
-- sha39fa98d6 2026-11-25T12:33:08+03:00
-- shab27768bd 2026-11-25T12:29:17+03:00
-- sha89279a29 2026-11-25T12:28:58+03:00
 
 ## Funnel
 | step | count |
@@ -33,7 +33,7 @@ Source commit: sha1b4aa10e7eb5
 | coded | 189 |
 | found_in_backlog | unknown |
 | gate_pass | 89 |
-| known_to_loop | 753 |
+| known_to_loop | 755 |
 | promoted | 87 |
 | ready | 35 |
 | reviewed | 230 |
@@ -43,8 +43,8 @@ Side counters: blocked=19, parked=0, requeued=9
 Tasks now: BLOCKED=19, DONE=68, FAILED=1060, PROMOTED=57, READY=35
 Accepted: 33
 Promoted: 87
-Free RAM, GB: 4.12
-Telemetry rows: 75980 recognised, 0 unrecognised
+Free RAM, GB: 4.51
+Telemetry rows: 76227 recognised, 0 unrecognised
 
 ## Spend per model
 | model | calls | tokens_in | tokens_out | usage_unknown | http_429 | errors |
@@ -72,13 +72,13 @@ Telemetry rows: 75980 recognised, 0 unrecognised
 |---|---|---|
 | answer | 546 | 0 |
 | gate | 9635 | 0 |
-| infra | 4084 | 0 |
-| loop | 10387 | 0 |
-| other | 22568 | 0 |
+| infra | 4089 | 0 |
+| loop | 10523 | 0 |
+| other | 22668 | 0 |
 | promote | 105 | 0 |
 | review | 3694 | 1709 |
 | run | 24467 | 12607 |
-| triage | 494 | 0 |
+| triage | 500 | 0 |
 
 ## Channels (model ids)
 - 1db4ab-gemini-3-8-flash
@@ -128,7 +128,7 @@ Telemetry rows: 75980 recognised, 0 unrecognised
 
 ## Published files
 Modules: 36
-Tests in the cloud: 113
+Tests in the cloud: 114
 Tests not in the cloud: 143
 - tests/test_agent_factory.py (backlog-id, call-word, env-path, long-run, pid-port)
 - tests/test_factory_503.py (backlog-id, long-run)
@@ -249,7 +249,7 @@ Tests not in the cloud: 143
 - tests/test_factory_slicer.py (backlog-id, call-word, email, key, long-run)
 - tests/test_factory_slicer_pool.py (env-path, long-run)
 - tests/test_factory_slim_worker.py (long-run)
-- tests/test_factory_solver.py (dependency)
+- tests/test_factory_solver.py (path)
 - tests/test_factory_source_guard.py (dependency)
 - tests/test_factory_status.py (dependency)
 - tests/test_factory_supply.py (dependency)

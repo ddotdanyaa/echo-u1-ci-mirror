@@ -556,6 +556,8 @@ def to_tasks(contract, *, bid, base_id, gen, priority, title, author=''):
     tasks = []
     if new:
         tasks.append(dict(common, id=test_id, kind='unit_test', touch_files=[path], depends_on=[]))
+    if contract.get('test_only') and new and not contract.get('parts'):
+        return tasks
     tasks.append(dict(common, id=code_id, kind='code',
                       touch_files=[p['file'] for p in contract['parts']], depends_on=[test_id] if new else []))
     return tasks
@@ -719,7 +721,8 @@ def validate(contract, root, *, bid='', title='', known_ids=None, named_ok=False
         return []
     root = Path(root).resolve()
     parts = contract.get('parts')
-    if not isinstance(parts, list) or not parts:
+    test_only = bool(contract.get('test_only')) and not rig and parts == [] and isinstance((contract.get('test') or {}).get('new'), dict)
+    if not test_only and (not isinstance(parts, list) or not parts):      # test first: a red test with no fix yet is a test task alone
         return ['parts must be a nonempty list']
     if len(parts) > MAX_PARTS:
         faults.append('oversize: too many parts')
