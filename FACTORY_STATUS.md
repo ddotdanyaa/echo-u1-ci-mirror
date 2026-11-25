@@ -1,9 +1,12 @@
 # Factory status (generated, structured data only)
 
-Generated: 2026-11-25T09:30:59Z
-Source commit: shab27768bd7b3f
+Generated: 2026-11-25T09:49:10Z
+Source commit: shace58d6ae6c4c
 
 ## Commits (sha, time)
+- shace58d6ae 2026-11-25T12:43:55+03:00
+- sha807cfc03 2026-11-25T12:36:17+03:00
+- sha39fa98d6 2026-11-25T12:33:08+03:00
 - shab27768bd 2026-11-25T12:29:17+03:00
 - sha89279a29 2026-11-25T12:28:58+03:00
 - sha558835cb 2026-11-25T12:21:56+03:00
@@ -21,30 +24,27 @@ Source commit: shab27768bd7b3f
 - shaaee228a4 2026-11-25T09:07:03+03:00
 - sha226297a8 2026-11-25T09:05:03+03:00
 - sha82dbd550 2026-11-25T08:56:31+03:00
-- shaf0699e04 2026-11-25T08:52:26+03:00
-- shae3b9ec19 2026-11-25T08:48:00+03:00
-- sha18b7cc34 2026-11-25T08:43:07+03:00
 
 ## Funnel
 | step | count |
 |---|---|
 | accepted | 33 |
-| claimed | 956 |
+| claimed | 972 |
 | coded | 189 |
 | found_in_backlog | unknown |
 | gate_pass | 89 |
-| known_to_loop | 731 |
+| known_to_loop | 743 |
 | promoted | 87 |
-| ready | 27 |
+| ready | 40 |
 | reviewed | 230 |
-| triaged | 539 |
+| triaged | 551 |
 
 Side counters: blocked=3, parked=0, requeued=9
-Tasks now: BLOCKED=3, DONE=68, FAILED=1042, PROMOTED=57, READY=27, RUNNING=12
+Tasks now: BLOCKED=3, DONE=68, FAILED=1042, PROMOTED=57, READY=40, RUNNING=11
 Accepted: 33
 Promoted: 87
-Free RAM, GB: 1.83
-Telemetry rows: 74497 recognised, 0 unrecognised
+Free RAM, GB: 2.99
+Telemetry rows: 74767 recognised, 0 unrecognised
 
 ## Spend per model
 | model | calls | tokens_in | tokens_out | usage_unknown | http_429 | errors |
@@ -62,8 +62,8 @@ Telemetry rows: 74497 recognised, 0 unrecognised
 | google/gemini-3.8-flash | 28 | 21237 | 15 | 25 | 13 | 25 |
 | google/gemini-4-hydrogen | 3 | 0 | 0 | 3 | 0 | 3 |
 | google/gemini-robotics-er-2-preview | 2 | 5373 | 134 | 0 | 0 | 0 |
-| google/gemma-4-26b-a4b-it | 4874 | 3951524 | 711933 | 3230 | 28 | 3230 |
-| google/gemma-4-31b-it | 4212 | 2007297 | 224361 | 3390 | 13 | 3390 |
+| google/gemma-4-26b-a4b-it | 4936 | 3982230 | 716938 | 3272 | 38 | 3272 |
+| google/gemma-4-31b-it | 4276 | 2017668 | 225700 | 3446 | 19 | 3446 |
 | openrouter/nvidia/nemotron-3-ultra-550b-a55b:free | 134 | 729190 | 156943 | 2 | 2 | 2 |
 | other | 65 | 1154192 | 66710 | 6 | 0 | 7 |
 
@@ -71,13 +71,13 @@ Telemetry rows: 74497 recognised, 0 unrecognised
 | span | rows | calls |
 |---|---|---|
 | answer | 546 | 0 |
-| gate | 9469 | 0 |
-| infra | 3964 | 0 |
-| loop | 10210 | 0 |
-| other | 22257 | 0 |
+| gate | 9498 | 0 |
+| infra | 3998 | 0 |
+| loop | 10228 | 0 |
+| other | 22302 | 0 |
 | promote | 105 | 0 |
 | review | 3694 | 1709 |
-| run | 23765 | 12042 |
+| run | 23909 | 12168 |
 | triage | 487 | 0 |
 
 ## Channels (model ids)
