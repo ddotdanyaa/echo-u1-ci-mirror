@@ -1699,6 +1699,9 @@ class Loop:
         skip = self.pool.tids() | self._dry_blocked(tasks, state)
         if self._hypers:        # W-feed2 2: a row under the hypotheses search does not start with a card
             skip = skip | {t for t, task in tasks.items() if F.row_of(task.backlog_id or t) in self._hypers}
+        if first := self._solver_first(tasks, state, ls, now):      # a red row is solved first; its own card (engine solver) is not held
+            skip = skip | {t for t, task in tasks.items() if F.row_of(task.backlog_id or t) in first
+                           and state["tasks"].get(t, {}).get("engine") != "solver"}
         later = self._bisect_later(tasks, state)        # W-bisect 4: never_green debt cards wait while there is other work
 
         def ask(hold):
@@ -4726,7 +4729,7 @@ class Loop:
             row = F.row_of(task.backlog_id or tid)
             related.setdefault(row, []).append(task)
             status = state["tasks"].get(tid, {}).get("status")
-            if status in ("RUNNING", "REVIEW"):
+            if status in ("RUNNING", "REVIEW") or (status == "READY" and state["tasks"][tid].get("engine") == "solver"):
                 running.add(row)
             elif status == "READY":
                 ready.add(row)
@@ -4744,6 +4747,21 @@ class Loop:
                 continue
             out.append(row)
         return sorted(out, key=lambda r: (HY.row_class(r), r))
+
+    def _solver_first(self, tasks, state, ls, now) -> set:
+        """Red rows the solver has not tried on the current base (bench 25.11: 4 of 8 and 8 of 19 against 3.4 % of the cards): no card
+        and no slicing call goes to them before it. Read anew at most once per HYPO_SCAN_S; [] without a free channel."""
+        if self.cfg.self_repo or now - self.__dict__.get("_first_at", -1e9) < self.HYPO_SCAN_S:
+            return self.__dict__.get("_first_rows", set())
+        self._first_at = now
+        try:
+            base = str(self.base_sha)
+            tried = {row for row, (sha, _at) in self._hypo_skip.items() if sha == base}
+            self._first_rows = set(self._hypo_candidates(tasks, state, ls, now)) - tried if self._solver_channels() else set()
+        except Exception as exc:        # noqa: BLE001  an aid: the cards go on as before
+            self.err("solver first", exc)
+            self._first_rows = set()
+        return self._first_rows
 
     HYPO_REVIEW_HOLD_S = 180.0      # W-hypo3 3: the longest the search yields to a waiting review (a stuck card must not starve it)
     _review_since = None
@@ -5640,7 +5658,7 @@ class Loop:
                 continue                # W-prio 3: the test names what the product no longer has: no cards, no slicing
             if bid in ls.get("quarantine", {}) or ls.get("slice_wait", {}).get(bid, 0) > now:
                 continue
-            if bid in running or bid in self._hypers:       # W-feed2 2: a row under the hypotheses search is not sliced
+            if bid in running or bid in self._hypers or bid in self._solver_first(tasks, state, ls, now):  # the solver goes first: no slicing call is spent before it
                 continue
             if bid in dry_rows and bid not in stuck and bid not in ls.get("to_slice", {}):
                 # W-dry 1: the row of a READY card without code goes to the slicer for the code: no penalty, no spent
