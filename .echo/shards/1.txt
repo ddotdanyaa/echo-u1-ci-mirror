@@ -1,0 +1,5 @@
+tests/test_c22_speed.py::test_cloud_form_opens_nothing_on_chatter_or_on_the_portion_s_words
+tests/test_c22_speed.py::test_the_ear_s_other_article_opens_no_search_before_the_final
+tests/test_chaos.py::test_after_the_fault_the_next_question_is_answered_and_nothing_is_stuck[1-mid_portion]
+tests/test_h3_tempo.py::test_the_whole_call_with_the_job_late[3.5-act]
+tests/test_h4_ear_first.py::test_the_whole_call_with_the_job_late[3.5]
