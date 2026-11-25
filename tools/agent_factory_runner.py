@@ -3188,6 +3188,9 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
               'attempt': attempt, 'kind': task.kind, 'calls': calls, 'stages': stages,
               'events': events, 'reason': None, 'tests': None, 'wait_s': 0.0, 'infra': False,
               'deploy_blocked': state['deploy_blocked']}
+    if reslice_after and paid_critic.agent_card(task) and any(p.get('code') or p.get('file_text') for p in K.contract_of(task).get('parts') or ()):
+        reslice_after = 1       # its code is the edit: a red gate or a reject goes back to a strong author with the evidence; a small model
+        # rewriting it (25.11: 14 of 15 such second attempts, up to 199 calls each) only buried that evidence
     started_pass = time.monotonic()
     prev_diff_file = staging / 'prev-diff' / (tid + '.diff')
 
