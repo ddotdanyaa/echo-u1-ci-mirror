@@ -18,6 +18,7 @@ import contextlib
 import difflib
 from hashlib import sha256
 import http.client
+import itertools
 import json
 import os
 from pathlib import Path
@@ -58,6 +59,7 @@ from . import factory_paid_critic as paid_critic
 from . import factory_ensemble as ENS
 from . import factory_calls as FC
 from . import factory_review_wait as RW
+from . import factory_head
 _log = logging.getLogger(__name__)
 ENV_ALLOW = ("PATH", "PATHEXT", "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC", "LANG")
 POLICY_FILE = "kilo.jsonc"
@@ -546,7 +548,7 @@ def prepare(root: Path, task: Task, workdir: Path) -> dict[str, bytes]:
     root = root.resolve()
     workdir.mkdir(parents=True, exist_ok=False)
     names = set(task.read_files) | set(task.touch_files) | set(task.tests)
-    if task.kind != "unit_test" and set(task.touch_files) & set(task.tests) and gate.is_rig_task(task) != gate.RESTATE:
+    if task.kind != "unit_test" and set(task.touch_files) & set(task.tests) and not gate.is_rig_task(task):      # a rig card repairs its own stand file; rig_weakens keeps its asserts
         raise InvalidPlan("existing acceptance tests are immutable")
     if not task.privacy_safe:
         raise InvalidPlan("private plan must not be staged for free-tier Google")
@@ -1060,6 +1062,12 @@ REVIEW_LENSES = (
     'You are the THIRD critic: the earlier critics disagree or only partly checked. Check that nothing the task asks '
     'for is missing and that the change cannot break the code around it (callers, error paths, other inputs of the '
     'same function). Reject only a concrete defect you can name with its line.')
+# fac-41: when no independent second model is free now, the first critic's model may look again, with
+# the first answer in front of it; it never replaces an independent voice and the author never votes.
+RECHECK_LENS = (
+    'You are the SAME model as the first critic, asked again only because no other independent model is free now. Check '
+    'BOTH the change AND the first critic\'s answer above: is every defect it named real, did it miss one? Agreement '
+    'without your own reference to a line of the code or the test is not an answer: cite the line you checked.')
 RUBRIC_ASK = (
     'Answer with exactly this JSON and nothing else: {"defect_assert_line": "<the exact line of the test, copied '
     'character for character, that observes the defect the task names>", "fix_changes_value": "<what a correct fix '
@@ -3396,6 +3404,57 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
         tokens = min(base_tokens, max(c['tpm'] for c in live))     # a huge file may not make every channel "too small"
         return channels.choose(order, seen, tokens, os.environ, requests=requests, affinity=affinity), tokens
 
+    def via_head(role, call_task, directory_for, prompt, small, tokens, head_file, candidate, models_out, on_booked, temperature):
+        """fac-40: one call of the light engine through the head; the head books, cools and hops, this only charges the
+        card's call budget, keeps the telemetry row and maps a refusal to ChannelFault. HeadDown: the caller's old path."""
+        def charge(state, row):
+            charge_call(state, tid)
+            began = row.get('began')
+            if isinstance(began, dict):
+                began['booked'] = int(began.get('booked') or 0) + 1      # the pool's admission counts workers that did not book yet
+        ck.commit(charge)
+        box = {}
+
+        def post(url, key, body, timeout):       # the key never travels: the head reads its own
+            own = channels.body_extra(small[0]['model'])
+            answer = factory_head.ask(head_file, role, tokens, {k: v for k, v in body.items() if k not in own},
+                                      [c['id'] for c in small], deadline_s=factory_head.DEADLINE_S, call_timeout_s=timeout)
+            box.update(answer)
+            if answer.get('expired') and answer.get('status') is None:    # never sent: the head names what held it
+                raise ChannelFault({'kind': 'transient', 'message': 'head: %s' % (answer.get('held') or {})})
+            return answer['status'], answer['body'].encode('utf-8')
+        with ctx['lock']:
+            ctx['last_tokens'] = tokens
+        began, directory = time.monotonic(), directory_for(0)
+        code, stdout, stderr = light_attempt(call_task, directory, small[0]['model'], timeout=90, prompt_override=prompt,
+                                             steps=None, key_env=small[0]['key_env'], post=post,
+                                             temperature=candidate_temperature(candidate) if temperature is None else temperature)
+        model = box.get('model') or small[0]['model']
+        if models_out is not None:
+            models_out.add(model)
+        if on_booked is not None:
+            on_booked(model)
+        ctx['light_note'] = stderr.decode('utf-8', 'replace')[:300] if code == 0 else ''
+        summary = event_summary(stdout, directory)
+        info = channels.classify(stdout, stderr, code)
+        kinds = ('input_tokens', 'cache_read_tokens', 'cache_write_tokens')
+        used = sum(summary[k] or 0 for k in kinds) if any(summary[k] is not None for k in kinds) else None
+        calls.append({'role': role, 'attempt': attempt, 'channel': box.get('channel'), 'model': model, 'tier': 'small',
+                      'reserved_tokens': tokens, 'actual_tokens': used, 'actual_input_tokens': used, 'head': True,
+                      'input_tokens': summary['input_tokens'], 'output_tokens': summary['output_tokens'],
+                      'reasoning_tokens': summary['reasoning_tokens'], 'cache_read_tokens': summary['cache_read_tokens'],
+                      'cache_write_tokens': summary['cache_write_tokens'], 'candidate': candidate if role != 'review' else None,
+                      'dur_s': round(time.monotonic() - began, 3), 'error_class': None if info['kind'] == 'ok' else info['kind'],
+                      'http_status': info.get('status'), 'returncode': code, 'tool_events': summary['tool_events'],
+                      'steps': summary['steps'], 'last_step_tools': summary['last_step_tools'],
+                      'finish_reason': summary['finish_reason'], 'files_read': summary['files_read'],
+                      'provider_error': info['kind'] not in ('ok', 'unknown') or summary['provider_error'],
+                      'cool_reason': None, 'cool_s': None})
+        ctx['last_text'] = summary['text']
+        if info['kind'] == 'ok' or (info['kind'] == 'unknown' and code == 0):
+            return code, stdout, stderr
+        raise ChannelFault(info)
+
     def call(role: str, call_task: Task, directory_for, preferred: str, prompt: str,
              *, exclude_model: str | None = None, skip_tiers: tuple = (), later: bool = False,
              candidate: int | None = None, models_out: set | None = None, on_booked=None,
@@ -3421,6 +3480,19 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                 began['booked'] = int(began.get('booked') or 0) + 1      # the pool's admission counts workers that did not book yet
 
         affinity = call_affinity(role)
+
+        # fac-40: with a live head the small-tier calls go to its one queue (own hop/breaker/cooling/retries are not used there)
+        head_file = (Path(ledger).parent / factory_head.STATE_NAME) if ledger is not None else None     # beside channels.json
+        if light and configured and head_file is not None and head_file.exists():
+            first = call_order(role, preferred, base_tokens, exclude_model, [], skip_tiers, later, live_quotas(), light, steps)
+            small = list(itertools.takewhile(lambda c: channels.tier_of(c) == 'small', first))
+            if small:
+                try:
+                    return via_head(role, call_task, directory_for, prompt, small, base_tokens, head_file, candidate,
+                                    models_out, on_booked, temperature)
+                except factory_head.HeadDown as error:
+                    events.append('head_down')       # telemetry: the old path below answers
+                    _log.warning('head down (%s): the old path', error)
 
         hopped, last_info = [], None     # models that answered "overloaded" in THIS call: the next hop skips them
         pauses = list(channels.OVERLOAD_RETRY_S)    # W-503: no free channel after a 503: the same one again after 5 s, 15 s
@@ -4886,14 +4958,22 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
             """W-review 2: the valid voices already given on THIS diff (key: its hash); an author or a repeated model never votes."""
             pend = ck.read()['tasks'][tid].get('pending_review') or {}
             kept = votes_of_diff(pend, diff_hash)
-            fresh, seen_models = [], set(banned)
+            fresh, seen_models, kept_models = [], set(banned), set()
             for old_vote in (kept if isinstance(kept, list) else []):
                 if not (isinstance(old_vote, dict) and isinstance(old_vote.get('model'), str) and type(old_vote.get('ok')) is bool
-                        and old_vote['model'] not in seen_models and old_vote['model'] not in authors()):
+                        and old_vote['model'] not in authors()):
+                    continue
+                # fac-41: a second look of a model already kept (flagged recheck) is a voice; any other repeat never votes
+                if old_vote['model'] in seen_models and not (old_vote.get('recheck') is True and old_vote['model'] in kept_models):
                     continue
                 seen_models.add(old_vote['model'])
+                kept_models.add(old_vote['model'])
                 fresh.append(old_vote)
             return fresh
+
+        def only_model(keep) -> list:
+            """fac-41: every configured model except ``keep``: the exclusion that leaves exactly one reviewer model."""
+            return sorted({c['model'] for c in configured} - {keep})
 
         def said_line(number, ok, why) -> str:
             """What the next critic is told of an earlier voice (the loop below and the precheck's prompt use it)."""
@@ -4937,6 +5017,11 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
             scratch_events = list(events)            # _kilo_fits writes into it: the precheck leaves no event behind
             order = call_order('review', review_model, base_tokens, authors() + voted, (), (), False, live_state, light, steps,
                                scratch_events)
+            lone = False
+            if not order and voted:                  # fac-41: no independent model: the first critic's own model may look again
+                order = call_order('review', review_model, base_tokens, authors() + only_model(voted[0]), (), (), False,
+                                   live_state, light, steps, scratch_events)
+                lone = bool(order)                   # ... but that is no "reviewer left today": the term of a short chain still counts
             if not order:
                 ctx['review_left'] = False           # W-rev 2: no reviewer channel at all
                 return 0.0, '', kept, kept           # without a voice the call's own NoIndependentReviewer path decides
@@ -4944,9 +5029,9 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
             try:
                 call_pick(order, seen, base_tokens, booked, call_affinity('review'))
             except channels.ChannelUnavailable as error:
-                ctx['review_left'] = RW.channel_left(order, error.reason or 'unknown')   # no reason: not a known open-today case
+                ctx['review_left'] = False if lone else RW.channel_left(order, error.reason or 'unknown')   # no reason: not a known open-today case
                 return float(error.wait_s or 0), str(error.reason or ''), [], kept
-            ctx['review_left'] = True
+            ctx['review_left'] = not lone
             return 0.0, '', [], kept
 
         def review_left() -> bool:
@@ -5043,6 +5128,7 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
         critics = []      # the models that reviewed this candidate: the next critic is none of them, nor the coder
         told = rejected_for(ck.read(), tid)
 
+        look_again = []      # fac-41: while a second look runs, the models it may NOT use (all but the first critic's)
         pass_wait = [RW.PASS_WAIT_S]               # W-rev: the 503 sleeps of ALL tries of this pass share it (the lease lives 1800 s)
 
         def pass_sleep(seconds):
@@ -5059,7 +5145,8 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                     return RW.retry_own_window(
                         lambda: RW.retry_overload(
                             lambda: past_day_limit(lambda: call('review', call_task, lambda _retry: directory, preferred,
-                                         kwargs['prompt_override'], exclude_model=authors() + critics, fast_retry='small')),
+                                         kwargs['prompt_override'], exclude_model=authors() + (look_again or critics),
+                                         fast_retry='small')),
                             lambda err: isinstance(err, ChannelFault) and bool((err.info or {}).get('fast_retry')),
                             total_s=max(0.0, min(RW.RETRY_TOTAL_S, pass_wait[0])), sleep=pass_sleep,
                             on_retry=lambda n: events.append('review_503_retry_%d' % n) if n <= 3 else None),
@@ -5093,11 +5180,35 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                     rejections.extend(kept_log[-1]['why'] or ['rejected without a stated reason'])
             if kept_log:
                 events.append('review_votes_kept_%d' % len(kept_log))
-            for n in range(len(votes), REVIEW_PANEL):
-                try:     # up to REVIEW_PANEL critics of different models, each with its own lens; the majority decides
-                    ok, why = timed('review_s', lambda: review_candidate(
+            def vote(n):
+                """One critic's (ok, why). fac-41: a second voice that finds no independent model now may be the FIRST critic's
+                model, shown that critic's answer and asked to check both; a fault of that look re-raises the original one."""
+                try:
+                    return timed('review_s', lambda: review_candidate(
                         task, ctx['workdir'], review_model, invoke, baseline=ctx['baseline'], scratch=staging,
                         lens=REVIEW_LENSES[n], prior=tuple(said), rejected=told, rubric=True, execution=exec_text))
+                except (NoIndependentReviewer, channels.ChannelUnavailable, ChannelFault):
+                    if n != 1 or len(votes) != 1 or not critics or critics[0] in authors():
+                        raise
+                    events.append('review_second_look')
+                    look_again[:] = only_model(critics[0])
+                    try:
+                        found = timed('review_s', lambda: review_candidate(
+                            task, ctx['workdir'], review_model, invoke, baseline=ctx['baseline'], scratch=staging,
+                            lens=RECHECK_LENS, prior=tuple(said), rejected=told, rubric=True, execution=exec_text))
+                        again.append(True)
+                        return found
+                    except (NoIndependentReviewer, channels.ChannelUnavailable, ReviewFault, ChannelFault):
+                        pass
+                    finally:
+                        look_again.clear()
+                    raise
+
+            again = []       # fac-41: set when the voice just taken was the first critic's second look
+            for n in range(len(votes), REVIEW_PANEL):
+                again.clear()
+                try:     # up to REVIEW_PANEL critics of different models, each with its own lens; the majority decides
+                    ok, why = vote(n)
                 except (NoIndependentReviewer, channels.ChannelUnavailable, ReviewFault, ChannelFault):
                     dry = dry_now()
                     if not votes:
@@ -5167,6 +5278,8 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                 if not ok:
                     rejections.extend(why or ['rejected without a stated reason'])
                 kept_log.append(dict(model=critics[-1], ok=bool(ok), why=[scrub(redact(str(w)))[:300] for w in (why or [])][:5]))
+                if again:
+                    kept_log[-1]['recheck'] = True     # fac-41: kept_votes lets this model's second voice stand
                 if diff_hash:                    # at once, not at the end: a chain cut short keeps this voice
                     ck.commit(lambda s, r, log=list(kept_log): keep_votes(r, log, diff_hash))
                 approved = panel_verdict(votes, n + 1 == REVIEW_PANEL, mech_ok)
