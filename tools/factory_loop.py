@@ -3564,10 +3564,10 @@ class Loop:
             try:
                 task_a = tasks.get(tid)
                 # a card with a non-empty `more` fixed only part of the row (the barrier of _closes_row): the debt closes by two full builds
-                if (task_a is None or not Loop._contract(task_a).get("more")) and REL.close_debt(self.cfg.state_dir, bid):     # a merged and accepted rel-base-<n>: its file leaves the debt
+                if (task_a is None or not (Loop._contract(task_a).get("more") or row.get("reds_left"))) and REL.close_debt(self.cfg.state_dir, bid):     # a merged and accepted rel-base-<n>: its file leaves the debt
                     self.event("release", status="debt_closed", backlog_id=bid, reason="baseline debt row accepted")
                 from tools import factory_gate as _fg
-                if task_a is not None and _fg.is_rig_task(task_a) and not Loop._contract(task_a).get("more"):
+                if task_a is not None and _fg.is_rig_task(task_a) and not (Loop._contract(task_a).get("more") or row.get("reds_left")):
                     # W-rig (deliberate second way to close debt): the task says the ids leave the baseline debt at once, without the two
                     # green builds of W-part; a rig card replaces the test stand itself, its ids were verified in the cloud run of the candidate
                     spec = Loop._contract(task_a).get("test") or {}
@@ -7998,6 +7998,14 @@ class Loop:
         return row.get("backlog_id") or (tasks[tid].backlog_id if tid in tasks else None) or None
 
     # -- PROMOTE
+    @staticmethod
+    def _id_path(red_id) -> str:
+        """'tests.verify.x.test_y.Class::name[p]' (the gate's id) -> 'tests/verify/x/test_y.py::name'."""
+        head, _, name = str(red_id).partition("::")
+        parts = head.split(".")
+        at = next((i for i, p in enumerate(parts) if p.startswith("test_")), len(parts) - 1)
+        return "/".join(parts[:at + 1]) + ".py::" + name.split("[", 1)[0]
+
     def _after_merge(self, tid: str, sha: str, *, recovered: bool = False, ls: dict | None = None,
                      base_sha: str | None = None, head: str | None = None,
                      dur_s: float | None = None) -> None:
@@ -8019,20 +8027,21 @@ class Loop:
             engine = state["tasks"].get(tid, {}).get("engine")
             if engine:
                 ls.setdefault("contracts_by_engine", {}).setdefault(engine, {"made": 0, "merged": 0})["merged"] += 1
-            more = self._contract(task).get("more")
+            left = list(state["tasks"].get(tid, {}).get("reds_left") or ())       # W-part 3: other reds of the same file stay: the row is not done
+            more = self._contract(task).get("more") or ("still red in the same file: " + ", ".join(left[:6]) if left else "")
             if task and task.kind == "code" and more:
                 bid = F.row_of(task.backlog_id or tid)
                 step = ls.setdefault("row_steps", {}).get(bid, 0) + 1
                 ls["row_steps"][bid] = step
                 if step < A.MAX_STEPS:
                     ls.setdefault("to_slice", {})[bid] = dict(at=self.clock(), hints=list(task.touch_files),
-                        guard="", priority=task.priority, done=F.redact("Merged " + tid + ": " + str(more)))
+                        guard=self._id_path(left[0]) if left else "", priority=task.priority, done=F.redact("Merged " + tid + ": " + str(more)))
                 else:
                     ls["holds"][bid] = "architect step limit reached"
             dirty = True
         if dirty and own:
             self.save_ls(ls)
-        if self._closes_row(task, ls.get("parents")):
+        if self._closes_row(task, ls.get("parents")) and not state["tasks"].get(tid, {}).get("reds_left"):
             self._write_closure(tid, self._bid(state, tasks, tid), {"commit": sha}, "promoted")
         self.event("promote", task_id=tid, backlog_id=self._bid(state, tasks, tid),
                    status="promoted", reason="already_merged" if recovered else "promoted",

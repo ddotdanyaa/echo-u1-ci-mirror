@@ -1743,6 +1743,34 @@ def weakening_check(base_root, cand_files: dict, kind, named=(), own_tests=None,
     return out, notes
 
 
+def target_names(contract) -> tuple:
+    """The functions ('test_x' or 'test_x[param]') the contract names as its target (test.use, test.also)."""
+    spec = contract.get('test') if isinstance(contract, dict) else None
+    if not isinstance(spec, dict) or not isinstance(spec.get('use'), str):
+        return ()
+    also = spec.get('also') if isinstance(spec.get('also'), (list, tuple)) else ()
+    return tuple(str(u).split('::')[-1] for u in (spec['use'], *also) if '::' in str(u))
+
+
+def _is_target(red_id, names) -> bool:
+    tail = str(red_id).split('::', 1)[-1]
+    return any(tail == n or ('[' not in n and tail.split('[', 1)[0] == n) for n in names)
+
+
+def partial_left(base: GateResult, cand: GateResult, targets) -> tuple | None:
+    """W-part 3: the red ids of the base the candidate leaves red, when it did what its contract asks: every target red on the base
+    (at least one) is green now and nothing is red that was not red on the base. None otherwise. A file often holds reds
+    of several causes; one card repairs one cause."""
+    red, was = set(cand.failed_ids), set(base.failed_ids)
+    if not targets or not base.junit_ok or not cand.junit_ok or cand.errors or not red or cand.failed != len(red):
+        return None
+    if cand.timed_out or cand.missing or not red <= was or cand.collected < base.collected or cand.skipped > base.skipped:
+        return None
+    if not any(_is_target(i, targets) for i in was) or any(_is_target(i, targets) for i in red):
+        return None
+    return tuple(sorted(red))
+
+
 def accept(base: GateResult, cand: GateResult, red_before_ok: bool):
     """(ok, reason). ``red_before_ok`` is ``verdict == 'red'``. ``reason`` is ``ok`` or the first violation."""
     # TDD: the task test cannot be collected on the base (imports a module the task adds). That is a
