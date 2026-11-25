@@ -5616,6 +5616,32 @@ class Loop:
                 st.setdefault("strikes", {}).pop("bl:" + bid, None)
         self._tx(reopen)
 
+    SLIM_FEEDBACK, SLIM_CHARS = 2, 800
+
+    def _slim_state(self) -> int:
+        """Rows nobody runs again (superseded, DONE) keep what the slicer reads of them (the last SLIM_FEEDBACK remarks, cut); their
+        red traces and the rest go to state_archive.jsonl. Every claim and snapshot parses the whole file under one lock (25.11: 3.9 MB,
+        2.5 of it of such rows, 'state_locked' waits of 10 s with 20 workers)."""
+        out = []
+
+        def slim(state):
+            for tid, row in state["tasks"].items():
+                if not (row["status"] == "DONE" or (row["status"] == "FAILED" and str(row.get("reason") or "").startswith("superseded"))):
+                    continue
+                items = row.get("feedback") or []
+                short = [dict(x, text=str(x.get("text") or "")[:self.SLIM_CHARS]) if isinstance(x, dict) else str(x)[:self.SLIM_CHARS]
+                         for x in items[-self.SLIM_FEEDBACK:]]
+                if "base_red" not in row and short == items:
+                    continue
+                out.append(dict(id=tid, base_red=row.pop("base_red", None), feedback=items))
+                if items:
+                    row["feedback"] = short
+            if out:             # on disk before the state drops them
+                with (self.cfg.state_dir / "state_archive.jsonl").open("a", encoding="utf-8") as f:
+                    f.writelines(json.dumps(x, ensure_ascii=False) + chr(10) for x in out)
+        self._tx(slim)
+        return len(out)
+
     def _reenter_on_new_slicer(self) -> int:
         tasks, state = self.load()
         version, now, ls = F.slicer_version(), self.clock(), self.ls()
@@ -8756,6 +8782,10 @@ class Loop:
             self.event("loop", action="START", status="ok", reason="start", pid=os.getpid(),
                        branch=cfg.branch, until=str(cfg.until) if cfg.until else None)
             self._reenter_on_new_slicer()
+            try:
+                self._slim_state()
+            except Exception as e:  # noqa: BLE001 - housekeeping
+                self.err("slim state", e)
             try:
                 self._return_worker_exceptions()
             except Exception as e:  # noqa: BLE001 - a fault of the lift never stops the loop
