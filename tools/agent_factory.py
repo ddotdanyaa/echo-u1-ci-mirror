@@ -94,13 +94,18 @@ def is_fresh_row(row) -> bool:
     return bool(rid) and not is_base_debt(rid) and (bool(_REGRESSION_ROW.match(rid)) or not rid.lower().startswith(("fac-", "rel-")))
 
 
+FRESH_REL: set = set()      # sha8 of the last full build while its verdict is new_red (the loop sets it each step); older rel- rows are debt
+
+
 def row_rank(row) -> int:
     """W-echo 3: the order of admission and of slicing: a fresh regression rel-<sha8>-<n> (0), then every other row, ECHO guard rows
     among them (1), the old baseline debt rel-base-<n> last (2)."""
     rid = _row_id(row)
     if is_base_debt(rid):
         return 2
-    return 0 if _REGRESSION_ROW.match(rid) else 1
+    if _REGRESSION_ROW.match(rid):
+        return 0 if rid.split("-")[1] in FRESH_REL else 2      # owner: ECHO before the old reds; only an open verdict is fresh
+    return 1
 
 
 def call_cap(parts: int = 1) -> int:

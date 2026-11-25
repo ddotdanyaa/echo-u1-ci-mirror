@@ -32,7 +32,7 @@ def contract(**over):
 
 # ---- 1. the contract
 def test_rig_contract_with_ready_code_is_valid(root):
-    assert A.validate(contract(), root, bid="B1", engine="hypo") == []
+    assert A.validate(contract(), root, bid="B1", engine="solver") == []
 
 
 def test_tests_dir_is_refused_without_rig(root):
@@ -56,7 +56,7 @@ def test_rig_refuses_other_dirs_and_more_than_three_echo_files(root):
 
 def test_rig_only_for_strong_engines(root):
     assert any("only paid/agent" in f for f in A.validate(contract(), root, bid="B1", engine="banana"))   # W-path D (was "free"): the free steps may give a rig now
-    for engine in ("paid", "agent", "hypo", "coordinator", "free", "free_main", "free_small"):
+    for engine in ("paid", "agent", "solver", "coordinator", "free", "free_main", "free_small"):
         assert A.validate(contract(), root, bid="B1", engine=engine) == []
 
 

@@ -864,7 +864,6 @@ class Loop:
         self._slicers: dict[str, Prefetch] = {}
         self._hypers: dict[str, Prefetch] = {}      # W-feed2 2: rows whose hypotheses search is under way (the loop thread owns this)
         self._hypo_skip: dict[str, tuple] = {}      # row -> (base sha, time): nothing to search for it now
-        self._hypo_lock = threading.RLock()       # the shared env/pump of the searches is built by one thread at a time
         self._ask_lock = threading.Lock()
         self._arch_quotas = None       # restored once, then owned in memory under _ask_lock
         self.sweep_fn = sweep_fn        # None: no cloud sweep (tests); main passes tools.echo_cloud.sweep
@@ -1700,6 +1699,9 @@ class Loop:
         skip = self.pool.tids() | self._dry_blocked(tasks, state)
         if self._hypers:        # W-feed2 2: a row under the hypotheses search does not start with a card
             skip = skip | {t for t, task in tasks.items() if F.row_of(task.backlog_id or t) in self._hypers}
+        if first := self._solver_first(tasks, state, ls, now):      # a red row is solved first; its own card (engine solver) is not held
+            skip = skip | {t for t, task in tasks.items() if F.row_of(task.backlog_id or t) in first
+                           and state["tasks"].get(t, {}).get("engine") != "solver"}
         later = self._bisect_later(tasks, state)        # W-bisect 4: never_green debt cards wait while there is other work
 
         def ask(hold):
@@ -1751,6 +1753,10 @@ class Loop:
         ls = self.ls()
         if ls.pop("git_wait", None) is not None:
             self.save_ls(ls)
+        verdict = ls.get("release") or {}
+        F.FRESH_REL.clear()
+        if verdict.get("status") == "new_red":
+            F.FRESH_REL.add(str(verdict.get("sha") or "")[:8])
         self._tick("apply_answers", self.apply_answers)  # Opus answers first: before anything else touches the state
         out = self._early_fill(now)          # W-feed2 4b: the cards start BEFORE the heavy ticks
         if out is not None:
@@ -4113,7 +4119,7 @@ class Loop:
         except (ValueError, TypeError):
             return {}
 
-    def _slice_light(self, budget, text, *, max_tokens, role):
+    def _slice_light(self, budget, text, *, max_tokens, role, temperature=0):
         """W-path A: one slicing call that does not give up at the first refusal. 429/500/503: the channel is cooled by
         _light_ask, so the next call takes another channel of the step at once (up to SLICE_HOPS, then a short wait). no_channel:
         wait the time the booking names (``why``), outside _ask_lock, within SLICE_WAIT_CALL_S per call and the job's
@@ -4122,7 +4128,7 @@ class Loop:
         while True:
             why = {}
             result = self._light_ask(text, attempt=1, section="loop-architect", quotas=self._arch_quotas,
-                                     max_tokens=max_tokens, role=role, why=why)
+                                     max_tokens=max_tokens, role=role, why=why, temperature=temperature)
             status = result[0]
             if status == "ok":
                 return result
@@ -4221,7 +4227,6 @@ class Loop:
             if self._arch_quotas is None:
                 self._arch_quotas = {}
             why = {}
-            loop._hypo_charge(channel or "", system + "\n\n" + user)        # W-feed2 1: the slicer takes the minute first
             status, _, answer, _ = loop._light_ask(system + "\n\n" + user, attempt=1, section="loop-architect",
                 quotas=loop._arch_quotas, max_tokens=A.SMALL_MAX_TOKENS, role="review", only_tier="small",
                 only_model=channel or "", temperature=0.2 if temperature is None else temperature, why=why)
@@ -4448,121 +4453,94 @@ class Loop:
             pass
         return out
 
-    def _hypo_min(self):
-        """W-feed2 1: ONE booking of the input tokens of the small tier (slicer and pump): the limits of the pump channels
-        (fast-a, fast-b: the smaller model; slow: the larger) are the tpm and rpm of channels.json."""
-        from tools import factory_hypo as HY
-        if getattr(self, "_hypo_minute", None) is not None:
-            return self._hypo_minute
-        with self._hypo_lock:
-            if getattr(self, "_hypo_minute", None) is not None:
-                return self._hypo_minute
-            return self._hypo_min_make(HY)
+    SOLVER_MAX_TOKENS = 4000        # W-solver: the answer of one step (reasoning + one command)
+    SOLVER_WAIT_S = 900.0           # W-solver: the waits for a channel of ONE solve (503/429/no channel are not steps)
+    SOLVER_TEMPERATURE = 0.4
 
-    def _hypo_min_make(self, HY):
-        limits, rpms = {}, {}
-        for c in self._hypo_channels():     # the window of each REAL channel (model + key): its own tpm and rpm of channels.json
-            if c.get("tpm"):
-                limits[c["id"]] = int(c["tpm"])
-            if c.get("rpm"):
-                rpms[c["id"]] = int(c["rpm"])
-        self._hypo_minute = HY.Minute(limits=limits, rpms=rpms)
-        return self._hypo_minute
-
-    def _hypo_channels(self) -> list:
-        """W-feed2 6: the channels of the tier small that are not reserve (channels.json rows); [] when the file does not read."""
+    def _solver_channels(self) -> list:
+        """W-solver: the free channels a solve may use (main and small tiers, not reserve); [] when channels.json does not read."""
         try:
             configured = json.loads(Path(self.cfg.channels).read_text(encoding="utf-8"))["channels"]
-            return [c for c in configured if CH.tier_of(c) == "small" and not CH.is_reserve(c)]
+            return [c for c in configured if CH.tier_of(c) in ("main", "small") and not CH.is_reserve(c)]
         except (OSError, ValueError, KeyError, TypeError):
             return []
 
-    def _hypo_charge(self, model, text):
-        """W-feed2 1: a live request of the slicer takes its input tokens from the pump's minute first (the pump gets the rest)."""
-        from tools import factory_hypo as HY
-        try:
-            minute = self._hypo_min()
-            names = [c["id"] for c in self._hypo_channels() if not model or c["model"] == model]
-            if names:       # the live request goes to the least used channel of its model
-                minute.charge(min(names, key=minute.used), HY.est_tokens(text))
-        except Exception as exc:        # noqa: BLE001  an aid
-            self.err("hypo charge", exc)
+    def _solver_limit(self) -> int:
+        """W-solver: as many solves at once as there are free channels (each step of a solve takes one booking of one)."""
+        return len(self._solver_channels())
 
-    def _hypo_env(self, root, packet):
-        """W-hyp: the search's environment over the loop's own parts: the small-tier ask (the smaller and the larger model), the cloud
-        batch, the failure text and the trace of the packet. None when no small channel is registered."""
-        from tools import factory_hypo as HY
-        small = self._hypo_channels()
-        if not small:
-            return None
-        names = tuple(c["id"] for c in small)       # the pump's channels: every real channel of the tier small, not reserve
+    def _solver_ctx(self, root, packet):
+        """W-solver: the environment of one solve over the loop's own parts: the ask of the free channels (Gemma first on the compact
+        text to the small tier, then the waiting route of the slicer) and the cloud batch. Never raises a refusal as a step:
+        NoChannel after the waits."""
+        from tools import factory_hypo as HY, factory_solver as SV
         if self._arch_quotas is None:
             self._arch_quotas = {}
-        loop = self
+        loop, budget, info = self, {"left": self.SOLVER_WAIT_S}, {}
 
-        def ask(chan, text, temp):
-            why = {}
-            status, _, answer, tokens = loop._light_ask(text, attempt=1, section="loop-hypo", quotas=loop._arch_quotas,
-                                                        max_tokens=3000, role="review", only_tier="small", only_channel=chan,
-                                                        temperature=temp, why=why)
-            return status, answer, tokens, float(why.get("wait_s") or 0)
+        def ask(text, small=None):
+            for _ in range(10):         # a waiting review of a green candidate takes the channels first (at most ~20 s a step)
+                if not loop._review_hold() or loop.stop.exists():
+                    break
+                loop._sleep(2.0)
+            for body, tier, role in ((small, "small", "review"), (text, "", "code")):    # owner: Gemma (57 600 calls a day) solves first, Flash-Lite is for slicing
+                if body is None:
+                    continue
+                status, model, answer, _ = loop._light_ask(body, attempt=1, section="loop-architect", quotas=loop._arch_quotas,
+                                                           max_tokens=loop.SOLVER_MAX_TOKENS, role=role, only_tier=tier,
+                                                           temperature=loop.SOLVER_TEMPERATURE)
+                if status == "ok" and str(answer).strip():
+                    info["model"] = model
+                    return answer
+            status, model, answer, _ = loop._slice_light(budget, text, max_tokens=loop.SOLVER_MAX_TOKENS, role="code",
+                                                         temperature=loop.SOLVER_TEMPERATURE)
+            if status == "ok" and str(answer).strip():
+                info["model"] = model
+                return answer
+            raise SV.NoChannel(status)
+        return SV.Ctx(root=root, ask=ask, cloud=lambda r, ids, files: HY.cloud_batch(r, ids, files, tid="s" + str(packet.get("bid"))),
+                      info=info, sleep=self._sleep)
 
-        def sample(why, answer):
-            loop._hypo_sample(why, answer)
-
-        evidence = str(packet.get("evidence") or "")
-        marker = "FAILURE OF THE RED TEST (assert, message, last frames):\n"
-        failure = evidence.partition(marker)[2][:4000] if marker in evidence else ""
+    def _solver_suspects(self, root, packet, ids, failure) -> list:
+        """W-solver: the product functions of the red test, most suspicious first: the failure stack, the guilty commit's diff, the
+        trace of the guard, the rest in the repomap order of the row's own words (up to 15 lines 'file :: symbol')."""
+        from tools import factory_hypo as HY
         trace = [(t[0], t[1], 0) for t in packet.get("trace_path") or ()]
         diff = HY.diff_funcs_of(packet.get("bisect_clue"))      # the functions of the guilty commit's diff (the bisect proof of the packet)
         title = str(packet.get("title") or "")
-
-        def ranked(ids):        # the rest in the repomap order of the row's own words
-            key = (str(self.base_sha), title)       # W-feed2 4e: the heavy pure work once per base and words, one thread at a time
-            cache = self.__dict__.setdefault("_rank_cache", {})
-            with self.__dict__.setdefault("_rank_lock", threading.Lock()):
-                if key in cache:
-                    return cache[key]
+        key = (str(self.base_sha), title)       # the heavy pure work once per base and words, one thread at a time
+        cache = self.__dict__.setdefault("_rank_cache", {})
+        with self.__dict__.setdefault("_rank_lock", threading.Lock()):
+            if key not in cache:
                 try:
                     from tools import repomap
-                    out = [(r[0], r[1]) for r in repomap.rank(root, title)] if title else []
+                    found = [(r[0], r[1]) for r in repomap.rank(root, title)] if title else []
                 except (ImportError, OSError, ValueError):
-                    return []
+                    found = []
                 for old in [k for k in cache if k[0] != key[0]]:
                     cache.pop(old, None)
-                cache[key] = out
-                return out
-        with self._hypo_lock:       # W-feed2 2: up to six searches build their env at once, the pump and the minute are made once
-            self._hypo_min()
-            if getattr(self, "_hypo_pump", None) is None:       # ONE pump for every searching row of the loop (ECHO < rel < base)
-                self._hypo_pump = HY.Pump(ask, None, channels=names, minute=self._hypo_minute, stats=HY.STATS)
-                self._hypo_pump.hold = self._review_hold
-        return HY.Ctx(root=root, ask=ask, cloud=lambda r, ids, files: HY.cloud_batch(r, ids, files, tid="h" + str(packet.get("bid"))),
-                      pump=self._hypo_pump, failure_text=lambda ids: failure, trace=lambda ids: trace,
-                      failure_of=self._hypo_failure_of, skip_groups=self._hypo_cooled_groups(), kept=self._hypo_kept_for(str(self.base_sha)),
-                      diff_funcs=lambda ids: diff, ranked=ranked, minute=self._hypo_minute, channels=names, sample=sample,
-                      event=lambda name, **f: loop.event(name, **f))
+                cache[key] = found
+            ranked = cache[key]
+        funcs = HY.rank_functions(root, stack=HY.stack_from_failure(failure), diff=diff, trace=trace, ranked=ranked, k=15)
+        if not funcs:       # no trace and no rank: the product functions the test itself imports or calls
+            funcs = HY.rank_functions(root, ranked=HY.test_functions(root, ids[0]), k=15)
+        return ["%s :: %s" % (f["file"], f["symbol"]) for f in funcs]
 
-    def _hypo_sample(self, why, answer):
-        """W-feed2 7: the first bad / invalid answer of each kind (the reason text), cut to 600 signs and redacted, in
-        state_dir/hypo_samples.json, at most HYPO_SAMPLES_MAX. Called from the pump's threads: one lock."""
-        from tools import factory_hypo as HY
-        with self._hypo_lock:
-            path = Path(self.cfg.state_dir) / "hypo_samples.json"
-            try:
-                have = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                have = {}
-            if not isinstance(have, dict):
-                have = {}
-            kind = str(why)[:100]
-            if kind in have or len(have) >= HY.SAMPLES_MAX:
-                return
-            have[kind] = dict(kind=HY.outcome_of(why), text=F.redact(str(answer or "")[:600]))
-            try:
-                F.save_atomic(path, have)
-            except OSError as exc:
-                self.err("hypo samples", exc)
+    def _solver_run(self, row, ids, packet, root) -> dict:
+        """W-solver: ONE solve of the row (a worker thread: reads and asks only). The ids of ONE failure signature (the biggest group
+        not searched lately) are the target; the result is a Result of factory_solver in a dict with its group."""
+        from tools import factory_hypo as HY, factory_solver as SV
+        groups = HY.group_ids(ids, self._hypo_failure_of)
+        skip = self._hypo_cooled_groups()
+        sig, gids = next((g for g in groups if g[0] not in skip), groups[0])
+        evidence = str(packet.get("evidence") or "")
+        marker = "FAILURE OF THE RED TEST (assert, message, last frames):\n"
+        failure = self._hypo_failure_of(gids[0]) or (evidence.partition(marker)[2][:4000] if marker in evidence else "")
+        suspects = self._solver_suspects(root, packet, gids, failure)
+        t0 = time.monotonic()
+        res = SV.solve(self._solver_ctx(root, packet), row, gids, failure, HY._test_body(root, gids[0]), suspects)
+        SV.STATS.add(res)
+        return dict(result=res, group=sig, ids=gids, secs=time.monotonic() - t0)
 
     def _red_last_keys(self, ids=()):
         """W-part 2: the red test keys of the last full verdict when its sha is the base or an ancestor of it, else None (unknown)."""
@@ -4636,7 +4614,7 @@ class Loop:
         left = list(rec.get("contracts") or ()) if rec.get("base") == str(self.base_sha) else []
         while left:
             contract = left.pop(0)
-            if not A.validate(contract, root, bid=row, known_ids=packet.get("known_ids"), engine="hypo"):
+            if not A.validate(contract, root, bid=row, known_ids=packet.get("known_ids"), engine="solver"):
                 break
             contract = None
         else:
@@ -4647,14 +4625,14 @@ class Loop:
             keep["hypo_spare"].pop(row, None)
         self.save_ls(keep)
         if contract is not None:
-            self.event("hypo", backlog_id=row, status="spare", greens=1, tried=0)
+            self.event("solver", backlog_id=row, status="spare", steps=0, calls=0, tests=0)
         return contract
 
     def _hypo_state(self, row, packet):
         """W-feed2 2: what a row needs from the search, by reads only: ('off' | 'none' (no red id) | 'spare' (a kept green
         candidate of this base) | 'cooled' (searched less than 12 h ago) | 'search', the red ids)."""
         from tools import factory_hypo as HY
-        if self.cfg.self_repo or os.environ.get("FACTORY_HYPO", "1") == "0":
+        if self.cfg.self_repo:
             return "off", []
         ids = self._hypo_ids(row, packet)
         if not ids:
@@ -4712,41 +4690,38 @@ class Loop:
             return ""
 
     def _hypo_post(self, row, packet, root, ids, found):
-        """W-feed2 2: what the loop thread does with a finished search: the event, the searched mark, the spares, the evidence
-        for the slicer; a contract result (green candidate, engine 'hypo') or None. Writes the loop state: loop thread only."""
-        from tools import factory_hypo as HY, factory_architect as A
+        """W-solver: what the loop thread does with a finished solve: the event (span 'solver'), the searched mark of the group, the
+        evidence for the slicer when it ended not green; a contract result (green overlay as whole functions, engine 'solver') or
+        None. Writes the loop state: loop thread only."""
+        from tools import factory_hypo as HY, factory_solver as SV, factory_architect as A
         try:
-            self.event("hypo", backlog_id=row, status=found["status"], greens=len(found["green"]), tried=len(found["tried"]),
-                       why=found.get("why") or None, group_ids=len(found.get("ids") or ()) or None)
-            if found["status"] in ("green", "red", "already_green"):     # a cloud failure or no hypothesis at all: no run, no penalty
+            res, gids = found["result"], found.get("ids") or ids
+            status = res.status if res.status in ("green", "cloud", "no_channel", "already_green") else "red"
+            self.event("solver", backlog_id=row, status=status, steps=res.steps, calls=res.calls, tests=res.tests,
+                       model=res.model or None, secs=round(float(found.get("secs") or 0), 1), why=res.why or None, group_ids=len(gids))
+            if status in ("green", "red", "already_green"):     # no channel or a cloud failure: no run, no penalty
                 fresh = self.ls()
                 HY.mark_searched(fresh.setdefault("hypo_seen", {}), str(self.base_sha), found.get("group") or ids[0], time.time())
                 self.save_ls(fresh)
-            contracts = []
-            for cand in found["green"]:
-                contract = HY.to_contract(row, ids, cand, group=found.get("group"), rep=(found.get("ids") or ids)[0])
-                if not A.validate(contract, root, bid=row, known_ids=packet.get("known_ids"), engine="hypo"):
-                    contracts.append(contract)
-            if contracts:
-                keep = self.ls()
-                if len(contracts) > 1:      # the smaller diff goes first, the rest are spares for this base
-                    keep.setdefault("hypo_spare", {})[row] = dict(base=str(self.base_sha), contracts=contracts[1:])
-                self.save_ls(keep)
-                return dict(contract=contracts[0], engine="hypo", faults=[], repaired=[])
-            if found["evidence"]:
-                text = "\nHYPOTHESES TRIED BEFORE YOU (cheap machine search, all red):\n" + "\n".join(found["evidence"])
+            if res.green:
+                contract = SV.to_contract(row, gids, res, root, group=found.get("group"), rep=gids[0])
+                faults = A.validate(contract, root, bid=row, known_ids=packet.get("known_ids"), engine="solver") if contract else ["not whole functions"]
+                if not faults:
+                    return dict(contract=contract, engine="solver", faults=[], repaired=[])
+                res.last_fail = "the green change was refused as a card: " + "; ".join(str(x) for x in faults[:3])
+            if status in ("red", "green") and res.evidence():
+                text = "\nTRIED BEFORE YOU (a free model with read/grep/edit and the cloud test, all red):\n" + "\n".join(res.evidence())
                 packet["evidence"] = str(packet.get("evidence") or "") + text
                 keep = self.ls()        # the row goes back the usual way: the next packet of the slicer carries what was tried
                 keep.setdefault("hypo_evidence", {})[row] = dict(base=str(self.base_sha), text=text[:3000])
                 self.save_ls(keep)
         except Exception as exc:        # noqa: BLE001  an aid: the slicer goes on as before
-            self.err("hypo", exc)
+            self.err("solver", exc)
         return None
 
-    HYPO_PARALLEL = 6           # W-feed2 2: searches of rows at the same time
     HYPO_SCAN_S = 5.0           # the candidates are looked through at most this often
-    HYPO_RETRY_S = 600.0        # a row with nothing to search (no red id, cooled, cloud failure) is looked at again after this
-    HYPO_STALE_S = 1800.0       # a search older than this is dropped (its result ignored)
+    HYPO_RETRY_S = 600.0        # a row with nothing to search (no red id, cooled, no channel, cloud failure) is looked at again after this
+    HYPO_STALE_S = 3600.0       # a solve older than this is dropped (its result ignored; 16 steps with a cloud run each)
 
     def _hypo_candidates(self, tasks, state, ls, now) -> list:
         """W-feed2 2: the rows that may be searched now, ECHO (guard) -> rel-<sha> -> rel-base: rows of the to_slice book (the wait
@@ -4758,7 +4733,7 @@ class Loop:
             row = F.row_of(task.backlog_id or tid)
             related.setdefault(row, []).append(task)
             status = state["tasks"].get(tid, {}).get("status")
-            if status in ("RUNNING", "REVIEW"):
+            if status in ("RUNNING", "REVIEW") or (status == "READY" and state["tasks"][tid].get("engine") == "solver"):
                 running.add(row)
             elif status == "READY":
                 ready.add(row)
@@ -4777,6 +4752,21 @@ class Loop:
             out.append(row)
         return sorted(out, key=lambda r: (HY.row_class(r), r))
 
+    def _solver_first(self, tasks, state, ls, now) -> set:
+        """Red rows the solver has not tried on the current base (bench 25.11: 4 of 8 and 8 of 19 against 3.4 % of the cards): no card
+        and no slicing call goes to them before it. Read anew at most once per HYPO_SCAN_S; [] without a free channel."""
+        if self.cfg.self_repo or now - self.__dict__.get("_first_at", -1e9) < self.HYPO_SCAN_S:
+            return self.__dict__.get("_first_rows", set())
+        self._first_at = now
+        try:
+            base = str(self.base_sha)
+            tried = {row for row, (sha, _at) in self._hypo_skip.items() if sha == base}
+            self._first_rows = set(self._hypo_candidates(tasks, state, ls, now)) - tried if self._solver_channels() else set()
+        except Exception as exc:        # noqa: BLE001  an aid: the cards go on as before
+            self.err("solver first", exc)
+            self._first_rows = set()
+        return self._first_rows
+
     HYPO_REVIEW_HOLD_S = 180.0      # W-hypo3 3: the longest the search yields to a waiting review (a stuck card must not starve it)
     _review_since = None
 
@@ -4787,7 +4777,7 @@ class Loop:
 
     def _hypo_review_gate(self, state) -> bool:
         """W-hypo3 3: True while the review of a candidate with green gates (REVIEW, or READY with its candidate kept) waits: the
-        search starts nothing and the pump books no minute (``_review_hold``), so the review takes the minute before edits and search.
+        search starts nothing and the solvers wait a few seconds a step (``_review_hold``), so the review takes the minute before edits and search.
         Yields for at most HYPO_REVIEW_HOLD_S."""
         mono = time.monotonic()
         if not any(self._has_candidate(state, tid) for tid in (state.get("tasks") or {})):
@@ -4811,30 +4801,18 @@ class Loop:
             self._hypo_gate_on = self._hypo_review_gate(self.load()[1])
         return bool(self.__dict__.get("_hypo_gate_on"))
 
-    def _hypo_limit(self) -> int:
-        """W-hypo3 1: searches at once from the answer rate of the last 5 minutes (1 below 2 answers a minute, up to HYPO_PARALLEL)."""
-        from tools import factory_hypo as HY
-        return HY.parallel_for(HY.STATS.answer_rate(time.monotonic()), self.HYPO_PARALLEL)
-
-    def _hypo_kept_for(self, base) -> dict:
-        """W-hypo3 1: the answers kept of searches that did not finish, for the current base only (an older base's are dropped)."""
-        have = self.__dict__.get("_hypo_kept")
-        if have is None or have[0] != base:
-            have = self._hypo_kept = (base, {})
-        return have[1]
-
     def _hypo_feed(self, now) -> None:
-        """W-feed2 2: the independent feeder of the search (a tick of the loop thread): finished searches are applied, then up to
-        HYPO_PARALLEL rows with a red test id on the current base start theirs. A row under a search neither starts with a card
-        nor goes to the slicer. The threads only read and ask; every write of the state is here."""
+        """W-solver: the independent feeder of the solves (a tick of the loop thread): finished solves are applied, then rows with a
+        red test id on the current base start theirs, as many at once as there are free channels (``_solver_limit``). A row under a
+        solve neither starts with a card nor goes to the slicer. The threads only read and ask; every write of the state is here."""
         from tools import factory_hypo as HY
-        if self.cfg.self_repo or os.environ.get("FACTORY_HYPO", "1") == "0":
+        if self.cfg.self_repo:
             return
         try:
             self._hypo_collect(now)
             if self._hypo_gate_tick():          # W-hypo3 fix1: the gate looks at the state, not at the scan moment (also while the limit is full)
                 return
-            limit = self._hypo_limit()
+            limit = self._solver_limit()
             if len(self._hypers) >= limit or now - getattr(self, "_hypo_scan_at", -1e9) < self.HYPO_SCAN_S:
                 return
             self._hypo_scan_at = now
@@ -4871,11 +4849,10 @@ class Loop:
             kind, ids = self._hypo_state(row, packet)
             if kind != "search":
                 return packet, ids, kind, None
-            env = self._hypo_env(root, packet)
-            if env is None:
+            if not self._solver_channels():
                 return packet, ids, "none", None
-            return packet, ids, "search", HY.search(row, ids, env)
-        job = self._hypers[row] = Prefetch("hypo", work, dict(row=row, base=base, root=root))
+            return packet, ids, "search", self._solver_run(row, ids, packet, root)
+        job = self._hypers[row] = Prefetch("solver", work, dict(row=row, base=base, root=root))
         job.thread.start()
 
     def _hypo_collect(self, now) -> None:
@@ -4885,7 +4862,7 @@ class Loop:
                 if time.monotonic() - job.t0 > self.HYPO_STALE_S:
                     del self._hypers[row]
                     self._hypo_skip[row] = (job.ctx["base"], now)
-                    self.event("hypo", backlog_id=row, status="stale", why="search older than %d s dropped" % self.HYPO_STALE_S)
+                    self.event("solver", backlog_id=row, status="stale", why="solve older than %d s dropped" % self.HYPO_STALE_S)
                 continue
             del self._hypers[row]
             base = job.ctx["base"]
@@ -4897,21 +4874,16 @@ class Loop:
                     continue
                 if kind == "spare":
                     spare = self._hypo_take_spare(row, job.ctx["root"], packet)
-                    result = dict(contract=spare, engine="hypo", faults=[], repaired=[]) if spare is not None else None
+                    result = dict(contract=spare, engine="solver", faults=[], repaired=[]) if spare is not None else None
                 elif kind == "search":
                     result = self._hypo_post(row, packet, job.ctx["root"], ids, found)
-                    again = self.__dict__.setdefault("_hypo_again", {})
-                    mine = any(k[0] == str(ids[0]) for k in self._hypo_kept_for(base)) if ids else False
-                    if result is None and found.get("status") == "cloud" and mine and again.get((row, base), 0) < 3:
-                        again[(row, base)] = again.get((row, base), 0) + 1
-                        pass       # W-hypo3 1: answers are kept: the row is searched again at once and finishes to a batch
-                    elif result is None:
+                    if result is None:
                         self._hypo_skip[row] = (base, now)      # red or no result: the row goes the usual way, evidence kept
                 else:
                     result = None
                     self._hypo_skip[row] = (base, now)
                     if kind == "already_green":     # W-part 2: the row's tests are green in the last full build: nothing to search
-                        self.event("hypo", backlog_id=row, status="already_green", greens=0, tried=0, why="not red in the last full build")
+                        self.event("solver", backlog_id=row, status="already_green", steps=0, calls=0, tests=0, why="not red in the last full build")
                 if result is not None:
                     self._hypo_adopt(row, packet, result)
             except Exception as exc:            # noqa: BLE001  one search never stops the loop
@@ -5690,7 +5662,7 @@ class Loop:
                 continue                # W-prio 3: the test names what the product no longer has: no cards, no slicing
             if bid in ls.get("quarantine", {}) or ls.get("slice_wait", {}).get(bid, 0) > now:
                 continue
-            if bid in running or bid in self._hypers:       # W-feed2 2: a row under the hypotheses search is not sliced
+            if bid in running or bid in self._hypers or bid in self._solver_first(tasks, state, ls, now):  # the solver goes first: no slicing call is spent before it
                 continue
             if bid in dry_rows and bid not in stuck and bid not in ls.get("to_slice", {}):
                 # W-dry 1: the row of a READY card without code goes to the slicer for the code: no penalty, no spent
@@ -8379,12 +8351,12 @@ class Loop:
                 stats["channels"] = self._channel_rows(state)
             except Exception as exc:                  # no channel file: the stats still go out
                 stats["channels"] = {"error": F.redact(type(exc).__name__)}
-            try:        # W-hyp 6: the hypotheses search (counters of the main instance only)
-                from tools import factory_hypo as HY
+            try:        # W-solver: the solves of the loop (counters of the main instance only)
+                from tools import factory_solver as SV
                 if not self.cfg.self_repo:
-                    stats["hypo"] = HY.STATS.snapshot(time.monotonic())
+                    stats["solver"] = SV.STATS.snapshot()
             except Exception as exc:
-                stats["hypo"] = {"error": F.redact(type(exc).__name__)}
+                stats["solver"] = {"error": F.redact(type(exc).__name__)}
             F.save_atomic(self.stats_path, stats)
             self._watch_pool(state, rows)
             if blocked or stats["quarantine"] or ls["holds"] or any(

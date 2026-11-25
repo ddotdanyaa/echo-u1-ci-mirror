@@ -671,7 +671,7 @@ def split_faults(contract, root, bid=''):
     return faults
 
 
-RIG_ENGINES = ('paid', 'agent', 'hypo', 'coordinator', 'free', 'free_main', 'free_small')     # W-rig: who may give a rig contract (ready code); W-path D: the free steps too (the AST lock rig_weakens, rig_touch_faults and the cloud run stand)
+RIG_ENGINES = ('paid', 'agent', 'solver', 'coordinator', 'free', 'free_main', 'free_small')     # W-rig: who may give a rig contract (ready code); W-path D: the free steps too (the AST lock rig_weakens, rig_touch_faults and the cloud run stand)
 
 
 def rig_faults(contract, engine=None):
@@ -682,7 +682,7 @@ def rig_faults(contract, engine=None):
     if contract.get('rig') is not True:
         return ['rig must be true']
     if engine is None or str(engine).split('+')[-1] not in RIG_ENGINES:     # no engine named = refusal
-        faults.append('rig: only paid/agent/free/hypo/coordinator may give a rig contract (ready code)')
+        faults.append('rig: only paid/agent/free/solver/coordinator may give a rig contract (ready code)')
     parts = [p for p in contract.get('parts') or [] if isinstance(p, dict)]
     faults.extend(G.rig_touch_faults([p.get('file') for p in parts if isinstance(p.get('file'), str)]))
     for part in parts:
@@ -693,6 +693,12 @@ def rig_faults(contract, engine=None):
     if not isinstance(spec, dict) or not spec.get('use'):
         faults.append('rig: the target is an existing test (test.use)')
     return faults
+
+
+def solver_blocks(code, file, engine):
+    """W-solver: True for the code of a .py part of the engine 'solver' that is SEARCH/REPLACE blocks (the other engines write whole functions)."""
+    return (str(engine or '').split('+')[-1] == 'solver' and str(file).endswith('.py') and isinstance(code, str)
+            and '<<<<<<< SEARCH' in code)
 
 
 def validate(contract, root, *, bid='', title='', known_ids=None, named_ok=False, engine=None):
@@ -760,11 +766,15 @@ def validate(contract, root, *, bid='', title='', known_ids=None, named_ok=False
                 code = part['code']
                 if not isinstance(code, str) or not code.strip() or F.is_private_text(code):
                     part.pop('code')          # empty or private text is thrown away: the editor writes the change
-                elif len(code) > K.PART_CODE_MAX:
+                elif len(code) > (K.SOLVER_CODE_MAX if solver_blocks(code, file, engine) else K.PART_CODE_MAX):
                     faults.append(PART_CODE_FAULT + '%s: longer than %d characters' % (file, K.PART_CODE_MAX))
                 else:
                     try:
-                        if file.endswith('.py'):
+                        if solver_blocks(code, file, engine):       # W-solver: the blocks of the green overlay, any place of the file
+                            from tools import factory_solver as SV
+                            if SV.apply_blocks((root / file).read_bytes().decode('utf-8-sig'), code) is None:
+                                raise ValueError('the SEARCH/REPLACE blocks do not apply to the snapshot, one place each')
+                        elif file.endswith('.py'):
                             K.split_part_code(code, symbols if isinstance(symbols, list) else [])
                         elif '<<<<<<<' not in code or '>>>>>>> REPLACE' not in code:
                             raise ValueError('not a SEARCH/REPLACE block')
