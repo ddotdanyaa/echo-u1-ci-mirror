@@ -1,0 +1,7 @@
+tests/test_c24_question_again.py
+tests/test_c24_repeat_pcm.py
+tests/test_g3_matrix.py
+tests/test_kb_holdout.py
+tests/test_m6_wire.py
+tests/test_speech_text_wiring.py
+tests/test_u78_degradation.py
