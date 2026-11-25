@@ -1,0 +1,2 @@
+tests/test_w3_replays.py::test_e34_year_question_cloud_yes_then_job_fails_then_second_job_answers
+tests/test_w3_replays.py::test_e43_no_final_from_the_cloud_the_ears_text_goes_to_the_job_within_the_bound
