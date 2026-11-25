@@ -1,50 +1,50 @@
 # Factory status (generated, structured data only)
 
-Generated: 2026-11-24T20:57:21Z
-Source commit: sha4b7fe247b6a9
+Generated: 2026-11-25T06:22:49Z
+Source commit: sha4a4136b361cd
 
 ## Commits (sha, time)
-- sha4b7fe247 2026-11-24T23:40:45+03:00
-- sha90a0bf4d 2026-11-24T23:39:55+03:00
-- sha188f2cb9 2026-11-24T23:28:05+03:00
-- sha79ece083 2026-11-24T22:51:12+03:00
-- sha1c91a81a 2026-11-24T22:19:10+03:00
-- sha3621f6ed 2026-11-24T21:44:51+03:00
-- shae1e582a1 2026-11-24T21:40:00+03:00
-- shad1f22b01 2026-11-24T15:33:23+03:00
-- sha6b309a45 2026-11-24T15:25:03+03:00
-- sha5af775b6 2026-11-24T14:53:39+03:00
-- sha3aa1b8b7 2026-11-24T14:48:38+03:00
-- sha5cb3d9c7 2026-11-24T14:35:22+03:00
-- sha16b57b85 2026-11-24T14:24:44+03:00
-- sha27ccd3db 2026-11-24T14:22:29+03:00
-- sha6c264e36 2026-11-24T14:20:39+03:00
-- shabd31b4b3 2026-11-24T13:55:56+03:00
-- shaa44f9888 2026-11-24T13:54:14+03:00
-- sha2f0f0139 2026-11-24T13:54:10+03:00
-- sha51e2da77 2026-11-24T13:53:13+03:00
-- sha3fb5bd78 2026-11-24T13:40:12+03:00
+- sha4a4136b3 2026-11-25T09:21:51+03:00
+- sha82dbd550 2026-11-25T08:56:31+03:00
+- shaf0699e04 2026-11-25T08:52:26+03:00
+- shae3b9ec19 2026-11-25T08:48:00+03:00
+- sha18b7cc34 2026-11-25T08:43:07+03:00
+- sha97114aa2 2026-11-25T08:41:43+03:00
+- sha15859a52 2026-11-25T08:33:57+03:00
+- sha91cd4a8b 2026-11-25T08:32:09+03:00
+- sha1284c89e 2026-11-25T06:58:57+03:00
+- shaf1894922 2026-11-25T06:53:55+03:00
+- shad6156e48 2026-11-25T02:45:59+03:00
+- sha62eb1f3e 2026-11-25T02:37:37+03:00
+- sha97ff5ce6 2026-11-25T02:24:25+03:00
+- shacf569268 2026-11-25T02:19:55+03:00
+- sha7ed74397 2026-11-25T02:10:13+03:00
+- sha5afc9948 2026-11-25T01:57:05+03:00
+- shabdc73abf 2026-11-25T01:15:14+03:00
+- sha92b6c690 2026-11-25T01:10:01+03:00
+- shad6f694b3 2026-11-25T01:02:36+03:00
+- shaccf7b51e 2026-11-25T00:54:16+03:00
 
 ## Funnel
 | step | count |
 |---|---|
-| accepted | 31 |
-| claimed | 807 |
+| accepted | 33 |
+| claimed | 936 |
 | coded | 189 |
 | found_in_backlog | unknown |
-| gate_pass | 86 |
-| known_to_loop | 608 |
-| promoted | 81 |
-| ready | 68 |
-| reviewed | 211 |
-| triaged | 422 |
+| gate_pass | 89 |
+| known_to_loop | 564 |
+| promoted | 87 |
+| ready | 8 |
+| reviewed | 230 |
+| triaged | 495 |
 
-Side counters: blocked=4, parked=0, requeued=9
-Tasks now: BLOCKED=4, DONE=68, FAILED=872, PROMOTED=57, READY=68
-Accepted: 31
-Promoted: 81
-Free RAM, GB: 2.52
-Telemetry rows: 65615 recognised, 0 unrecognised
+Side counters: blocked=0, parked=0, requeued=9
+Tasks now: DONE=68, FAILED=1032, PROMOTED=57, READY=8
+Accepted: 33
+Promoted: 87
+Free RAM, GB: 3.77
+Telemetry rows: 72941 recognised, 0 unrecognised
 
 ## Spend per model
 | model | calls | tokens_in | tokens_out | usage_unknown | http_429 | errors |
@@ -62,23 +62,23 @@ Telemetry rows: 65615 recognised, 0 unrecognised
 | google/gemini-3.8-flash | 28 | 21237 | 15 | 25 | 13 | 25 |
 | google/gemini-4-hydrogen | 3 | 0 | 0 | 3 | 0 | 3 |
 | google/gemini-robotics-er-2-preview | 2 | 5373 | 134 | 0 | 0 | 0 |
-| google/gemma-4-26b-a4b-it | 3852 | 2889972 | 515351 | 2708 | 17 | 2708 |
-| google/gemma-4-31b-it | 3171 | 1319789 | 145975 | 2649 | 10 | 2649 |
-| openrouter/nvidia/nemotron-3-ultra-550b-a55b:free | 130 | 715529 | 156330 | 2 | 2 | 2 |
+| google/gemma-4-26b-a4b-it | 4739 | 3848994 | 690943 | 3146 | 27 | 3146 |
+| google/gemma-4-31b-it | 4081 | 1936502 | 214075 | 3292 | 11 | 3292 |
+| openrouter/nvidia/nemotron-3-ultra-550b-a55b:free | 134 | 729190 | 156943 | 2 | 2 | 2 |
 | other | 65 | 1154192 | 66710 | 6 | 0 | 7 |
 
 ## Spans
 | span | rows | calls |
 |---|---|---|
-| answer | 537 | 0 |
-| gate | 8601 | 0 |
-| infra | 2908 | 0 |
-| loop | 9189 | 0 |
-| other | 19243 | 0 |
-| promote | 99 | 0 |
-| review | 3439 | 1592 |
-| run | 21158 | 10088 |
-| triage | 441 | 0 |
+| answer | 546 | 0 |
+| gate | 9406 | 0 |
+| infra | 3864 | 0 |
+| loop | 9830 | 0 |
+| other | 21594 | 0 |
+| promote | 105 | 0 |
+| review | 3681 | 1705 |
+| run | 23445 | 11776 |
+| triage | 470 | 0 |
 
 ## Channels (model ids)
 - 1db4ab-gemini-3-8-flash
@@ -127,9 +127,9 @@ Telemetry rows: 65615 recognised, 0 unrecognised
 - or-nemotron-3-ultra
 
 ## Published files
-Modules: 34
-Tests in the cloud: 110
-Tests not in the cloud: 136
+Modules: 35
+Tests in the cloud: 111
+Tests not in the cloud: 141
 - tests/test_agent_factory.py (backlog-id, call-word, env-path, long-run, pid-port)
 - tests/test_factory_503.py (backlog-id, long-run)
 - tests/test_factory_architect.py (backlog-id, email, env-path, path)
@@ -141,6 +141,7 @@ Tests not in the cloud: 136
 - tests/test_factory_base_near.py (email, short-name)
 - tests/test_factory_base_unsettled.py (dependency)
 - tests/test_factory_bisect_loop.py (backlog-id)
+- tests/test_factory_calls.py (path)
 - tests/test_factory_canary.py (env-path, long-run)
 - tests/test_factory_cannot_scope.py (env-path)
 - tests/test_factory_channels.py (dependency)
@@ -176,12 +177,14 @@ Tests not in the cloud: 136
 - tests/test_factory_gemma3.py (long-run)
 - tests/test_factory_gemma4.py (dependency)
 - tests/test_factory_gemma5.py (dependency)
+- tests/test_factory_gh_limit.py (dependency)
 - tests/test_factory_gslice.py (dependency)
 - tests/test_factory_guard.py (backlog-id)
 - tests/test_factory_guard_ids.py (backlog-id)
 - tests/test_factory_hard.py (long-run)
 - tests/test_factory_hypo.py (dependency)
 - tests/test_factory_hypo2.py (dependency)
+- tests/test_factory_hypo3.py (dependency)
 - tests/test_factory_intake.py (call-word, pid-port)
 - tests/test_factory_intake_merge.py (dependency)
 - tests/test_factory_keep.py (dependency)
@@ -199,6 +202,7 @@ Tests not in the cloud: 136
 - tests/test_factory_loop_d8d.py (backlog-id, call-word, key, long-run, phone)
 - tests/test_factory_loop_r7.py (dependency)
 - tests/test_factory_loop_r7b.py (dependency)
+- tests/test_factory_loop_revert.py (email)
 - tests/test_factory_loop_watch.py (long-run)
 - tests/test_factory_lost_rows.py (dependency)
 - tests/test_factory_marker_self.py (long-run)
@@ -213,6 +217,7 @@ Tests not in the cloud: 136
 - tests/test_factory_optimistic_fix3.py (dependency)
 - tests/test_factory_other_model.py (dependency)
 - tests/test_factory_owner_list.py (backlog-id, call-word, long-run)
+- tests/test_factory_package.py (email)
 - tests/test_factory_paid_critic.py (long-run)
 - tests/test_factory_paid_critic_span.py (key)
 - tests/test_factory_part2.py (email)

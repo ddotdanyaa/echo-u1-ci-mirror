@@ -23,8 +23,8 @@ FREE_RUNGS = ('free', 'free_main', 'free_small')     # the free steps of the lad
 SMALL_PROMPT_TOKENS = 4500      # the window of the small tier: estimated input tokens of one prompt (W-prio3: was 9000; the TPM of a channel is 15-16K)
 SMALL_MAX_TOKENS = 4096         # the answer limit of a small-tier call
 SMALL_REASONING = 'minimal'     # reasoning_effort of the small-tier call (the default of the model body; 'none' is refused by the API)
-SMALL_K = 2                     # the voices of the ensemble: different temperatures / models (W-prio3: 2, a third when they do not agree)
-SMALL_K_MAX = 3
+SMALL_K = 1                     # W-exact 2: ONE generation per contract (the measure: 4 voices gave 16/38 against 15/38 of one); a second only when the first is not valid
+SMALL_K_MAX = 2
 SMALL_TOTAL_S = 240.0           # W-prio3: the common term of a slicing ensemble (the editors' ensemble keeps its own)
 SMALL_TEMPERATURES = (0.2, 0.5, 0.8, 0.35)
 KEYWORDS_MAX = 12
@@ -234,6 +234,7 @@ def build_prompt(packet, engine=''):
                  else NOT_CODE_RULE + '\n' + SPLIT_RULE + '\n') + (PUBLISHED_ONLY_RULE + '\n' if packet.get('publishable') else '') +
               (TEST_CODE_RULE + '\n' if engine in ('paid', 'agent') else '') +
               (FREE_PROOF_RULE + '\n' if engine in FREE_RUNGS else '') +
+              (VAGUE_RULE + '\n' if engine else '') +
               (PART_CODE_RULE + '\n' if engine in ('paid', 'agent') and codes_ok(packet) else '') +
               (HOLD_RULE + '\n' if engine in ('paid', 'agent') and (packet.get('rung') or 0) >= 2 else '') +
               (DRY_RULE + '\n' if engine in ('paid', 'agent') and packet.get('edit_dry') else '') +
@@ -460,6 +461,8 @@ def new_test_code_faults(code, root):
                 if name == '*' or (have is None) or name in have or _module_file(root, module + '.' + name):
                     continue
                 faults.append(CODE_FAULT + 'module %s has no name %s' % (module, name))
+    from tools import factory_calls as FC      # W-true2 2: fakes-only asserts / a patched call with a kwarg nothing accepts
+    faults.extend(CODE_FAULT + f for f in FC.card_test_faults(code, root))
     return faults
 
 
@@ -528,7 +531,7 @@ def rig_faults(contract, engine=None):
     return faults
 
 
-def validate(contract, root, *, bid='', title='', known_ids=None, named_ok=False, engine=None):
+def validate(contract, root, *, bid='', title='', known_ids=None, named_ok=False, engine=None, exact=False):
     from tools import factory_gate as G
     faults = []
     if not isinstance(contract, dict):
@@ -589,6 +592,8 @@ def validate(contract, root, *, bid='', title='', known_ids=None, named_ok=False
                 faults.append('instruction too short')
             elif len(instruction) > INSTR_MAX:
                 faults.append('oversize: instruction too long')
+            elif exact and not rig and isinstance(symbols, list):      # W-exact 1: a new contract is executable (only new contracts)
+                faults.extend(vague_faults(part, root))
             if 'code' in part:
                 code = part['code']
                 if not isinstance(code, str) or not code.strip() or F.is_private_text(code):
@@ -758,6 +763,51 @@ def _need_one(part, root):
     except ValueError:
         header, region = K.part_region(text, [], '')                  # an anchor not found: the head of the file
     return file, file + ' ' + header + '\n' + _redact_whole(region), ''
+
+VAGUE_FAULT = 'vague: '
+VAGUE_MIN = 12
+_CODE_SPAN = re.compile(r'```[a-zA-Z]*\n?(.*?)```|`([^`\n]+)`', re.S)
+_REMOVAL = re.compile(r'\b(?:delete|remove|drop)\b', re.I)
+VAGUE_RULE = ('The instruction of every .py part must be executable by an editor that cannot think: put in it, in backticks, '
+              'one EXACT line (or a fragment of at least %d characters) copied from the shown body of the named function '
+              '(what to change) AND, in backticks, what stands in its place; or give the part "code" / "add_after". '
+              'Never write "ensure", "check", "investigate", "find where", "likely", "the logic". Good: "In `_pick`, replace '
+              '`return rows[0]` with `return max(rows, key=lambda r: r.rank)`." Bad: "Ensure the logic of _pick picks the '
+              'right row; check where it fails."' % VAGUE_MIN)
+
+
+def _norm_ws(text):
+    return ' '.join(str(text).split())
+
+
+def vague_faults(part, root):
+    """A .py part of a new contract must be executable: its instruction quotes, in backticks, an exact piece (>= VAGUE_MIN
+    characters) of the body of a named symbol and says what stands in its place (a second code span or delete/remove), unless
+    the part carries ready code (``code``/``add_after``). Returns [] when the part cannot be checked (no symbols, no file)."""
+    file, symbols, text = part.get('file'), part.get('symbols'), part.get('instruction')
+    if (not isinstance(file, str) or not file.endswith('.py') or not isinstance(symbols, list) or not symbols
+            or not isinstance(text, str) or part.get('code') or part.get('add_after') or part.get('file_text')):
+        return []
+    try:
+        source = (Path(root) / F.safe_path(file)).read_text(encoding='utf-8-sig')
+        found = K._symbols(ast.parse(source))
+    except (ValueError, TypeError, OSError, SyntaxError, UnicodeError, RecursionError):
+        return []
+    lines = source.splitlines()
+    bodies = [_norm_ws('\n'.join(lines[found[s].lineno - 1:found[s].end_lineno])) for s in symbols if s in found]
+    if not bodies:
+        return []
+    spans = []
+    for block, inline in _CODE_SPAN.findall(text):
+        spans += [l.strip() for l in (block or inline).splitlines() if l.strip()]
+    hit = next((l for l in spans if len(l) >= VAGUE_MIN and any(_norm_ws(l) in b for b in bodies)), None)
+    if hit is None:
+        return [VAGUE_FAULT + file + ': the instruction quotes no exact line (>= %d characters, in backticks) from the body of %s; '
+                'copy the line to change and write what stands in its place' % (VAGUE_MIN, ', '.join(symbols))]
+    names = {n.rsplit('.', 1)[-1] for n in symbols} | set(symbols)
+    if not any(l != hit and l not in names and len(l) >= 3 for l in spans) and not _REMOVAL.search(text):
+        return [VAGUE_FAULT + file + ': the instruction does not say, in backticks, what stands in place of `' + hit[:60] + '`']
+    return []
 
 
 def _need_py(file, text, symbols, anchor):
@@ -1227,7 +1277,7 @@ def _small_vote(ask, system, user, *, packet, root, named_ok=False, k=SMALL_K):
         _drop_part_codes(contract)
         repair_contract(contract, root, packet)
         errors = validate(contract, root, bid=packet.get('bid', ''), title=packet.get('title', ''),
-                          known_ids=packet.get('known_ids'), named_ok=named_ok, engine='free_small')
+                          known_ids=packet.get('known_ids'), named_ok=named_ok, engine='free_small', exact=True)
         if errors:
             return False, '; '.join(errors)[:300], ''
         if red and (bad := _red_fault(contract, 'free_small')):
@@ -1246,8 +1296,8 @@ def _small_vote(ask, system, user, *, packet, root, named_ok=False, k=SMALL_K):
         found = ens.run()
         stats, refused_by, rejected = dict(ens.stats), dict(ens.refused_by), list(ens.rejected)
         left = SMALL_TOTAL_S - (time.monotonic() - started)
-        if k < SMALL_K_MAX and not ens.early and not any(c.votes >= 2 for c in found) and left > 1:
-            # W-prio3: the first voices did not agree (or one was void): a third one, another temperature and channel, within the term
+        if k < SMALL_K_MAX and not found and left > 1:
+            # W-exact 2: the only voice was void (no valid contract): ONE more, another temperature and channel, within the term
             third = ENS.Ensemble(1, branch, verify, channels=(channels[k % len(channels):] + channels[:k % len(channels)])
                                  if channels else None, temperatures=(SMALL_TEMPERATURES[k % len(SMALL_TEMPERATURES)],), total_s=left)
             more = third.run()
@@ -1303,7 +1353,7 @@ def contract_for(packet, *, rung, root, asks, named_ok=False, red_given=None, sk
     base_debt = bool(packet.get('base_debt')) or F.is_base_debt(str(packet.get('bid', '')))
     for engine in [e for e in ladder(rung, rungs=tuple(asks), red=red, dry=dry, base_debt=base_debt, gone=no_money()) if e not in skip]:
         user, rounds, shrunk, fixed, idle = initial, 0, False, False, 0
-        dry_asked = False
+        dry_asked = vague_asked = False
         replied, raw = False, ''
         code_asked = False
         repaired = []
@@ -1358,7 +1408,12 @@ def contract_for(packet, *, rung, root, asks, named_ok=False, red_given=None, sk
                     raise ContractFault(bad)        # a fault of this step: the next step answers in the same pass
                 repaired = repair_contract(contract, root, packet)     # W-free 1: mechanical defects, before any verdict
                 errors = validate(contract, root, bid=packet.get('bid', ''), title=packet.get('title', ''),
-                                  known_ids=packet.get('known_ids'), named_ok=named_ok, engine=engine)
+                                  known_ids=packet.get('known_ids'), named_ok=named_ok, engine=engine, exact=True)
+                if any(e.startswith(VAGUE_FAULT) for e in errors) and not vague_asked:
+                    vague_asked = fixed = True      # W-exact 1: one re-ask of the same step with the text of the flaw (as oversize); it carries every fault
+                    user += ('\nThe contract is not executable:\n' + '\n'.join(errors) +
+                             '\n' + VAGUE_RULE + '\nReturn the full contract again.')
+                    continue
                 if any('oversize' in e for e in errors) and not shrunk:
                     shrunk = True
                     user += '\nShrink instructions or move excess work into more. Return the full contract again.'
@@ -1375,7 +1430,7 @@ def contract_for(packet, *, rung, root, asks, named_ok=False, red_given=None, sk
                         ((contract.get('test') or {}).get('new') or {}).pop('code', None)   # then the contract stands without the code, as before
                     _drop_part_codes(contract)
                     errors = validate(contract, root, bid=packet.get('bid', ''), title=packet.get('title', ''),
-                                      known_ids=packet.get('known_ids'), named_ok=named_ok, engine=engine)
+                                      known_ids=packet.get('known_ids'), named_ok=named_ok, engine=engine, exact=True)
                 if errors and not fixed and not any('oversize' in e for e in errors):
                     fixed = True      # one re-ask on a repairable defect, the same step
                     user += '\nFix these problems and return the full contract again:\n' + '\n'.join(errors)

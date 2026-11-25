@@ -25,6 +25,7 @@ import hashlib
 import inspect
 import json
 import os
+import posixpath
 import random
 import re
 import shutil
@@ -72,7 +73,7 @@ CLOUD_TRIAL_S = 60                    # a cloud that does not answer is asked ag
 FAST_LOCAL_SHARE = 0.20               # more of the gate time than this spent on local runs: new workers send every test to the cloud
 FAST_LOCAL_HOLD_S = 3600
 WAIT_PULSE_S = 60.0                   # a wait for live workers writes a short event at least this often (the watcher's quiet limit is 300 s)
-WAIT_BG_S = 0.1                      # the same look while a background triage / hold pick runs: a ready task is admitted within 0.1 s of its card
+WAIT_BG_S = 0.03                     # the same look while a background triage / hold pick runs: a ready task is admitted within ~0.03 s of its card (the runner's own boot is on top of it)
 WAIT_CHUNK_S = 3.0                  # real seconds between two looks at the pool while workers run
 STALE_INDEX_LOCK_S = 120
 ES_CONTINUOUS = 0x80000000
@@ -412,6 +413,111 @@ def _drop_stale_lock(cwd: Path) -> bool:
         return False
 
 
+def _is_fixture_deco(d) -> bool:
+    """pytest.fixture or pytest.fixture(scope=<str literal>): no positional args; only `scope`, its value a literal
+    (name=, params=, autouse=, ids= and any computed value are refused: they run at import or rename a fixture)."""
+    if isinstance(d, ast.Call):
+        if d.args or any(k.arg != "scope" or not (isinstance(k.value, ast.Constant) and isinstance(k.value.value, str))
+                         for k in d.keywords):
+            return False
+        d = d.func
+    return isinstance(d, ast.Attribute) and d.attr == "fixture" and isinstance(d.value, ast.Name) and d.value.id == "pytest"
+
+
+_BUILTIN_FIXTURES = frozenset((
+    "tmp_path", "tmp_path_factory", "tmpdir", "tmpdir_factory", "monkeypatch", "capsys", "capfd", "capsysbinary", "capfdbinary",
+    "caplog", "request", "pytestconfig", "recwarn", "cache", "doctest_namespace", "record_property", "record_xml_attribute",
+    "record_testsuite_property", "testdir", "pytester", "env", "event_loop", "anyio_backend", "mocker"))
+
+
+def _safe_annotation(a) -> bool:
+    return a is None or all(isinstance(n, (ast.Name, ast.Attribute, ast.Constant, ast.Load, ast.Subscript, ast.Tuple, ast.BinOp, ast.BitOr))
+                            for n in ast.walk(a))
+
+
+def _fixture_def_faults(node, reserved) -> bool:
+    """True when the def is unsafe at import: non-literal defaults/annotations, or a reserved (builtin/project) fixture name."""
+    if node.name in _BUILTIN_FIXTURES or node.name in reserved:
+        return True
+    args = node.args
+    defaults = list(args.defaults) + [x for x in args.kw_defaults if x is not None]
+    for dflt in defaults:
+        try:
+            ast.literal_eval(dflt)
+        except (ValueError, SyntaxError, TypeError, MemoryError, RecursionError):
+            return True
+    every = args.posonlyargs + args.args + args.kwonlyargs + [x for x in (args.vararg, args.kwarg) if x is not None]
+    return not all(_safe_annotation(a.annotation) for a in every) or not _safe_annotation(node.returns)
+
+
+def _conftest_faults(name: str, text: str, reserved=frozenset(), old: str = "") -> list[str]:
+    """W-pack: tests/conftest.py by AST allow-list: imports, constants (literals), docstring, and `def` fixtures decorated with
+    pytest.fixture without autouse. No hooks, no pytest_* names, no module-level code, no session/items access."""
+    try:
+        tree = ast.parse(text)
+    except (SyntaxError, ValueError, RecursionError):
+        return [name + ": conftest does not parse"]
+    try:  # a top-level node that stood there before is not the package's: only what it adds or changes is judged
+        stood = ast.parse(old).body
+        before = {ast.dump(n) for n in stood}
+    except (SyntaxError, ValueError, RecursionError):
+        stood, before = [], set()
+    bad = name + ": conftest allows only imports, constants and pytest.fixture functions (no hooks, plugins, autouse)"
+    fresh = [n for n in tree.body if ast.dump(n) not in before]
+    reserved = frozenset(reserved) | {n.name for n in stood if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))}
+    if before - {ast.dump(n) for n in tree.body}:
+        return [name + ": conftest drops or changes what stood there"]
+    for node in fresh:
+        if isinstance(node, ast.Import):
+            if any(a.name.split(".")[-1].startswith("pytest_") or (a.asname or "").startswith("pytest_") for a in node.names):
+                return [bad]
+        elif isinstance(node, ast.ImportFrom):
+            if any(a.name == "*" or a.name.startswith("pytest_") or (a.asname or "").startswith("pytest_") for a in node.names) \
+                    or (node.module or "").split(".")[-1].startswith("pytest_"):
+                return [bad]
+        elif isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant):
+            pass
+        elif isinstance(node, ast.Assign) and all(isinstance(t, ast.Name) and not t.id.startswith("pytest_") for t in node.targets):
+            try:
+                ast.literal_eval(node.value)
+            except (ValueError, SyntaxError, TypeError, MemoryError, RecursionError):
+                return [bad]
+        elif isinstance(node, ast.FunctionDef):
+            if node.name.startswith("pytest_") or not node.decorator_list or not all(_is_fixture_deco(d) for d in node.decorator_list) \
+                    or _fixture_def_faults(node, reserved):
+                return [bad]
+        else:
+            return [bad]
+    for node in (x for top in fresh for x in ast.walk(top)):
+        if (isinstance(node, ast.Attribute) and node.attr in ("items", "session", "hookimpl", "hookspec")) \
+                or (isinstance(node, ast.Name) and node.id in ("items", "session", "pytest_plugins")):
+            return [name + ": conftest touches session/items/hooks"]
+    return []
+
+
+def _project_fixture_names(wt: Path) -> frozenset:
+    """Names of fixtures defined in other conftest files of the project (tests/conftest.py itself may be updated)."""
+    names = set()
+    for p in Path(wt).rglob("conftest.py"):
+        try:
+            if p.relative_to(wt).as_posix().casefold() == "tests/conftest.py" or ".git" in p.parts:
+                continue
+            for n in ast.walk(ast.parse(p.read_text(encoding="utf-8"))):
+                if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    names.add(n.name)
+        except (OSError, ValueError, SyntaxError, RecursionError):
+            continue
+    return frozenset(names)
+
+
+def package_digest(files: dict) -> str:
+    """W-pack: sha1 over the sorted (path, bytes) of a root package."""
+    h = hashlib.sha1()
+    for name in sorted(files):
+        h.update(name.encode("utf-8") + b"\0" + files[name] + b"\0")
+    return h.hexdigest()
+
+
 def refresh_mirror(repo: Path, ref: str, mirror: Path) -> str:
     """Read-only mirror of the branch HEAD via git archive. The swap is atomic-ish: unpack into
     <mirror>.new, then old -> .old, new -> mirror; a kill mid-unpack never breaks the mirror."""
@@ -686,6 +792,7 @@ def _cloud_up(fn) -> bool:
 
 LINKS_EVERY_S = 600     # 4.2 (<id>): the owner's journal is linked to backlog rows at most this often, and only when it grew
 SLICE_PARALLEL = 12
+AWAIT_STEP_S = 20                     # W-await: workers are waited for this long, then a full step (slicing, merges, answers) runs beside them
 GUARD_REQUEUE_MAX = 3      # W-guard fix1: cards of one guard row sent back to the slicer as already_green, at most so often
 RESLICE_PER_STEP = SLICE_PARALLEL      # W-feed 4: up to SLICE_PARALLEL rows go to the slicer in one step
 RESLICE_SLEEP_S = 5
@@ -1783,7 +1890,8 @@ class Loop:
         # W-feed2 4d: the list of task ids is counted once per pass; the claim (F.acquire under the lock) checks every card
         # again, so after a start only the state is read anew, never the plan, the act or the resliceable set
         ids = list(act.get("task_ids") or [act.get("task_id")]) if act["action"] == "RUN" else []
-        for tid in ids[:64]:                                # bounded
+        ids.sort(key=lambda t: not self._has_candidate(state, t))      # W-hypo3 3: the card with a green candidate resumes first (its review takes the minute before edits)
+        for tid in ids[:64]:                              # bounded
             if not tid or tid in self.pool.tids() or tid in declined:
                 continue
             t0 = self.clock()
@@ -1855,10 +1963,13 @@ class Loop:
     def _await_workers(self) -> Outcome:
         """Workers are live: wait for the next one to end (a short look every WAIT_CHUNK_S: a cooled channel or freed
         RAM may admit one more). STOP, the deadline or a due brake: no admission, drain every live worker."""
-        self._pulse_at = self.clock()
+        self._pulse_at = getattr(self, "_pulse_at", None) or self.clock()
+        began = self.clock()
         while True:
             if self._ending() or self._brake_due is not None:
                 return self._drain()
+            if self.clock() - began >= AWAIT_STEP_S:        # live 25.11: 40 % of the hours no row was sliced and nothing merged while one worker lived
+                return Outcome(sleep=0, action="WAIT", reason="workers")
             done = self.pool.wait_any(WAIT_BG_S if self._bg is not None else WAIT_CHUNK_S)
             if done:
                 return self._account_done(done[0])
@@ -2504,12 +2615,14 @@ class Loop:
                                            "context_targets", "depends_on", "port_from", "contract")
                   if ans.get(k) is not None}
         kind = tasks[tid].kind if tid in tasks else (ans.get("kind") or "code")
+        if ans.get("package"):
+            return self._package_answer(Path(ans["package"]), bid, note)
         if ans.get("accept"):
             return self._accept_answer(tid, bid, state, note)
         if ans.get("reject"):
             if tid in tasks and note and tasks[tid].privacy_safe and not tasks[tid].only_opus:
                 self._check_note(raw_note)
-            return self._reject_answer(tid, bid, state, note)
+            return self._reject_answer(tid, bid, state, note, revert=bool(ans.get("revert")))
         if ans.get("close"):
             return self._close_answer(ans, tid, bid, tasks, state, note)
         for path in fields.get("touch_files") or []:  # the one rule, here and in the CLI
@@ -2808,6 +2921,8 @@ class Loop:
         """4.2 (<id>, <id>, <id>): every LINKS_EVERY_S, when OWNER_WORDS.md grew, ONE background job links the new entries to
         backlog rows (factory_intake.run_links; the small free tier first, role review; private chunks never leave).  The loop's
         own thread only starts it and books the count of unlinked requirements into reconcile.json."""
+        if self.cfg.self_repo:
+            return          # W-hypo3 4: the owner's words and the closures audit belong to the product instance only
         try:
             from tools import backlog_register as B
             from tools import factory_intake as I
@@ -2850,7 +2965,7 @@ class Loop:
             def work():
                 data = I.run_links(words, rows, out, ask=ask, scrub=I.scrub)
                 done = all(e["line"] <= int(data.get("upto_line") or 0) for e in I._entries(words)[0]); self._lk_size = size if done else self._lk_size; data = {**data, "partial": not done}
-                audited = I.audit_closed_rows(self.cfg.backlog, out, lambda p, n: self._light_ask(p, attempt=n, section="loop-links", quotas=self._lk_quotas, max_tokens=300, role="review", thrifty=True)[:3], I.scrub)
+                audited = I.audit_closed_rows(self.cfg.backlog, out, lambda p, n: self._light_ask(p, attempt=n, section="loop-links", quotas=self._lk_quotas, max_tokens=300, role="review", thrifty=True)[:3], I.scrub, self._commit_has_code)
                 return {**data, "reopened": {b: str(r.get("why") or "") for b, r in (audited or {}).items() if r.get("reopened")}}
             self._lk = Prefetch("links", work, {})
             self._lk.thread.start()
@@ -2860,7 +2975,7 @@ class Loop:
     def _audit_reopened(self, reopened: dict) -> None:
         """W-echo 4: a row two different models called not_done is open again in the backlog (FC.reopen): it also goes to to_slice with
         the audit's why as its text, and leaves the loop's closed book / holds, so the closure is not believed any more."""
-        if not reopened:
+        if not reopened or self.cfg.self_repo:      # W-hypo3 4: only the product instance reopens rows by the audit
             return
         ls, now = self.ls(), self.clock()
         for bid, why in sorted(reopened.items()):
@@ -2870,6 +2985,11 @@ class Loop:
             ls.setdefault("to_slice", {}).setdefault(bid, {"at": now, "hints": [], "guard": "", "text": self.rs(why, 300) or "not_done"})
             self.event("supply", status="audit_reopened", backlog_id=bid, reason=self.rs(why, 200) or "not_done")
         self.save_ls(ls)
+
+    def _commit_has_code(self, sha) -> bool:
+        """W-hypo3 4: the commit changed a .py file (the audit judges a triage-proof closure only then)."""
+        out = git_run(self.cfg.repo, "show", "--name-only", "--format=", str(sha))
+        return any(line.strip().endswith(".py") for line in out.splitlines())
 
     def _links_note(self, unlinked: int) -> None:
         self._lk_unlinked = unlinked          # written into reconcile.json by _write_reconcile_now
@@ -3520,13 +3640,156 @@ class Loop:
                        backlog_id=",".join(got["added"][:10]))
         return len(got["added"])
 
-    def _reject_answer(self, tid, bid, state, note) -> dict:
+    def _package_answer(self, folder: Path, bid, note) -> dict:
+        """W-pack: a root package (one root cause, many files) is merged by the cycle after a FULL cloud build of base and base+package:
+        ``folder/files/**`` + ``folder/verdict.json`` {base, digest, runs [2], green, new_red [], review {"verdict": "approve"}}. All is
+        checked again here: the digest, the paths (rig_touch_faults), the AST lock (rig_weakens), the calls (factory_calls), the touched
+        files unchanged since the verdict's base. One commit, the worktree lock of the cycle, like _revert_answer.
+        Trust: verdict.json is NOT signed; the answers folder is a trusted source (whoever can put a folder there is the owner).
+        The two full cloud runs and the review are claimed by the verdict, the cycle cannot confirm them. A conftest is limited to
+        fixtures (AST allow-list _conftest_faults; the path is compared canonically, only the exact name is written). A failed write/add/commit restores the package paths."""
+        from tools import factory_calls, factory_gate
+        wt = Path(self.cfg.worktree)
+        try:
+            verdict = json.loads((folder / "verdict.json").read_text(encoding="utf-8"))
+            files = {x.relative_to(folder / "files").as_posix(): x.read_bytes() for x in sorted((folder / "files").rglob("*"))
+                     if x.is_file() and not x.is_symlink() and "__pycache__" not in x.parts}
+            texts = {n: raw.decode("utf-8") for n, raw in files.items()}
+        except (OSError, ValueError) as e:
+            raise F.InvalidPlan("package unreadable: %s" % type(e).__name__) from e
+        base = str(verdict.get("base") or "")
+        if not files or verdict.get("digest") != package_digest(files):
+            raise F.InvalidPlan("package: the digest is not the one that was built")
+        if not isinstance(verdict, dict):
+            raise F.InvalidPlan("package: verdict.json must be an object")
+        runs, review, green = verdict.get("runs"), verdict.get("review"), verdict.get("green")
+        try:
+            green = int(green) if isinstance(green, (int, str)) and not isinstance(green, bool) else 0
+        except ValueError:
+            green = 0
+        if verdict.get("new_red") != [] or green <= 0 or not isinstance(runs, list) or len(runs) < 2 \
+                or not all(isinstance(r, (dict, int)) and not isinstance(r, bool) for r in runs) or not isinstance(review, dict) or review.get("verdict") != "approve":
+            raise F.InvalidPlan("package: needs green > 0, new_red [], two full runs and an approving review")
+        faults = factory_gate.rig_touch_faults(list(files))
+        if not re.fullmatch(r"[0-9a-f]{40}", base) or subprocess.run(
+                ["git", "-C", str(wt), "merge-base", "--is-ancestor", base, self.cfg.branch], capture_output=True).returncode != 0:
+            faults.append("base is not on " + self.cfg.branch)
+        if git_run(wt, "rev-parse", "--abbrev-ref", "HEAD").strip() != self.cfg.branch:
+            faults.append("merge worktree is not on " + self.cfg.branch)
+        if not faults and self._dirty_paths(wt):
+            faults.append("merge worktree is dirty: the package waits")
+        if not faults and subprocess.run(["git", "-C", str(wt), "diff", "--quiet", base, "HEAD", "--", *files]).returncode != 0:
+            faults.append("a file of the package changed since its base: build it again")
+        if not faults:
+            faults += factory_gate.rig_weakens(wt, texts)
+            for name, text in texts.items():
+                old = (wt / name).read_text(encoding="utf-8") if (wt / name).is_file() else ""
+                if name.endswith(".py"):
+                    faults += factory_calls.new_bad_calls(name, old, text, wt)
+                canon = posixpath.normpath(name.replace("\\", "/")).casefold()
+                is_conftest = canon == "tests/conftest.py"
+                if is_conftest and name != canon:
+                    faults.append(name + ": conftest must be written as exactly tests/conftest.py")
+                if not is_conftest and factory_gate.is_forbidden(name, "code", named=list(files), rig=True):
+                    faults.append(name + ": forbidden")
+                if is_conftest:
+                    faults += _conftest_faults(name, text, _project_fixture_names(wt), old)
+                if F.is_private_text(text) and not F.is_private_text(old):
+                    faults.append(name + ": private text")
+        if faults:
+            raise F.InvalidPlan("package refused: " + "; ".join(faults[:6]))
+        key = bid or "rel-pack-" + verdict["digest"][:8]
+        try:
+            for name, raw in files.items():
+                (wt / name).parent.mkdir(parents=True, exist_ok=True)
+                (wt / name).write_bytes(raw)
+            git_run(wt, "add", "--", *files)
+            git_run(wt, "-c", "user.name=agent-factory", "-c", "user.email=agent-factory@localhost", "commit", "-q", "-m",
+                    "factory-package(%s): %s" % (key, self._scrub(F.redact(note))[:300]))
+            sha = git_run(wt, "rev-parse", "HEAD").strip()
+        except Exception as e:  # a failed write/add/commit must not leave the package in the tree or the index
+            try:
+                self._restore(wt, list(files))
+            except Exception as e2:
+                self.err("package restore", e2)
+            raise F.InvalidPlan("package: write or commit failed (%s), the tree is restored" % type(e).__name__) from e
+        ls = self.ls()
+        ls["promoted_total"] = int(ls.get("promoted_total") or 0) + 1     # a merged package makes a final build due, like a product row
+        self.save_ls(ls)
+        self.event("promote", task_id=key, backlog_id=key, status="promoted", reason="package", commit=sha, green=green)
+        return {"task_id": None, "backlog_id": key, "reason": "package " + sha[:8]}
+
+    def _revert_answer(self, tid, bid, state, note, ls) -> dict:
+        """W-true2 3: --reject --revert: a revert commit of the merged edit in the cycle's own worktree (the worktree lock it
+        holds for its whole life, like _promote), the task FAILED superseded:revert, the row back to to_slice with the note.
+        A conflict is aborted (git revert --abort, no reset/clean) and refused with the reason."""
+        row, wt = state["tasks"][tid], Path(self.cfg.worktree)
+        sha = str(row.get("commit") or "")
+        if not sha:
+            raise F.InvalidPlan("task %s has no merge commit to revert" % tid)
+        if git_run(wt, "rev-parse", "--abbrev-ref", "HEAD").strip() != self.cfg.branch:
+            raise F.InvalidPlan("merge worktree is not on " + self.cfg.branch)
+        if self._dirty_paths(wt):
+            raise F.InvalidPlan("merge worktree is dirty: the revert waits")
+        if subprocess.run(["git", "-C", str(wt), "merge-base", "--is-ancestor", sha, self.cfg.branch]).returncode != 0:
+            raise F.InvalidPlan("commit %s is not on %s: nothing to revert" % (sha[:8], self.cfg.branch))
+        text = self._scrub(F.redact(note))[:300]
+        # a retry after a failed state write: the revert commit of this cycle is already in the branch, go on to the records
+        done = git_run(wt, "log", "-1", "--format=%H", "--fixed-strings", "--grep", "factory-revert(%s):" % tid,
+                       "%s..%s" % (sha, self.cfg.branch)).strip()
+        if done:
+            new_sha = done
+        else:
+            why = ""
+            proc = subprocess.run(["git", "-C", str(wt), "revert", "--no-commit", sha], capture_output=True, text=True)
+            if proc.returncode != 0:
+                why = "revert of %s conflicts: %s" % (sha[:8], F.redact((proc.stdout + proc.stderr).strip())[:200])
+            elif subprocess.run(["git", "-C", str(wt), "diff", "--cached", "--quiet"]).returncode == 0:
+                why = "revert of %s changes nothing (already undone)" % sha[:8]
+            if why:
+                subprocess.run(["git", "-C", str(wt), "revert", "--abort"], capture_output=True)
+                if self._dirty_paths(wt):
+                    why += "; the worktree is not clean after the abort, needs a look"
+                raise F.InvalidPlan(why)
+            git_run(wt, "-c", "user.name=agent-factory", "-c", "user.email=agent-factory@localhost", "commit", "-q", "-m",
+                    "factory-revert(%s): %s" % (tid, text))
+            new_sha = git_run(wt, "rev-parse", "HEAD").strip()
+        ls["promoted_total"] = int(ls.get("promoted_total") or 0) + 1     # the branch changed: a final build is due
+        (ls.get("accepted") or {}).pop(tid, None)
+        seen = ls.setdefault("rejected", {}).setdefault(tid, [])     # the recovered path of _promote never takes it again
+        if sha not in seen:
+            seen.append(sha)
+        bid = bid or row.get("backlog_id")
+        task = self.load()[0].get(tid)
+        entry = ls.setdefault("to_slice", {}).setdefault(F.row_of(bid or tid), {"at": self.clock(), "hints": [], "guard": ""})
+        entry["hints"] = [text] + [h for h in entry.get("hints", []) if h != text]
+        entry["text"] = text
+        if task is not None:
+            entry["hints"] += [f for f in task.touch_files if f not in entry["hints"]]
+        self.save_ls(ls)
+
+        def fail(st):
+            r = st["tasks"][tid]
+            r.update(status="FAILED", reason="superseded:revert", commit=None, lease=None, deadline=None)
+            F.add_feedback(st, tid, "opus", note or "reverted")
+        self._tx(fail)
+        try:
+            res = factory_closures.update_note(self.cfg.backlog, bid, sha, "reverted " + sha[:8])
+            self.event("closure", task_id=tid, backlog_id=bid, status=res, reason="reverted")
+        except Exception as e:
+            self.err("revert: closure note", e)
+        self.event("reject", task_id=tid, backlog_id=bid, status="reverted", reason="rejected_by_coordinator", commit=new_sha)
+        return {"task_id": tid, "backlog_id": bid, "reason": "reverted"}
+
+    def _reject_answer(self, tid, bid, state, note, revert=False) -> dict:
         if not tid or tid not in state["tasks"]:
             raise F.InvalidPlan("reject needs a known task (--task-id)")
         status = state["tasks"][tid]["status"]
         if status != "PROMOTED":
             raise F.InvalidPlan("only a PROMOTED task can be rejected (it is %s)" % status)
         ls = self.ls()
+        if revert:                                        # W-pack: a build may have accepted the culprit; the revert undoes that too
+            return self._revert_answer(tid, bid, state, note, ls)
         if tid in (ls.get("accepted") or {}):
             raise F.InvalidPlan("task %s is already accepted" % tid)
         row = state["tasks"][tid]
@@ -4226,9 +4489,10 @@ class Loop:
             self._hypo_min()
             if getattr(self, "_hypo_pump", None) is None:       # ONE pump for every searching row of the loop (ECHO < rel < base)
                 self._hypo_pump = HY.Pump(ask, None, channels=names, minute=self._hypo_minute, stats=HY.STATS)
+                self._hypo_pump.hold = self._review_hold
         return HY.Ctx(root=root, ask=ask, cloud=lambda r, ids, files: HY.cloud_batch(r, ids, files, tid="h" + str(packet.get("bid"))),
                       pump=self._hypo_pump, failure_text=lambda ids: failure, trace=lambda ids: trace,
-                      failure_of=self._hypo_failure_of, skip_groups=self._hypo_cooled_groups(),
+                      failure_of=self._hypo_failure_of, skip_groups=self._hypo_cooled_groups(), kept=self._hypo_kept_for(str(self.base_sha)),
                       diff_funcs=lambda ids: diff, ranked=ranked, minute=self._hypo_minute, channels=names, sample=sample,
                       event=lambda name, **f: loop.event(name, **f))
 
@@ -4466,6 +4730,52 @@ class Loop:
             out.append(row)
         return sorted(out, key=lambda r: (HY.row_class(r), r))
 
+    HYPO_REVIEW_HOLD_S = 180.0      # W-hypo3 3: the longest the search yields to a waiting review (a stuck card must not starve it)
+    _review_since = None
+
+    @staticmethod
+    def _has_candidate(state, tid) -> bool:
+        row = (state.get("tasks") or {}).get(tid) or {}
+        return row.get("status") == "REVIEW" or (row.get("status") == "READY" and isinstance(row.get("candidate"), dict))
+
+    def _hypo_review_gate(self, state) -> bool:
+        """W-hypo3 3: True while the review of a candidate with green gates (REVIEW, or READY with its candidate kept) waits: the
+        search starts nothing and the pump books no minute (``_review_hold``), so the review takes the minute before edits and search.
+        Yields for at most HYPO_REVIEW_HOLD_S."""
+        mono = time.monotonic()
+        if not any(self._has_candidate(state, tid) for tid in (state.get("tasks") or {})):
+            self._review_since = None
+            return False
+        if self._review_since is None:
+            self._review_since = mono
+        return mono - self._review_since < self.HYPO_REVIEW_HOLD_S
+
+    def _review_hold(self) -> bool:
+        since = self._review_since
+        return since is not None and time.monotonic() - since < self.HYPO_REVIEW_HOLD_S
+
+    HYPO_GATE_S = 2.0           # the review gate re-reads the state at most this often (bounds a stale _review_since)
+
+    def _hypo_gate_tick(self) -> bool:
+        """W-hypo3 fix1: the review gate on every feed tick (rate-limited), whatever the search limit or scan timer say."""
+        mono = time.monotonic()
+        if mono - self.__dict__.get("_hypo_gate_at", -1e9) >= self.HYPO_GATE_S:
+            self._hypo_gate_at = mono
+            self._hypo_gate_on = self._hypo_review_gate(self.load()[1])
+        return bool(self.__dict__.get("_hypo_gate_on"))
+
+    def _hypo_limit(self) -> int:
+        """W-hypo3 1: searches at once from the answer rate of the last 5 minutes (1 below 2 answers a minute, up to HYPO_PARALLEL)."""
+        from tools import factory_hypo as HY
+        return HY.parallel_for(HY.STATS.answer_rate(time.monotonic()), self.HYPO_PARALLEL)
+
+    def _hypo_kept_for(self, base) -> dict:
+        """W-hypo3 1: the answers kept of searches that did not finish, for the current base only (an older base's are dropped)."""
+        have = self.__dict__.get("_hypo_kept")
+        if have is None or have[0] != base:
+            have = self._hypo_kept = (base, {})
+        return have[1]
+
     def _hypo_feed(self, now) -> None:
         """W-feed2 2: the independent feeder of the search (a tick of the loop thread): finished searches are applied, then up to
         HYPO_PARALLEL rows with a red test id on the current base start theirs. A row under a search neither starts with a card
@@ -4475,7 +4785,10 @@ class Loop:
             return
         try:
             self._hypo_collect(now)
-            if len(self._hypers) >= self.HYPO_PARALLEL or now - getattr(self, "_hypo_scan_at", -1e9) < self.HYPO_SCAN_S:
+            if self._hypo_gate_tick():          # W-hypo3 fix1: the gate looks at the state, not at the scan moment (also while the limit is full)
+                return
+            limit = self._hypo_limit()
+            if len(self._hypers) >= limit or now - getattr(self, "_hypo_scan_at", -1e9) < self.HYPO_SCAN_S:
                 return
             self._hypo_scan_at = now
             tasks, state = self.load()
@@ -4483,7 +4796,7 @@ class Loop:
             copies = None
             looked = 0
             for row in self._hypo_candidates(tasks, state, ls, now):
-                if len(self._hypers) >= self.HYPO_PARALLEL or looked >= 40:
+                if len(self._hypers) >= limit or looked >= 40:
                     break
                 looked += 1
                 entry = ls.get("to_slice", {}).get(row, {})
@@ -4540,7 +4853,12 @@ class Loop:
                     result = dict(contract=spare, engine="hypo", faults=[], repaired=[]) if spare is not None else None
                 elif kind == "search":
                     result = self._hypo_post(row, packet, job.ctx["root"], ids, found)
-                    if result is None:
+                    again = self.__dict__.setdefault("_hypo_again", {})
+                    mine = any(k[0] == str(ids[0]) for k in self._hypo_kept_for(base)) if ids else False
+                    if result is None and found.get("status") == "cloud" and mine and again.get((row, base), 0) < 3:
+                        again[(row, base)] = again.get((row, base), 0) + 1
+                        pass       # W-hypo3 1: answers are kept: the row is searched again at once and finishes to a batch
+                    elif result is None:
                         self._hypo_skip[row] = (base, now)      # red or no result: the row goes the usual way, evidence kept
                 else:
                     result = None
@@ -6709,6 +7027,7 @@ class Loop:
         try:
             keep = {r.resolve() for r in self.pool.roots()}
             keep.update(Path(j.ctx["root"]).resolve() for j in self._slicers.values())
+            keep.update(Path(j.ctx["root"]).resolve() for j in list(self._hypers.values()))     # W-hypo3 5: the base of a live search stays
             if self.base_sha:
                 keep.add((self.snap_dir / self.base_sha[:12]).resolve())
             if self._rel_snap:                          # the final build reads its snapshot for as long as it sweeps
@@ -7854,8 +8173,8 @@ class Loop:
     def _restore(self, wt: Path, rel: list[str]) -> None:
         """Put the package paths back to HEAD: index, tracked files, new untracked files."""
         for r in rel:
-            tracked = subprocess.run(["git", "-C", str(wt), "ls-files", "--error-unmatch", "--", r],
-                                     capture_output=True).returncode == 0
+            tracked = subprocess.run(["git", "-C", str(wt), "cat-file", "-e", "HEAD:" + r],      # in HEAD, not in the index: a
+                                     capture_output=True).returncode == 0                        # file that was just `add`ed is new
             subprocess.run(["git", "-C", str(wt), "reset", "-q", "--", r], capture_output=True)
             if tracked:  # content from HEAD written directly: works while index.lock is held
                 blob = subprocess.run(["git", "-C", str(wt), "cat-file", "--filters", "HEAD:" + r],
@@ -8412,6 +8731,8 @@ def answer_main(argv) -> int:
     p.add_argument("--accept", action="store_true",
                    help="the coordinator accepts a PROMOTED task (PROMOTED = merged, ACCEPTED = taken)")
     p.add_argument("--reject", action="store_true", help="the coordinator rejects a PROMOTED task: back to READY with --note")
+    p.add_argument("--revert", action="store_true",
+                   help="with --reject: the loop also reverts the merged commit (task FAILED superseded:revert, the row to the slicer)")
     p.add_argument("--release-private", action="store_true",
                    help="allow a public --goal for a row private by content (keys, passwords, recordings); "
                         "other rows need no flag")
@@ -8421,7 +8742,10 @@ def answer_main(argv) -> int:
                                   "shown to the coder as a reference)")
     p.add_argument("--contract", help="JSON architect contract")
     p.add_argument("--note", default="")
+    p.add_argument("--package", type=Path, help="W-pack: the folder of a verified root package (files/ and verdict.json)")
     a = p.parse_args(argv)
+    if a.package and not a.backlog_id:
+        a.backlog_id = "rel-pack"
     if a.port is not None and not F.PORT_SHA.fullmatch(a.port):
         p.error("--port must be a commit sha (7-40 hex characters)")
     if not a.backlog_id and not a.task_id:
@@ -8446,6 +8770,8 @@ def answer_main(argv) -> int:
         p.error("--accept needs --task-id and nothing else but --note")
     if a.reject and (not a.task_id or not a.note.strip() or a.accept or a.close or a.goal or any(x is not None for x in (a.touch, a.tests, a.read, a.target, a.depends_on))):
         p.error("--reject needs --task-id and --note and nothing else")
+    if a.revert and not a.reject:
+        p.error("--revert goes with --reject")
     if a.close and not a.note.strip():
         p.error("--close needs --note with the reason")
     if a.close and any(x is not None for x in (a.touch, a.tests, a.read, a.target, a.depends_on)):
@@ -8467,6 +8793,8 @@ def answer_main(argv) -> int:
         except ValueError as exc:
             p.error(str(exc))
         ans["contract"] = a.contract
+    if a.package:
+        ans["package"] = str(a.package)
     if a.release_private:
         ans["release_private"] = True
     if a.port:
@@ -8477,6 +8805,8 @@ def answer_main(argv) -> int:
         ans["accept"] = True
     if a.reject:
         ans["reject"] = True
+        if a.revert:
+            ans["revert"] = True
     if a.kind == "unit_test":
         if set(a.touch or []) != set(a.tests or []) or not a.touch:
             p.error("a unit_test task touches exactly its tests: --touch must equal --tests")

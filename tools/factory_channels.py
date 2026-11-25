@@ -278,6 +278,9 @@ _ROLE_TIERS = {   # candidate order of tiers for a call; a tier that is not list
 }
 
 
+EDIT_MAIN_FLOOR = 0.7   # W-split (owner): Flash-Lite cuts, Gemma edits: a main channel takes edit calls only while this share of its day is left
+
+
 def note_edit_outcome(state, tier, green, seconds, now=None):
     """Keep a rolling experiment, evaluating every thirty cards or two hours."""
     now = time.time() if now is None else now
@@ -433,6 +436,8 @@ def route_order(channels, role, attempt, tokens, *, preferred=None, exclude_mode
             if not (gemma_first and tokens <= small_cap):   # (a single light request waits for the window in choose())
                 continue
         if state is not None and missing_for_good(state, channel):
+            continue
+        if state is not None and role == 'edit' and tier == 'main' and tokens <= small_cap                 and day_left_share(state, channel, now=now) < EDIT_MAIN_FLOOR:
             continue
         picked.append(channel)
     if state is None:

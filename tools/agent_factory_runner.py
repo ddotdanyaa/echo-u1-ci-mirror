@@ -56,6 +56,7 @@ from . import factory_tree
 from . import factory_quota as quota_ledger
 from . import factory_paid_critic as paid_critic
 from . import factory_ensemble as ENS
+from . import factory_calls as FC
 from . import factory_review_wait as RW
 _log = logging.getLogger(__name__)
 ENV_ALLOW = ("PATH", "PATHEXT", "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC", "LANG")
@@ -2605,7 +2606,10 @@ def part_undefined(file: str, old_text: str, new_text: str) -> str:
     if not file.endswith('.py'):
         return ''
     names = K.new_undefined_names(old_text, new_text)
-    return K.UNDEFINED_NOTE % (file, ', '.join(names[:8])) if names else ''
+    if not names:      # W-true2 1: a NEW call no definition of its name accepts (the same re-ask path, no strike)
+        bad = FC.new_bad_calls(file, old_text, new_text)
+        return 'your edit has a call the project does not accept: ' + ' | '.join(bad[:4]) if bad else ''
+    return K.UNDEFINED_NOTE % (file, ', '.join(names[:8]))
 
 
 VGS_ON = True         # W-vgs: the ensemble of the small tier (tests of other features switch it off)

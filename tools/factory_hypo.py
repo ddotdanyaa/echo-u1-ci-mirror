@@ -37,6 +37,14 @@ SAMPLES_MAX = 20                # kept first answers of each bad / invalid kind 
 RETRY_REFUSED_S = 30.0             # a refused hypothesis waits this long for the SAME channel (others take it at once)
 PER_CHANNEL = 4                 # concurrent requests of the pump on one channel
 CLOUD_TRIES = 3
+RATE_WINDOW_S = 300.0           # W-hypo3 1: the answer rate is measured over this window
+
+
+def parallel_for(rate: float, cap: int) -> int:
+    """W-hypo3 1: how many searches at once: 1 below 2 answers a minute, then one more per 2 answers, up to ``cap``."""
+    if rate < 2.0:
+        return 1
+    return max(1, min(int(cap), 1 + int(rate // 2)))
 FAIL_TEXT = 400
 ASK_TERM_S = 120.0
 RECENT_RE = re.compile(r"^\s*(\S+\.py):(\d+): in (\w+)", re.M)
@@ -95,6 +103,11 @@ def rank_functions(root, *, stack=(), diff=(), trace=(), ranked=(), k=HYPO_FUNCS
         if sym and (file, sym) not in seen:
             seen.add((file, sym))
             out.append({"file": file, "symbol": sym, "why": why})
+    # W-hypo3 2: the functions whose lines stand both in the failure trace and in the diff of the last merge come first
+    in_diff = {(str(f).replace("\\", "/"), str(n).rpartition(".")[2]) for f, n in diff}
+    for f, n in list(stack) + [(t[0], t[1]) for t in reversed(list(trace))]:
+        if (str(f).replace("\\", "/"), str(n).rpartition(".")[2]) in in_diff:
+            add(f, n, "stack+diff")
     for f, n in stack:
         add(f, n, "stack")
     for f, n in diff:
@@ -340,6 +353,7 @@ class Stats:
         self.lock = threading.Lock()
         self.c = collections.Counter()
         self.times = collections.deque()
+        self.ans_times = collections.deque()        # W-hypo3 1: the times of the answers (the rate of the last 5 minutes)
         self.refused = collections.Counter()        # status of a refused request -> n
         self.outcomes = collections.Counter()       # cannot / bad / invalid / no_effect / undefined / dup -> n
         self.chan = {}                              # channel id -> {'sent': n, 'ok': n}
@@ -364,9 +378,18 @@ class Stats:
         with self.lock:
             self.outcomes[str(name)] += 1
 
-    def answered(self, chan):
+    def answered(self, chan, now=None):
         with self.lock:
             self.chan.setdefault(str(chan), dict(sent=0, ok=0))["ok"] += 1
+            if now is not None:
+                self.ans_times.append(now)
+
+    def answer_rate(self, now, window=RATE_WINDOW_S) -> float:
+        """W-hypo3 1: answers a minute over the last ``window`` seconds."""
+        with self.lock:
+            while self.ans_times and now - self.ans_times[0] > window:
+                self.ans_times.popleft()
+            return len(self.ans_times) * 60.0 / window
 
     def snapshot(self, now) -> dict:
         with self.lock:
@@ -430,12 +453,13 @@ class Minute:
 
 
 class Item:
-    __slots__ = ("prio", "key", "text", "tokens", "temp", "tag", "avoid", "avoid_until", "fails", "group")
+    __slots__ = ("prio", "key", "text", "tokens", "temp", "tag", "avoid", "avoid_until", "fails", "group", "skip")
 
     def __init__(self, prio, key, text, tokens, temp, tag):
         self.prio, self.key, self.text, self.tokens, self.temp, self.tag = prio, key, text, tokens, temp, tag
         self.avoid, self.avoid_until, self.fails = "", 0.0, 0
         self.group = None
+        self.skip = None            # W-hypo3 2: a callable; true = the item is not sent (its function already said CANNOT)
 
 
 class Group:
@@ -473,6 +497,7 @@ class Pump:
         self.refused = collections.Counter()
         self.threads = {}           # channel -> its live worker (one pump serves every search of the loop at once)
         self.until = 0.0
+        self.hold = None            # W-hypo3 3: a callable; true = the pump books and asks nothing now
         self.shut = {}              # channel -> the time before which it books and asks nothing (it answered 'no_channel')
 
     def submit(self, items, on_answer=None) -> Group:
@@ -545,6 +570,13 @@ class Pump:
             if item.group is not None and item.group.cancelled:
                 self._done(item)
                 continue
+            if item.skip is not None and item.skip():
+                self._done(item)
+                continue
+            if self.hold is not None and self.hold():        # W-hypo3 3: a review of a green candidate takes the minute first
+                self._back(item)
+                self.sleep(0.2)
+                continue
             if self.clock() < self.shut.get(chan, 0.0):     # the channel just said 'no channel': no booking, no ask until it may open
                 self._back(item)
                 self.sleep(0.05)
@@ -568,7 +600,7 @@ class Pump:
             self.stats.request(self.clock(), item.tokens, chan)
             if status == "ok":
                 self.stats.add("answers")
-                self.stats.answered(chan)
+                self.stats.answered(chan, self.clock())
                 try:
                     if item.group is None or not item.group.cancelled:
                         (item.group.on_answer if item.group is not None else self.on_answer)(item, answer)
@@ -832,16 +864,23 @@ def search(row, ids, env, base_failure: str = ""):
             continue
         by_key[(fn["file"], fn["symbol"])] = dict(fn, card=card[0])
         env.stats.add("hypotheses")
-        for t, temp in enumerate(TEMPS):
-            items.append(Item((cls, i, t), (fn["file"], fn["symbol"]), card[0], card[1], temp, "first"))
+        for t, temp in enumerate(TEMPS):    # W-hypo3 2: every function's first temperature goes before any second one
+            items.append(Item((cls, t, i), (fn["file"], fn["symbol"]), card[0], card[1], temp, "first"))
+    kept = getattr(env, "kept", None)       # W-hypo3 1: answers of an unfinished search (same base, same test) are not asked again
+    kept_key = lambda item: (str(ids[0]), item.key[0], item.key[1], item.temp)      # noqa: <id>
+    cannot = set()                          # W-hypo3 2: functions that said CANNOT: no other temperature is sent for them
 
     def collect(item, answer):
         fn = by_key[item.key]
+        if kept is not None and item.tag == "first":
+            kept[kept_key(item)] = answer
         cand, why = check_candidate(env.root, fn, answer)
         with lock:
             if cand is None:
                 tried.append(dict(fn, outcome=why))
                 _note_outcome(env, why, answer)
+                if outcome_of(why) == "cannot":
+                    cannot.add(item.key)
                 return
             env.stats.add("valid")
             if cand["fp"] in seen_fp:
@@ -851,7 +890,15 @@ def search(row, ids, env, base_failure: str = ""):
             cand.update(n=len(cands), temp=item.temp, answer=answer)
             cands.append(cand)
             answers[cand["n"]] = fn
-    finished = _run_pump(env, row, items, collect)
+    todo = []
+    for item in items:
+        item.skip = (lambda key: lambda: key in cannot)(item.key)
+        if kept is not None and kept_key(item) in kept:     # answered before: used, not asked
+            if item.key not in cannot:
+                collect(item, kept[kept_key(item)])
+            continue
+        todo.append(item)
+    finished = _run_pump(env, row, todo, collect) if todo else True
     more = dict(group=sig, ids=ids)
     if not cands:
         if not finished:
