@@ -1650,7 +1650,8 @@ def rig_weakens(base_root, cand_files: dict) -> list[str]:
         base_file = root / path
         old = base_file.read_text(encoding='utf-8', errors='replace') if base_file.is_file() else ''
         new = text or ''
-        if len(_RIG_MARK.findall(new)) > len(_RIG_MARK.findall(old)):
+        marks = [[w for w in _RIG_MARK.findall(t) if w != 'monkeypatch' or path != 'tests/conftest.py'] for t in (new, old)]
+        if len(marks[0]) > len(marks[1]):       # W-pack: a fixture of tests/conftest.py may use monkeypatch; asserts stay locked
             out.append(f'rig_weakens: {path}: new skip/xfail/sleep/monkeypatch')
         try:
             new_tree = ast.parse(new)
