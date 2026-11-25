@@ -1,0 +1,4 @@
+@tests/test_a_u94_2_claim.py
+@tests/test_one_answer.py
+@tests/test_u94_11_try_counted.py
+@tests/test_w5_m_u138.py
