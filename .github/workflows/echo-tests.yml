@@ -1,0 +1,64 @@
+name: echo-tests
+on:
+  push:
+    branches: ['echo/**']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  tests:
+    name: shard ${{ matrix.shard }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 33
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5]
+    env:
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: .echo/requirements.txt
+      - name: Install test dependencies
+        run: python -m pip install --disable-pip-version-check -r .echo/requirements.txt
+      - name: Run shard
+        shell: bash
+        run: |
+          f=.echo/shards/${{ matrix.shard }}.txt
+          if [ -s "$f" ]; then
+            mapfile -t T < "$f"
+            python -m pytest "${T[@]}" -q -p no:cacheprovider --tb=short --continue-on-collection-errors --timeout=120 --junitxml=junit-${{ matrix.shard }}.xml
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: junit-${{ matrix.shard }}
+          path: junit-${{ matrix.shard }}.xml
+          if-no-files-found: ignore
+  merge:
+    needs: tests
+    if: always()
+    name: merge
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: junit-*
+          path: junit
+          merge-multiple: true
+      - name: Merge JUnit into results.json
+        run: python3 .echo/echo_cloud.py merge junit .echo/shards results.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: echo-results
+          path: results.json
