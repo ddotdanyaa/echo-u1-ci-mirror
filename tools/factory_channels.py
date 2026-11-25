@@ -270,12 +270,15 @@ def tier_of(channel) -> str:
 _ROLE_TIERS = {   # candidate order of tiers for a call; a tier that is not listed is not used for that role
     ('code', 1): ('main', 'small', 'escalation'),
     ('code', 2): ('escalation', 'main'),
-    ('edit', 1): ('main', 'small'),   # W-exact 4: the first edit goes to the main tier (Flash-Lite) while it has a live channel; Gemma follows (main_dry puts it first)
+    ('edit', 1): ('small', 'main'),
     ('edit', 2): ('main', 'escalation'),
     'architect': ('escalation', 'main'),   # the strong tier's quota is small: when it is spent the architect goes to the main tier
     'review': ('small', 'main', 'escalation'),
     'cross_review': ('main', 'small', 'escalation'),
 }
+
+
+EDIT_MAIN_FLOOR = 0.7   # W-split (owner): Flash-Lite cuts, Gemma edits: a main channel takes edit calls only while this share of its day is left
 
 
 def note_edit_outcome(state, tier, green, seconds, now=None):
@@ -433,6 +436,8 @@ def route_order(channels, role, attempt, tokens, *, preferred=None, exclude_mode
             if not (gemma_first and tokens <= small_cap):   # (a single light request waits for the window in choose())
                 continue
         if state is not None and missing_for_good(state, channel):
+            continue
+        if state is not None and role == 'edit' and tier == 'main' and tokens <= small_cap                 and day_left_share(state, channel, now=now) < EDIT_MAIN_FLOOR:
             continue
         picked.append(channel)
     if state is None:
