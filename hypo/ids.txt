@@ -1,0 +1,25 @@
+tests/test_first_cue_clock.py::test_every_first_cue_is_right_and_no_invariant_breaks
+tests/test_first_cue_never_silent.py::test_replay_harness_is_built_exactly_like_the_host
+tests/test_followup_real.py::test_the_ear_opens_the_followup_before_the_cloud_final[\u0442\u0430\u043a \u0430 \u043f\u044f\u0442\u044c\u0434\u0435\u0441\u044f\u0442 \u0434\u0432\u0430 \u044d\u0442\u043e \u043a\u0430\u043a\u043e\u0439 \u0443 \u043d\u0430\u0441 \u0441\u0447\u0451\u0442]
+tests/test_followup_real.py::test_the_ear_opens_the_followup_before_the_cloud_final[\u0430 \u041a\u041e-2 \u044d\u0442\u043e \u0447\u0442\u043e]
+tests/test_followup_real.py::test_the_ear_opens_the_followup_before_the_cloud_final[\u0442\u0430\u043a \u0447\u0442\u043e \u044d\u0442\u043e \u0437\u0430 \u0443\u043a\u0430\u0437\u0430\u043d\u0438\u0435]
+tests/test_followup_real.py::test_the_cloud_final_5_s_later_says_nothing_twice
+tests/test_i1b_lecture_scenes.py::test_the_question_of_a_lecture_is_answered_under_every_shape_of_the_packets
+tests/test_k_one_reading.py::test_the_side_doors_of_the_kind_are_gone
+tests/test_live_lab_more_detail.py::test_more_detail_is_no_go_on_whatever_mark_the_job_says[[\u043f\u0440\u043e\u0434\u043e\u043b\u0436\u0430\u0439]-\u041f\u043e\u0434\u0440\u043e\u0431\u043d\u0435\u0435]
+tests/test_live_lab_more_detail.py::test_more_detail_is_no_go_on_whatever_mark_the_job_says[[\u043f\u0440\u043e\u0434\u043e\u043b\u0436\u0430\u0439]-\u041f\u043e\u0434\u0440\u043e\u0431\u043d\u0435\u0435.]
+tests/test_live_lab_more_detail.py::test_more_detail_is_no_go_on_whatever_mark_the_job_says[[\u043f\u0440\u043e\u0434\u043e\u043b\u0436\u0430\u0439]-\u0410 \u043c\u043e\u0436\u043d\u043e \u043f\u043e\u043f\u043e\u0434\u0440\u043e\u0431\u043d\u0435\u0435]
+tests/test_live_lab_more_detail.py::test_more_detail_is_no_go_on_whatever_mark_the_job_says[[\u0434\u0430\u043b\u044c\u0448\u0435]-\u041f\u043e\u0434\u0440\u043e\u0431\u043d\u0435\u0435]
+tests/test_live_lab_more_detail.py::test_more_detail_is_no_go_on_whatever_mark_the_job_says[[\u0434\u0430\u043b\u044c\u0448\u0435]-\u041f\u043e\u0434\u0440\u043e\u0431\u043d\u0435\u0435.]
+tests/test_live_lab_more_detail.py::test_more_detail_is_no_go_on_whatever_mark_the_job_says[[\u0434\u0430\u043b\u044c\u0448\u0435]-\u0410 \u043c\u043e\u0436\u043d\u043e \u043f\u043e\u043f\u043e\u0434\u0440\u043e\u0431\u043d\u0435\u0435]
+tests/test_live_lab_more_detail.py::test_the_clouds_answer_to_a_request_for_detail_is_the_answer_after_the_mark
+tests/test_local_fallback.py::test_the_setup_fails_the_call_opens_and_the_bank_answers
+tests/test_m1_rules.py::test_a_row_is_silent_where_its_scene_says[gate_talk-neg-0]
+tests/test_m1_rules.py::test_a_row_is_silent_where_its_scene_says[went_to_the_answer-neg-0]
+tests/test_m2_open.py::test_the_422_scene_the_number_said_again_is_asked_and_gets_no_answer_on_the_cloud_s_number
+tests/test_m5_tick.py::test_the_seconds_of_the_hold_causes_exist
+tests/test_m6_act_steps.py::test_a_service_phrase_is_held_while_a_cue_of_the_open_question_plays_and_goes_when_it_has_ended
+tests/test_m6_act_steps.py::test_no_owner_of_another_family_stays_in_the_core
+tests/test_marathon.py::test_nothing_is_left_up_after_an_answer
+tests/test_material_folder.py::test_a_link_in_the_folder_to_a_file_of_someone_else_is_not_read_into_the_call
+tests/test_n02_topic_in_play.py::test_a_follow_up_with_no_new_subject_still_hangs_on_the_answered_question
