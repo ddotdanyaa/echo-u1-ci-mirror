@@ -56,6 +56,7 @@ from . import factory_tree
 from . import factory_quota as quota_ledger
 from . import factory_paid_critic as paid_critic
 from . import factory_ensemble as ENS
+from . import factory_calls as FC
 from . import factory_review_wait as RW
 _log = logging.getLogger(__name__)
 ENV_ALLOW = ("PATH", "PATHEXT", "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC", "LANG")
@@ -647,8 +648,12 @@ def neighbor_tests(root: Path, task: Task) -> list[str]:
         graph = affected_tests.Graph(Path(root))
         found, _, _ = affected_tests.affected(list(task.touch_files), radius=1, g=graph)
     out: list[str] = []
-    for name in found:
-        if name in task.tests or name in task.touch_files or name in out:
+    rig = gate.is_rig_task(task)
+    mine = [n for n in task.touch_files if rig and Path(n).name.startswith('test_') and n.endswith('.py') and n not in task.tests]   # W-rig: every id of a changed test file runs (the target file already runs as the target)
+    for name in mine + list(found):
+        if name in out:
+            continue
+        if name not in mine and (name in task.tests or name in task.touch_files):
             continue
         if (Path(root) / name).is_file():
             out.append(name)
@@ -2601,7 +2606,10 @@ def part_undefined(file: str, old_text: str, new_text: str) -> str:
     if not file.endswith('.py'):
         return ''
     names = K.new_undefined_names(old_text, new_text)
-    return K.UNDEFINED_NOTE % (file, ', '.join(names[:8])) if names else ''
+    if not names:      # W-true2 1: a NEW call no definition of its name accepts (the same re-ask path, no strike)
+        bad = FC.new_bad_calls(file, old_text, new_text)
+        return 'your edit has a call the project does not accept: ' + ' | '.join(bad[:4]) if bad else ''
+    return K.UNDEFINED_NOTE % (file, ', '.join(names[:8]))
 
 
 VGS_ON = True         # W-vgs: the ensemble of the small tier (tests of other features switch it off)
@@ -2736,7 +2744,10 @@ def edit_parts(task: Task, parts: list, workdir: Path, call, failing: str = '', 
             shutil.copytree(workdir, folder)
         try:
             try:
-                if file.endswith('.py'):
+                if gate.is_rig_task(task) and isinstance(part.get('file_text'), str):
+                    # W-rig fix2: a rig card carries the whole verified file; it is written as it is (bytes: CRLF stays)
+                    blocks = None
+                elif file.endswith('.py'):
                     # W-optim 3: a function that moved since the architect's read is not a refusal and not a reslice: the
                     # replacement is applied by name onto the fresh snapshot and the gates judge it
                     blocks = [(file, _FuncTarget(symbol), text)
@@ -2747,9 +2758,16 @@ def edit_parts(task: Task, parts: list, workdir: Path, call, failing: str = '', 
                         return 'the code block is not a SEARCH/REPLACE block of ' + file
             except (ValueError, OSError) as error:
                 return str(error)
-            applied, failed = apply_edit_blocks(folder, blocks, None, {file: part.get('symbols') or []})
-            if failed:
-                return '; '.join(sorted(failed))
+            if blocks is None:
+                try:
+                    (folder / file).parent.mkdir(parents=True, exist_ok=True)
+                    (folder / file).write_bytes(part['file_text'].encode('utf-8'))
+                except OSError as error:
+                    return str(error)
+            else:
+                applied, failed = apply_edit_blocks(folder, blocks, None, {file: part.get('symbols') or []})
+                if failed:
+                    return '; '.join(sorted(failed))
             target, before = folder / file, workdir / file
             with lock:
                 changed = target.is_file() and (not before.is_file() or target.read_bytes() != before.read_bytes())
@@ -2872,13 +2890,18 @@ def edit_parts(task: Task, parts: list, workdir: Path, call, failing: str = '', 
                 info['context_chars'] = info.get('context_chars', 0) + len(pack)
                 info['context_sections'] = sorted(set(info.get('context_sections', [])) | set(K.context_sections(pack)))
         reason, more = '', ''
-        if use_code and isinstance(part.get('code'), str) and part['code'].strip():
+        ready_file = gate.is_rig_task(task) and isinstance(part.get('file_text'), str)
+        # a rig card with a ready file has ONE path, writing that file: on a retry, with feedback or for a parallel
+        # candidate it is applied too, and an unapplied one is refused (never handed to a model, which would invent the file)
+        if ready_file or (use_code and isinstance(part.get('code'), str) and part['code'].strip()):
             why_not = apply_code(index, part)
             if not why_not:
                 if info is not None:
                     with lock:
                         info['code_applied'] = info.get('code_applied', 0) + 1
                 return ''
+            if ready_file:
+                return '%s: the ready file could not be written (%s)' % (file, why_not[:300])
             more = ('\nThe architect wrote code for this part; it could not be applied (%s). Make the change the '
                     'instruction asks for.\n' % why_not[:300])
         if vgs is not None and vgs.k:
@@ -4152,7 +4175,7 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                         json.loads(source) if name.endswith('.json') else tomllib.loads(source)
                     except ValueError as error:
                         return reject('gate', 'gate: parse error in ' + name, 'does not parse: %s' % error, changed)
-            problems = gate.weakening_violations(root, cand_files, task.kind, task.touch_files)
+            problems = gate.weakening_violations(root, cand_files, task.kind, task.touch_files, rig=gate.is_rig_task(task))
             if problems:
                 text = '; '.join(problems)
                 return reject('gate', 'weakening: ' + text[:300], 'weakening of the checks: ' + text, changed)
@@ -4444,7 +4467,7 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                             compile(source, name, 'exec')
                         except (SyntaxError, ValueError) as error:
                             return 'its edit of %s does not compile (%s)' % (name, error)
-                if gate.weakening_violations(root, texts, task.kind, task.touch_files):
+                if gate.weakening_violations(root, texts, task.kind, task.touch_files, rig=gate.is_rig_task(task)):
                     return 'its edit weakened a check'
                 if task.kind == 'unit_test' and task.backlog_id:
                     first = next((n for n in now if n in task.tests), task.tests[0])

@@ -392,6 +392,31 @@ def close_debt(state_dir, row_id) -> bool:
     return False
 
 
+def close_debt_ids(state_dir, ids) -> int:
+    """W-rig: a merged and accepted rig card takes many test ids out of the baseline debt at once (any file): the ids leave the
+    entry's ``tests``; an entry left without tests is closed. One read, one write. -> the number of ids taken out."""
+    want = {_key(i) for i in ids or () if i}
+    if not want:
+        return 0
+    path = release_dir(state_dir) / DEBT_FILE
+    book = _read_json(path, {})
+    taken = 0
+    for rec in book.values():
+        if not isinstance(rec, dict) or rec.get("closed"):
+            continue
+        tests = [t for t in rec.get("tests") or [] if isinstance(t, str)]
+        left = [t for t in tests if _key(t) not in want]
+        if len(left) == len(tests):
+            continue
+        taken += len(tests) - len(left)
+        rec["tests"] = left
+        if not left:
+            rec["closed"] = True
+    if taken:
+        _write_json(path, book)
+    return taken
+
+
 def _next_n(rel, book) -> int:
     seq = _read_json(rel / DEBT_SEQ, {})
     n = max(int(seq.get("next") or 1), 1 + max([int(r.get("n") or 0) for r in book.values() if isinstance(r, dict)] or [0]))

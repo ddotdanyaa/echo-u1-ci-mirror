@@ -15,6 +15,7 @@ import json
 import os
 import re
 import tempfile
+import threading
 import time
 import uuid
 import unicodedata
@@ -263,6 +264,15 @@ def _own_test_contract(row: dict) -> bool:
     return isinstance(contract, dict) and contract.get("own_test_edit") is True
 
 
+def _rig_contract(row: dict) -> bool:
+    """W-rig: True when the row's contract is a rig card (``rig: true``); the gate (is_forbidden rig, rig_weakens) decides the rest."""
+    try:
+        contract = json.loads(row.get("contract") or "")
+    except (ValueError, TypeError):
+        return False
+    return isinstance(contract, dict) and contract.get("rig") is True
+
+
 def read_plan(plan: object) -> dict[str, Task]:
     """Tasks require explicit scope, dependencies and privacy classification.
 
@@ -308,7 +318,8 @@ def read_plan(plan: object) -> dict[str, Task]:
         elif work_kind == "code":
             overlap = ({p.casefold() for p in files["touch_files"]} &
                        {p.casefold() for p in files["tests"]})
-            if overlap and not (_own_test_contract(row) and all(OWN_TEST_PATH.fullmatch(p) for p in overlap)):
+            if overlap and not (_own_test_contract(row) and all(OWN_TEST_PATH.fullmatch(p) for p in overlap)) \
+                    and not _rig_contract(row):         # W-rig: a rig card's stand files may meet the test files of its scope
                 raise InvalidPlan("code task must not edit its own tests")
         else:
             raise InvalidPlan("invalid kind")
@@ -1283,6 +1294,7 @@ def _drop_lock(lock: Path) -> None:
 
 LOCK_HELD_NOTE_S = 0.5      # W-ask 4: a lock held longer than this is a lock_held event with the place of the call
 LOCK_EVENTS_MAX = 200
+_LOCK_LOCAL = threading.local()   # commit_s: seconds the running txn spent in its own validate+save (not counted as a slow hold)
 
 
 def _note_lock_held(lock: Path, held_s: float) -> None:
@@ -1339,10 +1351,12 @@ def _dir_lock(path: Path, timeout_s: float):
     with contextlib.suppress(OSError):
         (lock / LOCK_OWNER).write_text(str(os.getpid()), encoding="ascii")
     held_from = time.monotonic()
+    _LOCK_LOCAL.commit_s = 0.0
     try:
         yield
     finally:
-        held = time.monotonic() - held_from
+        held = time.monotonic() - held_from - getattr(_LOCK_LOCAL, "commit_s", 0.0)
+        _LOCK_LOCAL.commit_s = 0.0
         if held > LOCK_HELD_NOTE_S:
             _note_lock_held(lock, held)
         try:
@@ -1407,8 +1421,12 @@ def txn(checkpoint: Path, plan: Path, timeout_s: float = LOCK_STALE_S + 10):
         tasks = read_plan_file(plan)
         state = load_state(checkpoint, tasks)
         yield tasks, state
-        validate_state(tasks, state)
-        save_atomic(checkpoint, state)
+        t_commit = time.monotonic()
+        try:
+            validate_state(tasks, state)
+            save_atomic(checkpoint, state)
+        finally:   # the commit's own write (an fsync may stall for a second on a loaded disk) is not the holder's slow block
+            _LOCK_LOCAL.commit_s = time.monotonic() - t_commit
 
 
 def claim(checkpoint: Path, plan: Path, tid: str | None = None):
