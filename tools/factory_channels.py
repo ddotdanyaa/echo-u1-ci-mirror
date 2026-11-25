@@ -270,7 +270,7 @@ def tier_of(channel) -> str:
 _ROLE_TIERS = {   # candidate order of tiers for a call; a tier that is not listed is not used for that role
     ('code', 1): ('main', 'small', 'escalation'),
     ('code', 2): ('escalation', 'main'),
-    ('edit', 1): ('small', 'main'),
+    ('edit', 1): ('main', 'small'),   # W-exact 4: the first edit goes to the main tier (Flash-Lite) while it has a live channel; Gemma follows (main_dry puts it first)
     ('edit', 2): ('main', 'escalation'),
     'architect': ('escalation', 'main'),   # the strong tier's quota is small: when it is spent the architect goes to the main tier
     'review': ('small', 'main', 'escalation'),
