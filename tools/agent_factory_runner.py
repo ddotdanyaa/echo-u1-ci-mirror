@@ -4785,7 +4785,7 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                             base_k = ctx['baseline']
                         code, text, note = edit_parts(task, parts_now, where,
                                                       lambda pt, d, p: part_call(k, pt, d, p), failing=line,
-                                                      use_code=attempt <= 1 and not feedback and not k,
+                                                      use_code=paid_critic.agent_card(task) or (attempt <= 1 and not feedback and not k),   # a strong author's code is applied again after a deferral, never rewritten
                                                       gemma_first=gemma_first_now, on_cut=events.append,
                                                       trace=part_trace, fail_ids=part_fail_ids, info=see,
                                                       on_event=events.append,
