@@ -1521,7 +1521,35 @@ def own_test_edit(path: str, kind=None, named=(), own_tests=None) -> bool:
     return bool(OWN_TEST_RE.fullmatch(canon)) and canon in {_canon(n) for n in named}
 
 
-def is_forbidden(path: str, kind=None, named=(), own_tests=None):
+def is_rig_task(task) -> bool:
+    """W-rig: True for a code task whose contract says ``rig: true`` (a test-stand card)."""
+    try:
+        contract = json.loads(getattr(task, 'contract', '') or '')
+    except (ValueError, TypeError):
+        return False
+    return isinstance(contract, dict) and contract.get('rig') is True and getattr(task, 'kind', 'code') == 'code'
+
+
+RIG_MAX_ECHO = 3    # W-rig: a rig card touches tests/** and at most this many echo_sync/** files
+
+
+def rig_touch_faults(named) -> list[str]:
+    """W-rig: the shape of a rig card's touch_files: tests/** and up to RIG_MAX_ECHO files of echo_sync/**, nothing else."""
+    out, echo = [], 0
+    for raw in named:
+        canon = _canon(raw)
+        if canon is None:
+            out.append('%s: path outside the repository' % raw)
+        elif canon.startswith('echo_sync/'):
+            echo += 1
+        elif not canon.startswith('tests/'):
+            out.append('%s: a rig card touches only tests/** and echo_sync/**' % canon)
+    if echo > RIG_MAX_ECHO:
+        out.append('a rig card names at most %d echo_sync files (%d named)' % (RIG_MAX_ECHO, echo))
+    return out
+
+
+def is_forbidden(path: str, kind=None, named=(), own_tests=None, rig=False):
     """The ONE rule of which paths a candidate may not write: the reason, or None when allowed.
 
     ``named``: the touch_files of the candidate's own task - only they open the factory's own code (OWNER_*), and, for the second
@@ -1541,6 +1569,8 @@ def is_forbidden(path: str, kind=None, named=(), own_tests=None):
             and canon not in {_canon(n) for n in named}):
         return "forbidden file (the factory's own code: only a task that names it)"
     if kind != 'unit_test' and parts[0] == 'tests' and not own_test_edit(path, kind, named, own_tests):
+        if rig and canon in {_canon(n) for n in named} and not rig_touch_faults(named):
+            return None             # W-rig: a rig card's own named files under tests/**
         return 'tests/** may be changed only by a unit_test task'
     return None
 
@@ -1573,15 +1603,93 @@ def candidate_findings(base_root, cand_files: dict, kind) -> tuple:
     return tuple(hollow), tuple(sorted(extra))
 
 
-def weakening_violations(base_root, cand_files: dict, kind, named=(), own_tests=None) -> list[str]:
+# Approximate by design: the words are counted per file as plain text, so a comment or a string can give a false refusal,
+# and a word moved from one file of the card to another is not caught.
+_RIG_MARK = re.compile(r'\b(skip|skipif|skipTest|xfail|sleep|monkeypatch)\b')
+
+
+def _is_raises(node) -> bool:
+    return isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in ('raises', 'warns')
+
+
+def _rig_checks(fn) -> list[str]:
+    """The assert / pytest.raises nodes of a test function (in source order) as ast.dump strings."""
+    out = []
+    for node in ast.walk(fn):
+        if isinstance(node, ast.Assert):
+            out.append(ast.dump(node))
+        elif _is_raises(node):
+            out.append(ast.dump(node))
+    return sorted(out)
+
+
+def _rig_tests(tree) -> dict:
+    """``{qualified name: function node}`` of every test_* function (module level and in classes)."""
+    found = {}
+
+    def walk(body, prefix):
+        for node in body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith('test'):
+                found[prefix + node.name] = node
+            elif isinstance(node, ast.ClassDef):
+                walk(node.body, prefix + node.name + '.')
+    walk(tree.body, '')
+    return found
+
+
+def rig_weakens(base_root, cand_files: dict) -> list[str]:
+    """W-rig AST lock: the violations (``rig_weakens: <path>::<function>: ...``) of a rig candidate's tests/**/*.py files.
+    Per file: the number of test_* functions and of assert/pytest.raises never goes down; no assert/pytest.raises inside
+    a base test_* function is changed (ast.dump equal); skip/xfail/sleep/monkeypatch do not grow. Helpers, fixtures,
+    stand classes, constants and imports are free."""
+    out, root = [], Path(base_root)
+    for raw, text in sorted(cand_files.items()):
+        path = _canon(raw)
+        if path is None or not path.startswith('tests/') or not path.endswith('.py'):
+            continue
+        base_file = root / path
+        old = base_file.read_text(encoding='utf-8', errors='replace') if base_file.is_file() else ''
+        new = text or ''
+        marks = [[w for w in _RIG_MARK.findall(t) if w != 'monkeypatch' or path != 'tests/conftest.py'] for t in (new, old)]
+        if len(marks[0]) > len(marks[1]):       # W-pack: a fixture of tests/conftest.py may use monkeypatch; asserts stay locked
+            out.append(f'rig_weakens: {path}: new skip/xfail/sleep/monkeypatch')
+        try:
+            new_tree = ast.parse(new)
+        except (SyntaxError, ValueError, RecursionError):
+            out.append(f'rig_weakens: {path}: candidate does not parse')
+            continue
+        try:
+            old_tree = ast.parse(old)
+        except (SyntaxError, ValueError, RecursionError):
+            continue
+        old_fns, new_fns = _rig_tests(old_tree), _rig_tests(new_tree)
+        if len(new_fns) < len(old_fns):
+            out.append(f'rig_weakens: {path}: tests removed: ' + ', '.join(sorted(set(old_fns) - set(new_fns))))
+        for name, fn in sorted(old_fns.items()):
+            other = new_fns.get(name)
+            if other is None:
+                out.append(f'rig_weakens: {path}::{name}: test function is gone')
+                continue
+            was, now = _rig_checks(fn), _rig_checks(other)
+            if len(now) < len(was):
+                out.append(f'rig_weakens: {path}::{name}: assert/raises dropped {len(was)} -> {len(now)}')
+            elif was != now:
+                out.append(f'rig_weakens: {path}::{name}: an assert/raises changed')
+    return out
+
+
+def weakening_violations(base_root, cand_files: dict, kind, named=(), own_tests=None, rig=False) -> list[str]:
     """Deterministic list of reasons a candidate weakens the checks (empty = clean); ``named`` as in is_forbidden."""
-    return weakening_check(base_root, cand_files, kind, named, own_tests)[0]
+    return weakening_check(base_root, cand_files, kind, named, own_tests, rig)[0]
 
 
-def weakening_check(base_root, cand_files: dict, kind, named=(), own_tests=None):
-    """``(violations, notes)``: notes are neutral remarks (a check that had to be skipped), not violations."""
+def weakening_check(base_root, cand_files: dict, kind, named=(), own_tests=None, rig=False):
+    """``(violations, notes)``: notes are neutral remarks (a check that had to be skipped), not violations.
+    ``rig``: a W-rig card (named tests/** open, the AST lock rig_weakens on top)."""
     out, notes = [], []
     root = Path(base_root)
+    if rig:
+        out.extend(rig_weakens(root, cand_files))
     extra = set()
     if kind == 'unit_test':
         for raw, text in cand_files.items():
@@ -1589,7 +1697,7 @@ def weakening_check(base_root, cand_files: dict, kind, named=(), own_tests=None)
                 extra |= _defined_names(text or '')
     for raw, text in sorted(cand_files.items()):
         path = _canon(raw)
-        reason = is_forbidden(raw, kind, named, own_tests)
+        reason = is_forbidden(raw, kind, named, own_tests, rig)
         if reason is not None:
             out.append(f'{raw if path is None else path}: {reason}')
             continue

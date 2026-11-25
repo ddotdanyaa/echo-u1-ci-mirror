@@ -25,6 +25,7 @@ import hashlib
 import inspect
 import json
 import os
+import posixpath
 import random
 import re
 import shutil
@@ -72,7 +73,7 @@ CLOUD_TRIAL_S = 60                    # a cloud that does not answer is asked ag
 FAST_LOCAL_SHARE = 0.20               # more of the gate time than this spent on local runs: new workers send every test to the cloud
 FAST_LOCAL_HOLD_S = 3600
 WAIT_PULSE_S = 60.0                   # a wait for live workers writes a short event at least this often (the watcher's quiet limit is 300 s)
-WAIT_BG_S = 0.1                      # the same look while a background triage / hold pick runs: a ready task is admitted within 0.1 s of its card
+WAIT_BG_S = 0.03                     # the same look while a background triage / hold pick runs: a ready task is admitted within ~0.03 s of its card (the runner's own boot is on top of it)
 WAIT_CHUNK_S = 3.0                  # real seconds between two looks at the pool while workers run
 STALE_INDEX_LOCK_S = 120
 ES_CONTINUOUS = 0x80000000
@@ -412,6 +413,111 @@ def _drop_stale_lock(cwd: Path) -> bool:
         return False
 
 
+def _is_fixture_deco(d) -> bool:
+    """pytest.fixture or pytest.fixture(scope=<str literal>): no positional args; only `scope`, its value a literal
+    (name=, params=, autouse=, ids= and any computed value are refused: they run at import or rename a fixture)."""
+    if isinstance(d, ast.Call):
+        if d.args or any(k.arg != "scope" or not (isinstance(k.value, ast.Constant) and isinstance(k.value.value, str))
+                         for k in d.keywords):
+            return False
+        d = d.func
+    return isinstance(d, ast.Attribute) and d.attr == "fixture" and isinstance(d.value, ast.Name) and d.value.id == "pytest"
+
+
+_BUILTIN_FIXTURES = frozenset((
+    "tmp_path", "tmp_path_factory", "tmpdir", "tmpdir_factory", "monkeypatch", "capsys", "capfd", "capsysbinary", "capfdbinary",
+    "caplog", "request", "pytestconfig", "recwarn", "cache", "doctest_namespace", "record_property", "record_xml_attribute",
+    "record_testsuite_property", "testdir", "pytester", "env", "event_loop", "anyio_backend", "mocker"))
+
+
+def _safe_annotation(a) -> bool:
+    return a is None or all(isinstance(n, (ast.Name, ast.Attribute, ast.Constant, ast.Load, ast.Subscript, ast.Tuple, ast.BinOp, ast.BitOr))
+                            for n in ast.walk(a))
+
+
+def _fixture_def_faults(node, reserved) -> bool:
+    """True when the def is unsafe at import: non-literal defaults/annotations, or a reserved (builtin/project) fixture name."""
+    if node.name in _BUILTIN_FIXTURES or node.name in reserved:
+        return True
+    args = node.args
+    defaults = list(args.defaults) + [x for x in args.kw_defaults if x is not None]
+    for dflt in defaults:
+        try:
+            ast.literal_eval(dflt)
+        except (ValueError, SyntaxError, TypeError, MemoryError, RecursionError):
+            return True
+    every = args.posonlyargs + args.args + args.kwonlyargs + [x for x in (args.vararg, args.kwarg) if x is not None]
+    return not all(_safe_annotation(a.annotation) for a in every) or not _safe_annotation(node.returns)
+
+
+def _conftest_faults(name: str, text: str, reserved=frozenset(), old: str = "") -> list[str]:
+    """W-pack: tests/conftest.py by AST allow-list: imports, constants (literals), docstring, and `def` fixtures decorated with
+    pytest.fixture without autouse. No hooks, no pytest_* names, no module-level code, no session/items access."""
+    try:
+        tree = ast.parse(text)
+    except (SyntaxError, ValueError, RecursionError):
+        return [name + ": conftest does not parse"]
+    try:  # a top-level node that stood there before is not the package's: only what it adds or changes is judged
+        stood = ast.parse(old).body
+        before = {ast.dump(n) for n in stood}
+    except (SyntaxError, ValueError, RecursionError):
+        stood, before = [], set()
+    bad = name + ": conftest allows only imports, constants and pytest.fixture functions (no hooks, plugins, autouse)"
+    fresh = [n for n in tree.body if ast.dump(n) not in before]
+    reserved = frozenset(reserved) | {n.name for n in stood if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))}
+    if before - {ast.dump(n) for n in tree.body}:
+        return [name + ": conftest drops or changes what stood there"]
+    for node in fresh:
+        if isinstance(node, ast.Import):
+            if any(a.name.split(".")[-1].startswith("pytest_") or (a.asname or "").startswith("pytest_") for a in node.names):
+                return [bad]
+        elif isinstance(node, ast.ImportFrom):
+            if any(a.name == "*" or a.name.startswith("pytest_") or (a.asname or "").startswith("pytest_") for a in node.names) \
+                    or (node.module or "").split(".")[-1].startswith("pytest_"):
+                return [bad]
+        elif isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant):
+            pass
+        elif isinstance(node, ast.Assign) and all(isinstance(t, ast.Name) and not t.id.startswith("pytest_") for t in node.targets):
+            try:
+                ast.literal_eval(node.value)
+            except (ValueError, SyntaxError, TypeError, MemoryError, RecursionError):
+                return [bad]
+        elif isinstance(node, ast.FunctionDef):
+            if node.name.startswith("pytest_") or not node.decorator_list or not all(_is_fixture_deco(d) for d in node.decorator_list) \
+                    or _fixture_def_faults(node, reserved):
+                return [bad]
+        else:
+            return [bad]
+    for node in (x for top in fresh for x in ast.walk(top)):
+        if (isinstance(node, ast.Attribute) and node.attr in ("items", "session", "hookimpl", "hookspec")) \
+                or (isinstance(node, ast.Name) and node.id in ("items", "session", "pytest_plugins")):
+            return [name + ": conftest touches session/items/hooks"]
+    return []
+
+
+def _project_fixture_names(wt: Path) -> frozenset:
+    """Names of fixtures defined in other conftest files of the project (tests/conftest.py itself may be updated)."""
+    names = set()
+    for p in Path(wt).rglob("conftest.py"):
+        try:
+            if p.relative_to(wt).as_posix().casefold() == "tests/conftest.py" or ".git" in p.parts:
+                continue
+            for n in ast.walk(ast.parse(p.read_text(encoding="utf-8"))):
+                if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    names.add(n.name)
+        except (OSError, ValueError, SyntaxError, RecursionError):
+            continue
+    return frozenset(names)
+
+
+def package_digest(files: dict) -> str:
+    """W-pack: sha1 over the sorted (path, bytes) of a root package."""
+    h = hashlib.sha1()
+    for name in sorted(files):
+        h.update(name.encode("utf-8") + b"\0" + files[name] + b"\0")
+    return h.hexdigest()
+
+
 def refresh_mirror(repo: Path, ref: str, mirror: Path) -> str:
     """Read-only mirror of the branch HEAD via git archive. The swap is atomic-ish: unpack into
     <mirror>.new, then old -> .old, new -> mirror; a kill mid-unpack never breaks the mirror."""
@@ -686,6 +792,7 @@ def _cloud_up(fn) -> bool:
 
 LINKS_EVERY_S = 600     # 4.2 (<id>): the owner's journal is linked to backlog rows at most this often, and only when it grew
 SLICE_PARALLEL = 12
+AWAIT_STEP_S = 20                     # W-await: workers are waited for this long, then a full step (slicing, merges, answers) runs beside them
 GUARD_REQUEUE_MAX = 3      # W-guard fix1: cards of one guard row sent back to the slicer as already_green, at most so often
 RESLICE_PER_STEP = SLICE_PARALLEL      # W-feed 4: up to SLICE_PARALLEL rows go to the slicer in one step
 RESLICE_SLEEP_S = 5
@@ -693,6 +800,9 @@ SLICE_WAIT_S = 60
 SLICE_PAUSES = (60, 120, 300, 600)        # W-pay 2: the pause of a row's repeated wait grows
 SLICE_STARVED_S = 600                    # W-prio2 2: no slice started or ended this long while a fresh row waits -> infra slicer_starved
 SLICE_STALE_S = 900                      # W-prio2 3: a slicer older than this is dropped (its result is ignored)
+SLICE_WAIT_CALL_S = 120.0                # W-path A: the longest wait of one slicing call for a channel
+SLICE_WAIT_JOB_S = 400.0                 # W-path A: the sum of the waits of one slicing job (under SLICE_STALE_S)
+SLICE_HOPS = 4                           # W-path A: channels of one step tried at once after 429/500/503, then a wait
 SLICE_HOPELESS_S = 600                   # W-gemma2 4: a row without a step (no money, no main channel) waits at least this
 QUARANTINE_TTL_S = 21600
 DRY_SLICE_MAX = 8           # W-dry 1: rows of cards without code that go to the slicer for code at the same time
@@ -754,7 +864,6 @@ class Loop:
         self._slicers: dict[str, Prefetch] = {}
         self._hypers: dict[str, Prefetch] = {}      # W-feed2 2: rows whose hypotheses search is under way (the loop thread owns this)
         self._hypo_skip: dict[str, tuple] = {}      # row -> (base sha, time): nothing to search for it now
-        self._hypo_lock = threading.RLock()       # the shared env/pump of the searches is built by one thread at a time
         self._ask_lock = threading.Lock()
         self._arch_quotas = None       # restored once, then owned in memory under _ask_lock
         self.sweep_fn = sweep_fn        # None: no cloud sweep (tests); main passes tools.echo_cloud.sweep
@@ -1856,10 +1965,13 @@ class Loop:
     def _await_workers(self) -> Outcome:
         """Workers are live: wait for the next one to end (a short look every WAIT_CHUNK_S: a cooled channel or freed
         RAM may admit one more). STOP, the deadline or a due brake: no admission, drain every live worker."""
-        self._pulse_at = self.clock()
+        self._pulse_at = getattr(self, "_pulse_at", None) or self.clock()
+        began = self.clock()
         while True:
             if self._ending() or self._brake_due is not None:
                 return self._drain()
+            if self.clock() - began >= AWAIT_STEP_S:        # live 25.11: 40 % of the hours no row was sliced and nothing merged while one worker lived
+                return Outcome(sleep=0, action="WAIT", reason="workers")
             done = self.pool.wait_any(WAIT_BG_S if self._bg is not None else WAIT_CHUNK_S)
             if done:
                 return self._account_done(done[0])
@@ -2505,12 +2617,14 @@ class Loop:
                                            "context_targets", "depends_on", "port_from", "contract")
                   if ans.get(k) is not None}
         kind = tasks[tid].kind if tid in tasks else (ans.get("kind") or "code")
+        if ans.get("package"):
+            return self._package_answer(Path(ans["package"]), bid, note)
         if ans.get("accept"):
             return self._accept_answer(tid, bid, state, note)
         if ans.get("reject"):
             if tid in tasks and note and tasks[tid].privacy_safe and not tasks[tid].only_opus:
                 self._check_note(raw_note)
-            return self._reject_answer(tid, bid, state, note)
+            return self._reject_answer(tid, bid, state, note, revert=bool(ans.get("revert")))
         if ans.get("close"):
             return self._close_answer(ans, tid, bid, tasks, state, note)
         for path in fields.get("touch_files") or []:  # the one rule, here and in the CLI
@@ -3437,6 +3551,14 @@ class Loop:
                 # a card with a non-empty `more` fixed only part of the row (the barrier of _closes_row): the debt closes by two full builds
                 if (task_a is None or not Loop._contract(task_a).get("more")) and REL.close_debt(self.cfg.state_dir, bid):     # a merged and accepted rel-base-<n>: its file leaves the debt
                     self.event("release", status="debt_closed", backlog_id=bid, reason="baseline debt row accepted")
+                from tools import factory_gate as _fg
+                if task_a is not None and _fg.is_rig_task(task_a) and not Loop._contract(task_a).get("more"):
+                    # W-rig (deliberate second way to close debt): the task says the ids leave the baseline debt at once, without the two
+                    # green builds of W-part; a rig card replaces the test stand itself, its ids were verified in the cloud run of the candidate
+                    spec = Loop._contract(task_a).get("test") or {}
+                    gone = REL.close_debt_ids(self.cfg.state_dir, [spec.get("use")] + list(spec.get("also") or []))
+                    if gone:
+                        self.event("release", status="debt_closed", backlog_id=bid, reason="rig accepted: %d ids left the debt" % gone)
             except Exception as e:
                 self.err("release: debt close", e)
             try:
@@ -3520,13 +3642,156 @@ class Loop:
                        backlog_id=",".join(got["added"][:10]))
         return len(got["added"])
 
-    def _reject_answer(self, tid, bid, state, note) -> dict:
+    def _package_answer(self, folder: Path, bid, note) -> dict:
+        """W-pack: a root package (one root cause, many files) is merged by the cycle after a FULL cloud build of base and base+package:
+        ``folder/files/**`` + ``folder/verdict.json`` {base, digest, runs [2], green, new_red [], review {"verdict": "approve"}}. All is
+        checked again here: the digest, the paths (rig_touch_faults), the AST lock (rig_weakens), the calls (factory_calls), the touched
+        files unchanged since the verdict's base. One commit, the worktree lock of the cycle, like _revert_answer.
+        Trust: verdict.json is NOT signed; the answers folder is a trusted source (whoever can put a folder there is the owner).
+        The two full cloud runs and the review are claimed by the verdict, the cycle cannot confirm them. A conftest is limited to
+        fixtures (AST allow-list _conftest_faults; the path is compared canonically, only the exact name is written). A failed write/add/commit restores the package paths."""
+        from tools import factory_calls, factory_gate
+        wt = Path(self.cfg.worktree)
+        try:
+            verdict = json.loads((folder / "verdict.json").read_text(encoding="utf-8"))
+            files = {x.relative_to(folder / "files").as_posix(): x.read_bytes() for x in sorted((folder / "files").rglob("*"))
+                     if x.is_file() and not x.is_symlink() and "__pycache__" not in x.parts}
+            texts = {n: raw.decode("utf-8") for n, raw in files.items()}
+        except (OSError, ValueError) as e:
+            raise F.InvalidPlan("package unreadable: %s" % type(e).__name__) from e
+        base = str(verdict.get("base") or "")
+        if not files or verdict.get("digest") != package_digest(files):
+            raise F.InvalidPlan("package: the digest is not the one that was built")
+        if not isinstance(verdict, dict):
+            raise F.InvalidPlan("package: verdict.json must be an object")
+        runs, review, green = verdict.get("runs"), verdict.get("review"), verdict.get("green")
+        try:
+            green = int(green) if isinstance(green, (int, str)) and not isinstance(green, bool) else 0
+        except ValueError:
+            green = 0
+        if verdict.get("new_red") != [] or green <= 0 or not isinstance(runs, list) or len(runs) < 2 \
+                or not all(isinstance(r, (dict, int)) and not isinstance(r, bool) for r in runs) or not isinstance(review, dict) or review.get("verdict") != "approve":
+            raise F.InvalidPlan("package: needs green > 0, new_red [], two full runs and an approving review")
+        faults = factory_gate.rig_touch_faults(list(files))
+        if not re.fullmatch(r"[0-9a-f]{40}", base) or subprocess.run(
+                ["git", "-C", str(wt), "merge-base", "--is-ancestor", base, self.cfg.branch], capture_output=True).returncode != 0:
+            faults.append("base is not on " + self.cfg.branch)
+        if git_run(wt, "rev-parse", "--abbrev-ref", "HEAD").strip() != self.cfg.branch:
+            faults.append("merge worktree is not on " + self.cfg.branch)
+        if not faults and self._dirty_paths(wt):
+            faults.append("merge worktree is dirty: the package waits")
+        if not faults and subprocess.run(["git", "-C", str(wt), "diff", "--quiet", base, "HEAD", "--", *files]).returncode != 0:
+            faults.append("a file of the package changed since its base: build it again")
+        if not faults:
+            faults += factory_gate.rig_weakens(wt, texts)
+            for name, text in texts.items():
+                old = (wt / name).read_text(encoding="utf-8") if (wt / name).is_file() else ""
+                if name.endswith(".py"):
+                    faults += factory_calls.new_bad_calls(name, old, text, wt)
+                canon = posixpath.normpath(name.replace("\\", "/")).casefold()
+                is_conftest = canon == "tests/conftest.py"
+                if is_conftest and name != canon:
+                    faults.append(name + ": conftest must be written as exactly tests/conftest.py")
+                if not is_conftest and factory_gate.is_forbidden(name, "code", named=list(files), rig=True):
+                    faults.append(name + ": forbidden")
+                if is_conftest:
+                    faults += _conftest_faults(name, text, _project_fixture_names(wt), old)
+                if F.is_private_text(text) and not F.is_private_text(old):
+                    faults.append(name + ": private text")
+        if faults:
+            raise F.InvalidPlan("package refused: " + "; ".join(faults[:6]))
+        key = bid or "rel-pack-" + verdict["digest"][:8]
+        try:
+            for name, raw in files.items():
+                (wt / name).parent.mkdir(parents=True, exist_ok=True)
+                (wt / name).write_bytes(raw)
+            git_run(wt, "add", "--", *files)
+            git_run(wt, "-c", "user.name=agent-factory", "-c", "user.email=agent-factory@localhost", "commit", "-q", "-m",
+                    "factory-package(%s): %s" % (key, self._scrub(F.redact(note))[:300]))
+            sha = git_run(wt, "rev-parse", "HEAD").strip()
+        except Exception as e:  # a failed write/add/commit must not leave the package in the tree or the index
+            try:
+                self._restore(wt, list(files))
+            except Exception as e2:
+                self.err("package restore", e2)
+            raise F.InvalidPlan("package: write or commit failed (%s), the tree is restored" % type(e).__name__) from e
+        ls = self.ls()
+        ls["promoted_total"] = int(ls.get("promoted_total") or 0) + 1     # a merged package makes a final build due, like a product row
+        self.save_ls(ls)
+        self.event("promote", task_id=key, backlog_id=key, status="promoted", reason="package", commit=sha, green=green)
+        return {"task_id": None, "backlog_id": key, "reason": "package " + sha[:8]}
+
+    def _revert_answer(self, tid, bid, state, note, ls) -> dict:
+        """W-true2 3: --reject --revert: a revert commit of the merged edit in the cycle's own worktree (the worktree lock it
+        holds for its whole life, like _promote), the task FAILED superseded:revert, the row back to to_slice with the note.
+        A conflict is aborted (git revert --abort, no reset/clean) and refused with the reason."""
+        row, wt = state["tasks"][tid], Path(self.cfg.worktree)
+        sha = str(row.get("commit") or "")
+        if not sha:
+            raise F.InvalidPlan("task %s has no merge commit to revert" % tid)
+        if git_run(wt, "rev-parse", "--abbrev-ref", "HEAD").strip() != self.cfg.branch:
+            raise F.InvalidPlan("merge worktree is not on " + self.cfg.branch)
+        if self._dirty_paths(wt):
+            raise F.InvalidPlan("merge worktree is dirty: the revert waits")
+        if subprocess.run(["git", "-C", str(wt), "merge-base", "--is-ancestor", sha, self.cfg.branch]).returncode != 0:
+            raise F.InvalidPlan("commit %s is not on %s: nothing to revert" % (sha[:8], self.cfg.branch))
+        text = self._scrub(F.redact(note))[:300]
+        # a retry after a failed state write: the revert commit of this cycle is already in the branch, go on to the records
+        done = git_run(wt, "log", "-1", "--format=%H", "--fixed-strings", "--grep", "factory-revert(%s):" % tid,
+                       "%s..%s" % (sha, self.cfg.branch)).strip()
+        if done:
+            new_sha = done
+        else:
+            why = ""
+            proc = subprocess.run(["git", "-C", str(wt), "revert", "--no-commit", sha], capture_output=True, text=True)
+            if proc.returncode != 0:
+                why = "revert of %s conflicts: %s" % (sha[:8], F.redact((proc.stdout + proc.stderr).strip())[:200])
+            elif subprocess.run(["git", "-C", str(wt), "diff", "--cached", "--quiet"]).returncode == 0:
+                why = "revert of %s changes nothing (already undone)" % sha[:8]
+            if why:
+                subprocess.run(["git", "-C", str(wt), "revert", "--abort"], capture_output=True)
+                if self._dirty_paths(wt):
+                    why += "; the worktree is not clean after the abort, needs a look"
+                raise F.InvalidPlan(why)
+            git_run(wt, "-c", "user.name=agent-factory", "-c", "user.email=agent-factory@localhost", "commit", "-q", "-m",
+                    "factory-revert(%s): %s" % (tid, text))
+            new_sha = git_run(wt, "rev-parse", "HEAD").strip()
+        ls["promoted_total"] = int(ls.get("promoted_total") or 0) + 1     # the branch changed: a final build is due
+        (ls.get("accepted") or {}).pop(tid, None)
+        seen = ls.setdefault("rejected", {}).setdefault(tid, [])     # the recovered path of _promote never takes it again
+        if sha not in seen:
+            seen.append(sha)
+        bid = bid or row.get("backlog_id")
+        task = self.load()[0].get(tid)
+        entry = ls.setdefault("to_slice", {}).setdefault(F.row_of(bid or tid), {"at": self.clock(), "hints": [], "guard": ""})
+        entry["hints"] = [text] + [h for h in entry.get("hints", []) if h != text]
+        entry["text"] = text
+        if task is not None:
+            entry["hints"] += [f for f in task.touch_files if f not in entry["hints"]]
+        self.save_ls(ls)
+
+        def fail(st):
+            r = st["tasks"][tid]
+            r.update(status="FAILED", reason="superseded:revert", commit=None, lease=None, deadline=None)
+            F.add_feedback(st, tid, "opus", note or "reverted")
+        self._tx(fail)
+        try:
+            res = factory_closures.update_note(self.cfg.backlog, bid, sha, "reverted " + sha[:8])
+            self.event("closure", task_id=tid, backlog_id=bid, status=res, reason="reverted")
+        except Exception as e:
+            self.err("revert: closure note", e)
+        self.event("reject", task_id=tid, backlog_id=bid, status="reverted", reason="rejected_by_coordinator", commit=new_sha)
+        return {"task_id": tid, "backlog_id": bid, "reason": "reverted"}
+
+    def _reject_answer(self, tid, bid, state, note, revert=False) -> dict:
         if not tid or tid not in state["tasks"]:
             raise F.InvalidPlan("reject needs a known task (--task-id)")
         status = state["tasks"][tid]["status"]
         if status != "PROMOTED":
             raise F.InvalidPlan("only a PROMOTED task can be rejected (it is %s)" % status)
         ls = self.ls()
+        if revert:                                        # W-pack: a build may have accepted the culprit; the revert undoes that too
+            return self._revert_answer(tid, bid, state, note, ls)
         if tid in (ls.get("accepted") or {}):
             raise F.InvalidPlan("task %s is already accepted" % tid)
         row = state["tasks"][tid]
@@ -3847,15 +4112,50 @@ class Loop:
         except (ValueError, TypeError):
             return {}
 
+    def _slice_light(self, budget, text, *, max_tokens, role, temperature=0):
+        """W-path A: one slicing call that does not give up at the first refusal. 429/500/503: the channel is cooled by
+        _light_ask, so the next call takes another channel of the step at once (up to SLICE_HOPS, then a short wait). no_channel:
+        wait the time the booking names (``why``), outside _ask_lock, within SLICE_WAIT_CALL_S per call and the job's
+        ``budget`` (SLICE_WAIT_JOB_S); a channel closed for the day is not waited for; STOP ends the waiting."""
+        waited, hops = 0.0, 0
+        while True:
+            why = {}
+            result = self._light_ask(text, attempt=1, section="loop-architect", quotas=self._arch_quotas,
+                                     max_tokens=max_tokens, role=role, why=why, temperature=temperature)
+            status = result[0]
+            if status == "ok":
+                return result
+            if status in ("http_429", "http_500", "http_503"):
+                hops += 1
+                if hops <= SLICE_HOPS:
+                    continue
+                hops, wait = 0, 5.0
+            elif status == "no_channel":
+                if why.get("reason") == "rpd":
+                    return result               # closed for the day: nothing to wait for
+                wait = float(why.get("wait_s") or 0) or 5.0
+            else:
+                return result
+            wait = min(wait, SLICE_WAIT_CALL_S - waited, budget["left"])
+            if wait <= 0 or self.stop.exists():
+                return result
+            slept = 0.0
+            while slept < wait and not self.stop.exists():
+                step = min(5.0, wait - slept)
+                self._sleep(step)
+                slept += step
+            waited += slept
+            budget["left"] -= slept
+
     def _asks(self, root=None) -> dict:
         from tools import factory_architect as A, factory_paid_critic as PK
         asks = {}
+        budget = {"left": SLICE_WAIT_JOB_S}       # W-path A: the waits of ONE slicing job (one _asks per job) share this
         for engine in self.cfg.architect_rungs:
             if engine in ("free", "free_main"):
                 role = "architect" if engine == "free" else "code"
                 def ask(system, user, role=role):
-                    status, _, answer, _ = self._light_ask(system + "\n\n" + user, attempt=1,
-                        section="loop-architect", quotas=self._arch_quotas, max_tokens=12000, role=role)
+                    status, _, answer, _ = self._slice_light(budget, system + "\n\n" + user, max_tokens=12000, role=role)
                     if status != "ok":
                         raise A.ContractFault(status)
                     return answer
@@ -3920,7 +4220,6 @@ class Loop:
             if self._arch_quotas is None:
                 self._arch_quotas = {}
             why = {}
-            loop._hypo_charge(channel or "", system + "\n\n" + user)        # W-feed2 1: the slicer takes the minute first
             status, _, answer, _ = loop._light_ask(system + "\n\n" + user, attempt=1, section="loop-architect",
                 quotas=loop._arch_quotas, max_tokens=A.SMALL_MAX_TOKENS, role="review", only_tier="small",
                 only_model=channel or "", temperature=0.2 if temperature is None else temperature, why=why)
@@ -4031,10 +4330,19 @@ class Loop:
             body = diff.read_text(encoding="utf-8", errors="replace") if diff.is_file() else ""
             out.append("RED FIX %s: failure:\n%s\ndiff:\n%s" % (
                 task.id, safe("\n".join(map(str, rec.get("feedback", [])[-2:])), 3000), safe(body, 4000) or "(no diff kept)"))
+        if len(reds) >= 2:      # W-path D: two red fixes of product code with the same failure: the stand itself may be out of date
+            ends = [" ".join(str((state["tasks"].get(t.id, {}).get("feedback") or [""])[-1]).split())[:200] for t in reds[-2:]]
+            if ends[0] and ends[0] == ends[1]:
+                out.append(self.STAND_HINT)
         for task in sorted(previous, key=lambda t: t.id)[-6:]:
             if task.contract and (text := safe(task.contract, 4000)):
                 out.append("CONTRACT OF AN EARLIER GENERATION (%s):\n%s" % (task.id, text))
         return "\n\n".join(out)[:self.DOSSIER_CHARS]
+
+    STAND_HINT = ("CHECK WHETHER THE STAND IS OUT OF DATE: two fixes of the product code failed with the same failure. If the "
+                  "test, its fixture or conftest is what is broken (a parameter or attribute that does not exist, an expectation "
+                  "of a setting that was changed), answer a rig contract (rig: true, ready code or file_text of the stand, the "
+                  "checks themselves untouched) instead of a third product fix.")
 
     # ---- W-redrow 1, 2: a row with a ready red test carries the proof of the red --------------------------------------
     RED_SOURCE_CHARS = 6000
@@ -4138,121 +4446,94 @@ class Loop:
             pass
         return out
 
-    def _hypo_min(self):
-        """W-feed2 1: ONE booking of the input tokens of the small tier (slicer and pump): the limits of the pump channels
-        (fast-a, fast-b: the smaller model; slow: the larger) are the tpm and rpm of channels.json."""
-        from tools import factory_hypo as HY
-        if getattr(self, "_hypo_minute", None) is not None:
-            return self._hypo_minute
-        with self._hypo_lock:
-            if getattr(self, "_hypo_minute", None) is not None:
-                return self._hypo_minute
-            return self._hypo_min_make(HY)
+    SOLVER_MAX_TOKENS = 4000        # W-solver: the answer of one step (reasoning + one command)
+    SOLVER_WAIT_S = 900.0           # W-solver: the waits for a channel of ONE solve (503/429/no channel are not steps)
+    SOLVER_TEMPERATURE = 0.4
 
-    def _hypo_min_make(self, HY):
-        limits, rpms = {}, {}
-        for c in self._hypo_channels():     # the window of each REAL channel (model + key): its own tpm and rpm of channels.json
-            if c.get("tpm"):
-                limits[c["id"]] = int(c["tpm"])
-            if c.get("rpm"):
-                rpms[c["id"]] = int(c["rpm"])
-        self._hypo_minute = HY.Minute(limits=limits, rpms=rpms)
-        return self._hypo_minute
-
-    def _hypo_channels(self) -> list:
-        """W-feed2 6: the channels of the tier small that are not reserve (channels.json rows); [] when the file does not read."""
+    def _solver_channels(self) -> list:
+        """W-solver: the free channels a solve may use (main and small tiers, not reserve); [] when channels.json does not read."""
         try:
             configured = json.loads(Path(self.cfg.channels).read_text(encoding="utf-8"))["channels"]
-            return [c for c in configured if CH.tier_of(c) == "small" and not CH.is_reserve(c)]
+            return [c for c in configured if CH.tier_of(c) in ("main", "small") and not CH.is_reserve(c)]
         except (OSError, ValueError, KeyError, TypeError):
             return []
 
-    def _hypo_charge(self, model, text):
-        """W-feed2 1: a live request of the slicer takes its input tokens from the pump's minute first (the pump gets the rest)."""
-        from tools import factory_hypo as HY
-        try:
-            minute = self._hypo_min()
-            names = [c["id"] for c in self._hypo_channels() if not model or c["model"] == model]
-            if names:       # the live request goes to the least used channel of its model
-                minute.charge(min(names, key=minute.used), HY.est_tokens(text))
-        except Exception as exc:        # noqa: BLE001  an aid
-            self.err("hypo charge", exc)
+    def _solver_limit(self) -> int:
+        """W-solver: as many solves at once as there are free channels (each step of a solve takes one booking of one)."""
+        return len(self._solver_channels())
 
-    def _hypo_env(self, root, packet):
-        """W-hyp: the search's environment over the loop's own parts: the small-tier ask (the smaller and the larger model), the cloud
-        batch, the failure text and the trace of the packet. None when no small channel is registered."""
-        from tools import factory_hypo as HY
-        small = self._hypo_channels()
-        if not small:
-            return None
-        names = tuple(c["id"] for c in small)       # the pump's channels: every real channel of the tier small, not reserve
+    def _solver_ctx(self, root, packet):
+        """W-solver: the environment of one solve over the loop's own parts: the ask of the free channels (Gemma first on the compact
+        text to the small tier, then the waiting route of the slicer) and the cloud batch. Never raises a refusal as a step:
+        NoChannel after the waits."""
+        from tools import factory_hypo as HY, factory_solver as SV
         if self._arch_quotas is None:
             self._arch_quotas = {}
-        loop = self
+        loop, budget, info = self, {"left": self.SOLVER_WAIT_S}, {}
 
-        def ask(chan, text, temp):
-            why = {}
-            status, _, answer, tokens = loop._light_ask(text, attempt=1, section="loop-hypo", quotas=loop._arch_quotas,
-                                                        max_tokens=3000, role="review", only_tier="small", only_channel=chan,
-                                                        temperature=temp, why=why)
-            return status, answer, tokens, float(why.get("wait_s") or 0)
+        def ask(text, small=None):
+            for _ in range(10):         # a waiting review of a green candidate takes the channels first (at most ~20 s a step)
+                if not loop._review_hold() or loop.stop.exists():
+                    break
+                loop._sleep(2.0)
+            for body, tier, role in ((small, "small", "review"), (text, "", "code")):    # owner: Gemma (57 600 calls a day) solves first, Flash-Lite is for slicing
+                if body is None:
+                    continue
+                status, model, answer, _ = loop._light_ask(body, attempt=1, section="loop-architect", quotas=loop._arch_quotas,
+                                                           max_tokens=loop.SOLVER_MAX_TOKENS, role=role, only_tier=tier,
+                                                           temperature=loop.SOLVER_TEMPERATURE)
+                if status == "ok" and str(answer).strip():
+                    info["model"] = model
+                    return answer
+            status, model, answer, _ = loop._slice_light(budget, text, max_tokens=loop.SOLVER_MAX_TOKENS, role="code",
+                                                         temperature=loop.SOLVER_TEMPERATURE)
+            if status == "ok" and str(answer).strip():
+                info["model"] = model
+                return answer
+            raise SV.NoChannel(status)
+        return SV.Ctx(root=root, ask=ask, cloud=lambda r, ids, files: HY.cloud_batch(r, ids, files, tid="s" + str(packet.get("bid"))),
+                      info=info, sleep=self._sleep)
 
-        def sample(why, answer):
-            loop._hypo_sample(why, answer)
-
-        evidence = str(packet.get("evidence") or "")
-        marker = "FAILURE OF THE RED TEST (assert, message, last frames):\n"
-        failure = evidence.partition(marker)[2][:4000] if marker in evidence else ""
+    def _solver_suspects(self, root, packet, ids, failure) -> list:
+        """W-solver: the product functions of the red test, most suspicious first: the failure stack, the guilty commit's diff, the
+        trace of the guard, the rest in the repomap order of the row's own words (up to 15 lines 'file :: symbol')."""
+        from tools import factory_hypo as HY
         trace = [(t[0], t[1], 0) for t in packet.get("trace_path") or ()]
         diff = HY.diff_funcs_of(packet.get("bisect_clue"))      # the functions of the guilty commit's diff (the bisect proof of the packet)
         title = str(packet.get("title") or "")
-
-        def ranked(ids):        # the rest in the repomap order of the row's own words
-            key = (str(self.base_sha), title)       # W-feed2 4e: the heavy pure work once per base and words, one thread at a time
-            cache = self.__dict__.setdefault("_rank_cache", {})
-            with self.__dict__.setdefault("_rank_lock", threading.Lock()):
-                if key in cache:
-                    return cache[key]
+        key = (str(self.base_sha), title)       # the heavy pure work once per base and words, one thread at a time
+        cache = self.__dict__.setdefault("_rank_cache", {})
+        with self.__dict__.setdefault("_rank_lock", threading.Lock()):
+            if key not in cache:
                 try:
                     from tools import repomap
-                    out = [(r[0], r[1]) for r in repomap.rank(root, title)] if title else []
+                    found = [(r[0], r[1]) for r in repomap.rank(root, title)] if title else []
                 except (ImportError, OSError, ValueError):
-                    return []
+                    found = []
                 for old in [k for k in cache if k[0] != key[0]]:
                     cache.pop(old, None)
-                cache[key] = out
-                return out
-        with self._hypo_lock:       # W-feed2 2: up to six searches build their env at once, the pump and the minute are made once
-            self._hypo_min()
-            if getattr(self, "_hypo_pump", None) is None:       # ONE pump for every searching row of the loop (ECHO < rel < base)
-                self._hypo_pump = HY.Pump(ask, None, channels=names, minute=self._hypo_minute, stats=HY.STATS)
-                self._hypo_pump.hold = self._review_hold
-        return HY.Ctx(root=root, ask=ask, cloud=lambda r, ids, files: HY.cloud_batch(r, ids, files, tid="h" + str(packet.get("bid"))),
-                      pump=self._hypo_pump, failure_text=lambda ids: failure, trace=lambda ids: trace,
-                      failure_of=self._hypo_failure_of, skip_groups=self._hypo_cooled_groups(), kept=self._hypo_kept_for(str(self.base_sha)),
-                      diff_funcs=lambda ids: diff, ranked=ranked, minute=self._hypo_minute, channels=names, sample=sample,
-                      event=lambda name, **f: loop.event(name, **f))
+                cache[key] = found
+            ranked = cache[key]
+        funcs = HY.rank_functions(root, stack=HY.stack_from_failure(failure), diff=diff, trace=trace, ranked=ranked, k=15)
+        if not funcs:       # no trace and no rank: the product functions the test itself imports or calls
+            funcs = HY.rank_functions(root, ranked=HY.test_functions(root, ids[0]), k=15)
+        return ["%s :: %s" % (f["file"], f["symbol"]) for f in funcs]
 
-    def _hypo_sample(self, why, answer):
-        """W-feed2 7: the first bad / invalid answer of each kind (the reason text), cut to 600 signs and redacted, in
-        state_dir/hypo_samples.json, at most HYPO_SAMPLES_MAX. Called from the pump's threads: one lock."""
-        from tools import factory_hypo as HY
-        with self._hypo_lock:
-            path = Path(self.cfg.state_dir) / "hypo_samples.json"
-            try:
-                have = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                have = {}
-            if not isinstance(have, dict):
-                have = {}
-            kind = str(why)[:100]
-            if kind in have or len(have) >= HY.SAMPLES_MAX:
-                return
-            have[kind] = dict(kind=HY.outcome_of(why), text=F.redact(str(answer or "")[:600]))
-            try:
-                F.save_atomic(path, have)
-            except OSError as exc:
-                self.err("hypo samples", exc)
+    def _solver_run(self, row, ids, packet, root) -> dict:
+        """W-solver: ONE solve of the row (a worker thread: reads and asks only). The ids of ONE failure signature (the biggest group
+        not searched lately) are the target; the result is a Result of factory_solver in a dict with its group."""
+        from tools import factory_hypo as HY, factory_solver as SV
+        groups = HY.group_ids(ids, self._hypo_failure_of)
+        skip = self._hypo_cooled_groups()
+        sig, gids = next((g for g in groups if g[0] not in skip), groups[0])
+        evidence = str(packet.get("evidence") or "")
+        marker = "FAILURE OF THE RED TEST (assert, message, last frames):\n"
+        failure = self._hypo_failure_of(gids[0]) or (evidence.partition(marker)[2][:4000] if marker in evidence else "")
+        suspects = self._solver_suspects(root, packet, gids, failure)
+        t0 = time.monotonic()
+        res = SV.solve(self._solver_ctx(root, packet), row, gids, failure, HY._test_body(root, gids[0]), suspects)
+        SV.STATS.add(res)
+        return dict(result=res, group=sig, ids=gids, secs=time.monotonic() - t0)
 
     def _red_last_keys(self, ids=()):
         """W-part 2: the red test keys of the last full verdict when its sha is the base or an ancestor of it, else None (unknown)."""
@@ -4326,7 +4607,7 @@ class Loop:
         left = list(rec.get("contracts") or ()) if rec.get("base") == str(self.base_sha) else []
         while left:
             contract = left.pop(0)
-            if not A.validate(contract, root, bid=row, known_ids=packet.get("known_ids")):
+            if not A.validate(contract, root, bid=row, known_ids=packet.get("known_ids"), engine="solver"):
                 break
             contract = None
         else:
@@ -4337,14 +4618,14 @@ class Loop:
             keep["hypo_spare"].pop(row, None)
         self.save_ls(keep)
         if contract is not None:
-            self.event("hypo", backlog_id=row, status="spare", greens=1, tried=0)
+            self.event("solver", backlog_id=row, status="spare", steps=0, calls=0, tests=0)
         return contract
 
     def _hypo_state(self, row, packet):
         """W-feed2 2: what a row needs from the search, by reads only: ('off' | 'none' (no red id) | 'spare' (a kept green
         candidate of this base) | 'cooled' (searched less than 12 h ago) | 'search', the red ids)."""
         from tools import factory_hypo as HY
-        if self.cfg.self_repo or os.environ.get("FACTORY_HYPO", "1") == "0":
+        if self.cfg.self_repo:
             return "off", []
         ids = self._hypo_ids(row, packet)
         if not ids:
@@ -4402,41 +4683,38 @@ class Loop:
             return ""
 
     def _hypo_post(self, row, packet, root, ids, found):
-        """W-feed2 2: what the loop thread does with a finished search: the event, the searched mark, the spares, the evidence
-        for the slicer; a contract result (green candidate, engine 'hypo') or None. Writes the loop state: loop thread only."""
-        from tools import factory_hypo as HY, factory_architect as A
+        """W-solver: what the loop thread does with a finished solve: the event (span 'solver'), the searched mark of the group, the
+        evidence for the slicer when it ended not green; a contract result (green overlay as whole functions, engine 'solver') or
+        None. Writes the loop state: loop thread only."""
+        from tools import factory_hypo as HY, factory_solver as SV, factory_architect as A
         try:
-            self.event("hypo", backlog_id=row, status=found["status"], greens=len(found["green"]), tried=len(found["tried"]),
-                       why=found.get("why") or None, group_ids=len(found.get("ids") or ()) or None)
-            if found["status"] in ("green", "red", "already_green"):     # a cloud failure or no hypothesis at all: no run, no penalty
+            res, gids = found["result"], found.get("ids") or ids
+            status = res.status if res.status in ("green", "cloud", "no_channel", "already_green") else "red"
+            self.event("solver", backlog_id=row, status=status, steps=res.steps, calls=res.calls, tests=res.tests,
+                       model=res.model or None, secs=round(float(found.get("secs") or 0), 1), why=res.why or None, group_ids=len(gids))
+            if status in ("green", "red", "already_green"):     # no channel or a cloud failure: no run, no penalty
                 fresh = self.ls()
                 HY.mark_searched(fresh.setdefault("hypo_seen", {}), str(self.base_sha), found.get("group") or ids[0], time.time())
                 self.save_ls(fresh)
-            contracts = []
-            for cand in found["green"]:
-                contract = HY.to_contract(row, ids, cand, group=found.get("group"), rep=(found.get("ids") or ids)[0])
-                if not A.validate(contract, root, bid=row, known_ids=packet.get("known_ids")):
-                    contracts.append(contract)
-            if contracts:
-                keep = self.ls()
-                if len(contracts) > 1:      # the smaller diff goes first, the rest are spares for this base
-                    keep.setdefault("hypo_spare", {})[row] = dict(base=str(self.base_sha), contracts=contracts[1:])
-                self.save_ls(keep)
-                return dict(contract=contracts[0], engine="hypo", faults=[], repaired=[])
-            if found["evidence"]:
-                text = "\nHYPOTHESES TRIED BEFORE YOU (cheap machine search, all red):\n" + "\n".join(found["evidence"])
+            if res.green:
+                contract = SV.to_contract(row, gids, res, root, group=found.get("group"), rep=gids[0])
+                faults = A.validate(contract, root, bid=row, known_ids=packet.get("known_ids"), engine="solver") if contract else ["not whole functions"]
+                if not faults:
+                    return dict(contract=contract, engine="solver", faults=[], repaired=[])
+                res.last_fail = "the green change was refused as a card: " + "; ".join(str(x) for x in faults[:3])
+            if status in ("red", "green") and res.evidence():
+                text = "\nTRIED BEFORE YOU (a free model with read/grep/edit and the cloud test, all red):\n" + "\n".join(res.evidence())
                 packet["evidence"] = str(packet.get("evidence") or "") + text
                 keep = self.ls()        # the row goes back the usual way: the next packet of the slicer carries what was tried
                 keep.setdefault("hypo_evidence", {})[row] = dict(base=str(self.base_sha), text=text[:3000])
                 self.save_ls(keep)
         except Exception as exc:        # noqa: BLE001  an aid: the slicer goes on as before
-            self.err("hypo", exc)
+            self.err("solver", exc)
         return None
 
-    HYPO_PARALLEL = 6           # W-feed2 2: searches of rows at the same time
     HYPO_SCAN_S = 5.0           # the candidates are looked through at most this often
-    HYPO_RETRY_S = 600.0        # a row with nothing to search (no red id, cooled, cloud failure) is looked at again after this
-    HYPO_STALE_S = 1800.0       # a search older than this is dropped (its result ignored)
+    HYPO_RETRY_S = 600.0        # a row with nothing to search (no red id, cooled, no channel, cloud failure) is looked at again after this
+    HYPO_STALE_S = 3600.0       # a solve older than this is dropped (its result ignored; 16 steps with a cloud run each)
 
     def _hypo_candidates(self, tasks, state, ls, now) -> list:
         """W-feed2 2: the rows that may be searched now, ECHO (guard) -> rel-<sha> -> rel-base: rows of the to_slice book (the wait
@@ -4477,7 +4755,7 @@ class Loop:
 
     def _hypo_review_gate(self, state) -> bool:
         """W-hypo3 3: True while the review of a candidate with green gates (REVIEW, or READY with its candidate kept) waits: the
-        search starts nothing and the pump books no minute (``_review_hold``), so the review takes the minute before edits and search.
+        search starts nothing and the solvers wait a few seconds a step (``_review_hold``), so the review takes the minute before edits and search.
         Yields for at most HYPO_REVIEW_HOLD_S."""
         mono = time.monotonic()
         if not any(self._has_candidate(state, tid) for tid in (state.get("tasks") or {})):
@@ -4501,30 +4779,18 @@ class Loop:
             self._hypo_gate_on = self._hypo_review_gate(self.load()[1])
         return bool(self.__dict__.get("_hypo_gate_on"))
 
-    def _hypo_limit(self) -> int:
-        """W-hypo3 1: searches at once from the answer rate of the last 5 minutes (1 below 2 answers a minute, up to HYPO_PARALLEL)."""
-        from tools import factory_hypo as HY
-        return HY.parallel_for(HY.STATS.answer_rate(time.monotonic()), self.HYPO_PARALLEL)
-
-    def _hypo_kept_for(self, base) -> dict:
-        """W-hypo3 1: the answers kept of searches that did not finish, for the current base only (an older base's are dropped)."""
-        have = self.__dict__.get("_hypo_kept")
-        if have is None or have[0] != base:
-            have = self._hypo_kept = (base, {})
-        return have[1]
-
     def _hypo_feed(self, now) -> None:
-        """W-feed2 2: the independent feeder of the search (a tick of the loop thread): finished searches are applied, then up to
-        HYPO_PARALLEL rows with a red test id on the current base start theirs. A row under a search neither starts with a card
-        nor goes to the slicer. The threads only read and ask; every write of the state is here."""
+        """W-solver: the independent feeder of the solves (a tick of the loop thread): finished solves are applied, then rows with a
+        red test id on the current base start theirs, as many at once as there are free channels (``_solver_limit``). A row under a
+        solve neither starts with a card nor goes to the slicer. The threads only read and ask; every write of the state is here."""
         from tools import factory_hypo as HY
-        if self.cfg.self_repo or os.environ.get("FACTORY_HYPO", "1") == "0":
+        if self.cfg.self_repo:
             return
         try:
             self._hypo_collect(now)
             if self._hypo_gate_tick():          # W-hypo3 fix1: the gate looks at the state, not at the scan moment (also while the limit is full)
                 return
-            limit = self._hypo_limit()
+            limit = self._solver_limit()
             if len(self._hypers) >= limit or now - getattr(self, "_hypo_scan_at", -1e9) < self.HYPO_SCAN_S:
                 return
             self._hypo_scan_at = now
@@ -4561,11 +4827,10 @@ class Loop:
             kind, ids = self._hypo_state(row, packet)
             if kind != "search":
                 return packet, ids, kind, None
-            env = self._hypo_env(root, packet)
-            if env is None:
+            if not self._solver_channels():
                 return packet, ids, "none", None
-            return packet, ids, "search", HY.search(row, ids, env)
-        job = self._hypers[row] = Prefetch("hypo", work, dict(row=row, base=base, root=root))
+            return packet, ids, "search", self._solver_run(row, ids, packet, root)
+        job = self._hypers[row] = Prefetch("solver", work, dict(row=row, base=base, root=root))
         job.thread.start()
 
     def _hypo_collect(self, now) -> None:
@@ -4575,7 +4840,7 @@ class Loop:
                 if time.monotonic() - job.t0 > self.HYPO_STALE_S:
                     del self._hypers[row]
                     self._hypo_skip[row] = (job.ctx["base"], now)
-                    self.event("hypo", backlog_id=row, status="stale", why="search older than %d s dropped" % self.HYPO_STALE_S)
+                    self.event("solver", backlog_id=row, status="stale", why="solve older than %d s dropped" % self.HYPO_STALE_S)
                 continue
             del self._hypers[row]
             base = job.ctx["base"]
@@ -4587,21 +4852,16 @@ class Loop:
                     continue
                 if kind == "spare":
                     spare = self._hypo_take_spare(row, job.ctx["root"], packet)
-                    result = dict(contract=spare, engine="hypo", faults=[], repaired=[]) if spare is not None else None
+                    result = dict(contract=spare, engine="solver", faults=[], repaired=[]) if spare is not None else None
                 elif kind == "search":
                     result = self._hypo_post(row, packet, job.ctx["root"], ids, found)
-                    again = self.__dict__.setdefault("_hypo_again", {})
-                    mine = any(k[0] == str(ids[0]) for k in self._hypo_kept_for(base)) if ids else False
-                    if result is None and found.get("status") == "cloud" and mine and again.get((row, base), 0) < 3:
-                        again[(row, base)] = again.get((row, base), 0) + 1
-                        pass       # W-hypo3 1: answers are kept: the row is searched again at once and finishes to a batch
-                    elif result is None:
+                    if result is None:
                         self._hypo_skip[row] = (base, now)      # red or no result: the row goes the usual way, evidence kept
                 else:
                     result = None
                     self._hypo_skip[row] = (base, now)
                     if kind == "already_green":     # W-part 2: the row's tests are green in the last full build: nothing to search
-                        self.event("hypo", backlog_id=row, status="already_green", greens=0, tried=0, why="not red in the last full build")
+                        self.event("solver", backlog_id=row, status="already_green", steps=0, calls=0, tests=0, why="not red in the last full build")
                 if result is not None:
                     self._hypo_adopt(row, packet, result)
             except Exception as exc:            # noqa: BLE001  one search never stops the loop
@@ -4856,6 +5116,7 @@ class Loop:
                 if self.cfg.self_repo:      # the second instance: a new test imports only the modules the mirror publishes
                     packet["publishable"] = ", ".join(A.publishable_modules())
                 extra = {"named_ok": True} if self.cfg.self_repo else {}      # 8.1: the factory's own files are the contract's subject
+                A._samples_dir = self.cfg.state_dir        # W-rig 7: the black box of the rejected answers (<state>/slice_samples.json)
                 if cached:      # W-pay 2: the steps that already answered this row (or refused it) on this version and sha
                     extra["skip"] = cached
                 if not packet.get("guard_green") and str(row).startswith("rel-") and not self.cfg.self_repo \
@@ -7892,7 +8153,9 @@ class Loop:
                  for r in rel}
         named = tuple(task.touch_files) if getattr(getattr(self, "cfg", None), "self_repo", False) and task else ()   # 8.1: only the second instance merges the factory's
         own = bool(getattr(getattr(self, "cfg", None), "self_repo", False))
-        bad = factory_gate.weakening_violations(self.mirror, texts, task.kind, named, own)   # own code (and its tests, no weaker), only files the contract names
+        rig = bool(task) and factory_gate.is_rig_task(task)
+        named = tuple(task.touch_files) if rig else named                                      # W-rig: the card's named files open tests/**
+        bad = factory_gate.weakening_violations(self.mirror, texts, task.kind, named, own, rig=rig)   # own code (and its tests, no weaker), only files the contract names
         return "; ".join(bad[:3]) if bad else ""
 
     @staticmethod
@@ -7908,8 +8171,8 @@ class Loop:
     def _restore(self, wt: Path, rel: list[str]) -> None:
         """Put the package paths back to HEAD: index, tracked files, new untracked files."""
         for r in rel:
-            tracked = subprocess.run(["git", "-C", str(wt), "ls-files", "--error-unmatch", "--", r],
-                                     capture_output=True).returncode == 0
+            tracked = subprocess.run(["git", "-C", str(wt), "cat-file", "-e", "HEAD:" + r],      # in HEAD, not in the index: a
+                                     capture_output=True).returncode == 0                        # file that was just `add`ed is new
             subprocess.run(["git", "-C", str(wt), "reset", "-q", "--", r], capture_output=True)
             if tracked:  # content from HEAD written directly: works while index.lock is held
                 blob = subprocess.run(["git", "-C", str(wt), "cat-file", "--filters", "HEAD:" + r],
@@ -8066,12 +8329,12 @@ class Loop:
                 stats["channels"] = self._channel_rows(state)
             except Exception as exc:                  # no channel file: the stats still go out
                 stats["channels"] = {"error": F.redact(type(exc).__name__)}
-            try:        # W-hyp 6: the hypotheses search (counters of the main instance only)
-                from tools import factory_hypo as HY
+            try:        # W-solver: the solves of the loop (counters of the main instance only)
+                from tools import factory_solver as SV
                 if not self.cfg.self_repo:
-                    stats["hypo"] = HY.STATS.snapshot(time.monotonic())
+                    stats["solver"] = SV.STATS.snapshot()
             except Exception as exc:
-                stats["hypo"] = {"error": F.redact(type(exc).__name__)}
+                stats["solver"] = {"error": F.redact(type(exc).__name__)}
             F.save_atomic(self.stats_path, stats)
             self._watch_pool(state, rows)
             if blocked or stats["quarantine"] or ls["holds"] or any(
@@ -8466,6 +8729,8 @@ def answer_main(argv) -> int:
     p.add_argument("--accept", action="store_true",
                    help="the coordinator accepts a PROMOTED task (PROMOTED = merged, ACCEPTED = taken)")
     p.add_argument("--reject", action="store_true", help="the coordinator rejects a PROMOTED task: back to READY with --note")
+    p.add_argument("--revert", action="store_true",
+                   help="with --reject: the loop also reverts the merged commit (task FAILED superseded:revert, the row to the slicer)")
     p.add_argument("--release-private", action="store_true",
                    help="allow a public --goal for a row private by content (keys, passwords, recordings); "
                         "other rows need no flag")
@@ -8475,7 +8740,10 @@ def answer_main(argv) -> int:
                                   "shown to the coder as a reference)")
     p.add_argument("--contract", help="JSON architect contract")
     p.add_argument("--note", default="")
+    p.add_argument("--package", type=Path, help="W-pack: the folder of a verified root package (files/ and verdict.json)")
     a = p.parse_args(argv)
+    if a.package and not a.backlog_id:
+        a.backlog_id = "rel-pack"
     if a.port is not None and not F.PORT_SHA.fullmatch(a.port):
         p.error("--port must be a commit sha (7-40 hex characters)")
     if not a.backlog_id and not a.task_id:
@@ -8500,6 +8768,8 @@ def answer_main(argv) -> int:
         p.error("--accept needs --task-id and nothing else but --note")
     if a.reject and (not a.task_id or not a.note.strip() or a.accept or a.close or a.goal or any(x is not None for x in (a.touch, a.tests, a.read, a.target, a.depends_on))):
         p.error("--reject needs --task-id and --note and nothing else")
+    if a.revert and not a.reject:
+        p.error("--revert goes with --reject")
     if a.close and not a.note.strip():
         p.error("--close needs --note with the reason")
     if a.close and any(x is not None for x in (a.touch, a.tests, a.read, a.target, a.depends_on)):
@@ -8521,6 +8791,8 @@ def answer_main(argv) -> int:
         except ValueError as exc:
             p.error(str(exc))
         ans["contract"] = a.contract
+    if a.package:
+        ans["package"] = str(a.package)
     if a.release_private:
         ans["release_private"] = True
     if a.port:
@@ -8531,6 +8803,8 @@ def answer_main(argv) -> int:
         ans["accept"] = True
     if a.reject:
         ans["reject"] = True
+        if a.revert:
+            ans["revert"] = True
     if a.kind == "unit_test":
         if set(a.touch or []) != set(a.tests or []) or not a.touch:
             p.error("a unit_test task touches exactly its tests: --touch must equal --tests")
@@ -8594,6 +8868,65 @@ def answer_main(argv) -> int:
     return 0
 
 
+RIG_ROOTS = ("tests/", "echo_sync/")
+
+
+def rig_main(argv) -> int:
+    """W-rig 4: `rig --cand DIR --ids FILE --why TEXT --state-dir DIR [--repo DIR]`: a rel-rig-<sha8> card (priority 0, rig contract with the
+    whole changed files as parts) from the directory of changed files (paths tests/**, echo_sync/**). Idempotent: the same files and ids
+    give the same card id and the plan keeps the first one."""
+    from tools import factory_architect as A
+    p = argparse.ArgumentParser(prog="factory_loop rig", description="a test-stand (rig) card from a directory of changed files")
+    p.add_argument("--cand", type=Path, required=True)
+    p.add_argument("--ids", type=Path, required=True, help="a file with the target test ids, one per line")
+    p.add_argument("--why", required=True)
+    p.add_argument("--state-dir", type=Path, default=DEFAULT_STATE_DIR)
+    p.add_argument("--repo", type=Path, default=Path("."))
+    a = p.parse_args(argv)
+    if not a.cand.is_dir():
+        p.error("--cand is not a directory: %s" % a.cand)
+    if not Path(a.state_dir).is_dir():
+        p.error("--state-dir does not exist: %s" % a.state_dir)
+    try:
+        ids = [x.strip() for x in a.ids.read_text(encoding="utf-8").splitlines() if x.strip()]
+    except OSError as exc:
+        p.error("--ids is unreadable: %s" % exc)
+    if not ids:
+        p.error("--ids is empty")
+    files = {}
+    for path in sorted(a.cand.rglob("*")):
+        if path.is_file():
+            rel = path.relative_to(a.cand).as_posix()
+            if "__pycache__" in rel or rel.endswith((".pyc", ".pyo")):
+                continue            # a cache is never a card file, wherever it lies
+            if not rel.startswith(RIG_ROOTS):
+                p.error("%s: a rig card carries only tests/** and echo_sync/**" % rel)
+            try:
+                files[rel] = path.read_bytes().decode("utf-8")      # bytes: CRLF stays CRLF (the card text and its hash are the file's own)
+            except (OSError, UnicodeDecodeError) as exc:
+                p.error("%s: unreadable as utf-8 text: %s" % (rel, exc))
+    if not files:
+        p.error("--cand holds no files")
+    digest = hashlib.sha1(json.dumps([files, ids], sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
+    bid = "rel-rig-" + digest[:8]
+    test = {"use": ids[0]}
+    if len(ids) > 1:
+        test["also"] = ids[1:]
+    contract = dict(row=bid, decision="fix", rig=True, why=F.redact(a.why)[:500], test=test,
+                    parts=[dict(file=name, file_text=text, instruction="Replace the whole file with the text verified in the cloud run of the rig candidate.")
+                           for name, text in files.items()])
+    # engine="coordinator" is deliberate: this submission is made by the coordinator, so the strong-engine check always
+    # passes here; the engine check bites where the card is validated again for the engine that really runs it
+    faults = A.validate(contract, Path(a.repo), bid=bid, engine="coordinator")
+    if faults:
+        print("rig refused: " + "; ".join(faults[:5]), file=sys.stderr)
+        return 2
+    rows = A.to_tasks(contract, bid=bid, base_id=bid.replace("-", "_"), gen=1, priority=0, title="rig: " + F.redact(a.why)[:80])
+    added = F.append_tasks(Path(a.state_dir) / "plan.json", rows)
+    print("rig card %s: %s" % (bid, "added " + ",".join(added) if added else "already there"))
+    return 0
+
+
 def _cloud_sweep_fn(a):
     """The existing cloud sweep (tools.echo_cloud.sweep), or None with --no-cloud-sweep / when the module is absent."""
     if getattr(a, "no_cloud_sweep", False):
@@ -8649,6 +8982,8 @@ def main(argv=None) -> int:
         return answer_main(argv[1:])
     if argv and argv[0] == "summary":
         return summary_main(argv[1:])
+    if argv and argv[0] == "rig":
+        return rig_main(argv[1:])
     a = parse_args(argv)
     absent: list = []
     keys = load_keys(a.env_file, a.channels, absent) if a.env_file else {}
