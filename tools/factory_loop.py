@@ -4828,7 +4828,7 @@ class Loop:
     HYPO_RETRY_S = 600.0        # a row with nothing to search (no red id, cooled, no channel, cloud failure) is looked at again after this
     HYPO_STALE_S = 3600.0       # a solve older than this is dropped (its result ignored; 16 steps with a cloud run each)
 
-    def _hypo_candidates(self, tasks, state, ls, now) -> list:
+    def _hypo_candidates(self, tasks, state, ls, now, tfirst=False) -> list:
         """W-feed2 2: the rows that may be searched now, ECHO (guard) -> rel-<sha> -> rel-base: rows of the to_slice book (the wait
         and the barred steps do not matter: the search needs neither) and rows of READY cards that no card runs; a red row only
         (the entry's guard or a rel- row); not a row that is under a search or a slicer already, not one that has nothing to search."""
@@ -4842,11 +4842,12 @@ class Loop:
                 running.add(row)
             elif status == "READY":
                 ready.add(row)
-        out = []
+        out, first = [], []
         for row in (set(ls.get("to_slice", {})) | ready) - running - set(self._hypers) - set(self._slicers):
             entry = ls.get("to_slice", {}).get(row, {})
-            if not Loop._is_red_row(row, entry):
-                continue
+            red = Loop._is_red_row(row, entry)
+            if not red and not (tfirst and row in ls.get("to_slice", {}) and not str(row).startswith(("rel-", "fac-"))):
+                continue            # test first (``tfirst``): a to_slice row of ECHO without a red test follows the red rows
             skipped = self._hypo_skip.get(row)
             if skipped and skipped[0] == str(self.base_sha) and now - skipped[1] < self.HYPO_RETRY_S:
                 continue
@@ -4854,8 +4855,8 @@ class Loop:
                     or row in (ls.get("outdated_tests") or {}) \
                     or any(t.only_opus or not t.privacy_safe for t in related.get(row, [])):
                 continue
-            out.append(row)
-        return sorted(out, key=lambda r: (HY.row_class(r), r))
+            (out if red else first).append(row)
+        return sorted(out, key=lambda r: (HY.row_class(r), r)) + sorted(first)
 
     def _solver_first(self, tasks, state, ls, now) -> set:
         """Red rows the solver has not tried on the current base (bench 25.11: 4 of 8 and 8 of 19 against 3.4 % of the cards): no card
@@ -4925,11 +4926,19 @@ class Loop:
             ls = self.ls()
             copies = None
             looked = 0
-            for row in self._hypo_candidates(tasks, state, ls, now):
+            for row in self._hypo_candidates(tasks, state, ls, now, tfirst=True):
                 if len(self._hypers) >= limit or looked >= 40:
                     break
                 looked += 1
                 entry = ls.get("to_slice", {}).get(row, {})
+                if not Loop._is_red_row(row, entry):        # test first: no red test, the model writes it (after the rows with a red one)
+                    if HY.cooled(ls.get("hypo_seen", {}), str(self.base_sha), "tfirst:" + row, time.time()) or not self._solver_channels():
+                        self._hypo_skip[row] = (str(self.base_sha), now)
+                        continue
+                    if copies is None:
+                        copies = copy.deepcopy((tasks, state, ls))
+                    self._hypo_start_tfirst(row, copies)
+                    continue
                 try:
                     red = Loop._guard_red_ids(self, row, entry)
                 except Exception as exc:        # noqa: BLE001  nothing known: the ids of the row's own books only
@@ -4960,6 +4969,64 @@ class Loop:
         job = self._hypers[row] = Prefetch("solver", work, dict(row=row, base=base, root=root))
         job.thread.start()
 
+    def _hypo_start_tfirst(self, row, copies) -> None:
+        """Test first: the solve of a row WITHOUT a red test (the same feeder, the same Prefetch slot ``_hypers``)."""
+        base, root = str(self.base_sha), self._snapshot(self.base_sha)
+        tasks_c, state_c, ls_c = copies
+
+        def work():
+            packet = self._row_packet(row, "first", "", tasks=tasks_c, state=state_c, ls=ls_c, root=root, rung=0)
+            return packet, [], "tfirst", self._solver_run_tfirst(row, packet, root)
+        job = self._hypers[row] = Prefetch("solver", work, dict(row=row, base=base, root=root))
+        job.thread.start()
+
+    def _solver_run_tfirst(self, row, packet, root) -> dict:
+        """Test first: ONE solve (a worker thread: reads and asks only) of a row with the text, the acceptance, the quotes and the hints."""
+        from tools import factory_solver as SV, agent_factory_import as imp
+        try:
+            back = next((r for r in imp.parse_section4(self.cfg.backlog.read_text(encoding="utf-8-sig")) if r["backlog_id"] == row), {})
+        except (ValueError, OSError):
+            back = {}
+        acceptance = F.redact(str(back.get("row") or "")) if not F.is_private_text(str(back.get("row") or "")) else ""
+        suspects = self._solver_suspects(root, packet, [], "")
+        t0 = time.monotonic()
+        res = SV.solve_row(self._solver_ctx(root, packet), row, packet["title"], acceptance, suspects,
+                           quotes="\n".join(str(q) for q in packet.get("quotes") or ()),
+                           hints="\n".join(str(h) for h in packet.get("hints") or ()))
+        SV.STATS.add(res)
+        self._solver_save_trace(row, res, [res.test["id"]] if res.test else [])
+        return dict(result=res, group="tfirst:" + row, ids=[], secs=time.monotonic() - t0)
+
+    def _hypo_post_tfirst(self, row, packet, root, found):
+        """Test first: what the loop thread does with a finished solve: the event, the cooldown mark, then the contract (a test task and
+        a code task, or the test task alone when the fix is not green) or None. Loop thread only."""
+        from tools import factory_hypo as HY, factory_solver as SV, factory_architect as A
+        try:
+            res = found["result"]
+            status = res.status if res.status in ("green", "cloud", "no_channel", "already_green", "stale") else "red"
+            self.event("solver", backlog_id=row, status=status, steps=res.steps, calls=res.calls, tests=res.tests, model=res.model or None,
+                       secs=round(float(found.get("secs") or 0), 1), why=("test first: " + (res.why or "")) or None, group_ids=0,
+                       tfirst=True, test=bool(res.test))
+            if status in ("green", "red"):
+                fresh = self.ls()
+                HY.mark_searched(fresh.setdefault("hypo_seen", {}), str(self.base_sha), "tfirst:" + row, time.time())
+                self.save_ls(fresh)
+            contract = SV.to_contract_tfirst(row, res, root)
+            if contract is None:
+                return None
+            faults = A.validate(contract, root, bid=row, known_ids=packet.get("known_ids"), engine="solver")
+            if faults and contract.get("parts"):         # the fix is refused as a card: the red test alone still goes
+                contract = SV.to_contract_tfirst(row, res, root, with_fix=False)
+                faults = A.validate(contract, root, bid=row, known_ids=packet.get("known_ids"), engine="solver") if contract else ["no test"]
+            if faults:
+                self.err("solver tfirst", RuntimeError("; ".join(str(x) for x in faults[:3])))
+                return None
+            return dict(contract=contract, engine="solver", faults=[], repaired=[], test_only=bool(contract.get("test_only")),
+                        guard=str(res.test["id"]))
+        except Exception as exc:        # noqa: BLE001  an aid: the slicer goes on as before
+            self.err("solver tfirst", exc)
+        return None
+
     def _hypo_collect(self, now) -> None:
         """Apply the searches that have finished (loop thread). A search of an older base is ignored."""
         for row, job in list(self._hypers.items()):
@@ -4980,6 +5047,10 @@ class Loop:
                 if kind == "spare":
                     spare = self._hypo_take_spare(row, job.ctx["root"], packet)
                     result = dict(contract=spare, engine="solver", faults=[], repaired=[]) if spare is not None else None
+                elif kind == "tfirst":
+                    result = self._hypo_post_tfirst(row, packet, job.ctx["root"], found)
+                    if result is None:
+                        self._hypo_skip[row] = (base, now)
                 elif kind == "search":
                     result = self._hypo_post(row, packet, job.ctx["root"], ids, found)
                     if result is None:
@@ -5017,8 +5088,13 @@ class Loop:
         priority = int(str(packet["priority"]).removeprefix("P"))
         portion = dict(engine=engine, rung=0, tasks=A.to_tasks(contract, bid=row, base_id=base_id, gen=gen, priority=priority,
                                                                  title=packet["title"], author=A.author_model(engine)))
+        entry_before = copy.deepcopy(self.ls().get("to_slice", {}).get(row)) if result.get("test_only") else None
         try:
             added = self._apply_portion(row, gen, portion, "first")
+            if entry_before is not None and added and result.get("guard"):      # test first: the row stays in the book with the new test as its red id
+                kept = self.ls()
+                kept.setdefault("to_slice", {})[row] = dict(entry_before, guard=str(result["guard"]))
+                self.save_ls(kept)
         except F.LockBusy:          # W-ask 4c: the state is locked: the green candidate is kept as a spare, not lost
             keep = self.ls()
             rec = (keep.get("hypo_spare") or {}).get(row)

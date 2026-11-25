@@ -30,6 +30,30 @@ READ_PREFIXES = ("echo_sync/", "tests/")
 EDIT_PREFIXES = ("echo_sync/", "tests/")
 TRACE_CAP = 40000               # bytes of the saved full trace of one solve
 FAIL_CAP = 2200
+STEPS_TFIRST = 24               # test first: the steps of the test and of the fix together
+
+SYSTEM_TFIRST = '''You work on ONE defect of a Python repository (a voice assistant) that has NO red test yet. Step 1: write ONE new test file whose ONE test_ function fails on the product as it is now, with an AssertionError of its own assert (not an import error, not a fixture error, not a skip). Step 2: fix the product in echo_sync/ until that test passes. You work in steps. Every reply: 1-3 short sentences of reasoning, then the command(s): up to 4 READ/GREP/DEF together, or ONE NEWFILE, or ONE EDIT (the tests run by themselves after it):
+READ path start end            (lines, at most 160)
+GREP regex :: path_prefix      (e.g. GREP def _source\\( :: echo_sync/)
+DEF name                       (shows every function/class with that name, with its file and lines)
+GIVEN: one sentence            (the state), WHEN: one sentence (the action), THEN: one sentence (the expected result): before NEWFILE
+NEWFILE tests/test_factory_<row lowercase>_<word>.py
+```python
+the whole test file: exactly ONE test_ function, a real assert on a value that comes back from the product code
+```
+EDIT path
+<<<<<<< SEARCH
+exact old lines
+=======
+new lines
+>>>>>>> REPLACE
+DONE                           (only after the tests passed)
+Rules: read the product code first, then write the test from the row, its acceptance and the owner's words: it must pin the behaviour the owner wants, and be red NOW. The machine runs the test on the base: a test that passes, or fails with an error instead of an assertion, is refused with the reason. Once the test is red it is frozen (never edited); then EDIT only files of echo_sync/ (at most 3), small edits, SEARCH text must match exactly once. Never skip, never special-case the test. Write only YOUR next step: never write a RESULT yourself.'''
+NEW_TEST_RE = r"tests/test_factory_%s_[a-z0-9_]+\.py"
+_NEWFILE = re.compile(r"^[ \t]*NEWFILE[ \t]+[\"'`]?([^\s\"'`]+)[\"'`]?[ \t]*\n(?:```[\w+-]*[ \t]*\n(.*?)\n```|<{5,} NEW[ \t]*\n(.*?)\n>{5,} END)", re.S | re.M)
+_BAD_ERROR = re.compile(r"ERROR collecting|ERROR at (?:setup|teardown)|ImportError|ModuleNotFoundError|SyntaxError|NameError|"
+                        r"fixture '[^']*' not found|[Ss]kipped|SKIPPED|timeout after \d+ s|INTERNALERROR")
+_ASSERT_LINE = re.compile(r"^E\s+(?:assert\b|AssertionError)", re.M)
 
 SYSTEM = '''You fix failing pytest tests in a Python repository (a voice assistant). You work in steps. Every reply: 1-3 short sentences of reasoning, then the command(s): up to 4 READ/GREP/DEF together, or ONE EDIT (the tests run by themselves after it):
 READ path start end            (lines, at most 160)
@@ -69,10 +93,15 @@ class Result:
         self.model = ""
         self.stale = None               # {"phrase", "ref"} of a proven STALE answer
         self.log = []                   # the full trace: [{"step", "reply", "result"}]
+        self.row = ""
+        self.tfirst = False             # test first: the row had no red test, the model writes it (res.test) before the fix
+        self.test = None                # {"path", "id", "code", "given", "when", "then", "because", "text"} of an accepted red test
 
     def evidence(self):
         """Lines for the slicer: what the solver edited last and how the test answered."""
         out = []
+        if self.test:
+            out.append("SOLVER wrote the red test %s (red now because: %s)" % (self.test["id"], self.test["because"]))
         if self.overlay:
             out.append("SOLVER edited %s; the test still failed:" % ", ".join(sorted(self.overlay)))
         if self.last_fail:
@@ -106,6 +135,8 @@ class Tree:
         self.overlay = overlay if overlay is not None else {}
         self._base = {}
         self._files = None
+        self.frozen = {}                # test first: the accepted red test (never edited, run with every candidate)
+        self.edit_prefixes = EDIT_PREFIXES
 
     def files(self):
         if self._files is None:
@@ -116,7 +147,7 @@ class Tree:
                     for n in names:
                         if n.endswith(".py"):
                             out.append((Path(dirpath) / n).relative_to(self.root).as_posix())
-            self._files = sorted(set(out) | set(self.overlay))
+            self._files = sorted(set(out) | set(self.overlay) | set(self.frozen))
         return self._files
 
     def base(self, path):
@@ -128,6 +159,8 @@ class Tree:
         path = str(path).strip().strip("\"'`").replace("\\", "/")
         if path in self.overlay:
             return self.overlay[path]
+        if path in self.frozen:
+            return self.frozen[path]
         if ".." in path or not path.startswith(READ_PREFIXES) or not (self.root / path).is_file():
             near = difflib.get_close_matches(path, self.files(), n=3, cutoff=0.5)
             raise ValueError("no such file %s%s" % (path, ("; did you mean " + ", ".join(near)) if near else ""))
@@ -311,8 +344,10 @@ def do_edit(tree, reply):
         return "EDIT needs the SEARCH/REPLACE block", False
     staged = {}
     for path, search, replace in blocks:
-        if ".." in path or not path.startswith(EDIT_PREFIXES):
-            return "refused: only files of echo_sync/ and tests/ may be edited: " + path, False
+        if path in tree.frozen:
+            return "refused: %s is the red test, it is frozen: fix the product in echo_sync/" % path, False
+        if ".." in path or not path.startswith(tree.edit_prefixes):
+            return "refused: only files of %s may be edited: %s" % (" and ".join(tree.edit_prefixes), path), False
         if re.search(r"pytest\.(skip|xfail)|mark\.(skip|xfail)", replace):
             return "refused: skipping is not a fix", False
         try:
@@ -523,11 +558,13 @@ def _task(red_ids, failure, test_source, suspects):
             % (", ".join(red_ids[:TEST_IDS]), str(test_source)[:3500], str(failure)[-FAIL_CAP:], tops or "(unknown)"))
 
 
-def render(task, hist, limit, keep=KEEP):
+def render(task, hist, limit, keep=KEEP, system=None):
     """The prompt: the system rules, the task, the whole history; above ``limit`` characters the observations and replies of the
     steps older than ``keep`` are cut (the newest stay whole), and ``keep`` shrinks until it fits (down to 2)."""
+    system = system or SYSTEM
+
     def build(k):
-        parts = [SYSTEM, "", task]
+        parts = [system, "", task]
         for i, (a, o) in enumerate(hist):
             old = len(hist) - i > k
             a = a[:400] if old and len(a) > 400 else a
@@ -535,7 +572,7 @@ def render(task, hist, limit, keep=KEEP):
             parts += ["", "YOU:", a, "", "RESULT:", o]
         parts += ["", "YOU:"]
         return "\n".join(parts)
-    full = "\n".join([SYSTEM, "", task] + [x for a, o in hist for x in ("", "YOU:", a, "", "RESULT:", o)] + ["", "YOU:"])
+    full = "\n".join([system, "", task] + [x for a, o in hist for x in ("", "YOU:", a, "", "RESULT:", o)] + ["", "YOU:"])
     if len(full) <= limit:
         return full
     k = keep
@@ -570,9 +607,11 @@ def _final(ctx, tree, ids, res):
     """The green check: every id of the group passes and nothing that passed on the base fails (the whole files run, the
     unchanged base is the control). ('' = green) or the text for the model."""
     files = sorted({str(i).split("::", 1)[0] for i in ids})
+    if res.tfirst:      # the new test file is the only red one: the files of the tests next to the edited product files are the 'no new red' proof
+        files += [f for f in neighbors(ctx.root, res.overlay) if f not in files]
     first = sorted(res.overlay)[0]
     got = _verdict(ctx, list(ids[:FINAL_IDS]) + [HY.FILE_RUN + f for f in files],
-                   {"1": dict(res.overlay), HY.CONTROL: {first: tree.base(first)}}, res)
+                   {"1": dict(tree.overlay, **tree.frozen), HY.CONTROL: {first: tree.base(first)}}, res)
     ctl = got.get(HY.CONTROL)
     if not isinstance(ctl, dict):
         raise HY.CloudFail("no control verdict")
@@ -590,23 +629,30 @@ def _final(ctx, tree, ids, res):
     return ""
 
 
-def solve(ctx, row, red_ids, failure, test_source, suspects, *, steps=STEPS):
-    """One row: the loop of the model against the red ids. Returns a Result (never raises: a refusal of every road is a status)."""
-    res = Result()
+def solve(ctx, row, red_ids, failure, test_source, suspects, *, steps=STEPS, tfirst=None, _res=None):
+    """One row: the loop of the model against the red ids. Returns a Result (never raises: a refusal of every road is a status).
+    ``tfirst`` = the task text of a row WITHOUT a red test: the model writes the test first (NEWFILE), the ids appear when it is red."""
+    res = _res or Result()
     ids = [str(i) for i in red_ids]
-    if not ids:
+    if not ids and tfirst is None:
         res.status, res.why = "red", "no red ids"
         return res
     tree = Tree(ctx.root)
     res_overlay = tree.overlay
     res.overlay = res_overlay
-    task = _task(ids, failure, test_source, suspects)
+    system = None
+    if tfirst is not None:
+        res.tfirst, system = True, SYSTEM_TFIRST
+        tree.edit_prefixes = ("echo_sync/",)
+        task = tfirst
+    else:
+        task = _task(ids, failure, test_source, suspects)
     hist = []
     try:
         for n in range(1, steps + 1):
             res.steps = n
-            small = render(task, hist, ctx.small_chars, keep=2)
-            text = render(task, hist, ctx.ctx_chars)
+            small = render(task, hist, ctx.small_chars, keep=2, system=system)
+            text = render(task, hist, ctx.ctx_chars, system=system)
             try:
                 reply = ctx.ask(text, small=small)
             except NoChannel as exc:
@@ -624,7 +670,9 @@ def solve(ctx, row, red_ids, failure, test_source, suspects, *, steps=STEPS):
                 return res
             if res.status in ("already_green", "cloud", "stale"):
                 return res
-            if n == max(1, steps // 3) and not res_overlay:
+            if res.tfirst and not ids and n >= max(1, steps // 4):
+                obs += "\nYou have read enough: write the failing test now (NEWFILE)."
+            elif n == max(1, steps // 3) and not res_overlay:
                 obs += "\nYou have read enough: make your best EDIT now (a red test run is cheap and tells more than reading)."
             elif n >= steps // 2 and not res_overlay:
                 obs += "\nNo edit yet. Your next reply MUST be an EDIT."
@@ -642,6 +690,12 @@ def solve(ctx, row, red_ids, failure, test_source, suspects, *, steps=STEPS):
 def _step(ctx, tree, ids, reply, res):
     """One reply -> the observation text. Sets res.green, res.status 'cloud' / 'already_green' when it ends the solve."""
     text = (reply or "").replace("\r\n", "\n")
+    if res.tfirst:
+        nf = parse_newfile(text)
+        if nf is not None:
+            return _new_test(ctx, tree, ids, nf, res)
+        if not ids and (_BLOCK.search(text) or re.search(r"^[ \t]*(TEST|DONE|STALE)\b", text, flags=re.M)):
+            return "no red test yet: first write it with NEWFILE tests/test_factory_<row>_<word>.py and a ```python block (one test_ function that fails now)"
     if _BLOCK.search(text):
         obs, ok = do_edit(tree, text)
         if not ok:
@@ -695,10 +749,106 @@ def _stale(tree, phrase, res):
     return "STALE accepted"
 
 
+def parse_newfile(reply):
+    """{path, code, given, when, then} of the NEWFILE block of a reply (a fenced block or NEW/END marks), else None."""
+    text = (reply or "").replace("\r\n", "\n")
+    m = _NEWFILE.search(text)
+    if not m:
+        return None
+    code = m[2] if m[2] is not None else m[3]
+    head = text[:m.start()]
+    said = {}
+    for key in ("given", "when", "then"):
+        found = re.findall(r"^[ \t]*%s:[ \t]*(.+)$" % key.upper(), head, flags=re.M | re.I)
+        said[key] = found[-1].strip()[:300] if found else ""
+    return dict(path=m[1].replace("\\", "/"), code=code.rstrip("\n") + "\n", **said)
+
+
+def test_ids_of(path, code):
+    """The pytest ids of the test functions of a text: top-level test_*, methods of Test* classes."""
+    ids = []
+    for node in ast.parse(code).body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith("test_"):
+            ids.append("%s::%s" % (path, node.name))
+        elif isinstance(node, ast.ClassDef) and node.name.startswith("Test"):
+            ids += ["%s::%s::%s" % (path, node.name, f.name) for f in node.body
+                    if isinstance(f, (ast.FunctionDef, ast.AsyncFunctionDef)) and f.name.startswith("test_")]
+    return ids
+
+
+def red_reason(verdict, test_id, path):
+    """'' when the verdict shows the test red by an AssertionError of its own test_ function, else why it does not count (the text for
+    the model): a pass, a test that did not run (skip, not collected), an error of collection / setup / import, an assert below the test."""
+    passed, failed = set(verdict.get("passed") or ()), set(verdict.get("failed") or ())
+    text = str(verdict.get("text") or "")
+    if test_id in passed:
+        return "the test PASSES on the product as it is: it proves nothing. Write a test that fails now, on the behaviour the row says is wrong."
+    if test_id not in failed:
+        return "the test did not run to a verdict (skipped or not collected): it must run and fail."
+    if _BAD_ERROR.search(text):
+        return ("the test fails with an ERROR (collection, import, name, fixture or timeout), not with its own assert: the failure must be an "
+                "AssertionError inside the test_ function.\n" + text[-900:])
+    hit = _ASSERT_LINE.search(text)
+    if not hit:
+        return "the test fails, but not with an assert (no 'E   assert ...' line): it must fail by an assert of its own.\n" + text[-900:]
+    frames = re.findall(r"^(\S+\.py):\d+: in (\w+)", text[:hit.start()], flags=re.M)
+    if frames and not (frames[-1][0].replace("\\", "/").endswith(path.rsplit("/", 1)[-1]) and frames[-1][1].startswith("test_")):
+        return "the assert that fails is not inside the test_ function of your file (it is %s in %s): assert in the test itself.\n%s" % (
+            frames[-1][1], frames[-1][0], text[-700:])
+    return ""
+
+
+def neighbors(root, overlay, limit=3):
+    """The test files next to the edited product files (tests/test_<stem>*.py), at most ``limit``."""
+    out = []
+    for f in sorted(overlay):
+        if not str(f).startswith("echo_sync/"):
+            continue
+        for p in sorted((Path(root) / "tests").glob("test_%s*.py" % Path(f).stem)):
+            rel = p.relative_to(root).as_posix()
+            if rel not in out:
+                out.append(rel)
+    return out[:limit]
+
+
+def _new_test(ctx, tree, ids, nf, res):
+    """The first step of a test-first solve: the NEWFILE of the model. Accepted only when the cloud shows it red by its own assert
+    on the base; then it is frozen, ``ids`` gets its id and the solve goes on to the fix. The text for the model."""
+    from tools import factory_architect as A
+    if ids:
+        return "the red test is already accepted and frozen (%s): fix the product with EDIT in echo_sync/." % ids[0]
+    path, code = nf["path"], nf["code"]
+    slug = re.sub(r"[^a-z0-9]+", "_", str(res.row).lower()).strip("_")
+    if not re.fullmatch(NEW_TEST_RE % re.escape(slug), path) or (Path(ctx.root) / path).exists():
+        return "refused: the path must be a NEW file named tests/test_factory_%s_<word>.py (lowercase letters, digits, _)" % slug
+    if re.search(r"pytest\.(skip|xfail)|mark\.(skip|xfail)|importorskip", code):
+        return "refused: skipping is not a test"
+    faults = A.new_test_code_faults(code, ctx.root)
+    if faults:
+        return "refused: the test is unusable or weak: " + "; ".join(str(f) for f in faults[:4])
+    found = test_ids_of(path, code)
+    if len(found) != 1:
+        return "refused: the file must hold exactly ONE test_ function (it has %d): one test, one reason to be red." % len(found)
+    verdict = _verdict(ctx, found, {"1": {path: code}}, res)["1"]
+    why = red_reason(verdict, found[0], path)
+    if why:
+        res.last_fail = why[-FAIL_CAP:]
+        return "the test is refused: " + why
+    text = str(verdict.get("text") or "")
+    line = _ASSERT_LINE.search(text)
+    because = (text[line.start():].split("\n", 1)[0] if line else "assert fails")[:300]
+    tree.frozen[path] = code
+    ids[:] = found
+    res.test = dict(path=path, id=found[0], code=code, given=nf["given"], when=nf["when"], then=nf["then"], because=because, text=text[-FAIL_CAP:])
+    res.last_fail = ""
+    return "the test is RED by its own assert and now frozen (%s): %s\nNow fix the product in echo_sync/ with EDIT until it passes.\n%s" % (
+        found[0], because, text[-900:])
+
+
 def _test(ctx, tree, ids, res):
     """The cloud run after an edit: the red ids (the first few of the group). res.green only after the final check passes."""
     try:
-        got = _verdict(ctx, _run_ids(ids), {"1": dict(tree.overlay)}, res)
+        got = _verdict(ctx, _run_ids(ids), {"1": dict(tree.overlay, **tree.frozen)}, res)
     except HY.CloudFail as exc:
         res.status, res.why = "cloud", str(exc)[:120]
         return "cloud trouble"
@@ -722,6 +872,44 @@ def _test(ctx, tree, ids, res):
         return verdict
     res.green = True
     return "PASSED"
+
+
+def _task_tfirst(row, text, acceptance, quotes, hints, suspects):
+    tops = "\n".join(str(s) for s in list(suspects)[:15])
+    return ("Row %s (it has NO red test yet; write one, then fix):\n%s\n\nAcceptance:\n%s\n\nWords of the owner:\n%s\n\nHints (code of the likely places):\n%s\n\n"
+            "Product functions that may be involved, most likely first:\n%s"
+            % (row, str(text)[:2500], str(acceptance)[:2500], str(quotes)[:2500], str(hints)[:5000], tops or "(unknown)"))
+
+
+def solve_row(ctx, row, text, acceptance, suspects, quotes="", hints="", *, steps=STEPS_TFIRST):
+    """Test first: a row without a red test. The model writes ONE new test (NEWFILE) that the cloud shows red by its own assert,
+    the test is frozen, then the usual loop edits echo_sync/ until it is green and no neighbour test goes red. Result.test is set
+    once the test is accepted (green or not); Result.green only when the fix passed too."""
+    res = Result()
+    res.row = row
+    res.tfirst = True
+    out = solve(ctx, row, [], "", "", suspects, steps=steps, tfirst=_task_tfirst(row, text, acceptance, quotes, hints, suspects),
+                _res=res)
+    return out
+
+
+def to_contract_tfirst(row, res, root, why="the solver wrote a red test first and made it green in the cloud", with_fix=True):
+    """The contract of a test-first result (engine 'solver'): decision fix, test.new {path, given, when, then, red_now_because, code} and,
+    when the fix is green, parts = the SEARCH/REPLACE blocks (a test task, then a code task). A red but good test without a fix:
+    ``test_only`` (parts empty: the test task only). None when there is no accepted test."""
+    t = res.test
+    if not t:
+        return None
+    new = dict(path=t["path"], given=t["given"] or "the state the backlog row describes", when=t["when"] or "the behaviour of the row is exercised",
+               then=t["then"] or "the result the row's acceptance asks for", red_now_because=t["because"] or "the assert fails on the base",
+               code=t["code"])
+    contract = dict(row=row, decision="fix", why=why, test={"new": new})
+    parts, problem = parts_of(root, res.overlay) if res.green and res.overlay and with_fix else ([], "no green fix")
+    if parts and not problem:
+        contract["parts"] = parts
+    else:
+        contract.update(parts=[], test_only=True, why="the solver wrote a red test (the fix is left to the next solve): " + t["id"])
+    return contract
 
 
 def trace_text(res, row, ids, redact=lambda t: t, cap=TRACE_CAP):
