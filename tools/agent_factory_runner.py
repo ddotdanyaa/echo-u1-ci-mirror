@@ -4247,6 +4247,17 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                         ctx['red_evidence'] = red_evidence(cand.diag)
                 else:
                     ok, why = gate.accept(base, cand, verdict == 'red')
+                    part_left = gate.partial_left(base, cand, gate.target_names(K.contract_of(task))) if not ok and verdict == 'red' else None
+                    if part_left:       # the target is green and nothing new is red: the other reds of the file are other rows' work
+                        ok, why = True, 'ok'
+                        events.append('partial_green:%d' % len(part_left))
+
+                    def note_left(state, row):
+                        mine = state['tasks'][tid]
+                        mine.pop('reds_left', None)
+                        if part_left:
+                            mine['reds_left'] = list(part_left)[:20]
+                    ck.commit(note_left)
                 if not ok and why.startswith('env:'):
                     return env_release(why)
                 if not ok and task.kind != 'unit_test' and gate.undecided(base, cand):
