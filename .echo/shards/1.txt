@@ -1,0 +1,7 @@
+tests/break/world/test_w_host_world.py
+tests/test_bad_network.py
+tests/test_s6_fault_injection.py
+tests/test_s6_segmentation.py
+tests/test_task2_stuck_endless_complete.py
+tests/test_ux_repeat_host.py
+tests/test_w9_arch.py
