@@ -1,0 +1,16 @@
+tests/test_c22_repeat_scenes.py
+tests/test_c24_lecture.py
+tests/test_c24_question_again.py
+tests/test_h29_call.py
+tests/test_h30_call.py
+tests/test_h31_rules.py
+tests/test_m1_rules.py
+tests/test_r31_6_last_words.py
+tests/test_registry_coverage.py
+tests/test_repeat_cases.py
+tests/test_s6_fault_injection.py
+tests/test_u117_answered_by_other.py
+tests/test_u17_half_duplex.py
+tests/test_u18_tails.py
+tests/verify/lists/test_v_H31_03.py
+tests/verify/lists/test_v_S9.py
