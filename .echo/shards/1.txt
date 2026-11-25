@@ -1,0 +1,1 @@
+tests/registry/test_fn_5_06.py
