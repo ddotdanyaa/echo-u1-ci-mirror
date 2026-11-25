@@ -98,23 +98,6 @@ def _pool():
             dict(id="m1", group="gm", model="google/flash-lite", key_env="K", tpm=100000, rpd=100, verified=True, tier="main")]
 
 
-def test_exact_the_first_edit_goes_to_the_main_tier_and_gemma_follows():
-    from tools import factory_channels as CH
-    order = [c["id"] for c in CH.route_order(_pool(), "edit", 1, 3000, state={})]
-    assert order == ["m1", "s1"]
-    # the experiment's own switch does not put Gemma back in front, and the second attempt stays main first
-    assert [c["id"] for c in CH.route_order(_pool(), "edit", 1, 3000, state={"edit_route": "small_second"})] == ["m1", "s1"]
-    assert CH.tier_of(CH.route_order(_pool(), "edit", 2, 3000, state={})[0]) == "main"
-
-
-def test_exact_with_no_main_channel_the_edit_goes_to_gemma_at_once():
-    from tools import factory_channels as CH
-    only_small = [c for c in _pool() if c["tier"] == "small"]
-    assert [c["id"] for c in CH.route_order(only_small, "edit", 1, 3000, state={})] == ["s1"]
-    dead_key = [c["id"] for c in CH.route_order(_pool(), "edit", 1, 3000, state={})]
-    assert dead_key[0] == "m1"          # a main channel without a key is skipped later by choose() (usable), Gemma is the next of the order
-
-
 def test_exact_a_red_row_is_asked_for_it_too(root):
     answers, seen = [json.dumps(contract(VAGUE)), json.dumps(contract(EXACT))], []
 
@@ -123,3 +106,15 @@ def test_exact_a_red_row_is_asked_for_it_too(root):
         return answers[len(seen) - 1]
     got = A.contract_for(dict(PACKET, red_given=True), rung=0, root=root, asks={"agent": ask})
     assert len(seen) == 2 and "vague: " in seen[1] and got["contract"]["parts"][0]["instruction"] == EXACT
+
+
+def test_split_gemma_edits_first_and_main_only_while_most_of_its_day_is_left():
+    import time
+    from tools import factory_channels as CH
+    now = time.time()
+    fresh = [c["id"] for c in CH.route_order(_pool(), "edit", 1, 3000, state={}, now=now)]
+    assert fresh == ["s1", "m1"]
+    main = next(c for c in _pool() if c["id"] == "m1")
+    used = {main["group"]: {"request_times": [now] * (main["rpd"] * 4 // 10)}}
+    assert [c["id"] for c in CH.route_order(_pool(), "edit", 1, 3000, state=used, now=now)] == ["s1"]
+    assert "m1" in [c["id"] for c in CH.route_order(_pool(), "architect", 1, 3000, state=used, now=now)]
