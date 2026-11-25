@@ -799,7 +799,7 @@ RESLICE_SLEEP_S = 5
 SLICE_WAIT_S = 60
 SLICE_PAUSES = (60, 120, 300, 600)        # W-pay 2: the pause of a row's repeated wait grows
 SLICE_STARVED_S = 600                    # W-prio2 2: no slice started or ended this long while a fresh row waits -> infra slicer_starved
-SLICE_STALE_S = 900                      # W-prio2 3: a slicer older than this is dropped (its result is ignored)
+SLICE_STALE_S = 3600                      # W-prio2 3: a slicer older than this is dropped (its result is ignored)
 SLICE_WAIT_CALL_S = 120.0                # W-path A: the longest wait of one slicing call for a channel
 SLICE_WAIT_JOB_S = 400.0                 # W-path A: the sum of the waits of one slicing job (under SLICE_STALE_S)
 SLICE_HOPS = 4                           # W-path A: channels of one step tried at once after 429/500/503, then a wait
@@ -4461,8 +4461,9 @@ class Loop:
         return out
 
     SOLVER_MAX_TOKENS = 4000        # W-solver: the answer of one step (reasoning + one command)
-    SOLVER_WAIT_S = 900.0           # W-solver: the waits for a channel of ONE solve (503/429/no channel are not steps)
+    SOLVER_WAIT_S = 3600.0           # W-solver: the waits for a channel of ONE solve (503/429/no channel are not steps)
     SOLVER_TEMPERATURE = 0.4
+    SOLVER_RETRY_S = 4.0            # a pause between two askings of the open channels
 
     def _solver_channels(self) -> list:
         """W-solver: the free channels a solve may use (main and small tiers, not reserve); [] when channels.json does not read."""
@@ -4491,8 +4492,12 @@ class Loop:
     def _slice_parallel(self) -> int:
         """SLICE_PARALLEL while a main channel is open; else half of the open small channels (the solves have the other half)."""
         live = self._open_channels()
-        from tools import factory_architect as A
-        if any(CH.tier_of(c) == "main" for c in live) or ("paid" in self._asks() and "paid" not in (A.no_money() or ())):
+        from tools import factory_paid_critic as PK
+        try:
+            money = "paid" in self._asks() and not PK.credit_dead() and PK.left(PK._today()) - PK._external("FACTORY_BUILDERS_WAITING", ("usd",)) > 0.3
+        except Exception:       # noqa: BLE001  unknown money: none
+            money = False
+        if any(CH.tier_of(c) == "main" for c in live) or money:
             return SLICE_PARALLEL
         return max(1, len(live) // 2)
 
@@ -4521,20 +4526,21 @@ class Loop:
                     if status == "ok" and str(answer).strip():
                         info["model"] = model
                         return answer
-            for body, tier, role in ((small, "small", "review"), (text, "", "code")):    # owner: Gemma (57 600 calls a day) solves first, Flash-Lite is for slicing
-                if body is None:
-                    continue
-                status, model, answer, _ = loop._light_ask(body, attempt=1, section="loop-architect", quotas=loop._arch_quotas,
-                                                           max_tokens=loop.SOLVER_MAX_TOKENS, role=role, only_tier=tier,
-                                                           temperature=loop.SOLVER_TEMPERATURE)
-                if status == "ok" and str(answer).strip():
-                    info["model"] = model
-                    return answer
-            status, model, answer, _ = loop._slice_light(budget, text, max_tokens=loop.SOLVER_MAX_TOKENS, role="code",
-                                                         temperature=loop.SOLVER_TEMPERATURE)
-            if status == "ok" and str(answer).strip():
-                info["model"] = model
-                return answer
+            # a refused minute is waited out, the steps made are never thrown away: the open channels are asked again every few seconds
+            while True:
+                for body, tier, role in ((small, "small", "review"), (text, "", "code")):    # owner: Gemma (57 600 calls a day) solves first, Flash-Lite is for slicing
+                    if body is None:
+                        continue
+                    status, model, answer, _ = loop._light_ask(body, attempt=1, section="loop-architect", quotas=loop._arch_quotas,
+                                                               max_tokens=loop.SOLVER_MAX_TOKENS, role=role, only_tier=tier,
+                                                               temperature=loop.SOLVER_TEMPERATURE)
+                    if status == "ok" and str(answer).strip():
+                        info["model"] = model
+                        return answer
+                if budget["left"] <= 0 or loop.stop.exists():
+                    break
+                budget["left"] -= loop.SOLVER_RETRY_S
+                loop._sleep(loop.SOLVER_RETRY_S)
             raise SV.NoChannel(status)
         return SV.Ctx(root=root, ask=ask, cloud=lambda r, ids, files: HY.cloud_batch(r, ids, files, tid="s" + str(packet.get("bid"))),
                       info=info, sleep=self._sleep)

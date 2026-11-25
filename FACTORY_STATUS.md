@@ -1,9 +1,12 @@
 # Factory status (generated, structured data only)
 
-Generated: 2026-11-25T11:20:42Z
-Source commit: sha75db48bc444f
+Generated: 2026-11-25T11:44:47Z
+Source commit: sha08737d0f5d02
 
 ## Commits (sha, time)
+- sha08737d0f 2026-11-25T14:44:03+03:00
+- sha7f1c295e 2026-11-25T14:23:43+03:00
+- shadebae943 2026-11-25T14:20:20+03:00
 - sha75db48bc 2026-11-25T14:19:54+03:00
 - sha4d767eca 2026-11-25T14:04:46+03:00
 - sha7b97562f 2026-11-25T13:59:52+03:00
@@ -21,9 +24,6 @@ Source commit: sha75db48bc444f
 - shab27768bd 2026-11-25T12:29:17+03:00
 - sha89279a29 2026-11-25T12:28:58+03:00
 - sha558835cb 2026-11-25T12:21:56+03:00
-- shaf805ad3a 2026-11-25T12:11:46+03:00
-- shab99933f1 2026-11-25T11:46:16+03:00
-- sha0ecce85c 2026-11-25T11:37:49+03:00
 
 ## Funnel
 | step | count |
@@ -35,16 +35,16 @@ Source commit: sha75db48bc444f
 | gate_pass | 89 |
 | known_to_loop | 753 |
 | promoted | 87 |
-| ready | 20 |
+| ready | 35 |
 | reviewed | 230 |
 | triaged | 561 |
 
 Side counters: blocked=19, parked=0, requeued=9
-Tasks now: BLOCKED=19, DONE=68, FAILED=1060, PROMOTED=57, READY=20, RUNNING=15
+Tasks now: BLOCKED=19, DONE=68, FAILED=1060, PROMOTED=57, READY=35
 Accepted: 33
 Promoted: 87
-Free RAM, GB: 4.61
-Telemetry rows: 75830 recognised, 0 unrecognised
+Free RAM, GB: 4.7
+Telemetry rows: 75964 recognised, 0 unrecognised
 
 ## Spend per model
 | model | calls | tokens_in | tokens_out | usage_unknown | http_429 | errors |
@@ -72,13 +72,13 @@ Telemetry rows: 75830 recognised, 0 unrecognised
 |---|---|---|
 | answer | 546 | 0 |
 | gate | 9635 | 0 |
-| infra | 4077 | 0 |
-| loop | 10305 | 0 |
-| other | 22512 | 0 |
+| infra | 4083 | 0 |
+| loop | 10382 | 0 |
+| other | 22559 | 0 |
 | promote | 105 | 0 |
 | review | 3694 | 1709 |
 | run | 24467 | 12607 |
-| triage | 489 | 0 |
+| triage | 493 | 0 |
 
 ## Channels (model ids)
 - 1db4ab-gemini-3-8-flash
