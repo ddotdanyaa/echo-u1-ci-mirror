@@ -1,0 +1,35 @@
+{
+ "id": "everyday-boil",
+ "split": "dev",
+ "area": "everyday",
+ "kind": "qa",
+ "source": {
+  "name": "authored for ECHO (this repository), general knowledge, no external text copied",
+  "license": "CC0-1.0",
+  "kind": "authored",
+  "url": null
+ },
+ "turns": [
+  {
+   "user": "Сколько градусов нужно, чтобы вода закипела на уровне моря?",
+   "expected": "сто градусов Цельсия",
+   "length": "short",
+   "kind": "question",
+   "gap_s": 6.0
+  },
+  {
+   "user": "А высоко в горах она закипит при такой же температуре?",
+   "expected": "ниже, потому что давление меньше",
+   "length": "short",
+   "kind": "question",
+   "gap_s": 8
+  },
+  {
+   "user": "Объясни подробнее почему так.",
+   "expected": "чем выше, тем меньше давление воздуха, поэтому вода закипает при меньшей температуре",
+   "length": "long",
+   "kind": "question",
+   "gap_s": 6.0
+  }
+ ]
+}
