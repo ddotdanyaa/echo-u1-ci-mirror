@@ -551,6 +551,7 @@ def _control(task, diff, failure, exclude_model, baseline, workdir, key):
                                           failure[-FAIL_LIMIT:], diff[:DIFF_LIMIT])
     if spec:
         prompt += '\nContract of the new test:\n' + spec + '\n'
+    prompt = K.restate_note(task) + prompt
     prompt += '\nTests and source regions:\n' + _review_source(task, baseline, workdir)
     try:
         multifile = len(json.loads(getattr(task, 'contract', '') or '{}').get('parts', [])) > 1

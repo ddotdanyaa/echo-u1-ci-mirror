@@ -680,6 +680,29 @@ def split_faults(contract, root, bid=''):
 RIG_ENGINES = ('paid', 'agent', 'solver', 'coordinator', 'free', 'free_main', 'free_small')     # W-rig: who may give a rig contract (ready code); W-path D: the free steps too (the AST lock rig_weakens, rig_touch_faults and the cloud run stand)
 
 
+def restate_faults(contract, root):
+    """W-restate 2: a restate card names the rule the product follows now: 1-5 verbatim quotes (20+ characters) of files outside the
+    card's own parts, each really there."""
+    rules = contract.get('rule')
+    if not isinstance(rules, list) or not 1 <= len(rules) <= 5:
+        return ['restate: rule must list 1-5 quotes {file, quote} of the rule the product follows now']
+    own = {p.get('file') for p in contract.get('parts') or [] if isinstance(p, dict)}
+    faults = []
+    for row in rules:
+        file, quote = (row.get('file'), row.get('quote')) if isinstance(row, dict) else (None, None)
+        if not isinstance(file, str) or not isinstance(quote, str) or len(' '.join(quote.split())) < 20:
+            faults.append('restate: a rule needs a file and a quote of 20+ characters')
+            continue
+        try:
+            text = (Path(root) / F.safe_path(file)).read_text(encoding='utf-8-sig')
+        except (OSError, ValueError):
+            faults.append('restate: no such file: ' + file[:80])
+            continue
+        if file in own or ' '.join(quote.split()) not in ' '.join(text.split()):
+            faults.append('restate: the quote is not in %s (or it is a file of the card itself)' % file[:80])
+    return faults
+
+
 def rig_faults(contract, engine=None):
     """W-rig: the shape of a rig contract (``rig: true``): ready text in every part, touch_files tests/** (+ <= 3 echo_sync/**),
     an existing test as the target, a strong engine."""
@@ -734,6 +757,8 @@ def validate(contract, root, *, bid='', title='', known_ids=None, named_ok=False
     seen, stages = set(), set()
     if rig:
         faults.extend(rig_faults(contract, engine))
+        if contract.get('restate'):
+            faults.extend(restate_faults(contract, root))
     for part in parts:
         if not isinstance(part, dict):
             faults.append('invalid part'); continue
