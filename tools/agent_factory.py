@@ -1721,7 +1721,7 @@ def save_atomic(path: Path, state: dict) -> None:
                                          dir=path.parent, prefix=".agent-state-",
                                          delete=False) as f:
             tmp = Path(f.name)
-            json.dump(state, f, ensure_ascii=False, sort_keys=True, indent=2)
+            f.write(json.dumps(state, ensure_ascii=False, sort_keys=True))      # one C call; json.dump with indent walked 3 MB in Python under the lock
             f.flush()
             os.fsync(f.fileno())
         replace_retry(tmp, path)
