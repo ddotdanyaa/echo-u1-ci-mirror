@@ -867,6 +867,7 @@ class Loop:
         self._hypo_skip: dict[str, tuple] = {}      # row -> (base sha, time): nothing to search for it now
         self._ask_lock = threading.Lock()
         self._arch_quotas = None       # restored once, then owned in memory under _ask_lock
+        self._head = self._head_close = None     # fac-40: the one host of the small-tier calls (started in run)
         self.sweep_fn = sweep_fn        # None: no cloud sweep (tests); main passes tools.echo_cloud.sweep
         self._sw = None                 # the cloud sweep job in flight (Prefetch) or None
         self._sw_refresh_at = 0.0
@@ -2099,7 +2100,7 @@ class Loop:
 
     def _light_ask(self, text: str, *, attempt: int, section: str, quotas: dict, max_tokens: int, role: str = "code",
                    thrifty: bool = False, temperature: float = 0, only_tier: str = "", only_model: str = "", why: dict = None,
-                   only_channel: str = ""):
+                   only_channel: str = "", no_head: bool = False):
         """One free model call outside the runner (the <id> self-fix head): a registry channel in
         route_order (attempt 1: main first; 2: escalation first), booked in the shared quota ledger under `section`
         and cooled there on 429/5xx. Returns (status, model, answer, tokens): status 'ok', 'no_channel' or
@@ -2119,6 +2120,7 @@ class Loop:
                 Q.publish(folder, section, quotas)
             except OSError as e:
                 self.err(section + " ledger", e)
+        via = []                   # fac-40: the small channels the head serves (nothing is booked here for them)
         with self._ask_lock:
             self._seed_section(folder, section, quotas)
             seen = Q.view(quotas, Q.others(folder, section))
@@ -2156,14 +2158,24 @@ class Loop:
                         channel = probe
                         break
                 if channel is None:
-                    channel = C.choose(order, seen, tokens, env, now=now_ask)
+                    via = [] if no_head else self._head_channels(order)
+                    if not via:
+                        channel = C.choose(order, seen, tokens, env, now=now_ask)
             except C.ChannelUnavailable as unavailable:
                 if why is not None:         # W-prio3: the reason of the booking (tpm_window / rpm / rpd / cool ...) and the wait
                     why.update(reason=str(getattr(unavailable, "reason", "")), wait_s=float(getattr(unavailable, "wait_s", 0) or 0))
                 return "no_channel", None, "", tokens
-            model = channel["model"]
-            C.reserve(quotas, channel, tokens, now=self.clock())
-            publish()
+            if not via:
+                model = channel["model"]
+                C.reserve(quotas, channel, tokens, now=self.clock())
+                publish()
+        if via:
+            done = self._light_via_head(via, text, tokens, max_tokens, temperature, role, why)
+            if done is not None:
+                return done
+            return self._light_ask(text, attempt=attempt, section=section, quotas=quotas, max_tokens=max_tokens, role=role,
+                                   thrifty=thrifty, temperature=temperature, only_tier=only_tier, only_model=only_model, why=why,
+                                   only_channel=only_channel, no_head=True)       # the head did not answer: the old path
         provider, _, model_id = model.partition("/")
         body = {"model": model_id, "temperature": temperature, "max_tokens": max_tokens,       # ERROR_PATTERNS inline-thought
                 "messages": [{"role": "user", "content": R.NO_THOUGHT + "\n\n" + text}]}
@@ -2207,6 +2219,60 @@ class Loop:
         except (ValueError, KeyError, IndexError, TypeError, AttributeError):
             answer, used = "", None
         return "ok", model, answer, used or tokens
+
+    def _head_channels(self, order) -> list:
+        """fac-40: the leading small-tier channels of ``order`` when the head is alive (its state file exists), else []."""
+        from tools import factory_channels as C
+        from tools import factory_head as HD
+        if not (Path(self.cfg.channels).resolve().parent / HD.STATE_NAME).exists():
+            return []
+        out = []
+        for c in order:
+            if C.tier_of(c) != "small":
+                break
+            out.append(c)
+        return out
+
+    def _light_via_head(self, via, text, tokens, max_tokens, temperature, role, why):
+        """fac-40: one ask of the head. Returns the _light_ask tuple, or None when the head is down (event written)."""
+        from tools import agent_factory_runner as R
+        from tools import factory_head as HD
+        body = {"temperature": temperature, "max_tokens": max_tokens,
+                "messages": [{"role": "user", "content": R.NO_THOUGHT + "\n\n" + text}]}
+        try:
+            got = HD.ask(Path(self.cfg.channels).resolve().parent / HD.STATE_NAME, role, tokens, body, [c["id"] for c in via],
+                         deadline_s=HD.DEADLINE_S, call_timeout_s=120)
+        except HD.HeadDown as error:
+            self.event("infra", status="head_down", reason=str(error)[:100])
+            return None
+        model = got.get("model") or via[0]["model"]
+        if got.get("status") == 200:
+            try:
+                data = json.loads(got["body"])
+                return "ok", model, data["choices"][0]["message"].get("content") or "", (data.get("usage") or {}).get("total_tokens") or tokens
+            except (ValueError, KeyError, IndexError, TypeError, AttributeError):
+                return "ok", model, "", tokens
+        if got.get("status") is None:       # never sent: the head says what held it
+            held = got.get("held") or {}
+            if why is not None:
+                why.update(reason=str(held.get("reason") or "head"), wait_s=float(held.get("wait_s") or 0))
+            return "no_channel", None, "", tokens
+        return "http_%s" % got["status"], model, "", tokens
+
+    def _start_head(self) -> None:
+        """fac-40: start the one host of the small-tier calls (local only, a random port, a token in head.json beside
+        channels.json). Any fault leaves the old path: nothing else depends on it."""
+        try:
+            from tools import factory_head as HD
+            if not self.cfg.channels or not Path(self.cfg.channels).is_file():
+                return
+            path = Path(self.cfg.channels).resolve()
+            rows = json.loads(path.read_text(encoding="utf-8"))["channels"]
+            self._head, self._head_close = HD.serve(rows, {**os.environ, **self.extra_env}, path.parent / HD.STATE_NAME,
+                                                    folder=path.parent / "quota")
+            self.event("infra", status="head_up", reason="head started")
+        except Exception as e:  # noqa: BLE001 - the old path stands
+            self.err("head start", e)
 
     def _slice_hopeless(self) -> bool:
         """W-gemma2 4: no paid step (no key, no agent) and every main channel closed by the day's mark: only Gemma is left."""
@@ -8680,6 +8746,8 @@ class Loop:
                     stats["solver"] = SV.STATS.snapshot()
             except Exception as exc:
                 stats["solver"] = {"error": F.redact(type(exc).__name__)}
+            if getattr(self, "_head", None) is not None:
+                stats["head"] = self._head.stats()     # fac-40: per channel ok / 503 / 429 of the hour, tokens in the minute, queue by role
             F.save_atomic(self.stats_path, stats)
             self._watch_pool(state, rows)
             if blocked or stats["quarantine"] or ls["holds"] or any(
@@ -8796,6 +8864,7 @@ class Loop:
                 self.err("rel decision lift", e)
             self._decide_experiments()
             self._discover_keys()
+            self._start_head()
             while True:
                 if self.stop.exists():
                     self._drain_before_exit()
@@ -8823,6 +8892,8 @@ class Loop:
                     return EXIT_OK
                 self._sleep(min(out.sleep, WAIT_CHUNK_S) if self.pool.workers else out.sleep)
         finally:
+            if getattr(self, "_head_close", None) is not None:
+                self._head_close()                         # fac-40: the state file goes first, so no caller finds a dead host
             self._bg_cancel.set()                          # a background ask in flight ends; nothing of it was applied
             for w in list(self.pool.workers.values()):     # an exit with live workers (an error): their jobs die
                 try:

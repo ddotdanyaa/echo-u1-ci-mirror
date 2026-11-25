@@ -1549,8 +1549,8 @@ def rig_touch_faults(named) -> list[str]:
             out.append('%s: path outside the repository' % raw)
         elif canon.startswith('echo_sync/'):
             echo += 1
-        elif not canon.startswith('tests/'):
-            out.append('%s: a rig card touches only tests/** and echo_sync/**' % canon)
+        elif not canon.startswith(('tests/', 'tools/replay/')):      # tools/replay is the stand of the recorded calls, no product
+            out.append('%s: a rig card touches only tests/**, tools/replay/** and echo_sync/**' % canon)
     if echo > RIG_MAX_ECHO:
         out.append('a rig card names at most %d echo_sync files (%d named)' % (RIG_MAX_ECHO, echo))
     return out

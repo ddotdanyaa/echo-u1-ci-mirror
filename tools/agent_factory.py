@@ -177,6 +177,7 @@ MODEL_ID = re.compile(r"^(?:(?!(?i:openrouter)/)|(?=.*:free$))(?!\.+/)[a-zA-Z0-9
 
 
 LOCK_EVENTS: list[dict] = []  # journal of lock housekeeping (stale lock removed, ...)
+LOCK_YIELD_FROM_S, LOCK_YIELD_S = 0.2, 0.15
 LOCK_STALE_S = 120.0
 LOCK_OWNER = "owner"   # <lock>.lockdir/owner = the holder's pid: a dead holder's lock is stale at once
 _log = logging.getLogger(__name__)
@@ -1370,6 +1371,9 @@ def _dir_lock(path: Path, timeout_s: float):
             LOCK_EVENTS.append({"event": "lock_release_failed", "lock": str(lock),
                                 "reason": str(e)[:200]})
             _log.warning("lock %s not released: %s", lock, e)
+        if held > LOCK_YIELD_FROM_S:
+            time.sleep(LOCK_YIELD_S)        # the waiters poll every 50 ms: a writer of many commits in a row (a review that hops
+            # channels, 25.11 23:15) took the lock again at once and starved 19 workers and the loop for minutes
 
 
 PLAN_READS = [0]            # W-flow 4: how many times a plan file was really read and parsed (a test counts it)
