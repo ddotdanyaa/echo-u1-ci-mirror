@@ -4856,7 +4856,8 @@ class Loop:
                     or any(t.only_opus or not t.privacy_safe for t in related.get(row, [])):
                 continue
             (out if red else first).append(row)
-        return sorted(out, key=lambda r: (HY.row_class(r), r)) + sorted(first)
+        red = sorted(out, key=lambda r: (HY.row_class(r), r))       # owner: ECHO before the old reds, with or without a red test
+        return [r for r in red if not r.startswith("rel-")] + sorted(first) + [r for r in red if r.startswith("rel-")]
 
     def _solver_first(self, tasks, state, ls, now) -> set:
         """Red rows the solver has not tried on the current base (bench 25.11: 4 of 8 and 8 of 19 against 3.4 % of the cards): no card

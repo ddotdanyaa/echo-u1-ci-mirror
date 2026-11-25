@@ -16,7 +16,7 @@ from pathlib import Path
 
 from tools import factory_hypo as HY
 
-STEPS = 16                      # answered replies of one solve (a refusal of the channel is not a step)
+STEPS = 28                      # answered replies of one solve (a refusal of the channel is not a step)
 READS_MAX = 4                   # READ / GREP / DEF commands answered in one reply
 READ_LINES = 160
 OBS_CAP = 7000                  # chars of one observation
@@ -30,7 +30,7 @@ READ_PREFIXES = ("echo_sync/", "tests/")
 EDIT_PREFIXES = ("echo_sync/", "tests/")
 TRACE_CAP = 40000               # bytes of the saved full trace of one solve
 FAIL_CAP = 2200
-STEPS_TFIRST = 24               # test first: the steps of the test and of the fix together
+STEPS_TFIRST = 40               # test first: the steps of the test and of the fix together
 
 SYSTEM_TFIRST = '''You work on ONE defect of a Python repository (a voice assistant) that has NO red test yet. Step 1: write ONE new test file whose ONE test_ function fails on the product as it is now, with an AssertionError of its own assert (not an import error, not a fixture error, not a skip). Step 2: fix the product in echo_sync/ until that test passes. You work in steps. Every reply: 1-3 short sentences of reasoning, then the command(s): up to 4 READ/GREP/DEF together, or ONE NEWFILE, or ONE EDIT (the tests run by themselves after it):
 READ path start end            (lines, at most 160)
@@ -177,7 +177,13 @@ def do_read(tree, args):
     if not m:
         return "READ needs a path"
     path, rest = m[1], m[2]
-    s = tree.read(path).split("\n")
+    try:
+        s = tree.read(path).split("\n")
+    except ValueError:          # a bare or misplaced name: the only file of the tree with it
+        same = [p for p in tree.files() if p.rsplit("/", 1)[-1] == path.replace("\\", "/").rsplit("/", 1)[-1]]
+        if len(same) != 1:
+            raise
+        s = tree.read(same[0]).split("\n")
     nums = _numbers(rest)
     i = nums[0] if nums else 1
     j = nums[1] if len(nums) > 1 else i + 120
@@ -194,6 +200,7 @@ def do_grep(tree, args):
         if len(parts) == 2 and parts[1].strip("\"'`").startswith(READ_PREFIXES):
             raw, pre = parts[0].strip(), parts[1].strip("\"'`")
     raw = raw.strip("\"'`")
+    pre = pre.split("*")[0]
     if not pre.startswith(READ_PREFIXES):
         pre = ""
     if not raw:
@@ -225,11 +232,15 @@ def do_grep(tree, args):
 
 
 def do_def(tree, args):
-    name = args.strip().strip("\"'`").split(".")[-1].split("(")[0].strip()
+    parts = [x.strip().strip("\"'` ") for x in args.split("::")]       # `DEF name :: path`, `DEF path::name` and `DEF Class.name` are one request
+    names = [x for x in parts if x and not x.startswith(READ_PREFIXES) and "/" not in x]
+    name = (names[0] if names else "").split(".")[-1].split("(")[0].strip()
+    name = name.split()[-1] if name else ""
+    pre = next((x.split("*")[0] for x in parts if x.startswith(READ_PREFIXES)), "")
     if not name:
         return "DEF needs a name"
     out = []
-    for p in tree.files():
+    for p in sorted(tree.files(), key=lambda f: not (pre and f.startswith(pre))):
         try:
             s = tree.read(p)
         except ValueError:
@@ -244,7 +255,7 @@ def do_def(tree, args):
             if isinstance(n, (ast.FunctionDef, ast.ClassDef, ast.AsyncFunctionDef)) and n.name == name:
                 lines = s.split("\n")[n.lineno - 1:n.end_lineno]
                 out.append("%s:%d-%d\n" % (p, n.lineno, n.end_lineno) + "\n".join(x[:500] for x in lines[:60]))
-    return "\n".join(out)[:OBS_CAP] or "not found"
+    return "\n".join(out)[:OBS_CAP] or "no def or class of this name; the lines with it:\n" + do_grep(tree, name)
 
 
 _BLOCK = re.compile(r"<{5,} SEARCH[ \t]*\n(.*?)\n?={5,}[ \t]*\n(.*?)\n?>{5,} REPLACE", re.S)

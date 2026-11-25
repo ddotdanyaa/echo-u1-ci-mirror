@@ -1,9 +1,12 @@
 # Factory status (generated, structured data only)
 
-Generated: 2026-11-25T12:27:52Z
-Source commit: sha0fb9d5d34c77
+Generated: 2026-11-25T12:54:22Z
+Source commit: sha758ac96f65d6
 
 ## Commits (sha, time)
+- sha758ac96f 2026-11-25T15:53:14+03:00
+- sha6bfe1cd9 2026-11-25T15:30:53+03:00
+- sha9115d190 2026-11-25T15:28:37+03:00
 - sha0fb9d5d3 2026-11-25T15:26:55+03:00
 - sha1b4aa10e 2026-11-25T14:47:48+03:00
 - sha08737d0f 2026-11-25T14:44:03+03:00
@@ -21,30 +24,27 @@ Source commit: sha0fb9d5d34c77
 - sha63a96764 2026-11-25T13:29:12+03:00
 - sha334193ae 2026-11-25T12:52:10+03:00
 - shace58d6ae 2026-11-25T12:43:55+03:00
-- sha807cfc03 2026-11-25T12:36:17+03:00
-- sha39fa98d6 2026-11-25T12:33:08+03:00
-- shab27768bd 2026-11-25T12:29:17+03:00
 
 ## Funnel
 | step | count |
 |---|---|
 | accepted | 33 |
-| claimed | 1009 |
+| claimed | 1010 |
 | coded | 189 |
 | found_in_backlog | unknown |
 | gate_pass | 89 |
-| known_to_loop | 755 |
+| known_to_loop | 750 |
 | promoted | 87 |
-| ready | 35 |
+| ready | 36 |
 | reviewed | 230 |
 | triaged | 561 |
 
-Side counters: blocked=19, parked=0, requeued=9
-Tasks now: BLOCKED=19, DONE=68, FAILED=1060, PROMOTED=57, READY=35
+Side counters: blocked=20, parked=0, requeued=9
+Tasks now: BLOCKED=20, DONE=68, FAILED=1060, PROMOTED=57, READY=36
 Accepted: 33
 Promoted: 87
-Free RAM, GB: 4.4
-Telemetry rows: 76210 recognised, 0 unrecognised
+Free RAM, GB: 3.33
+Telemetry rows: 76346 recognised, 0 unrecognised
 
 ## Spend per model
 | model | calls | tokens_in | tokens_out | usage_unknown | http_429 | errors |
@@ -62,8 +62,8 @@ Telemetry rows: 76210 recognised, 0 unrecognised
 | google/gemini-3.8-flash | 28 | 21237 | 15 | 25 | 13 | 25 |
 | google/gemini-4-hydrogen | 3 | 0 | 0 | 3 | 0 | 3 |
 | google/gemini-robotics-er-2-preview | 2 | 5373 | 134 | 0 | 0 | 0 |
-| google/gemma-4-26b-a4b-it | 5179 | 4111340 | 736689 | 3455 | 40 | 3455 |
-| google/gemma-4-31b-it | 4452 | 2071710 | 230119 | 3601 | 20 | 3601 |
+| google/gemma-4-26b-a4b-it | 5188 | 4114718 | 737636 | 3462 | 40 | 3462 |
+| google/gemma-4-31b-it | 4456 | 2075088 | 230540 | 3603 | 20 | 3603 |
 | openrouter/nvidia/nemotron-3-ultra-550b-a55b:free | 134 | 729190 | 156943 | 2 | 2 | 2 |
 | other | 65 | 1154192 | 66710 | 6 | 0 | 7 |
 
@@ -71,14 +71,14 @@ Telemetry rows: 76210 recognised, 0 unrecognised
 | span | rows | calls |
 |---|---|---|
 | answer | 546 | 0 |
-| gate | 9635 | 0 |
-| infra | 4089 | 0 |
-| loop | 10512 | 0 |
-| other | 22662 | 0 |
+| gate | 9637 | 0 |
+| infra | 4095 | 0 |
+| loop | 10575 | 0 |
+| other | 22709 | 0 |
 | promote | 105 | 0 |
 | review | 3694 | 1709 |
-| run | 24467 | 12607 |
-| triage | 500 | 0 |
+| run | 24481 | 12620 |
+| triage | 504 | 0 |
 
 ## Channels (model ids)
 - 1db4ab-gemini-3-8-flash
@@ -249,7 +249,7 @@ Tests not in the cloud: 143
 - tests/test_factory_slicer.py (backlog-id, call-word, email, key, long-run)
 - tests/test_factory_slicer_pool.py (env-path, long-run)
 - tests/test_factory_slim_worker.py (long-run)
-- tests/test_factory_solver.py (dependency)
+- tests/test_factory_solver.py (path)
 - tests/test_factory_source_guard.py (dependency)
 - tests/test_factory_status.py (dependency)
 - tests/test_factory_supply.py (dependency)
