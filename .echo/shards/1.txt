@@ -1,0 +1,13 @@
+tests/registry/test_fn_2_04.py
+tests/registry/test_fn_2_12.py
+tests/test_b_ruling.py
+tests/test_c22_repeat_wiring.py
+tests/test_c24_landmark_wiring.py
+tests/test_t_classes.py
+tests/test_u141_writing_cycle.py
+tests/test_u18_record_wiring.py
+tests/test_u35_long_ask_answered.py
+tests/test_u54_ear_tail.py
+tests/test_u60_reads_ahead.py
+tests/test_x_cap_wiring.py
+tests/test_x_tick_order.py
