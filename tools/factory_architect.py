@@ -374,6 +374,69 @@ def _asked_need(data, others):
     return [dict(file=f, symbols=names) for f in files]
 
 
+_OK_ESCAPES = '"\\/bfnrt'
+
+
+def _mend_json(chunk):
+    """W-rig 5: the text of a JSON object that does not parse, mended without any package: comments are cut, a backslash that
+    starts no valid escape is doubled, a trailing comma goes, a string and the brackets left open are closed, the tail after
+    the closed object is dropped. Returns the mended text or None."""
+    out, stack, i, n, in_str = [], [], 0, len(chunk), False
+    while i < n:
+        c = chunk[i]
+        if in_str:
+            if c == '\\':
+                nxt = chunk[i + 1] if i + 1 < n else ''
+                if nxt and nxt in _OK_ESCAPES:
+                    out.append(c + nxt); i += 2; continue
+                if nxt == 'u' and re.fullmatch(r'[0-9a-fA-F]{4}', chunk[i + 2:i + 6]):
+                    out.append(chunk[i:i + 6]); i += 6; continue
+                out.append('\\\\'); i += 1; continue
+            if c == '"':
+                in_str = False
+            out.append(c); i += 1; continue
+        if c == '"':
+            in_str = True; out.append(c); i += 1; continue
+        if c == '/' and chunk[i + 1:i + 2] == '/':
+            j = chunk.find('\n', i)
+            i = n if j < 0 else j; continue
+        if c == '/' and chunk[i + 1:i + 2] == '*':
+            j = chunk.find('*/', i + 2)
+            i = n if j < 0 else j + 2; continue
+        if c in '{[':
+            stack.append('}' if c == '{' else ']')
+        elif c in '}]':
+            while out and out[-1].isspace():
+                out.pop()
+            if out and out[-1] == ',':
+                out.pop()
+            if not stack:
+                break
+            want = stack.pop()
+            out.append(want)
+            i += 1
+            if not stack:
+                break
+            continue
+        out.append(c); i += 1
+    if in_str:
+        out.append('"')
+    tail = ''.join(out).rstrip()
+    if tail.endswith(','):
+        tail = tail[:-1]
+    if tail.endswith(':'):
+        tail += 'null'
+    return tail + ''.join(reversed(stack)) if tail else None
+
+
+def _soft_load(chunk):
+    """(data, size) of a mended object at the head of ``chunk``; ValueError when it cannot be mended."""
+    mended = _mend_json(chunk)
+    if not mended:
+        raise ValueError('nothing to mend')
+    return json.JSONDecoder(strict=False).raw_decode(mended)[0], len(chunk)
+
+
 def parse(text):
     decoder = json.JSONDecoder()
     found, end = [], 0
@@ -381,9 +444,12 @@ def parse(text):
         if match.start() < end:
             continue
         try:
-            data, size = decoder.raw_decode(text[match.start():])
+            data, size = json.JSONDecoder(strict=False).raw_decode(text[match.start():])
         except ValueError:
-            continue
+            try:     # W-rig 5: a soft mend (comments, bad backslashes, open brackets, a tail) before "no contract JSON"
+                data, size = _soft_load(text[match.start():])
+            except (ValueError, RecursionError):
+                continue
         if isinstance(data, dict) and ('decision' in data or 'need' in data or _valid_parts(data)):
             found.append(data)
             end = match.start() + size
@@ -629,7 +695,7 @@ def rig_faults(contract, engine=None):
     return faults
 
 
-def validate(contract, root, *, bid='', title='', known_ids=None, named_ok=False, engine=None, exact=False):
+def validate(contract, root, *, bid='', title='', known_ids=None, named_ok=False, engine=None):
     from tools import factory_gate as G
     faults = []
     if not isinstance(contract, dict):
@@ -690,8 +756,6 @@ def validate(contract, root, *, bid='', title='', known_ids=None, named_ok=False
                 faults.append('instruction too short')
             elif len(instruction) > INSTR_MAX:
                 faults.append('oversize: instruction too long')
-            elif exact and not rig and isinstance(symbols, list):      # W-exact 1: a new contract is executable (only new contracts)
-                faults.extend(vague_faults(part, root))
             if 'code' in part:
                 code = part['code']
                 if not isinstance(code, str) or not code.strip() or F.is_private_text(code):
@@ -862,50 +926,13 @@ def _need_one(part, root):
         header, region = K.part_region(text, [], '')                  # an anchor not found: the head of the file
     return file, file + ' ' + header + '\n' + _redact_whole(region), ''
 
-VAGUE_FAULT = 'vague: '
 VAGUE_MIN = 12
-_CODE_SPAN = re.compile(r'```[a-zA-Z]*\n?(.*?)```|`([^`\n]+)`', re.S)
-_REMOVAL = re.compile(r'\b(?:delete|remove|drop)\b', re.I)
 VAGUE_RULE = ('The instruction of every .py part must be executable by an editor that cannot think: put in it, in backticks, '
               'one EXACT line (or a fragment of at least %d characters) copied from the shown body of the named function '
               '(what to change) AND, in backticks, what stands in its place; or give the part "code" / "add_after". '
               'Never write "ensure", "check", "investigate", "find where", "likely", "the logic". Good: "In `_pick`, replace '
               '`return rows[0]` with `return max(rows, key=lambda r: r.rank)`." Bad: "Ensure the logic of _pick picks the '
               'right row; check where it fails."' % VAGUE_MIN)
-
-
-def _norm_ws(text):
-    return ' '.join(str(text).split())
-
-
-def vague_faults(part, root):
-    """A .py part of a new contract must be executable: its instruction quotes, in backticks, an exact piece (>= VAGUE_MIN
-    characters) of the body of a named symbol and says what stands in its place (a second code span or delete/remove), unless
-    the part carries ready code (``code``/``add_after``). Returns [] when the part cannot be checked (no symbols, no file)."""
-    file, symbols, text = part.get('file'), part.get('symbols'), part.get('instruction')
-    if (not isinstance(file, str) or not file.endswith('.py') or not isinstance(symbols, list) or not symbols
-            or not isinstance(text, str) or part.get('code') or part.get('add_after') or part.get('file_text')):
-        return []
-    try:
-        source = (Path(root) / F.safe_path(file)).read_text(encoding='utf-8-sig')
-        found = K._symbols(ast.parse(source))
-    except (ValueError, TypeError, OSError, SyntaxError, UnicodeError, RecursionError):
-        return []
-    lines = source.splitlines()
-    bodies = [_norm_ws('\n'.join(lines[found[s].lineno - 1:found[s].end_lineno])) for s in symbols if s in found]
-    if not bodies:
-        return []
-    spans = []
-    for block, inline in _CODE_SPAN.findall(text):
-        spans += [l.strip() for l in (block or inline).splitlines() if l.strip()]
-    hit = next((l for l in spans if len(l) >= VAGUE_MIN and any(_norm_ws(l) in b for b in bodies)), None)
-    if hit is None:
-        return [VAGUE_FAULT + file + ': the instruction quotes no exact line (>= %d characters, in backticks) from the body of %s; '
-                'copy the line to change and write what stands in its place' % (VAGUE_MIN, ', '.join(symbols))]
-    names = {n.rsplit('.', 1)[-1] for n in symbols} | set(symbols)
-    if not any(l != hit and l not in names and len(l) >= 3 for l in spans) and not _REMOVAL.search(text):
-        return [VAGUE_FAULT + file + ': the instruction does not say, in backticks, what stands in place of `' + hit[:60] + '`']
-    return []
 
 
 def _need_py(file, text, symbols, anchor):
@@ -1106,6 +1133,209 @@ def _new_test_path(root, bid, new):
     return 'tests/test_factory_%s_%s.py' % (slug, hashlib.sha1(os.urandom(8)).hexdigest()[:6])
 
 
+def _py_files(root):
+    root = Path(root)
+    base = root / 'echo_sync'
+    out = []
+    for folder, dirs, names in os.walk(base):
+        dirs[:] = [d for d in dirs if d not in _SKIP_DIRS]
+        out.extend((Path(folder) / n).relative_to(root).as_posix() for n in names if n.endswith('.py'))
+    return sorted(out)
+
+
+def _defs_index(root, extra=()):
+    """{file: {qualified name: node}} of the Python files of echo_sync/** and of the named files."""
+    root = Path(root)
+    index = {}
+    for rel in dict.fromkeys(_py_files(root) + [e for e in extra if isinstance(e, str) and e.endswith('.py')]):
+        try:
+            index[rel] = K._symbols(ast.parse((root / rel).read_text(encoding='utf-8-sig')))
+        except (OSError, SyntaxError, ValueError, UnicodeError, RecursionError):
+            continue
+    return index
+
+
+def _bases_of(index, head):
+    """Names of the base classes (two levels) of every class called ``head`` in the index."""
+    found = set()
+    todo = [head]
+    for _ in range(3):
+        nxt = []
+        for name in todo:
+            for syms in index.values():
+                node = syms.get(name)
+                if isinstance(node, ast.ClassDef):
+                    for b in node.bases:
+                        base = b.id if isinstance(b, ast.Name) else b.attr if isinstance(b, ast.Attribute) else None
+                        if base and base not in found:
+                            found.add(base)
+                            nxt.append(base)
+        todo = nxt
+    return found
+
+
+def _find_symbol(index, name, shown):
+    """W-rig 2: (file, qualified name) of the def/class whose LAST name part is that of ``name`` (a method that lives in a mixin of
+    another file); one place -> it; several -> the file the packet shows, then the base class of the named class; else None."""
+    last = name.rsplit('.', 1)[-1]
+    cands = [(rel, q) for rel, syms in index.items() for q, node in syms.items()
+             if q.rsplit('.', 1)[-1] == last and isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))]
+    if len(cands) <= 1:
+        return cands[0] if cands else None
+    shown_files = [c for c in cands if c[0] in shown]
+    if len({c[0] for c in shown_files}) == 1 and len(shown_files) == 1:
+        return shown_files[0]
+    head = name.rsplit('.', 1)[0] if '.' in name else ''
+    if head:
+        bases = _bases_of(index, head.rsplit('.', 1)[-1])
+        inherited = [c for c in cands if c[1].split('.')[0] in bases]
+        if len(inherited) == 1:
+            return inherited[0]
+    return None
+
+
+def _quoted_lines(text):
+    spans = []
+    for block, inline in re.findall(r'```[a-zA-Z]*\n?(.*?)```|`([^`\n]+)`', str(text), re.S):
+        spans += [l.strip() for l in (block or inline).splitlines() if len(l.strip()) >= VAGUE_MIN]
+    return spans
+
+
+def _cited_place(root, index, text):
+    """W-rig 2: (file, enclosing def) of a quoted line of ``text`` that stands in exactly one file of echo_sync/**; else None."""
+    spans = _quoted_lines(text)
+    if not spans:
+        return None
+    root = Path(root)
+    hits = {}
+    for rel in index:
+        try:
+            lines = (root / rel).read_text(encoding='utf-8-sig').splitlines()
+        except (OSError, UnicodeError):
+            continue
+        flat = [' '.join(l.split()) for l in lines]
+        for span in spans:
+            want = ' '.join(span.split())
+            for number, line in enumerate(flat, 1):
+                if want in line:
+                    hits.setdefault((rel, number), span)
+    files = {rel for rel, _ in hits}
+    if len(files) != 1:
+        return None
+    rel = next(iter(files))
+    number = min(n for r, n in hits if r == rel)
+    inner = None
+    for q, node in index[rel].items():
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.lineno <= number <= node.end_lineno:
+            if inner is None or (node.end_lineno - node.lineno) < (index[rel][inner].end_lineno - index[rel][inner].lineno):
+                inner = q
+    return (rel, inner) if inner else None
+
+
+def _is_red_packet(packet):
+    return bool(packet.get('red_given') or packet.get('guard_red') or packet.get('guard_test'))
+
+
+def _repair_parts(contract, root, packet, repaired):
+    """W-rig 2/4: the parts of a fix are mended before any verdict: a file that is not there (the one echo_sync file of that name), a
+    symbol that is not in the named file (its last name part is searched in echo_sync/**), a part in a test file of a red row
+    (rig with ready code, else dropped when others remain)."""
+    parts = contract.get('parts')
+    if not isinstance(parts, list):
+        return
+    root = Path(root)
+    rig = contract.get('rig') is True
+    red = _is_red_packet(packet)
+    # 4: a part in a test file on a red row
+    if red and not rig:
+        tests = [p for p in parts if isinstance(p, dict) and _TEST_PATH.search(str(p.get('file', '')).replace('\\', '/'))]
+        if tests:
+            if all(isinstance(p, dict) and ((isinstance(p.get('code'), str) and p['code'].strip())
+                                           or (isinstance(p.get('file_text'), str) and p['file_text'].strip())) for p in parts):
+                contract['rig'] = True
+                repaired.append('rig')
+            elif len(tests) < len(parts):
+                contract['parts'] = parts = [p for p in parts if p not in tests]
+                repaired.append('parts.test_dropped')
+    if contract.get('rig') is True:
+        return
+    shown = _flat(packet.get('hints')) + '\n' + _flat(packet.get('trace_path')) + '\n' + _flat(packet.get('evidence'))
+    index = None
+    out = []
+    for i, part in enumerate(parts):
+        out.append(part)
+        if not isinstance(part, dict):
+            continue
+        file, symbols = part.get('file'), part.get('symbols')
+        if isinstance(file, str) and file.strip() and not _exact_file(root, file):
+            same = [r for r in _py_files(root) if r.rsplit('/', 1)[-1] == file.replace('\\', '/').rsplit('/', 1)[-1]]
+            if len(same) == 1:
+                part['file'] = file = same[0]
+                repaired.append('parts[%d].file' % i)
+        if not (isinstance(file, str) and file.endswith('.py') and isinstance(symbols, list) and symbols
+                and all(isinstance(x, str) and x for x in symbols) and _exact_file(root, file)):
+            continue
+        try:
+            own = K._symbols(ast.parse((root / F.safe_path(file)).read_text(encoding='utf-8-sig')))
+        except (OSError, SyntaxError, ValueError, UnicodeError, RecursionError):
+            continue
+        missing = [x for x in symbols if x not in own]
+        if not missing:
+            continue
+        if index is None:
+            index = _defs_index(root, [p.get('file') for p in parts if isinstance(p, dict)])
+        keep, moved = [x for x in symbols if x in own], {}
+        unresolved = []
+        for name in missing:
+            hit = _find_symbol(index, name, shown)
+            if hit is None:
+                unresolved.append(name)
+            elif hit[0] == file:
+                keep.append(hit[1])
+            else:
+                moved.setdefault(hit[0], []).append(hit[1])
+        if unresolved:
+            cite = _cited_place(root, index, str(part.get('instruction', '')) + '\n' + str(part.get('anchor', '')))
+            if cite and not keep and not moved:
+                moved.setdefault(cite[0], []).append(cite[1])
+                unresolved = []
+        if unresolved:
+            continue                                           # the fault stays as before
+        repaired.append('parts[%d].symbols' % i)
+        if keep:
+            part['symbols'] = keep
+        elif moved:
+            target, names = next(iter(moved.items()))
+            part['file'], part['symbols'] = target, names
+            part.pop('anchor', None)
+            del moved[target]
+        for target, names in moved.items():                     # symbols that live in other files: one part each
+            other = dict(part, file=target, symbols=names)
+            other.pop('code', None)
+            out.append(other)
+    if len(out) != len(parts):
+        contract['parts'] = out
+
+
+def _find_test(root, name):
+    """The one tests/** file that defines ``def <name>`` (the node name without class and [params]); else None."""
+    base = name.split('[', 1)[0].split('::')[-1].strip()
+    if not re.fullmatch(r'[A-Za-z_]\w*', base):
+        return None
+    pattern = re.compile(r'^[ \t]*(?:async\s+)?def %s\b' % re.escape(base), re.M)
+    found = []
+    for folder, dirs, names in os.walk(Path(root) / 'tests'):
+        dirs[:] = [d for d in dirs if d not in _SKIP_DIRS]
+        for n in names:
+            if n.startswith('test_') and n.endswith('.py'):
+                try:
+                    if pattern.search((Path(folder) / n).read_text(encoding='utf-8-sig')):
+                        found.append((Path(folder) / n).relative_to(root).as_posix())
+                except (OSError, UnicodeError):
+                    continue
+    return found[0] if len(found) == 1 else None
+
+
 def repair_contract(contract, root, packet):
     """W-free 1: mechanical defects are mended by the machine, not by another model call. Returns the list of what was
     repaired (names for the slice event); a contract that is not a fix is left alone."""
@@ -1128,9 +1358,15 @@ def repair_contract(contract, root, packet):
             if found and found != file:
                 part['file'] = found
                 repaired.append('parts[%d].file' % i)
+    try:
+        _repair_parts(contract, root, packet, repaired)
+    except (OSError, ValueError, TypeError, AttributeError, RecursionError):
+        pass                                           # an aid: the validation says what is left
     spec = contract.get('test')
     red_ids = [str(x) for x in (packet.get('guard_red') or []) if '::' in str(x)]
-    if red_ids and isinstance(packet.get('guard_red'), list):
+    if not red_ids and '::' in str(packet.get('guard_test') or ''):
+        red_ids = [str(packet['guard_test'])]         # W-rig 3: the machine sets the red test of the row, always
+    if red_ids:
         # W-guard 1: the row's guard is red: the card runs ITS red test (any step, any form), the model does not choose it
         use = red_ids[0].split('[', 1)[0]
         want = {'use': use}
@@ -1157,6 +1393,19 @@ def repair_contract(contract, root, packet):
             file = F.safe_path(_use_path(use.partition('::')[0]))
         except (ValueError, TypeError):
             file = ''
+        name0 = use.partition('::')[2].strip()
+        if file and _exact_file(root, file) and name0:
+            try:
+                have = test_name_exists((root / file).read_text(encoding='utf-8-sig'), name0)
+            except (OSError, UnicodeError):
+                have = True
+            where = None if have else _find_test(root, name0)
+            if where:
+                spec['use'] = where + '::' + name0
+                repaired.append('test.use')
+        elif file and not _exact_file(root, file) and name0 and not _unique_file(root, file) and (where := _find_test(root, name0)):
+            spec['use'] = where + '::' + name0
+            repaired.append('test.use')
         if file and not _exact_file(root, file):
             name = use.partition('::')[2].strip()
             found = _unique_file(root, file)
@@ -1383,10 +1632,12 @@ def _small_vote(ask, system, user, *, packet, root, named_ok=False, k=SMALL_K):
         _drop_part_codes(contract)
         repair_contract(contract, root, packet)
         errors = validate(contract, root, bid=packet.get('bid', ''), title=packet.get('title', ''),
-                          known_ids=packet.get('known_ids'), named_ok=named_ok, engine='free_small', exact=True)
+                          known_ids=packet.get('known_ids'), named_ok=named_ok, engine='free_small')
         if errors:
+            note_sample(_samples_dir, 'free_small', '; '.join(errors), raw)
             return False, '; '.join(errors)[:300], ''
         if red and (bad := _red_fault(contract, 'free_small')):
+            note_sample(_samples_dir, 'free_small', bad, raw)
             return False, bad, ''
         if decision == 'fix' and (bad := reach_fault(contract, packet, root)):
             return False, bad, ''
@@ -1445,21 +1696,69 @@ def _small_vote(ask, system, user, *, packet, root, named_ok=False, k=SMALL_K):
     raise exc
 
 
-def contract_for(packet, *, rung, root, asks, named_ok=False, red_given=None, skip=None):
+RETRY_AFTER_S = 600         # W-rig 6: a step whose answer WE rejected may be asked again after this long
+SAMPLE_MAX = 60             # W-rig 7: the keys of slice_samples.json
+
+
+def _sample_key(engine, message):
+    """The kind of a flaw without names and numbers: the key of the black box."""
+    text = re.sub(r'`[^`]*`|\'[^\']*\'|"[^"]*"|\[[^\]]*\]|\S*\.py\S*|\b\w*\d\w*\b|\b[A-Za-z_]+(?:\.[A-Za-z_]+)+\b', '', str(message))
+    return str(engine) + '|' + ' '.join(text.split())[:100]
+
+
+_samples_dir = None      # the folder of the running contract_for (the small tier's voices note their rejections there)
+
+
+def note_sample(folder, engine, message, raw):
+    """W-rig 7: the first 2000 characters of an answer we rejected, kept in <state>/slice_samples.json by the kind of its flaw
+    (at most SAMPLE_MAX keys, the oldest goes first). A write error is swallowed."""
+    if not folder or not isinstance(raw, str) or not raw.strip():
+        return
+    try:
+        path = Path(folder) / 'slice_samples.json'
+        try:
+            data = json.loads(path.read_text(encoding='utf-8'))
+            data = data if isinstance(data, dict) else {}
+        except (OSError, ValueError):
+            data = {}
+        key = _sample_key(engine, message)
+        data.pop(key, None)
+        data[key] = dict(at=time.time(), fault=F.redact(str(message))[:300], sample=F.redact(raw)[:2000])
+        while len(data) > SAMPLE_MAX:
+            data.pop(next(iter(data)))
+        tmp = path.with_name(path.name + '.tmp')
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding='utf-8')
+        os.replace(tmp, path)
+    except Exception:       # noqa: BLE001 - the black box never stops a slicing
+        pass
+
+
+def contract_for(packet, *, rung, root, asks, named_ok=False, red_given=None, skip=None, samples=None):
     """`skip` is the cache of the row's wait record ({engine: {'kind', 'fault', 'answer'}}): a step that already answered
     this row with a flaw on this version and sha is not asked again in the repeat (its answer counts as given when any
     other step answers now); a step that refused ('prompt oversize') is not asked at all."""
+    global _samples_dir
+    if samples:
+        _samples_dir = samples
     red = is_red(packet, red_given)
     packet = dict(packet, red_given=True) if red else packet
     system, initial = build_prompt(dict(packet, rung=rung))
     faults, answered, votes = [], set(), {}
     skip = {e: v for e, v in (skip or {}).items() if e in asks and isinstance(v, dict)}
+    now = time.time()
+    again = {}      # W-rig 6: a step whose answer we rejected is asked again after RETRY_AFTER_S, with the text of its flaw
+    for e, v in list(skip.items()):
+        if v.get('kind') == 'answered' and now - float(v.get('at') or 0) >= RETRY_AFTER_S:
+            again[e] = str(v.get('fault') or '')[:300]
+            del skip[e]
     cache = dict(skip)
     dry = bool(packet.get('edit_dry'))
     base_debt = bool(packet.get('base_debt')) or F.is_base_debt(str(packet.get('bid', '')))
     for engine in [e for e in ladder(rung, rungs=tuple(asks), red=red, dry=dry, base_debt=base_debt, gone=no_money()) if e not in skip]:
         user, rounds, shrunk, fixed, idle = initial, 0, False, False, 0
-        dry_asked = vague_asked = False
+        if again.get(engine):
+            user += ('\nYour earlier answer for this row was rejected: ' + again[engine] + '\nReturn a corrected contract.')
+        dry_asked = False
         replied, raw = False, ''
         code_asked = False
         repaired = []
@@ -1514,12 +1813,7 @@ def contract_for(packet, *, rung, root, asks, named_ok=False, red_given=None, sk
                     raise ContractFault(bad)        # a fault of this step: the next step answers in the same pass
                 repaired = repair_contract(contract, root, packet)     # W-free 1: mechanical defects, before any verdict
                 errors = validate(contract, root, bid=packet.get('bid', ''), title=packet.get('title', ''),
-                                  known_ids=packet.get('known_ids'), named_ok=named_ok, engine=engine, exact=True)
-                if any(e.startswith(VAGUE_FAULT) for e in errors) and not vague_asked:
-                    vague_asked = fixed = True      # W-exact 1: one re-ask of the same step with the text of the flaw (as oversize); it carries every fault
-                    user += ('\nThe contract is not executable:\n' + '\n'.join(errors) +
-                             '\n' + VAGUE_RULE + '\nReturn the full contract again.')
-                    continue
+                                  known_ids=packet.get('known_ids'), named_ok=named_ok, engine=engine)
                 if any('oversize' in e for e in errors) and not shrunk:
                     shrunk = True
                     user += '\nShrink instructions or move excess work into more. Return the full contract again.'
@@ -1536,7 +1830,7 @@ def contract_for(packet, *, rung, root, asks, named_ok=False, red_given=None, sk
                         ((contract.get('test') or {}).get('new') or {}).pop('code', None)   # then the contract stands without the code, as before
                     _drop_part_codes(contract)
                     errors = validate(contract, root, bid=packet.get('bid', ''), title=packet.get('title', ''),
-                                      known_ids=packet.get('known_ids'), named_ok=named_ok, engine=engine, exact=True)
+                                      known_ids=packet.get('known_ids'), named_ok=named_ok, engine=engine)
                 if errors and not fixed and not any('oversize' in e for e in errors):
                     fixed = True      # one re-ask on a repairable defect, the same step
                     user += '\nFix these problems and return the full contract again:\n' + '\n'.join(errors)
@@ -1583,12 +1877,14 @@ def contract_for(packet, *, rung, root, asks, named_ok=False, red_given=None, sk
             if refused and 'not available' not in message:
                 message += ' (not available: ' + ', '.join(dict.fromkeys(refused)) + ')'
             faults.append(dict(engine=engine, fault=F.redact(message)))
+            if replied:
+                note_sample(samples or _samples_dir, engine, message, raw)       # W-rig 7
             if red and engine == 'agent' and message == AGENT_BUSY:
                 raise Exhausted(0, faults)      # AGENT_BUSY is raised only while live reservations hold money: the red row waits its turn, no weaker step guesses
             if message.startswith('prompt oversize'):
                 cache[engine] = dict(kind='refused', fault='prompt oversize', answer='')     # a counted refusal of the step
             elif replied and isinstance(exc, ContractFault) and not isinstance(exc, Exhausted):
-                cache[engine] = dict(kind='answered', fault=F.redact(message)[:300],
+                cache[engine] = dict(kind='answered', fault=F.redact(message)[:300], at=now,
                                      answer=F.redact(raw if isinstance(raw, str) else '')[:4000])
     if answered and any(v.get('kind') == 'answered' for v in skip.values()):
         answered |= {e for e, v in skip.items() if v.get('kind') == 'answered'}    # the earlier answers stand with the new one
