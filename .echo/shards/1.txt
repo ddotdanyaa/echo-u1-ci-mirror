@@ -1,0 +1,10 @@
+tests/test_h5_live.py::test_a_mark_inside_an_answer_never_reaches_the_earpiece[Двадцать пять [дальше].]
+tests/test_h5_live.py::test_a_mark_inside_an_answer_never_reaches_the_earpiece[Двадцать пять. [Стоп]]
+tests/test_h5_live.py::test_a_mark_inside_an_answer_never_reaches_the_earpiece[Двадцать пять. [стоп] Хорошо.]
+tests/test_h5_live.py::test_a_mark_inside_an_answer_never_reaches_the_earpiece[Двадцать пять. [стоп]]
+tests/test_h5_live.py::test_a_mark_inside_an_answer_never_reaches_the_earpiece[Двадцать пять.\n[продолжай]]
+tests/test_h5_live.py::test_a_mark_that_comes_in_pieces_after_the_first_cue_never_reaches_the_earpiece
+tests/test_h5_live.py::test_a_question_the_ear_opens_in_that_breath_keeps_its_prepared_job
+tests/test_h5_live.py::test_a_short_reference_waits_for_a_turn_announced_as_late_as_on_the_phone
+tests/test_h5_live.py::test_the_start_of_a_mark_at_the_frontier_is_not_said
+tests/test_h6.py::test_a_fallback_that_is_no_whole_answer_is_refused[В каком году было крещение Руси-Верно.]
