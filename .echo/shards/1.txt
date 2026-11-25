@@ -1,0 +1,3 @@
+@tests/test_m1_rules.py
+@tests/test_night_gate_act.py
+@tests/test_q_ticket.py
