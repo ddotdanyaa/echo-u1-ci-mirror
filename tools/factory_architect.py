@@ -530,11 +530,14 @@ def test_name_exists(text, name):
     return True
 
 
+BOX_ENGINE = 'agent+solver'      # W-box: a contract of the box (written by the agent model; parts as whole functions or SEARCH/REPLACE)
+
+
 def author_model(engine):
     """The model name an engine of the ladder stands for ('free+free_main' votes: the last engine): the card of a test
     written by the architect keeps it, so that model is never its reviewer."""
     last = str(engine or '').split('+')[-1]
-    return AGENT_MODEL if last == 'agent' else PK.MODELS[0] if last == 'paid' else last
+    return AGENT_MODEL if last == 'agent' or engine == BOX_ENGINE else PK.MODELS[0] if last == 'paid' else last
 
 
 def to_tasks(contract, *, bid, base_id, gen, priority, title, author=''):
