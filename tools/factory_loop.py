@@ -8550,6 +8550,15 @@ class Loop:
         except Exception as e:  # the watchdog must never stop the loop
             self.err("pool watchdog", e)
 
+    REPORT_S = 600.0
+
+    def _report(self, name, fn):
+        """A report over the whole telemetry (tens of megabytes), made at most once per REPORT_S: no step pays for it."""
+        kept = self.__dict__.setdefault("_reports", {}).get(name)
+        if kept is None or not 0 <= time.monotonic() - kept[0] < self.REPORT_S:
+            kept = self._reports[name] = (time.monotonic(), fn())
+        return kept[1]
+
     def _stats(self) -> None:
         try:
             tasks, state = self.load()
@@ -8591,7 +8600,7 @@ class Loop:
             except Exception as e:      # statistics never stop the loop
                 stats["bisect"] = {"error": F.redact(type(e).__name__)}
             try:        # W-vgs 5: the ensemble of the small tier over 24 h
-                stats["vgs"] = factory_metrics.vgs_report(self.dir, now=self.ts())
+                stats["vgs"] = self._report("vgs", lambda: factory_metrics.vgs_report(self.dir, now=self.ts()))
             except Exception as e:      # statistics never stop the loop
                 stats["vgs"] = {"error": F.redact(type(e).__name__)}
             stats["outdated"] = len(ls.get("outdated_tests") or {})      # W-prio 4: red tests that name what the product no longer has
@@ -8621,7 +8630,7 @@ class Loop:
                     counts[kind] = counts.get(kind, 0) + 1
             stats["slice_faults"] = counts
             try:        # W-money 4: the owner's money numbers
-                money = factory_metrics.money_report(self.dir, now=self.ts())
+                money = self._report("money", lambda: factory_metrics.money_report(self.dir, now=self.ts()))
                 stats["accepted_hour"] = money["accepted_hour"]
                 stats["accepted_per_1000_calls"] = money["accepted_per_1000_calls"]
                 stats["edit_first_try_pct"] = money["edit_first_try_pct"]
