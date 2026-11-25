@@ -1,0 +1,6 @@
+tests/test_c24_landmark_wiring.py::test_from_the_last_word_is_no_next
+tests/test_c24_landmark_wiring.py::test_from_the_word_includes_it
+tests/test_c24_landmark_wiring.py::test_the_words_before_the_last_get_the_tail_after_the_pen_wait
+tests/test_u19_s5_voice_lang.py
+tests/verify/lists/test_v_F11.py::test_the_confirmation_at_the_same_moment_as_the_timer_is_one_next
+tests/verify/lists/test_v_F11.py::test_the_landmark_tail_after_the_owners_word_comes_at_once
