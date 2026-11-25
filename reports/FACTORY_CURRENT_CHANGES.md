@@ -1,42 +1,45 @@
-# ECHO — изменения фабрики и следующий замер, 24 ноября
+# ECHO — что вошло в ночь и что сейчас активно, 25 ноября
 
-Рабочий SHA d1f22b014c1f. Публичный снимок 4bb9e7ef3a36 покрывает публикуемую часть исходников. Таблица основана на первых родителях основной рабочей ветки после 08:13 МСК.
+Рабочий SHA 93617c4ff942. Проверка первой родительской линии от вечерней точки 24.11 19:08. Колонка «пакет» использует смысл итогового изменения. Некоторые рабочие ветки переиспользовали одно имя.
 
-| МСК | Пакет | Рабочий коммит | Что в нём |
-|---|---|---|---|
-| 08:35 | W-refresh | 9c92f86d | Обновление рабочего зеркала и путей синхронизации, с проверками |
-| 10:02 | W-mem | 6e3e9175 | Бюджет памяти по типичной памяти рабочего процесса и общему резерву |
-| 10:13 | W-lost | 1435c225 | Возврат потерянных карточек и пересмотр после смены версии нарезчика |
-| 10:20 | W-optim | d3e11270 | Сохранение diff кандидата после конфликта и возврат старого долга к нарезчику по подтверждённым воротам |
-| 10:22 | W-hyp2 | ed96f635 | Общая очередь гипотез, облачная пакетная проверка, порядок ECHO → свежие регрессии → старый долг |
-| 11:52 | W-feed2 | 65d9fbbe | Фоновая подача строк в поиск, ранний старт, сохранение ограничений закрытого канала |
-| 12:12 | W-mem2 | f3375ccf | Оценка по текущему рабочему набору, коррекция ложных отказов из-за прежнего пика RSS |
-| 14:35 | W-noxml | 5cb3d9c7 | Точечное исправление проверки вывода XML с тестами |
-| 15:25 | W-part2 | 6b309a45 | Частичный прогресс по группам красных тестов и контроль исходной базы |
-| 15:33 | W-tick2 | d1f22b01 | Тяжёлая подготовка статусов вне главного тика, пропуск вычислений до результата актуальной версии бэклога |
+| МСК | Слияние | Проверенное изменение |
+|---|---|---|
+| 24.11 21:35 | 74b89c9f | W-hypo3 — удержание ответов, приоритет ревью, изменения поиска и отделения очередей |
+| 25.11 00:01 | c7d02df5 | W-rig — стенд для прохождения карточки через цепочку проверок |
+| 00:04 | ddebb135 | W-true2 — учёт фактических вызовов и аргументов |
+| 01:15 | bdc73abf | W-pack — пакет и проверки фикстур/вердиктов |
+| 02:24 | 97ff5ce6 | W-pack — учёт блокировок и тесты пакета |
+| 02:45 | d6156e48 | W-pack — финальная сборка после пакета или отката |
+| 06:58 | 1284c89e | fac-39 — поведение при лимите GitHub |
+| 08:48 | e3b9ec19 | W-exact — адресность контракта для красных строк |
+| 08:56 | 82dbd550 | W-split — роли Flash-Lite для нарезки и Gemma для правок |
+| 09:22 | 8180139d | W-path/W-free — выбор пути, маршруты и проверки |
+| 09:25 | 066d315c | W-await — главный шаг возобновляется при длительном ожидании воркера |
+| 09:58 | 93617c4f | W-need2 — decision=need нормализуется в запрос исходника |
 
-Рабочий цикл запущен на d1f22b014c1f в 15:45. По журналу, после релизной приёмки в 15:16 и до 19:08 продуктивных приёмок не прибавилось. [Рабочий код в публичном зеркале](https://github.com/ddotdanyaa/echo-u1-ci-mirror/commit/4bb9e7ef3a36add52db600038e61a1510a55cb33) · [Результат 27 успешных задач матрицы](https://github.com/ddotdanyaa/echo-u1-ci-mirror/actions/runs/45397221215)
+Локально прошли 45 адресных тестов в test_factory_need2.py, test_factory_need_outline.py и test_factory_loop_core3.py.
 
-## Что поставлено в очередь и что проверять
+Публичное зеркало 02dbc299ebccca52a4a8e1189e525b25fa2cab95 ссылается на тот же исходный SHA. Матрица: 28 успешных задач, aggregate gate пропущен. Она проверяет опубликованное подмножество. Живая приёмка по продукту измеряется журналом фабрики. [Коммит зеркала](https://github.com/ddotdanyaa/echo-u1-ci-mirror/commit/02dbc299ebccca52a4a8e1189e525b25fa2cab95) · [Прогон](https://github.com/ddotdanyaa/echo-u1-ci-mirror/actions/runs/45564708443)
 
-- **fac-21**. Замер повторяемости на 15 одних и тех же карточках до и после. В бэклоге «новая». Результат сопоставимого сравнения не найден.
-- **fac-31**. Зарезервировать второй голос для кандидата с зелёными воротами раньше новых правок и гипотез. Есть постановка, попытка бесплатной нарезки дала карантин.
-- **fac-32**. Отсечь продуктовую очередь из контура самодоработки и сверять закрытие по правке. Десять строк временно сняты вручную. Полного исправления в рабочей версии нет.
-- **fac-33**. Собирать больше ответов на одну строку, сохранять их при тайм-ауте, начинать от места падения теста. Замер 16:02–18:20: 628 отправок, 154 ответа, 111 «не могу», 22 годные правки по фильтру формата, 12 пачек и 0 зелёных. 35 из последних 40 поисков завершались по времени в промежуточном замере.
-- **W-hypo3**. Один подготовленный пакет по этим проблемам. Наличие задания проверено, слияния в d1f22b014c1f нет. Клод в 18:20 ориентировался на запуск после восстановления бесплатного ресурса для сборки 25.11 в 11:00 МСК. Это заявленный план.
+## Ветки и лишние слои
 
-Для сравнения fac-21 замерить четыре наблюдаемых перехода: ответ модели с пригодным изменением, адресный зелёный тест против красной базы, второй голос, ACCEPTED. Фиксировать стоимость и ожидание каждого перехода. Повторить один пред/пост-набор с разными ограничениями параллельности, сохранив одинаковые тесты и маршруты. При 964 измеренных вызовах с нулевой приёмкой число одновременных слотов даёт слабый прогноз результата.
+Верхушки fix/W-hypo3, fix/W-pack, fix/W-rig и fix/W-true2 являются предками живого SHA. Эти четыре рабочие копии всё ещё зарегистрированы в Git. Их наличие само по себе не запускает повторную работу: цикл отчитывается по SHA основной ветки. Затраты создают одновременно запущенные сборки, повторное владение одними файлами, фоновые проверки старой базы и переплетение поведения в уже влитом коде. Чтобы установить дубли, сверять parent SHA, изменённые модули, тест и запущенный процесс. Метки WT/W/TIC/WC нельзя использовать как критерий удаления. Для WT/TIC/WC однозначного соответствия живым веткам и активным задачам в найденных реестрах не установлено. Удаление веток, откат кода или изменение прав контроллера не выполнялись.
 
-## Прямые ссылки на код
+Два отдельных направления следует различать по доказательству. Рабочие пакеты тестов помогли закрыть большой объём уже зелёного долга: 248 уникальных строк. Главный дефект нарезчика устранили утром после разбора живого ответа. Доказательств, что все ночные изменения были необходимы для этой конкретной правки или что они ускорили приёмку, нет.
 
-- [Цикл и допуск задач](https://raw.githubusercontent.com/ddotdanyaa/echo-u1-ci-mirror/4bb9e7ef3a36add52db600038e61a1510a55cb33/tools/factory_loop.py)
-- [Исполнитель и ревью](https://raw.githubusercontent.com/ddotdanyaa/echo-u1-ci-mirror/4bb9e7ef3a36add52db600038e61a1510a55cb33/tools/agent_factory_runner.py)
-- [Поиск гипотез Gemma](https://raw.githubusercontent.com/ddotdanyaa/echo-u1-ci-mirror/4bb9e7ef3a36add52db600038e61a1510a55cb33/tools/factory_hypo.py)
-- [Каналы и квоты](https://raw.githubusercontent.com/ddotdanyaa/echo-u1-ci-mirror/4bb9e7ef3a36add52db600038e61a1510a55cb33/tools/factory_channels.py)
-- [Нарезка задач](https://raw.githubusercontent.com/ddotdanyaa/echo-u1-ci-mirror/4bb9e7ef3a36add52db600038e61a1510a55cb33/tools/factory_architect.py)
-- [Карта кода для контекста](https://raw.githubusercontent.com/ddotdanyaa/echo-u1-ci-mirror/4bb9e7ef3a36add52db600038e61a1510a55cb33/tools/repomap.py)
-- [Оценка процессов и памяти](https://raw.githubusercontent.com/ddotdanyaa/echo-u1-ci-mirror/4bb9e7ef3a36add52db600038e61a1510a55cb33/tools/factory_process.py)
-- [Ожидание ревью](https://raw.githubusercontent.com/ddotdanyaa/echo-u1-ci-mirror/4bb9e7ef3a36add52db600038e61a1510a55cb33/tools/factory_review_wait.py)
-- [Проверка релиза](https://raw.githubusercontent.com/ddotdanyaa/echo-u1-ci-mirror/4bb9e7ef3a36add52db600038e61a1510a55cb33/tools/factory_release.py)
-- [Встроенные метрики](https://raw.githubusercontent.com/ddotdanyaa/echo-u1-ci-mirror/4bb9e7ef3a36add52db600038e61a1510a55cb33/tools/factory_metrics.py)
-- [Конфигурация облачной матрицы](https://raw.githubusercontent.com/ddotdanyaa/echo-u1-ci-mirror/4bb9e7ef3a36add52db600038e61a1510a55cb33/.github/workflows/factory-matrix.yml)
+## Прямые исходники
+
+- [Нарезчик и парсер ответа](https://raw.githubusercontent.com/ddotdanyaa/echo-u1-ci-mirror/02dbc299ebccca52a4a8e1189e525b25fa2cab95/tools/factory_architect.py)
+- [Адресные тесты нового протокола](https://raw.githubusercontent.com/ddotdanyaa/echo-u1-ci-mirror/02dbc299ebccca52a4a8e1189e525b25fa2cab95/tests/test_factory_need2.py)
+- [Цикл и ожидание воркеров](https://raw.githubusercontent.com/ddotdanyaa/echo-u1-ci-mirror/02dbc299ebccca52a4a8e1189e525b25fa2cab95/tools/factory_loop.py)
+- [Очередь гипотез](https://raw.githubusercontent.com/ddotdanyaa/echo-u1-ci-mirror/02dbc299ebccca52a4a8e1189e525b25fa2cab95/tools/factory_hypo.py)
+- [Исполнитель и ревью](https://raw.githubusercontent.com/ddotdanyaa/echo-u1-ci-mirror/02dbc299ebccca52a4a8e1189e525b25fa2cab95/tools/agent_factory_runner.py)
+- [Маршрутизация Flash-Lite/Gemma и квоты](https://raw.githubusercontent.com/ddotdanyaa/echo-u1-ci-mirror/02dbc299ebccca52a4a8e1189e525b25fa2cab95/tools/factory_channels.py)
+- [Учёт фактических вызовов](https://raw.githubusercontent.com/ddotdanyaa/echo-u1-ci-mirror/02dbc299ebccca52a4a8e1189e525b25fa2cab95/tools/factory_calls.py)
+- [Подбор файлов и символов](https://raw.githubusercontent.com/ddotdanyaa/echo-u1-ci-mirror/02dbc299ebccca52a4a8e1189e525b25fa2cab95/tools/repomap.py)
+- [Проверки кандидата](https://raw.githubusercontent.com/ddotdanyaa/echo-u1-ci-mirror/02dbc299ebccca52a4a8e1189e525b25fa2cab95/tools/factory_gate.py)
+- [Сборка, релиз и закрытие долга](https://raw.githubusercontent.com/ddotdanyaa/echo-u1-ci-mirror/02dbc299ebccca52a4a8e1189e525b25fa2cab95/tools/factory_release.py)
+- [Метрики и знаменатели](https://raw.githubusercontent.com/ddotdanyaa/echo-u1-ci-mirror/02dbc299ebccca52a4a8e1189e525b25fa2cab95/tools/factory_metrics.py)
+- [Облачный workflow](https://raw.githubusercontent.com/ddotdanyaa/echo-u1-ci-mirror/02dbc299ebccca52a4a8e1189e525b25fa2cab95/.github/workflows/factory-matrix.yml)
+
+- [Парсер непосредственно перед W-need2, 066d315c](https://raw.githubusercontent.com/ddotdanyaa/echo-u1-ci-mirror/2ccfc536131a64072c4700f7d5170789fb63fca0/tools/factory_architect.py)
