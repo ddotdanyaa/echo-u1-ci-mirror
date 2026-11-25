@@ -5166,6 +5166,7 @@ class Loop:
                 if self.cfg.self_repo:      # the second instance: a new test imports only the modules the mirror publishes
                     packet["publishable"] = ", ".join(A.publishable_modules())
                 extra = {"named_ok": True} if self.cfg.self_repo else {}      # 8.1: the factory's own files are the contract's subject
+                A._samples_dir = self.cfg.state_dir        # W-rig 7: the black box of the rejected answers (<state>/slice_samples.json)
                 if cached:      # W-pay 2: the steps that already answered this row (or refused it) on this version and sha
                     extra["skip"] = cached
                 if not packet.get("guard_green") and str(row).startswith("rel-") and not self.cfg.self_repo \
