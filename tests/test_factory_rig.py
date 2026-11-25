@@ -49,7 +49,7 @@ def test_rig_needs_ready_code_in_every_part(root):
 def test_rig_refuses_other_dirs_and_more_than_three_echo_files(root):
     c = contract()
     c["parts"].append({"file": "tools/x.py", "code": "x = 1\n", "instruction": "Replace the helper text here."})
-    assert any("only tests/** and echo_sync/**" in f for f in A.validate(c, root, bid="B1"))
+    assert any("only tests/**, tools/replay/** and echo_sync/**" in f for f in A.validate(c, root, bid="B1"))
     assert G.rig_touch_faults(["tests/a.py"] + ["echo_sync/f%d.py" % n for n in range(4)])
     assert not G.rig_touch_faults(["tests/a.py"] + ["echo_sync/f%d.py" % n for n in range(3)])
 
