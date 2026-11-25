@@ -8,6 +8,7 @@ failure but a hint with the format. The result carries the overlay as SEARCH/REP
 'solver')."""
 import ast
 import difflib
+import json
 import os
 import re
 import time
@@ -26,7 +27,8 @@ TEST_IDS = 5                    # red ids of the group run by an intermediate TE
 FINAL_IDS = 40
 CLOUD_TRIES = 3
 READ_PREFIXES = ("echo_sync/", "tests/")
-EDIT_PREFIXES = ("echo_sync/",)
+EDIT_PREFIXES = ("echo_sync/", "tests/")
+TRACE_CAP = 40000               # bytes of the saved full trace of one solve
 FAIL_CAP = 2200
 
 SYSTEM = '''You fix failing pytest tests in a Python repository (a voice assistant). You work in steps. Every reply: 1-3 short sentences of reasoning, then the command(s): up to 4 READ/GREP/DEF together, or ONE EDIT (the tests run by themselves after it):
@@ -39,8 +41,9 @@ exact old lines
 =======
 new lines
 >>>>>>> REPLACE
+STALE: one phrase             (only when the assert is outdated and nothing can be fixed; name file.py::name)
 DONE                           (only after the tests passed)
-Rules: find the ROOT cause first by reading the test, its helper and the product code it calls. Fix the product (echo_sync/); tests are never edited. Never change, remove or weaken any assert, never skip, never special-case the test. SEARCH text must match exactly once. Small edits. Write only YOUR next step: never write a RESULT yourself, the result comes in the next message.'''
+Rules: find the ROOT cause first by reading the test, its helper and the product code it calls. First decide: is the PRODUCT broken, or is the STAND stale (a fixture, a fake, a helper, a setting that no longer exists in tests/)? Fix the product in echo_sync/, or, when the stand is stale, fix the stand and its helpers in tests/ (at most 3 files of echo_sync/ with it). The asserts of the tests are never changed: do not change, remove or weaken any assert, never skip, never special-case the test. If the assert itself is outdated and neither the product nor the stand can be fixed, answer one line 'STALE: <which assert contradicts which code file.py::name>' (the name must exist in the tree). SEARCH text must match exactly once. Small edits. Write only YOUR next step: never write a RESULT yourself, the result comes in the next message.'''
 
 FORMAT_HINT = ("I could not find a command in your reply. Reply with 1-3 sentences and then exactly one of: up to 4 lines "
                "READ path start end / GREP regex :: path_prefix / DEF name, or one block\nEDIT path\n<<<<<<< SEARCH\nold lines\n"
@@ -54,7 +57,7 @@ class NoChannel(RuntimeError):
 class Result:
     def __init__(self):
         self.green = False
-        self.status = "red"             # green | red | cloud | no_channel | already_green
+        self.status = "red"             # green | red | cloud | no_channel | already_green | stale
         self.overlay = {}               # file -> new text (LF)
         self.greens = []                # red ids that pass with the overlay
         self.steps = 0
@@ -64,6 +67,8 @@ class Result:
         self.last_fail = ""             # the newest failure text of a TEST
         self.why = ""
         self.model = ""
+        self.stale = None               # {"phrase", "ref"} of a proven STALE answer
+        self.log = []                   # the full trace: [{"step", "reply", "result"}]
 
     def evidence(self):
         """Lines for the slicer: what the solver edited last and how the test answered."""
@@ -307,7 +312,7 @@ def do_edit(tree, reply):
     staged = {}
     for path, search, replace in blocks:
         if ".." in path or not path.startswith(EDIT_PREFIXES):
-            return "refused: only files of echo_sync/ may be edited (tests never): " + path, False
+            return "refused: only files of echo_sync/ and tests/ may be edited: " + path, False
         if re.search(r"pytest\.(skip|xfail)|mark\.(skip|xfail)", replace):
             return "refused: skipping is not a fix", False
         try:
@@ -328,8 +333,33 @@ def do_edit(tree, reply):
             if fresh:
                 return "refused: the edit uses names that nothing defines: %s" % ", ".join(sorted(fresh)[:6]), False
         staged[path] = new
+    refused = _rig_refusal(tree, staged)
+    if refused:
+        return refused, False
     tree.overlay.update(staged)
     return "edited " + ", ".join(sorted(staged)), True
+
+
+def _rig_refusal(tree, staged):
+    """A result that touches tests/** is a rig card: the AST lock of the gate (no assert / raises of a test changes, no test goes,
+    no new skip), the gate's own forbidden paths and the shape of the touch list (tests/** and at most 3 files of echo_sync/)
+    are checked against the base at once. '' or the refusal for the model; nothing of the edit is kept then."""
+    files = sorted(set(tree.overlay) | set(staged))
+    if not any(f.startswith("tests/") for f in files):
+        return ""
+    from tools import factory_gate as G
+    cand = {f: tree.overlay.get(f, "") for f in files}
+    cand.update(staged)
+    tests = {f: t for f, t in cand.items() if f.startswith("tests/")}
+    problems = list(G.rig_weakens(tree.root, tests)) + list(G.rig_touch_faults(files))
+    for f in files:
+        if f.startswith("tests/"):
+            why = G.is_forbidden(f, "code", named=files, rig=True)
+            if why:
+                problems.append("%s: %s" % (f, why))
+    if problems:
+        return "refused (the edit is rolled back): " + "; ".join(problems[:4])
+    return ""
 
 
 # ----------------------------------------------------------------------------------------- what is shipped
@@ -478,6 +508,8 @@ def to_contract(row, ids, res, root, group=None, rep=None, why="the solver made 
     if group:
         why = "%s [группа: %s; представитель: %s]" % (why, str(group)[:120], rep or ids[0])
     out = dict(row=row, decision="fix", why=why, test=test, parts=parts)
+    if any(str(p["file"]).startswith("tests/") for p in parts):
+        out["rig"] = True       # a result that fixes the stand is a rig card (the gates: AST lock, touch list, the cloud run)
     left = [i for i in ids if i not in greens]
     if left:
         out["more"] = "остались красные: " + ", ".join(left[:6]) + (" (+%d)" % (len(left) - 6) if len(left) > 6 else "")
@@ -584,11 +616,13 @@ def solve(ctx, row, red_ids, failure, test_source, suspects, *, steps=STEPS):
             res.calls += 1
             res.model = str(ctx.info.get("model") or res.model)
             obs = _step(ctx, tree, ids, reply, res)
+            if res.green or res.status in ("already_green", "cloud", "stale"):
+                res.log.append({"step": n, "reply": reply, "result": obs})
             if res.green:
                 res.trace.append((reply[-300:], "PASSED"))
                 res.status = "green"
                 return res
-            if res.status in ("already_green", "cloud"):
+            if res.status in ("already_green", "cloud", "stale"):
                 return res
             if n == max(1, steps // 3) and not res_overlay:
                 obs += "\nYou have read enough: make your best EDIT now (a red test run is cheap and tells more than reading)."
@@ -597,6 +631,7 @@ def solve(ctx, row, red_ids, failure, test_source, suspects, *, steps=STEPS):
             obs += "\n(%d steps left)" % (steps - n)
             hist.append((reply[-3500:], obs))
             res.trace.append((reply[-300:], obs[:300]))
+            res.log.append({"step": n, "reply": reply, "result": obs})
         res.status, res.why = "red", "steps used"
     except HY.CloudFail as exc:
         res.status, res.why = "cloud", str(exc)[:120]
@@ -622,6 +657,9 @@ def _step(ctx, tree, ids, reply, res):
                 got = str(exc)
             out.append("> %s %s\n%s" % (verb, args.strip(), got))
         return "\n\n".join(out)[:14000]
+    stale = re.search(r"^[ \t]*STALE[ \t]*:[ \t]*(.+)$", text, flags=re.M)
+    if stale:
+        return _stale(tree, stale[1].strip(), res)
     if re.search(r"^[ \t]*DONE\b", text, flags=re.M):
         return "not done: no TEST has passed on your edits yet" if not tree.overlay else "not done: the tests have not passed yet"
     if re.search(r"^[ \t]*TEST\b", text, flags=re.M):
@@ -629,6 +667,32 @@ def _step(ctx, tree, ids, reply, res):
     if re.search(r"^[ \t]*EDIT\b", text, flags=re.M):
         return "I found EDIT but no complete block. Use:\nEDIT path\n<<<<<<< SEARCH\nold lines\n=======\nnew lines\n>>>>>>> REPLACE"
     return FORMAT_HINT
+
+
+def stale_ref(tree, phrase):
+    """The 'file.py::name' of the phrase that exists in the tree (the file is there and defines or spells the name), else None."""
+    for path, name in re.findall(r"([\w/.\-]+\.py)::([\w.]+)", phrase):
+        try:
+            text = tree.read(path if "/" in path else "echo_sync/" + path)
+        except ValueError:
+            try:
+                text = tree.read(path)
+            except ValueError:
+                continue
+        last = name.split(".")[-1]
+        if re.search(r"(?m)^\s*(?:async\s+)?(?:def|class)\s+%s\b|^\s*%s\s*[:=]" % (re.escape(last), re.escape(last)), text):
+            return "%s::%s" % (path, name)
+    return None
+
+
+def _stale(tree, phrase, res):
+    ref = stale_ref(tree, phrase)
+    if ref is None:
+        return ("STALE needs the proof: name the code the assert contradicts as file.py::name, a function, class or constant that "
+                "stands in the tree (use GREP/DEF to find it). Or go on with an EDIT.")
+    res.stale = {"phrase": phrase[:300], "ref": ref}
+    res.status, res.why = "stale", "STALE: " + phrase[:200]
+    return "STALE accepted"
 
 
 def _test(ctx, tree, ids, res):
@@ -658,6 +722,24 @@ def _test(ctx, tree, ids, res):
         return verdict
     res.green = True
     return "PASSED"
+
+
+def trace_text(res, row, ids, redact=lambda t: t, cap=TRACE_CAP):
+    """The full trace of one solve as JSON text of at most ``cap`` bytes: every reply and result (redacted); too long: the oldest
+    entries are cut to 400 characters first, then dropped."""
+    entries = [{"step": e["step"], "reply": redact(str(e["reply"])), "result": redact(str(e["result"]))} for e in res.log]
+    head = dict(row=row, status=res.status, model=res.model, steps=res.steps, calls=res.calls, tests=res.tests, why=res.why,
+                ids=list(ids)[:10], stale=res.stale, edited=sorted(res.overlay))
+    while True:
+        text = json.dumps(dict(head, entries=entries), ensure_ascii=False)
+        if len(text.encode("utf-8")) <= cap or not entries:
+            return text
+        for e in entries:
+            if not e["result"].endswith("...[cut]") and (len(e["reply"]) > 400 or len(e["result"]) > 400):
+                e["reply"], e["result"] = e["reply"][:400] + " ...[cut]", e["result"][:400] + " ...[cut]"
+                break
+        else:
+            entries.pop(0)
 
 
 # -------------------------------------------------------------------------------------------------------- stats

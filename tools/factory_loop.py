@@ -1702,6 +1702,9 @@ class Loop:
         if first := self._solver_first(tasks, state, ls, now):      # a red row is solved first; its own card (engine solver) is not held
             skip = skip | {t for t, task in tasks.items() if F.row_of(task.backlog_id or t) in first
                            and state["tasks"].get(t, {}).get("engine") != "solver"}
+        if self._hypers:        # the same model minutes: the solves (bench 25.11: 40-50 % green) go before the cards of red rows (3.4 %)
+            skip = skip | {t for t, task in tasks.items() if str(task.backlog_id or t).startswith("rel-")
+                           and state["tasks"].get(t, {}).get("engine") != "solver" and not self._has_candidate(state, t)}
         later = self._bisect_later(tasks, state)        # W-bisect 4: never_green debt cards wait while there is other work
 
         def ask(hold):
@@ -4469,7 +4472,7 @@ class Loop:
         """W-solver: as many solves at once as there are free channels (each step of a solve takes one booking of one)."""
         return len(self._solver_channels())
 
-    def _solver_ctx(self, root, packet):
+    def _solver_ctx(self, root, packet, avoid=""):
         """W-solver: the environment of one solve over the loop's own parts: the ask of the free channels (Gemma first on the compact
         text to the small tier, then the waiting route of the slicer) and the cloud batch. Never raises a refusal as a step:
         NoChannel after the waits."""
@@ -4483,6 +4486,17 @@ class Loop:
                 if not loop._review_hold() or loop.stop.exists():
                     break
                 loop._sleep(2.0)
+            if avoid:       # the second pass of a STALE answer goes to another model (another channel) than the first one
+                for chan in loop._solver_channels():
+                    if chan["model"] == avoid:
+                        continue
+                    status, model, answer, _ = loop._light_ask(small if small is not None and CH.tier_of(chan) == "small" else text,
+                                                               attempt=1, section="loop-architect", quotas=loop._arch_quotas,
+                                                               max_tokens=loop.SOLVER_MAX_TOKENS, role="review" if CH.tier_of(chan) == "small" else "code",
+                                                               only_channel=chan["id"], temperature=loop.SOLVER_TEMPERATURE)
+                    if status == "ok" and str(answer).strip():
+                        info["model"] = model
+                        return answer
             for body, tier, role in ((small, "small", "review"), (text, "", "code")):    # owner: Gemma (57 600 calls a day) solves first, Flash-Lite is for slicing
                 if body is None:
                     continue
@@ -4537,10 +4551,69 @@ class Loop:
         marker = "FAILURE OF THE RED TEST (assert, message, last frames):\n"
         failure = self._hypo_failure_of(gids[0]) or (evidence.partition(marker)[2][:4000] if marker in evidence else "")
         suspects = self._solver_suspects(root, packet, gids, failure)
+        vote = (self.ls().get("stale_votes") or {}).get(row)
+        avoid = str(vote.get("model") or "") if isinstance(vote, dict) and vote.get("test") == gids[0] else ""
         t0 = time.monotonic()
-        res = SV.solve(self._solver_ctx(root, packet), row, gids, failure, HY._test_body(root, gids[0]), suspects)
+        res = SV.solve(self._solver_ctx(root, packet, avoid=avoid), row, gids, failure, HY._test_body(root, gids[0]), suspects)
         SV.STATS.add(res)
+        self._solver_save_trace(row, res, gids)
         return dict(result=res, group=sig, ids=gids, secs=time.monotonic() - t0)
+
+    SOLVER_TRACE_FILES = 60     # the saved full traces of the solves: the newest files only
+
+    def _solver_save_trace(self, row, res, ids) -> None:
+        """W-solver: the full trace (every reply and result, redacted, up to 40 KB) in <state>/solver_trace/<row>.json, at most
+        SOLVER_TRACE_FILES files (the oldest go). An aid: a failure here never stops the solve."""
+        from tools import factory_solver as SV
+        try:
+            folder = Path(self.cfg.state_dir) / "solver_trace"
+            folder.mkdir(parents=True, exist_ok=True)
+            (folder / (re.sub(r"[^\w.-]", "_", str(row)) + ".json")).write_text(
+                SV.trace_text(res, row, ids, redact=F.redact), encoding="utf-8")
+            files = sorted(folder.glob("*.json"), key=lambda f: f.stat().st_mtime)
+            for old in files[:-self.SOLVER_TRACE_FILES]:
+                old.unlink(missing_ok=True)
+        except Exception as exc:        # noqa: BLE001  an aid
+            self.err("solver trace", exc)
+
+    def _solver_stale(self, row, gids, res) -> bool:
+        """W-solver: a proven STALE answer. The first one is a vote (the model, the test, the proof); the second pass by ANOTHER model
+        on the same test that also says STALE puts the row into ls['outdated_tests'] (source 'solver', no cards, no slicing, 24 h).
+        True when the row was booked as outdated now. Loop thread only."""
+        ls, now = self.ls(), self.clock()
+        test, model, stale = str(gids[0]), str(res.model or ""), res.stale or {}
+        votes = ls.setdefault("stale_votes", {})
+        vote = votes.get(row)
+        if not (isinstance(vote, dict) and vote.get("test") == test and vote.get("model") != model and model):
+            votes[row] = dict(test=test, model=model, ref=stale.get("ref"), phrase=stale.get("phrase"), at=now, base=str(self.base_sha))
+            self.save_ls(ls)
+            self.event("solver", backlog_id=row, status="stale_vote", why=self.rs(stale.get("phrase"), 200), model=model or None)
+            return False
+        votes.pop(row, None)
+        ls.setdefault("outdated_tests", {})[row] = {
+            "test": test, "names": [{"kind": "assert against code", "name": str(stale.get("ref")), "last": ""}], "at": now,
+            "sha": str(self.base_sha)[:12], "source": "solver", "why": self.rs(stale.get("phrase"), 200), "models": [vote.get("model"), model]}
+        for key in ("to_slice", "slice_wait", "reslices", "quarantine"):
+            if isinstance(ls.get(key), dict):
+                ls[key].pop(row, None)
+        self.save_ls(ls)
+
+        def supersede(st):
+            for tid, rec in st["tasks"].items():
+                if F.row_of(rec.get("backlog_id") or tid) == row and rec.get("status") == "READY":
+                    rec.update(status="FAILED", reason="superseded:outdated_test")
+        try:
+            self._tx(supersede)
+        except Exception as exc:        # noqa: BLE001  a busy plan: the cards are no longer admitted anyway
+            self.err("solver stale: supersede", exc)
+        try:
+            from tools import factory_outdated as OD
+            (self.cfg.state_dir / "outdated_tests.md").write_text(OD.report_md(ls["outdated_tests"]), encoding="utf-8")
+        except OSError as exc:
+            self.err("solver stale: report", exc)
+        self.event("supply", status="outdated_test", backlog_id=row,
+                   reason="outdated_test: two models say STALE: %s" % self.rs(stale.get("phrase"), 160))
+        return True
 
     def _red_last_keys(self, ids=()):
         """W-part 2: the red test keys of the last full verdict when its sha is the base or an ancestor of it, else None (unknown)."""
@@ -4696,10 +4769,12 @@ class Loop:
         from tools import factory_hypo as HY, factory_solver as SV, factory_architect as A
         try:
             res, gids = found["result"], found.get("ids") or ids
-            status = res.status if res.status in ("green", "cloud", "no_channel", "already_green") else "red"
+            status = res.status if res.status in ("green", "cloud", "no_channel", "already_green", "stale") else "red"
             self.event("solver", backlog_id=row, status=status, steps=res.steps, calls=res.calls, tests=res.tests,
                        model=res.model or None, secs=round(float(found.get("secs") or 0), 1), why=res.why or None, group_ids=len(gids))
-            if status in ("green", "red", "already_green"):     # no channel or a cloud failure: no run, no penalty
+            if status == "stale" and self._solver_stale(row, gids, res):
+                return None                 # booked as an outdated test: no evidence, no card
+            if status in ("green", "red", "already_green"):     # no channel, a cloud failure or a STALE vote: no run, no penalty
                 fresh = self.ls()
                 HY.mark_searched(fresh.setdefault("hypo_seen", {}), str(self.base_sha), found.get("group") or ids[0], time.time())
                 self.save_ls(fresh)
@@ -4709,7 +4784,7 @@ class Loop:
                 if not faults:
                     return dict(contract=contract, engine="solver", faults=[], repaired=[])
                 res.last_fail = "the green change was refused as a card: " + "; ".join(str(x) for x in faults[:3])
-            if status in ("red", "green") and res.evidence():
+            if status in ("red", "green", "stale") and res.evidence():
                 text = "\nTRIED BEFORE YOU (a free model with read/grep/edit and the cloud test, all red):\n" + "\n".join(res.evidence())
                 packet["evidence"] = str(packet.get("evidence") or "") + text
                 keep = self.ls()        # the row goes back the usual way: the next packet of the slicer carries what was tried
@@ -6499,6 +6574,9 @@ class Loop:
                     ls[key].pop(bid, None)
             new.append(bid)
         for bid in sorted(set(book) - set(verdict)):
+            kept = book.get(bid)
+            if isinstance(kept, dict) and kept.get("source") == "solver" and now - float(kept.get("at") or 0) < 86400:
+                continue                            # W-solver: two models said the assert is outdated: it stays 24 h
             if bid in by_row:                       # the names are back in the tree: the row is a live red row again
                 entry = self._rel_entry_back(ls, bid)
                 if entry:
