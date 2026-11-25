@@ -1,9 +1,12 @@
 # Factory status (generated, structured data only)
 
-Generated: 2026-11-25T18:55:09Z
-Source commit: shaf303ae5ee7a3
+Generated: 2026-11-25T20:15:10Z
+Source commit: sha0cfcccb67c74
 
 ## Commits (sha, time)
+- sha0cfcccb6 2026-11-25T23:11:22+03:00
+- sha25e6df33 2026-11-25T23:07:12+03:00
+- sha01a49ffe 2026-11-25T21:57:20+03:00
 - shaf303ae5e 2026-11-25T21:54:25+03:00
 - shad94f1954 2026-11-25T21:29:39+03:00
 - sha23c5b881 2026-11-25T21:25:42+03:00
@@ -21,30 +24,27 @@ Source commit: shaf303ae5ee7a3
 - sha220073d1 2026-11-25T18:39:28+03:00
 - sha3946968f 2026-11-25T18:35:09+03:00
 - sha44e71511 2026-11-25T18:14:51+03:00
-- sha54125383 2026-11-25T18:13:05+03:00
-- sha8bdebf5a 2026-11-25T18:07:56+03:00
-- shaeabba6ea 2026-11-25T17:22:22+03:00
 
 ## Funnel
 | step | count |
 |---|---|
 | accepted | 36 |
-| claimed | 1117 |
-| coded | 190 |
+| claimed | 1125 |
+| coded | 191 |
 | found_in_backlog | unknown |
-| gate_pass | 102 |
-| known_to_loop | 782 |
-| promoted | 99 |
-| ready | 58 |
-| reviewed | 298 |
-| triaged | 594 |
+| gate_pass | 109 |
+| known_to_loop | 785 |
+| promoted | 107 |
+| ready | 48 |
+| reviewed | 302 |
+| triaged | 597 |
 
-Side counters: blocked=20, parked=0, requeued=9
-Tasks now: BLOCKED=20, DONE=68, FAILED=1126, PROMOTED=69, READY=58, REVIEW=1, RUNNING=8
+Side counters: blocked=24, parked=0, requeued=9
+Tasks now: BLOCKED=24, DONE=68, FAILED=1143, PROMOTED=77, READY=48, REVIEW=1, RUNNING=3
 Accepted: 36
-Promoted: 99
-Free RAM, GB: 3.05
-Telemetry rows: 80647 recognised, 0 unrecognised
+Promoted: 107
+Free RAM, GB: 1.69
+Telemetry rows: 81780 recognised, 0 unrecognised
 
 ## Spend per model
 | model | calls | tokens_in | tokens_out | usage_unknown | http_429 | errors |
@@ -52,18 +52,18 @@ Telemetry rows: 80647 recognised, 0 unrecognised
 | cohere/command-a-03-2025 | 45 | 84775 | 11984 | 0 | 0 | 0 |
 | cohere/command-a-plus-05-2026 | 12 | 5678 | 452 | 8 | 0 | 8 |
 | cohere/north-mini-code-1.0 | 7 | 10515 | 346 | 3 | 0 | 3 |
-| google/gemini-3-flash-preview | 54 | 56167 | 7724 | 33 | 32 | 33 |
+| google/gemini-3-flash-preview | 57 | 56167 | 7724 | 36 | 35 | 36 |
 | google/gemini-3.1-flash-lite | 1688 | 8754452 | 615246 | 133 | 10 | 133 |
 | google/gemini-3.1-flash-lite-preview | 477 | 896229 | 148756 | 109 | 18 | 109 |
-| google/gemini-3.5-flash | 45 | 30545 | 1824 | 35 | 33 | 35 |
+| google/gemini-3.5-flash | 47 | 30545 | 1824 | 37 | 35 | 37 |
 | google/gemini-3.5-flash-lite | 1992 | 11070268 | 651486 | 49 | 13 | 49 |
-| google/gemini-3.6-flash | 145 | 414079 | 20196 | 67 | 22 | 67 |
-| google/gemini-3.7-flash | 36 | 9121 | 14 | 35 | 23 | 35 |
-| google/gemini-3.8-flash | 37 | 21237 | 15 | 34 | 22 | 34 |
-| google/gemini-4-hydrogen | 20 | 2852 | 507 | 19 | 12 | 19 |
-| google/gemini-robotics-er-2-preview | 22 | 18872 | 780 | 16 | 15 | 16 |
-| google/gemma-4-26b-a4b-it | 5753 | 4420312 | 789186 | 3902 | 48 | 3902 |
-| google/gemma-4-31b-it | 4958 | 2318553 | 251162 | 4014 | 27 | 4014 |
+| google/gemini-3.6-flash | 146 | 414079 | 20196 | 68 | 23 | 68 |
+| google/gemini-3.7-flash | 37 | 9121 | 14 | 36 | 24 | 36 |
+| google/gemini-3.8-flash | 38 | 21237 | 15 | 35 | 23 | 35 |
+| google/gemini-4-hydrogen | 21 | 2852 | 507 | 20 | 13 | 20 |
+| google/gemini-robotics-er-2-preview | 24 | 18872 | 780 | 18 | 17 | 18 |
+| google/gemma-4-26b-a4b-it | 5910 | 4547186 | 811983 | 4013 | 65 | 4013 |
+| google/gemma-4-31b-it | 5100 | 2432007 | 263505 | 4118 | 40 | 4118 |
 | openrouter/nvidia/nemotron-3-ultra-550b-a55b:free | 134 | 729190 | 156943 | 2 | 2 | 2 |
 | other | 65 | 1154192 | 66710 | 6 | 0 | 7 |
 
@@ -71,13 +71,13 @@ Telemetry rows: 80647 recognised, 0 unrecognised
 | span | rows | calls |
 |---|---|---|
 | answer | 546 | 0 |
-| gate | 10166 | 0 |
-| infra | 4612 | 0 |
-| loop | 11084 | 0 |
-| other | 23621 | 0 |
-| promote | 117 | 0 |
-| review | 4215 | 2049 |
-| run | 25772 | 13441 |
+| gate | 10380 | 0 |
+| infra | 4780 | 0 |
+| loop | 11203 | 0 |
+| other | 23757 | 0 |
+| promote | 125 | 0 |
+| review | 4331 | 2121 |
+| run | 26144 | 13679 |
 | triage | 514 | 0 |
 
 ## Channels (model ids)

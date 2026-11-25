@@ -296,3 +296,17 @@ def test_a_rejected_task_starts_again_with_no_red_attempts(tmp_path, monkeypatch
     loop._reject_answer("T1", "B1", state, "bad")
     row = e.state()["tasks"]["T1"]
     assert (row["status"], row["reds"], row["attempts"]) == ("READY", 0, 0)
+
+
+def test_finished_rows_keep_two_short_remarks_and_the_rest_goes_to_the_archive(tmp_path, monkeypatch):
+    e = Env(tmp_path, monkeypatch, tasks=[task_row(1), task_row(3)])
+    long = [{"source": "gate", "text": "x" * F.FEEDBACK_MAX_CHARS}] * 3
+    e.set_row("T1", status="FAILED", reason="superseded:reslice1", base_red={"result": {}}, feedback=long)
+    e.set_row("T3", status="FAILED", reason="reslice", base_red={"result": {}}, feedback=long)
+    loop = e.loop()
+    assert loop._slim_state() == 1 and loop._slim_state() == 0
+    st = e.state()["tasks"]
+    assert "base_red" not in st["T1"] and [len(x["text"]) for x in st["T1"]["feedback"]] == [min(800, F.FEEDBACK_MAX_CHARS)] * 2
+    assert st["T3"]["feedback"] == long and "base_red" in st["T3"]
+    kept = json.loads((e.state_dir / "state_archive.jsonl").read_text(encoding="utf-8"))
+    assert kept["feedback"] == long and kept["base_red"] == {"result": {}}
