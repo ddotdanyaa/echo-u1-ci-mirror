@@ -4961,7 +4961,7 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
             hold, why_hold, short_chain, kept_now = reviewers_wait()
             # rule 4 of 21.11: with a kept voice the paid critic is the insurance second voice, so while it can be asked
             # the chain is not cut short here: the gates run and the chain's own handler calls it (W-review fix 2)
-            if kept_now and paid_critic.available():
+            if (kept_now or paid_critic.agent_card(task)) and paid_critic.available():      # an agent card has two paid voices
                 short_chain, hold = [], 0.0
             if short_chain:                          # a voice is kept, no other model exists: the gates would end in this
                 events.append('review_deferred_before_gates')
@@ -5100,6 +5100,21 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                         lens=REVIEW_LENSES[n], prior=tuple(said), rejected=told, rubric=True, execution=exec_text))
                 except (NoIndependentReviewer, channels.ChannelUnavailable, ReviewFault, ChannelFault):
                     dry = dry_now()
+                    if not votes:
+                        both = paid_critic.pair(
+                            task, unified_diff(ctx['baseline'], ctx['workdir'], task.touch_files, paid_critic.DIFF_LIMIT)
+                            if ctx['baseline'] is not None else '', (exec_text + '\n' + told)[-paid_critic.FAIL_LIMIT:],
+                            exclude_model=authors(), baseline=ctx['baseline'], workdir=ctx['workdir'])
+                        if both is not None:
+                            ctx['paid_done'] = both
+                            events.append('paid_pair')
+                            approved = both['verdict'] != 'reject'
+                            kept_log.extend(dict(model=m, ok=approved or m != both['voices'][-1], why=[]) for m in both['voices'])
+                            if not approved:
+                                paid_critic.record_class(task, both)
+                                rejections.append(scrub(redact('paid critic [%s]: %s' % (
+                                    both['class'], both['reason'] or both['symptom']))))
+                            break
                     if not votes and not dry:
                         raise                      # the first critic failed: the handlers below decide
                     # W-dry 2: with no free voice (Gemma stayed silent after its repeats) the paid Haiku below is the missing voice
