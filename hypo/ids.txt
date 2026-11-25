@@ -1,0 +1,4 @@
+@tests/registry/test_fn_4_04a.py
+@tests/test_core_silence_wait.py
+@tests/test_d0811_a_asleep.py
+@tests/test_n02_topic_in_play.py
