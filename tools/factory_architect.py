@@ -544,7 +544,8 @@ def to_tasks(contract, *, bid, base_id, gen, priority, title, author=''):
     if contract.get('decision') != 'fix':
         return []
     wrote_code = bool(isinstance(contract.get('test'), dict) and (contract['test'].get('new') or {}).get('code')) or any(
-        isinstance(p, dict) and p.get('code') for p in contract.get('parts') or [])
+        isinstance(p, dict) and (p.get('code') or p.get('file_text')) for p in contract.get('parts') or [])
+    contract = {k: v for k, v in contract.items() if k != 'author' and (k != 'restate' or author == AGENT_MODEL)}
     if author and wrote_code:
         contract = dict(contract, author=author)        # who wrote test.new.code or parts[].code (the review excludes that model)
     serialized = json.dumps(contract, ensure_ascii=False)

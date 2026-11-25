@@ -5373,13 +5373,13 @@ class Loop:
             base_debt = F.is_base_debt(row)
             if base_debt:                      # W-base0: the old debt is sliced by the free steps only, whatever waits in the queue
                 left = {k: v for k, v in asks.items() if k in ("free", "free_main", "free_small")}
-                if not left:
+                if not left and not boxed:
                     self.event("slice", backlog_id=row, status="barred", engine="paid,agent", rung=rung, ladder="")
                     raise SliceWait()
                 asks = left
             if ls.get("to_slice", {}).get(row, {}).get("only") == "free_small":     # W-lost 4: the small tier's ensemble only
                 left = {k: v for k, v in asks.items() if k == "free_small"}
-                if not left:
+                if not left and not boxed:
                     self.event("slice", backlog_id=row, status="barred", engine="free,free_main,paid,agent", rung=rung, ladder="")
                     raise SliceWait()
                 asks = left

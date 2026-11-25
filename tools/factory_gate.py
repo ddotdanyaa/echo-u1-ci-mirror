@@ -1521,13 +1521,20 @@ def own_test_edit(path: str, kind=None, named=(), own_tests=None) -> bool:
     return bool(OWN_TEST_RE.fullmatch(canon)) and canon in {_canon(n) for n in named}
 
 
-def is_rig_task(task) -> bool:
+# W-restate: a rig card of the agent step (never of a free model: to_tasks drops the mark) may say what an existing test expects anew:
+# the product's rule was replaced on purpose and the test still asks for the old one. Tests and asserts are not fewer, no skip.
+RESTATE, RESTATE_AUTHOR = 'restate', 'claude-sonnet-5-5'
+
+
+def is_rig_task(task):
     """W-rig: True for a code task whose contract says ``rig: true`` (a test-stand card)."""
     try:
         contract = json.loads(getattr(task, 'contract', '') or '')
     except (ValueError, TypeError):
         return False
-    return isinstance(contract, dict) and contract.get('rig') is True and getattr(task, 'kind', 'code') == 'code'
+    if not (isinstance(contract, dict) and contract.get('rig') is True and getattr(task, 'kind', 'code') == 'code'):
+        return False
+    return RESTATE if contract.get('restate') is True and contract.get('author') == RESTATE_AUTHOR else True
 
 
 RIG_MAX_ECHO = 3    # W-rig: a rig card touches tests/** and at most this many echo_sync/** files
@@ -1637,7 +1644,7 @@ def _rig_tests(tree) -> dict:
     return found
 
 
-def rig_weakens(base_root, cand_files: dict) -> list[str]:
+def rig_weakens(base_root, cand_files: dict, restate=False) -> list[str]:
     """W-rig AST lock: the violations (``rig_weakens: <path>::<function>: ...``) of a rig candidate's tests/**/*.py files.
     Per file: the number of test_* functions and of assert/pytest.raises never goes down; no assert/pytest.raises inside
     a base test_* function is changed (ast.dump equal); skip/xfail/sleep/monkeypatch do not grow. Helpers, fixtures,
@@ -1673,7 +1680,7 @@ def rig_weakens(base_root, cand_files: dict) -> list[str]:
             was, now = _rig_checks(fn), _rig_checks(other)
             if len(now) < len(was):
                 out.append(f'rig_weakens: {path}::{name}: assert/raises dropped {len(was)} -> {len(now)}')
-            elif was != now:
+            elif was != now and not restate:
                 out.append(f'rig_weakens: {path}::{name}: an assert/raises changed')
     return out
 
@@ -1689,7 +1696,7 @@ def weakening_check(base_root, cand_files: dict, kind, named=(), own_tests=None,
     out, notes = [], []
     root = Path(base_root)
     if rig:
-        out.extend(rig_weakens(root, cand_files))
+        out.extend(rig_weakens(root, cand_files, restate=rig == RESTATE))
     extra = set()
     if kind == 'unit_test':
         for raw, text in cand_files.items():

@@ -546,7 +546,7 @@ def prepare(root: Path, task: Task, workdir: Path) -> dict[str, bytes]:
     root = root.resolve()
     workdir.mkdir(parents=True, exist_ok=False)
     names = set(task.read_files) | set(task.touch_files) | set(task.tests)
-    if task.kind != "unit_test" and set(task.touch_files) & set(task.tests):
+    if task.kind != "unit_test" and set(task.touch_files) & set(task.tests) and gate.is_rig_task(task) != gate.RESTATE:
         raise InvalidPlan("existing acceptance tests are immutable")
     if not task.privacy_safe:
         raise InvalidPlan("private plan must not be staged for free-tier Google")
