@@ -21,7 +21,7 @@ READS_MAX = 4                   # READ / GREP / DEF commands answered in one rep
 READ_LINES = 160
 OBS_CAP = 7000                  # chars of one observation
 CTX_CHARS = 400000              # the whole prompt of the big step; older observations are cut only above this
-SMALL_CHARS = 30000             # the compact prompt for the small step (Gemma: 16k tokens a minute)
+SMALL_CHARS = 15000             # the compact prompt for the small step (Gemma: 16k tokens a minute)
 KEEP = 5                        # the newest steps kept whole in a cut history
 TEST_IDS = 5                    # red ids of the group run by an intermediate TEST (the rest at the final check)
 FINAL_IDS = 40
@@ -591,7 +591,10 @@ def render(task, hist, limit, keep=KEEP, system=None):
     while len(text) > limit and k > 2:
         k -= 1
         text = build(k)
-    return text[-limit:] if len(text) > limit else text
+    if len(text) <= limit:
+        return text
+    head = system + chr(10) * 2 + task + chr(10)         # the rules and the test always stay; the oldest of the history goes
+    return head + text[-max(0, limit - len(head)):] if len(head) < limit - 2000 else text[:limit]
 
 
 def _run_ids(ids):

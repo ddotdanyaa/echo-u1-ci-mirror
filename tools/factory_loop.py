@@ -1864,7 +1864,8 @@ class Loop:
         used = len(ledger.get(tid) or [])
         # already_green is a fact of the base, not of a model: a lift reruns the same green test on the same base (live
         # 21.11 21:41-22:20: 7 tasks took 12 lifts, a slot each, all green again). It goes to the head question at once.
-        if used >= F.AUTO_UNBLOCK_MAX or why == "already_green":
+        # a green candidate that only lacks a second reviewer waits for the day of the other models, it is never buried (live 25.11: <id>_s2_r2)
+        if (used >= F.AUTO_UNBLOCK_MAX and why != "review_chain_short") or why == "already_green":
             got = []
 
             def esc(state):
@@ -4528,7 +4529,7 @@ class Loop:
                         return answer
             # a refused minute is waited out, the steps made are never thrown away: the open channels are asked again every few seconds
             while True:
-                for body, tier, role in ((small, "small", "review"), (text, "", "code")):    # owner: Gemma (57 600 calls a day) solves first, Flash-Lite is for slicing
+                for body, tier, role in ((small, "small", "review"), (text, "main", "code")):    # owner: Gemma (57 600 calls a day) solves first, Flash-Lite is for slicing
                     if body is None:
                         continue
                     status, model, answer, _ = loop._light_ask(body, attempt=1, section="loop-architect", quotas=loop._arch_quotas,
