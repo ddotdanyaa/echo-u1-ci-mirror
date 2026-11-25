@@ -1,0 +1,7 @@
+tests/test_cm_probes.py
+tests/test_early_ack_reconcile.py
+tests/test_p04_stop_words.py
+tests/test_t_classes.py
+tests/test_user_intents_e3a.py
+tests/test_user_intents_e3a2.py
+tests/verify/question/test_v_H31_07.py
