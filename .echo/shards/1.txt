@@ -1,0 +1,13 @@
+tests/verify/lists/test_v_F11.py::test_every_item_of_the_list_has_scenes_that_exist
+tests/verify/lists/test_v_F11.py::test_the_confirmation_at_the_same_moment_as_the_timer_is_one_next
+tests/verify/lists/test_v_F11.py::test_the_item_of_the_list_holds_on_each_of_its_scenes[STOP and back]
+tests/verify/lists/test_v_F11.py::test_the_item_of_the_list_holds_on_each_of_its_scenes[a landmark in the middle]
+tests/verify/lists/test_v_F11.py::test_the_item_of_the_list_holds_on_each_of_its_scenes[noise]
+tests/verify/lists/test_v_F11.py::test_the_item_of_the_list_holds_on_each_of_its_scenes[repeated ASR final]
+tests/verify/lists/test_v_F11.py::test_the_item_of_the_list_holds_on_each_of_its_scenes[repeated last word]
+tests/verify/lists/test_v_F11.py::test_the_item_of_the_list_holds_on_each_of_its_scenes[the negation lost / kept]
+tests/verify/lists/test_v_F11.py::test_the_item_of_the_list_holds_on_each_of_its_scenes[the next question read out]
+tests/verify/lists/test_v_F11.py::test_the_item_of_the_list_holds_on_each_of_its_scenes[the number corrected / wrong]
+tests/verify/lists/test_v_F11.py::test_the_item_of_the_list_holds_on_each_of_its_scenes[the word before the last]
+tests/verify/lists/test_v_F11.py::test_the_landmark_tail_after_the_owners_word_comes_at_once
+tests/verify/lists/test_v_F11.py::test_the_stranger_with_the_same_word_and_the_question_read_next_are_in_the_connected_talk
