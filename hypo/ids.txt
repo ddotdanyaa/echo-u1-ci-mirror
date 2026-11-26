@@ -1,0 +1,1 @@
+tests/test_h4_ear_first.py::test_the_model_that_asked_for_a_search_is_answered_when_the_job_has_spoken[before_it_opened]
