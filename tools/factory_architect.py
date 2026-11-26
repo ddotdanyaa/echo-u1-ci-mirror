@@ -680,6 +680,10 @@ def split_faults(contract, root, bid=''):
 RIG_ENGINES = ('paid', 'agent', 'solver', 'coordinator', 'free', 'free_main', 'free_small')     # W-rig: who may give a rig contract (ready code); W-path D: the free steps too (the AST lock rig_weakens, rig_touch_faults and the cloud run stand)
 
 
+OWNER_FILE = 'OWNER_DECISION'      # 26.11: a behaviour the owner decided is a rule as good as a line of the product
+OWNER_DECISIONS = os.environ.get('FACTORY_DECISIONS') or os.path.join(os.sep, 'agent-factory', 'echo', 'owner_decisions.md')      # the station's own file, never published
+
+
 def restate_faults(contract, root):
     """W-restate 2: a restate card names the rule the product follows now: 1-5 verbatim quotes (20+ characters) of files outside the
     card's own parts, each really there."""
@@ -694,7 +698,7 @@ def restate_faults(contract, root):
             faults.append('restate: a rule needs a file and a quote of 20+ characters')
             continue
         try:
-            text = (Path(root) / F.safe_path(file)).read_text(encoding='utf-8-sig')
+            text = (Path(OWNER_DECISIONS) if file == OWNER_FILE else Path(root) / F.safe_path(file)).read_text(encoding='utf-8-sig')
         except (OSError, ValueError):
             faults.append('restate: no such file: ' + file[:80])
             continue

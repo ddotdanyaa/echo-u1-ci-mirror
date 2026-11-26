@@ -343,7 +343,7 @@ def restate_note(task) -> str:
     return ('THIS IS A RESTATE CARD, judge it by these three questions only (they replace the ordinary rule that a test is never '
             'changed; changing the expected value is the purpose of this card):\n'
             '1. Does the evidence below really show that the product replaced the old rule ON PURPOSE (a rule stated in code or in another test), '
-            'not that the product is broken?\n2. Is the new expectation exactly what that rule says?\n3. Are the checks no weaker otherwise (same scene, '
+            '(a quote from OWNER_DECISION is the product owner\'s own decision of the behaviour: it is such a rule), not that the product is broken?\n2. Is the new expectation exactly what that rule says?\n3. Are the checks no weaker otherwise (same scene, '
             'no fewer asserts)?\nReject when the evidence does not show a deliberate rule.\nWhy: ' + str(contract.get('why') or '')[:600]
             + '\nEvidence (verbatim, present in the tree):\n' + '\n'.join(rows) + '\n')
 
