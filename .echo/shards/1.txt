@@ -1,0 +1,1 @@
+tests/test_u54_ear_tail.py::test_a_word_after_the_issued_tail_cuts_the_cue
