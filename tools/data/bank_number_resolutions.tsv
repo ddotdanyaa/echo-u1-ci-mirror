@@ -1,0 +1,1 @@
+50,01	50,02	PRESUMED (предположительно), the original sheet not opened: 3051,10 / 6100,34 * 100 = 50,0152 -> 50,02; eval/sheet_questions.tsv key row 26 and _build/ext3_1107.py say 50,02, _build/ext4.py + merged/ext4_1107.json say 50,01; rebuild must run bank_audit --resolve until the sources are fixed
