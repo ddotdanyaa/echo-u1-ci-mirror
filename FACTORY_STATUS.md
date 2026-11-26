@@ -1,9 +1,11 @@
 # Factory status (generated, structured data only)
 
-Generated: 2026-11-26T07:27:44Z
-Source commit: sha661879da8ee4
+Generated: 2026-11-26T08:46:44Z
+Source commit: shaf9262f472da4
 
 ## Commits (sha, time)
+- shaf9262f47 2026-11-26T11:42:24+03:00
+- sha45d5b65f 2026-11-26T11:37:13+03:00
 - sha661879da 2026-11-26T10:27:11+03:00
 - sha9abe9f8c 2026-11-26T10:23:22+03:00
 - sha5eb6d410 2026-11-26T10:23:02+03:00
@@ -22,48 +24,46 @@ Source commit: sha661879da8ee4
 - sha13d4d68c 2026-11-26T09:15:16+03:00
 - sha270676b6 2026-11-26T08:41:29+03:00
 - shaae878900 2026-11-26T08:34:51+03:00
-- sha3926b2f9 2026-11-26T02:00:21+03:00
-- shacbfecf3d 2026-11-26T01:56:17+03:00
 
 ## Funnel
 | step | count |
 |---|---|
-| accepted | 42 |
-| claimed | 1251 |
-| coded | 193 |
+| accepted | 65 |
+| claimed | 1267 |
+| coded | 196 |
 | found_in_backlog | unknown |
 | gate_pass | 133 |
-| known_to_loop | 829 |
+| known_to_loop | 836 |
 | promoted | 130 |
-| ready | 33 |
-| reviewed | 365 |
-| triaged | 635 |
+| ready | 55 |
+| reviewed | 368 |
+| triaged | 642 |
 
-Side counters: blocked=20, parked=0, requeued=10
-Tasks now: BLOCKED=20, DONE=68, FAILED=1271, PROMOTED=100, READY=33, RUNNING=1
-Accepted: 42
+Side counters: blocked=19, parked=0, requeued=10
+Tasks now: BLOCKED=19, DONE=68, FAILED=1281, PROMOTED=100, READY=55
+Accepted: 65
 Promoted: 130
-Free RAM, GB: 2.43
-Telemetry rows: 88751 recognised, 0 unrecognised
+Free RAM, GB: 1.0
+Telemetry rows: 89669 recognised, 0 unrecognised
 
 ## Spend per model
 | model | calls | tokens_in | tokens_out | usage_unknown | http_429 | errors |
 |---|---|---|---|---|---|---|
-| cohere/command-a-03-2025 | 45 | 84775 | 11984 | 0 | 0 | 0 |
-| cohere/command-a-plus-05-2026 | 12 | 5678 | 452 | 8 | 0 | 8 |
+| cohere/command-a-03-2025 | 46 | 93172 | 12146 | 0 | 0 | 0 |
+| cohere/command-a-plus-05-2026 | 13 | 5678 | 452 | 9 | 0 | 9 |
 | cohere/north-mini-code-1.0 | 7 | 10515 | 346 | 3 | 0 | 3 |
-| google/gemini-3-flash-preview | 61 | 56167 | 7724 | 40 | 39 | 40 |
-| google/gemini-3.1-flash-lite | 1688 | 8754452 | 615246 | 133 | 10 | 133 |
-| google/gemini-3.1-flash-lite-preview | 477 | 896229 | 148756 | 109 | 18 | 109 |
-| google/gemini-3.5-flash | 52 | 30545 | 1824 | 42 | 40 | 42 |
-| google/gemini-3.5-flash-lite | 1992 | 11070268 | 651486 | 49 | 13 | 49 |
-| google/gemini-3.6-flash | 148 | 414079 | 20196 | 70 | 25 | 70 |
-| google/gemini-3.7-flash | 41 | 9121 | 14 | 40 | 28 | 40 |
-| google/gemini-3.8-flash | 41 | 21237 | 15 | 38 | 26 | 38 |
+| google/gemini-3-flash-preview | 63 | 60205 | 8493 | 40 | 39 | 40 |
+| google/gemini-3.1-flash-lite | 1691 | 8760622 | 616857 | 134 | 10 | 134 |
+| google/gemini-3.1-flash-lite-preview | 480 | 908524 | 149336 | 109 | 18 | 109 |
+| google/gemini-3.5-flash | 53 | 30545 | 1824 | 43 | 40 | 43 |
+| google/gemini-3.5-flash-lite | 1994 | 11074296 | 652263 | 49 | 13 | 49 |
+| google/gemini-3.6-flash | 150 | 416172 | 20302 | 71 | 25 | 71 |
+| google/gemini-3.7-flash | 42 | 9121 | 14 | 41 | 29 | 41 |
+| google/gemini-3.8-flash | 42 | 21237 | 15 | 39 | 26 | 39 |
 | google/gemini-4-hydrogen | 25 | 2852 | 507 | 24 | 17 | 24 |
-| google/gemini-robotics-er-2-preview | 29 | 18872 | 780 | 23 | 22 | 23 |
-| google/gemma-4-26b-a4b-it | 6347 | 5627918 | 970612 | 4066 | 72 | 4066 |
-| google/gemma-4-31b-it | 5436 | 3047900 | 321182 | 4220 | 55 | 4220 |
+| google/gemini-robotics-er-2-preview | 31 | 23150 | 1337 | 23 | 22 | 23 |
+| google/gemma-4-26b-a4b-it | 6358 | 5642860 | 973196 | 4068 | 72 | 4068 |
+| google/gemma-4-31b-it | 5447 | 3072751 | 323503 | 4221 | 56 | 4221 |
 | openrouter/nvidia/nemotron-3-ultra-550b-a55b:free | 140 | 744121 | 158302 | 3 | 2 | 3 |
 | other | 65 | 1154192 | 66710 | 6 | 0 | 7 |
 
@@ -71,13 +71,13 @@ Telemetry rows: 88751 recognised, 0 unrecognised
 | span | rows | calls |
 |---|---|---|
 | answer | 546 | 0 |
-| gate | 11178 | 0 |
-| infra | 5582 | 0 |
-| loop | 13180 | 0 |
-| other | 25385 | 0 |
+| gate | 11232 | 0 |
+| infra | 5683 | 0 |
+| loop | 13369 | 0 |
+| other | 25863 | 0 |
 | promote | 149 | 0 |
-| review | 4656 | 2324 |
-| run | 27491 | 14282 |
+| review | 4668 | 2332 |
+| run | 27575 | 14315 |
 | triage | 584 | 0 |
 
 ## Channels (model ids)

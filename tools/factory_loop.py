@@ -5607,7 +5607,7 @@ class Loop:
         """W-a4: (the cohort yield of the steps, whether this row is a probe): one row in PROBE_EVERY with data is led by the
         step of the worst confirmed yield, the others by the best one."""
         from tools import factory_architect as A
-        yields = A.engine_yield(ls.get("cohort") or {}, self.clock())
+        yields = A.engine_yield(ls.get("cohort") or {}, self.clock(), ls.get("contracts_by_engine"))
         if not yields:
             return yields, False
         self._yield_picks = getattr(self, "_yield_picks", 0) + 1

@@ -893,6 +893,7 @@ def no_money():
 YIELD_WINDOW = 400          # W-a4: the cohort window: the rows of the latest first contracts
 YIELD_MIN_ROWS = 10         # W-a4: an engine's yield is confirmed from this many settled rows of its first contracts
 YIELD_SETTLE_S = 6 * 3600   # W-a4: an unmerged row counts as a miss of its first engine once its first contract is this old
+PRIOR_MIN = 10              # W-a4: a step's history (contracts_by_engine) stands in for the cohort from this many made contracts
 PROBE_EVERY = 10            # W-a4: the engine of the worst confirmed yield leads one row in PROBE_EVERY (the probe of the bandit)
 
 
@@ -901,7 +902,21 @@ def yield_step(engine):
     return str(engine or '').split('+')[0]
 
 
-def engine_yield(cohort, now):
+def prior_yield(by_engine):
+    """W-a4: the history of loop_state.contracts_by_engine {engine: {made, merged}} as the prior yield per step ('free+free_main' -> 'free');
+    a step enters from PRIOR_MIN made contracts. -> {step: {'rows', 'merged', 'yield', 'prior': True}}."""
+    acc = {}
+    for engine, v in (by_engine or {}).items():
+        if not isinstance(v, dict):
+            continue
+        cell = acc.setdefault(yield_step(engine), [0, 0])
+        cell[0] += int(v.get('made') or 0)
+        cell[1] += int(v.get('merged') or 0)
+    return {st: {'rows': m, 'merged': g, 'yield': round(g / m, 4), 'prior': True}
+            for st, (m, g) in acc.items() if m >= PRIOR_MIN}
+
+
+def engine_yield(cohort, now, prior=None):
     """W-a4: the measured yield of each step over the cohort window: of the rows whose FIRST contract it made, the share that
     merged in the end (in any of the row's generations, whatever step made the merged card). A row still young and unmerged
     is not counted yet. ``cohort`` = {row: {'engine', 'at', 'merged'}}."""
@@ -917,6 +932,9 @@ def engine_yield(cohort, now):
         cell['merged'] += merged
     for cell in out.values():
         cell['yield'] = round(cell['merged'] / cell['rows'], 4)
+    for step, old in prior_yield(prior).items():       # the cohort has too few rows of this step: the history is its yield
+        if step not in out or out[step]['rows'] < YIELD_MIN_ROWS:
+            out[step] = old
     return out
 
 
