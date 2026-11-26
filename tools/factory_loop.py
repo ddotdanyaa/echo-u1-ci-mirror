@@ -3428,7 +3428,13 @@ class Loop:
     def _test_only(task) -> bool:
         """A task that adds tests and no code: a merged test task of a row is not yet the row."""
         files = [str(f).replace("\\", "/") for f in getattr(task, "touch_files", None) or ()]
-        return getattr(task, "kind", "") == "unit_test" or bool(files and all(f.startswith("tests/") for f in files))
+        if getattr(task, "kind", "") == "unit_test":
+            return True
+        try:
+            rig = json.loads(getattr(task, "contract", "") or "{}").get("rig") is True
+        except (ValueError, TypeError, AttributeError):
+            rig = False
+        return not rig and bool(files and all(f.startswith("tests/") for f in files))      # a rig card IS the fix of its row (26.11: 0 accepted of 20 merged stand fixes)
 
     @staticmethod
     def _task_finished(row) -> bool:
