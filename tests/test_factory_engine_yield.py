@@ -71,3 +71,19 @@ def test_the_cohort_keeps_the_first_engine_only():
     L.Loop._cohort_first(loop, ls, "row-1", "free_small")
     L.Loop._cohort_first(loop, ls, "row-1", "paid")
     assert ls["cohort"]["row-1"]["engine"] == "free_small" and ls["cohort"]["row-1"]["merged"] is False
+
+
+def test_history_is_the_prior_when_the_cohort_is_empty():
+    by_engine = {e: {"made": m, "merged": g} for e, (m, g) in TABLE.items()}
+    by_engine["guard"] = {"made": 128, "merged": 0}
+    yields = A.engine_yield({}, NOW, by_engine)
+    for rung in (0, 1, 2):
+        order = A.ladder(rung, rungs=ALL, yields=yields)
+        assert order[0] not in ("free_small", "guard") and order[-1] == "free_small"
+        assert order[0] == "agent"
+    assert A.ladder(0, rungs=ALL, yields=yields, probe=True)[0] == "free_small"       # only the probe share
+    loop = SimpleNamespace(clock=lambda: NOW)
+    got, _ = L.Loop._yield_pick(loop, {"contracts_by_engine": by_engine})
+    assert got["agent"]["rows"] == 248
+    thin = {"free_small": {"made": A.PRIOR_MIN - 1, "merged": 0}}
+    assert A.engine_yield({}, NOW, thin) == {}
