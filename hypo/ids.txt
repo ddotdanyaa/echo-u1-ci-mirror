@@ -1,0 +1,1 @@
+tests/test_factory_c07_echo_s2_coverage.py::test_collected_test_names_only_test_underscore
