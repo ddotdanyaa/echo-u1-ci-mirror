@@ -145,7 +145,9 @@ SECRET = re.compile(
 # source files, where e-mail addresses and user paths are legitimate content.
 REDACT_EXTRA = re.compile(
     # NAME_KEY=value, *_TOKEN=value, *_SECRET=value (value >= 8 chars), free text only
-    r"(?i:[A-Za-z][A-Za-z0-9_]{0,63}_(?:key|token|secret))\s*=\s*['\"]?[^\s'\"]{8,}['\"]?|"
+    # only a quoted literal or a high-entropy token (letters+digits, 8+) is a secret; `expected_key = sorted(r)` is code
+    r"(?i:[A-Za-z][A-Za-z0-9_]{0,63}_(?:key|token|secret))\s*=\s*"
+    r"(?:['\"][^\s'\"]{8,}['\"]?|(?=[A-Za-z0-9_.+/=-]*[0-9])(?=[A-Za-z0-9_.+/=-]*[A-Za-z])[A-Za-z0-9_.+/=-]{8,}(?![A-Za-z0-9_.+/=(\[-]))|"
     r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}|"
     r"[A-Za-z]:[\\/]+Users[\\/]+[^\\/\s\"'<>|:]+"
 )
@@ -940,10 +942,11 @@ DEFER_REASONS = frozenset((REASON_CLOUD_DOWN, REASON_CLOUD_BUSY, "rate_minute", 
 
 
 def defer(state: dict, tid: str, token: str, reason: str, seconds: float, *,
-          now: float | None = None) -> str:
+          now: float | None = None, key: str = "") -> str:
     """RUNNING -> READY without a strike and without spending the attempt; the task is
     postponed to now + seconds. For channel/provider/infrastructure faults and waits, never
-    for a candidate that failed a gate. ``reason`` must be whitelisted (no free text)."""
+    for a candidate that failed a gate. ``reason`` must be whitelisted (no free text).
+    W-a2: ``key`` (the fingerprint of the pass's input) is part of the streak: the same reason on another input starts at 1."""
     if reason not in DEFER_REASONS:
         raise InvalidPlan("unknown defer reason")
     fence(state, tid, token)
@@ -953,12 +956,13 @@ def defer(state: dict, tid: str, token: str, reason: str, seconds: float, *,
     streak = row.get("defer_streak")
     if not isinstance(streak, dict):
         streak = {}
+    same = streak.get("reason") == reason and str(streak.get("key") or "") == str(key or "")
     row.update(status="READY", lease=None, deadline=None,
                attempts=max(0, row["attempts"] - 1),
                not_before=now + max(0.0, float(seconds)), defer_reason=reason,
-               defer_streak={"reason": reason,
-                             "n": (streak["n"] if type(streak.get("n")) is int else 0) + 1
-                             if streak.get("reason") == reason else 1},
+               defer_streak=dict({"reason": reason,
+                                  "n": (streak["n"] if type(streak.get("n")) is int else 0) + 1 if same else 1},
+                                 **({"key": str(key)} if key else {})),
                evidence=sha256(reason.encode("utf-8")).hexdigest())
     row.pop("orphan_releases", None)
     if state.get("strikes", {}).get(_strike_key(row, tid), 0) >= MAX_STRIKES:
@@ -966,10 +970,10 @@ def defer(state: dict, tid: str, token: str, reason: str, seconds: float, *,
     return row["status"]
 
 
-def defer_streak(state: dict, tid: str, reason: str) -> int:
-    """How many deferrals for ``reason`` in a row this task already had (settle/unblock reset it)."""
+def defer_streak(state: dict, tid: str, reason: str, key: str = "") -> int:
+    """How many deferrals for ``reason`` (on the input ``key``, W-a2) in a row this task already had (settle/unblock reset it)."""
     streak = state["tasks"][tid].get("defer_streak")
-    if not isinstance(streak, dict) or streak.get("reason") != reason or type(streak.get("n")) is not int:
+    if not isinstance(streak, dict) or streak.get("reason") != reason or type(streak.get("n")) is not int             or str(streak.get("key") or "") != str(key or ""):
         return 0
     return streak["n"]
 

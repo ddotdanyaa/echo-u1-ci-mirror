@@ -4347,6 +4347,14 @@ class Loop:
                 return False
         ask.channels = models if len(models) > 1 else None
         ask.gate = Gate()
+        small_ids = [c["id"] for c in configured if CH.tier_of(c) == "small" and not CH.is_reserve(c)]
+
+        def capacity():
+            """W-a2: the head's free places of the small channels (None: no head; HeadDown: it does not answer)."""
+            from tools import factory_head as HD
+            state = Path(loop.cfg.channels).resolve().parent / HD.STATE_NAME
+            return HD.capacity(state, small_ids) if state.exists() else None
+        ask.capacity = capacity
         return ask
 
     def _ladder_sig(self):
@@ -5456,6 +5464,7 @@ class Loop:
                     raise SliceWait()
                 asks = left
             cached = dict(self._wait_record(ls, row).get("engines") or {})
+            yields, probe = self._yield_pick(ls)       # W-a4: the steps ordered by the cohort's measured yield
             ctx = dict(root=root, gen=gen, rung=rung, cause=cause, ladder=",".join(asks), boxed=boxed)
             task_copy, state_copy, ls_copy = copy.deepcopy((tasks, state, ls))
             dry_now = self._edit_dry(state)       # W-dry 1: with the edit channels dry the contract asks for finished code
@@ -5475,6 +5484,8 @@ class Loop:
                 A._samples_dir = self.cfg.state_dir        # W-rig 7: the black box of the rejected answers (<state>/slice_samples.json)
                 if cached:      # W-pay 2: the steps that already answered this row (or refused it) on this version and sha
                     extra["skip"] = cached
+                if yields:      # W-a4: the order of the steps by the cohort's measured yield
+                    extra.update(yields=yields, probe=probe)
                 if not packet.get("guard_green") and str(row).startswith("rel-") and not self.cfg.self_repo \
                         and self._packet_green_on_row(row, packet):
                     packet["guard_green"] = True    # W-part 2: no test of the row is red in the last full build (red_last): already_fixed
@@ -5567,6 +5578,7 @@ class Loop:
             (fresh.get("slice_cache") or {}).pop(row, None)
             made = fresh.setdefault("contracts_by_engine", {}).setdefault(engine, {"made": 0, "merged": 0})
             made["made"] += 1
+            self._cohort_first(fresh, row, engine)
             vgs = getattr(job.ctx.get("small"), "vgs", None)
             if vgs and engine.endswith("free_small"):       # W-gslice 4: the ensemble's own counters of this engine
                 for name in ("asked", "answered", "valid"):
@@ -5590,6 +5602,28 @@ class Loop:
                                            if k.startswith("refused_") and type(v) is int}
             self.event("slice", backlog_id=row, engine=engine, status=outcome, rung=job.ctx["rung"],
                        ladder=job.ctx.get("ladder", ""), **extra)
+
+    def _yield_pick(self, ls):
+        """W-a4: (the cohort yield of the steps, whether this row is a probe): one row in PROBE_EVERY with data is led by the
+        step of the worst confirmed yield, the others by the best one."""
+        from tools import factory_architect as A
+        yields = A.engine_yield(ls.get("cohort") or {}, self.clock())
+        if not yields:
+            return yields, False
+        self._yield_picks = getattr(self, "_yield_picks", 0) + 1
+        return yields, self._yield_picks % A.PROBE_EVERY == 0
+
+    def _cohort_first(self, ls, row, engine) -> None:
+        """W-a4: the cohort of the rows: the engine of a row's FIRST contract and whether the row merged in the end (_after_merge).
+        The oldest records beyond twice the window are dropped."""
+        from tools import factory_architect as A
+        cohort = ls.setdefault("cohort", {})
+        if row in cohort or not engine:
+            return
+        cohort[row] = dict(engine=str(engine), at=self.clock(), merged=False)
+        if len(cohort) > 2 * A.YIELD_WINDOW:
+            for old in sorted(cohort, key=lambda k: float(cohort[k].get("at") or 0))[:len(cohort) - 2 * A.YIELD_WINDOW]:
+                del cohort[old]
 
     NO_FIX_FREE = ("already_fixed", "cannot_reproduce")
     LOST_ESCALATIONS = 3
@@ -8159,6 +8193,10 @@ class Loop:
             engine = state["tasks"].get(tid, {}).get("engine")
             if engine:
                 ls.setdefault("contracts_by_engine", {}).setdefault(engine, {"made": 0, "merged": 0})["merged"] += 1
+            for key in {bid, F.row_of(bid)} if bid else ():         # W-a4: the row merged: its first engine scores
+                rec = (ls.get("cohort") or {}).get(key)
+                if isinstance(rec, dict):
+                    rec["merged"] = True
             left = list(state["tasks"].get(tid, {}).get("reds_left") or ())       # W-part 3: other reds of the same file stay: the row is not done
             more = self._contract(task).get("more") or ("still red in the same file: " + ", ".join(left[:6]) if left else "")
             if task and task.kind == "code" and more:
@@ -8697,6 +8735,11 @@ class Loop:
                 stats["agent"]["usd_per_merged_by_engine"] = A.price_per_merged(ls.get("contracts_by_engine", {}))
             except Exception as e:      # statistics never stop the loop
                 self.err("agent stats", e)
+            try:        # W-a4: the cohort yield of each step (rows of its first contract -> merged in the end)
+                from tools import factory_architect as A
+                stats["engine_yield"] = A.engine_yield(ls.get("cohort") or {}, self.clock())
+            except Exception as e:      # statistics never stop the loop
+                stats["engine_yield"] = {"error": F.redact(type(e).__name__)}
             try:
                 from tools import factory_bisect as BIS
                 stats["bisect"] = BIS.counts(self.cfg.state_dir)        # W-bisect 5: {done, regression, never_green, moved}
