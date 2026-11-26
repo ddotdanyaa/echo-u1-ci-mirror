@@ -953,6 +953,20 @@ def by_yield(order, yields, probe=False):
     return [worst, best] + rest if probe else [best] + rest + [worst]
 
 
+YIELD_FLOOR = 0.1           # W-yfloor: a step whose confirmed yield is below this share of the best MEASURED step's yield (even one unavailable now) does not slice a row
+
+
+def weak_steps(order, yields):
+    """W-yfloor: the steps of ``order`` whose confirmed yield (rows >= YIELD_MIN_ROWS) is under YIELD_FLOOR of the best measured step's yield;
+    the best is taken over every measured step of ``yields``, available now or not. A step without data is never weak. -> set of steps."""
+    known = {e: float(v['yield']) for e, v in (yields or {}).items()
+             if isinstance(v, dict) and int(v.get('rows') or 0) >= YIELD_MIN_ROWS}
+    if not known:
+        return set()
+    top = max(known.values())
+    return {e for e in order if e in known and known[e] < YIELD_FLOOR * top}
+
+
 def ladder(rung, *, rungs, red=False, dry=False, base_debt=False, gone=(), yields=None, probe=False):
     """W-a4: ``yields`` (engine_yield of the cohort) reorders the available steps by measured yield (by_yield); without it the order is the fixed one.
     W-base0: a row of the old baseline debt (base_debt) is sliced by the free steps only, always: no paid, no agent.
