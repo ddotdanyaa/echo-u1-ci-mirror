@@ -1,0 +1,6 @@
+tests/test_c22_wiring.py
+tests/test_c7_number_first_cue.py
+tests/test_f1_meaning_portions.py
+tests/test_fix_c20_first_portion.py
+tests/test_go_on_property.py
+tests/test_h6.py
