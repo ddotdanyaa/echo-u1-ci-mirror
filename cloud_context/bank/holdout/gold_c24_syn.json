@@ -1,0 +1,703 @@
+[
+ {
+  "id": "s.0",
+  "round": 0,
+  "q": "Что за счёт 28 вообще?",
+  "gold": [
+   "b00309"
+  ],
+  "kind": "para",
+  "long": false,
+  "split": "syn"
+ },
+ {
+  "id": "s.1",
+  "round": 0,
+  "q": "Счёт 28 это что такое",
+  "gold": [
+   "b00309"
+  ],
+  "kind": "para",
+  "long": false,
+  "split": "syn"
+ },
+ {
+  "id": "s.2",
+  "round": 0,
+  "q": "Что такое счёт 29?",
+  "gold": [],
+  "kind": "twin",
+  "long": false,
+  "split": "syn"
+ },
+ {
+  "id": "s.3",
+  "round": 0,
+  "q": "Что такое счёт 82?",
+  "gold": [
+   "b00391"
+  ],
+  "kind": "plain",
+  "long": false,
+  "split": "syn",
+  "note": "bank has it (checked after the first run)"
+ },
+ {
+  "id": "s.4",
+  "round": 0,
+  "q": "Счёт 28 активный или пассивный, напомни",
+  "gold": [
+   "b00305"
+  ],
+  "kind": "para",
+  "long": false,
+  "split": "syn"
+ },
+ {
+  "id": "s.5",
+  "round": 0,
+  "q": "Счёт 29 активный или пассивный",
+  "gold": [],
+  "kind": "twin",
+  "long": false,
+  "split": "syn"
+ },
+ {
+  "id": "s.6",
+  "round": 0,
+  "q": "Что записывают по дебету и по кредиту счёта 28",
+  "gold": [
+   "b00306"
+  ],
+  "kind": "plain",
+  "long": false,
+  "split": "syn"
+ },
+ {
+  "id": "s.7",
+  "round": 0,
+  "q": "Что записывают по дебету и по кредиту счёта 23",
+  "gold": [
+   "b00291"
+  ],
+  "kind": "plain",
+  "long": false,
+  "split": "syn",
+  "note": "bank has it (checked after the first run)"
+ },
+ {
+  "id": "s.8",
+  "round": 0,
+  "q": "Зачем двойная запись нужна",
+  "gold": [
+   "b00057"
+  ],
+  "kind": "para",
+  "long": false,
+  "split": "syn"
+ },
+ {
+  "id": "s.9",
+  "round": 0,
+  "q": "Слушай, а зачем вообще нужна двойная запись",
+  "gold": [
+   "b00057"
+  ],
+  "kind": "para",
+  "long": false,
+  "split": "syn"
+ },
+ {
+  "id": "s.10",
+  "round": 0,
+  "q": "Что такое двойная запись, расскажи",
+  "gold": [
+   "b00056"
+  ],
+  "kind": "para",
+  "long": false,
+  "split": "syn"
+ },
+ {
+  "id": "s.11",
+  "round": 0,
+  "q": "Зачем нужна одинарная запись?",
+  "gold": [],
+  "kind": "twin",
+  "long": false,
+  "split": "syn"
+ },
+ {
+  "id": "s.12",
+  "round": 0,
+  "q": "Можно ли вести учёт без двойной записи?",
+  "gold": [
+   "b00041"
+  ],
+  "kind": "plain",
+  "long": false,
+  "split": "syn"
+ },
+ {
+  "id": "s.13",
+  "round": 0,
+  "q": "Нельзя ли вести учёт без двойной записи",
+  "gold": [
+   "b00041"
+  ],
+  "kind": "twin_ok",
+  "long": false,
+  "split": "syn"
+ },
+ {
+  "id": "s.14",
+  "round": 0,
+  "q": "Можно ли вести учёт без первичных документов",
+  "gold": [],
+  "kind": "twin",
+  "long": false,
+  "split": "syn"
+ },
+ {
+  "id": "s.15",
+  "round": 0,
+  "q": "Можно ли заплатить налог раньше срока?",
+  "gold": [
+   "b00630"
+  ],
+  "kind": "plain",
+  "long": false,
+  "split": "syn"
+ },
+ {
+  "id": "s.16",
+  "round": 0,
+  "q": "Можно ли заплатить налог позже срока?",
+  "gold": [
+   "b00515"
+  ],
+  "kind": "plain",
+  "long": false,
+  "split": "syn",
+  "note": "bank has it (checked after the first run)"
+ },
+ {
+  "id": "s.17",
+  "round": 0,
+  "q": "Не стоит ли платить налог раньше срока",
+  "gold": [],
+  "kind": "twin",
+  "long": false,
+  "split": "syn"
+ },
+ {
+  "id": "s.18",
+  "round": 0,
+  "q": "Что такое инвойс?",
+  "gold": [
+   "b01407"
+  ],
+  "kind": "plain",
+  "long": false,
+  "split": "syn"
+ },
+ {
+  "id": "s.19",
+  "round": 0,
+  "q": "што такое инвойс",
+  "gold": [
+   "b01407"
+  ],
+  "kind": "asr",
+  "long": false,
+  "split": "syn"
+ },
+ {
+  "id": "s.20",
+  "round": 0,
+  "q": "что такое анвойс",
+  "gold": [],
+  "kind": "asr_unknown",
+  "long": false,
+  "split": "syn"
+ },
+ {
+  "id": "s.21",
+  "round": 0,
+  "q": "Кто такой Костюшко",
+  "gold": [
+   "b01551"
+  ],
+  "kind": "para",
+  "long": false,
+  "split": "syn"
+ },
+ {
+  "id": "s.22",
+  "round": 0,
+  "q": "кто такой Тадеуш Костюшко",
+  "gold": [
+   "b01551"
+  ],
+  "kind": "plain",
+  "long": false,
+  "split": "syn"
+ },
+ {
+  "id": "s.23",
+  "round": 0,
+  "q": "Кто такой Тадеуш Ковальский",
+  "gold": [],
+  "kind": "twin",
+  "long": false,
+  "split": "syn"
+ },
+ {
+  "id": "s.24",
+  "round": 0,
+  "q": "Почему монголы не дошли до Новгорода?",
+  "gold": [
+   "b01568"
+  ],
+  "kind": "plain",
+  "long": false,
+  "split": "syn"
+ },
+ {
+  "id": "s.25",
+  "round": 0,
+  "q": "Почему монголы дошли до Новгорода?",
+  "gold": [],
+  "kind": "twin",
+  "long": false,
+  "split": "syn"
+ },
+ {
+  "id": "s.26",
+  "round": 0,
+  "q": "Почему монголы не дошли до Пскова?",
+  "gold": [],
+  "kind": "twin",
+  "long": false,
+  "split": "syn"
+ },
+ {
+  "id": "s.27",
+  "round": 0,
+  "q": "Когда Новгород присоединили к Москве",
+  "gold": [
+   "b01569"
+  ],
+  "kind": "para",
+  "long": false,
+  "split": "syn"
+ },
+ {
+  "id": "s.28",
+  "round": 0,
+  "q": "Когда Тверь присоединили к Москве",
+  "gold": [],
+  "kind": "twin",
+  "long": false,
+  "split": "syn"
+ },
+ {
+  "id": "s.29",
+  "round": 0,
+  "q": "Кто освободил Москву от поляков",
+  "gold": [
+   "b01476"
+  ],
+  "kind": "plain",
+  "long": false,
+  "split": "syn"
+ },
+ {
+  "id": "s.30",
+  "round": 0,
+  "q": "Кто освободил Москву от французов",
+  "gold": [],
+  "kind": "twin",
+  "long": false,
+  "split": "syn"
+ },
+ {
+  "id": "s.31",
+  "round": 0,
+  "q": "Чем закончилась Семибоярщина?",
+  "gold": [
+   "b01513"
+  ],
+  "kind": "plain",
+  "long": false,
+  "split": "syn"
+ },
+ {
+  "id": "s.32",
+  "round": 0,
+  "q": "Чем началась Семибоярщина?",
+  "gold": [],
+  "kind": "twin",
+  "long": false,
+  "split": "syn"
+ },
+ {
+  "id": "s.33",
+  "round": 0,
+  "q": "Что такое относительная ссылка?",
+  "gold": [
+   "b01006"
+  ],
+  "kind": "plain",
+  "long": false,
+  "split": "syn"
+ },
+ {
+  "id": "s.34",
+  "round": 0,
+  "q": "Что такое абсолютная ссылка?",
+  "gold": [
+   "b01007"
+  ],
+  "kind": "plain",
+  "long": false,
+  "split": "syn"
+ },
+ {
+  "id": "s.35",
+  "round": 0,
+  "q": "Что такое смешанная ссылка в таблице расскажи",
+  "gold": [],
+  "kind": "oob_check",
+  "long": false,
+  "split": "syn"
+ },
+ {
+  "id": "s.36",
+  "round": 0,
+  "q": "Как читать срок окупаемости?",
+  "gold": [
+   "b00903"
+  ],
+  "kind": "plain",
+  "long": false,
+  "split": "syn"
+ },
+ {
+  "id": "s.37",
+  "round": 0,
+  "q": "Как считать срок окупаемости",
+  "gold": [
+   "b00902"
+  ],
+  "kind": "plain",
+  "long": false,
+  "split": "syn",
+  "note": "bank has it (checked after the first run)"
+ },
+ {
+  "id": "s.38",
+  "round": 0,
+  "q": "Что такое срок окупаемости, ну в общем",
+  "gold": [
+   "b00902"
+  ],
+  "kind": "para",
+  "long": false,
+  "split": "syn"
+ },
+ {
+  "id": "s.39",
+  "round": 0,
+  "q": "Как читать чистую приведённую стоимость?",
+  "gold": [
+   "b00909"
+  ],
+  "kind": "plain",
+  "long": false,
+  "split": "syn"
+ },
+ {
+  "id": "s.40",
+  "round": 0,
+  "q": "как читать чистую приведенную стоймость",
+  "gold": [
+   "b00909"
+  ],
+  "kind": "asr",
+  "long": false,
+  "split": "syn"
+ },
+ {
+  "id": "s.41",
+  "round": 0,
+  "q": "Чем срок окупаемости отличается от чистой приведённой стоимости?",
+  "gold": [
+   "b00912"
+  ],
+  "kind": "plain",
+  "long": false,
+  "split": "syn"
+ },
+ {
+  "id": "s.42",
+  "round": 0,
+  "q": "Чем срок окупаемости похож на чистую приведённую стоимость",
+  "gold": [],
+  "kind": "twin",
+  "long": false,
+  "split": "syn"
+ },
+ {
+  "id": "s.43",
+  "round": 0,
+  "q": "Что такое статья 139 НК?",
+  "gold": [
+   "b00623"
+  ],
+  "kind": "plain",
+  "long": false,
+  "split": "syn"
+ },
+ {
+  "id": "s.44",
+  "round": 0,
+  "q": "Что говорится в статье 139 Налогового кодекса",
+  "gold": [
+   "b00623"
+  ],
+  "kind": "para",
+  "long": false,
+  "split": "syn"
+ },
+ {
+  "id": "s.45",
+  "round": 0,
+  "q": "Что такое статья 138 НК?",
+  "gold": [],
+  "kind": "twin",
+  "long": false,
+  "split": "syn"
+ },
+ {
+  "id": "s.46",
+  "round": 0,
+  "q": "Что такое статья 1390 НК",
+  "gold": [],
+  "kind": "twin",
+  "long": false,
+  "split": "syn"
+ },
+ {
+  "id": "s.47",
+  "round": 0,
+  "q": "Чем занимается Центральный банк",
+  "gold": [
+   "b01252"
+  ],
+  "kind": "plain",
+  "long": false,
+  "split": "syn"
+ },
+ {
+  "id": "s.48",
+  "round": 0,
+  "q": "Чем занимается ЦБ?",
+  "gold": [
+   "b01252"
+  ],
+  "kind": "abbr",
+  "long": false,
+  "split": "syn"
+ },
+ {
+  "id": "s.49",
+  "round": 0,
+  "q": "Чем занимается Сбербанк?",
+  "gold": [],
+  "kind": "twin",
+  "long": false,
+  "split": "syn"
+ },
+ {
+  "id": "s.50",
+  "round": 0,
+  "q": "Что такое единый налоговый счёт?",
+  "gold": [
+   "b00625"
+  ],
+  "kind": "plain",
+  "long": false,
+  "split": "syn"
+ },
+ {
+  "id": "s.51",
+  "round": 0,
+  "q": "Что такое ЕНС?",
+  "gold": [
+   "b00625"
+  ],
+  "kind": "abbr",
+  "long": false,
+  "split": "syn"
+ },
+ {
+  "id": "s.52",
+  "round": 0,
+  "q": "На кого ведётся единый налоговый счёт?",
+  "gold": [
+   "b00627"
+  ],
+  "kind": "plain",
+  "long": false,
+  "split": "syn"
+ },
+ {
+  "id": "s.53",
+  "round": 0,
+  "q": "Что такое нематериальные активы?",
+  "gold": [
+   "b00915"
+  ],
+  "kind": "plain",
+  "long": false,
+  "split": "syn"
+ },
+ {
+  "id": "s.54",
+  "round": 0,
+  "q": "Что такое НМА?",
+  "gold": [
+   "b00915"
+  ],
+  "kind": "abbr",
+  "long": false,
+  "split": "syn"
+ },
+ {
+  "id": "s.55",
+  "round": 0,
+  "q": "Какие бывают нематериальные активы",
+  "gold": [
+   "b00916"
+  ],
+  "kind": "plain",
+  "long": false,
+  "split": "syn"
+ },
+ {
+  "id": "s.56",
+  "round": 0,
+  "q": "Чем нематериальные активы отличаются от основных средств",
+  "gold": [
+   "b00917"
+  ],
+  "kind": "plain",
+  "long": false,
+  "split": "syn"
+ },
+ {
+  "id": "s.57",
+  "round": 0,
+  "q": "Чем основные средства отличаются от нематериальных активов",
+  "gold": [
+   "b00917"
+  ],
+  "kind": "para",
+  "long": false,
+  "split": "syn"
+ },
+ {
+  "id": "s.58",
+  "round": 0,
+  "q": "Что такое биткоин?",
+  "gold": [],
+  "kind": "oob",
+  "long": false,
+  "split": "syn"
+ },
+ {
+  "id": "s.59",
+  "round": 0,
+  "q": "Кто такой Илон Маск?",
+  "gold": [],
+  "kind": "oob",
+  "long": false,
+  "split": "syn"
+ },
+ {
+  "id": "s.60",
+  "round": 0,
+  "q": "Расскажи анекдот про бухгалтера",
+  "gold": [],
+  "kind": "oob",
+  "long": false,
+  "split": "syn"
+ },
+ {
+  "id": "s.61",
+  "round": 0,
+  "q": "Как приготовить борщ",
+  "gold": [],
+  "kind": "oob",
+  "long": false,
+  "split": "syn"
+ },
+ {
+  "id": "s.62",
+  "round": 0,
+  "q": "Какая сегодня погода в Москве",
+  "gold": [],
+  "kind": "oob",
+  "long": false,
+  "split": "syn"
+ },
+ {
+  "id": "s.63",
+  "round": 0,
+  "q": "Что такое квантовая запутанность",
+  "gold": [],
+  "kind": "oob",
+  "long": false,
+  "split": "syn"
+ },
+ {
+  "id": "s.64",
+  "round": 0,
+  "q": "Когда родился Пушкин",
+  "gold": [],
+  "kind": "oob",
+  "long": false,
+  "split": "syn"
+ },
+ {
+  "id": "s.65",
+  "round": 0,
+  "q": "Что такое счёт 99?",
+  "gold": [
+   "b00202"
+  ],
+  "kind": "plain",
+  "long": false,
+  "split": "syn",
+  "note": "bank has it (checked after the first run)"
+ },
+ {
+  "id": "s.66",
+  "round": 0,
+  "q": "Почему небо голубое",
+  "gold": [],
+  "kind": "oob",
+  "long": false,
+  "split": "syn"
+ },
+ {
+  "id": "s.67",
+  "round": 0,
+  "q": "Объясни, как работает двигатель внутреннего сгорания",
+  "gold": [],
+  "kind": "oob",
+  "long": false,
+  "split": "syn"
+ }
+]
