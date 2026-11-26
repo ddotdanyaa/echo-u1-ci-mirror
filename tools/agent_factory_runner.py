@@ -45,7 +45,7 @@ from .agent_factory import (BudgetExhausted, DEFER_REASONS, LEASE_LIFETIME_S, MA
                             defer, defer_streak, fail_not_code, fail_row, failed_models_of, is_base_debt, is_unsafe_reject, seconds_to_local_midnight,
                             read_plan, ready, redact, REPEAT_MARK, route, quarantine, safe_path, safe_source, settle,
                             snapshot, startable, txn, unclaim)
-from .agent_factory import TRACE_DIR, load_trace as agent_factory_load_trace, put_trace
+from .agent_factory import TRACE_DIR, load_trace as agent_factory_load_trace, put_trace, save_atomic
 from .factory_context import (LARGE_FILE_CHARS, asked_names, failing_names, identifier_tokens, keywords_from, packet,
                               render, scrub_paths)
 from .factory_process import kilo_argv, run_owned
@@ -196,6 +196,11 @@ class PromptTooLarge(Exception):
 
 class ReviewFault(Exception):
     """Reviewer call failed or answered with something that is not a verdict."""
+
+
+class RubricInvalid(ReviewFault):
+    """The critic answered without a required field of the rubric or cited a line the test does not have: an invalid
+    vote, not a rejection of the candidate. The panel asks the next model of the chain instead."""
 
 
 def profile_names() -> tuple:
@@ -439,8 +444,7 @@ def votes_of_diff(pend, diff_hash):
     return None
 
 
-_SHARED_BASE: dict = {}          # W-base 2: the red bases of this process, one per (tree, kind, tests, file bytes)
-_SHARED_BASE_LOCK = threading.Lock()
+SHARED_BASE_DIR = 'shared_base'      # W-a3: the red bases of ALL executors live here, one file per core (atomic), beside traces/
 SHARED_BASE_MAX = 256
 
 
@@ -480,49 +484,89 @@ def _changed_between(root, old: str, new: str):
     return {line.strip() for line in done.stdout.splitlines() if line.strip()}
 
 
-def _shared_base_get(core: str, base_sha: str | None, root):
-    """A red base measured earlier in this process (by this card or another with the same tests and file bytes): on the
-    same commit as it is; on a moved commit when the move did not touch a file the base depends on. Else None."""
-    if not core or not base_sha:
+def _carry_ok(root, old_sha, new_sha, carry, deps) -> bool:
+    """ONE carry rule of a red base (disk store and card row): the same commit, or a moved commit whose move did not
+    touch a file the base depends on (it needs the failing tests' trace, else only the same commit counts)."""
+    if old_sha == new_sha:
+        return True
+    if not carry or not old_sha or not new_sha:
+        return False
+    changed = _changed_between(root, old_sha, new_sha)
+    return changed is not None and not (changed & set(deps or ()))
+
+
+def _gate_result(fields: dict):
+    """A GateResult from its stored fields (lists back to tuples); TypeError/ValueError/AttributeError when damaged."""
+    fields = {k: tuple(v) if isinstance(v, list) else v for k, v in fields.items()}
+    if 'path' in fields:
+        fields['path'] = tuple(tuple(p) for p in fields['path'])
+    return gate.GateResult(**fields)
+
+
+def _shared_base_file(state_dir, core: str) -> Path:
+    return Path(state_dir) / SHARED_BASE_DIR / (core + '.json')
+
+
+def _shared_base_get(core: str, base_sha: str | None, root, state_dir=None):
+    """A red base measured earlier by ANY executor (this card or another with the same tests and file bytes), read from
+    the state dir: on the same commit as it is; on a moved commit when the move did not touch a file the base depends
+    on. Else None (absent, stale, damaged: a new measurement)."""
+    if not core or not base_sha or state_dir is None:
         return None
-    with _SHARED_BASE_LOCK:
-        rec = _SHARED_BASE.get(core)
-    if rec is None or not 0 <= _now() - rec['at'] < BASE_CACHE_S:
+    path = _shared_base_file(state_dir, core)
+    try:
+        rec = json.loads(path.read_text(encoding='utf-8'))
+        if not 0 <= _now() - float(rec['at']) < BASE_CACHE_S:
+            return None
+        result = _gate_result(rec['result'])
+        if not _carry_ok(root, rec['sha'], base_sha, rec.get('carry'), rec.get('deps')):
+            return None
+    except (OSError, ValueError, TypeError, KeyError, AttributeError):
         return None
     if rec['sha'] != base_sha:
-        if not rec['carry']:
-            return None
-        changed = _changed_between(root, rec['sha'], base_sha)
-        if changed is None or changed & rec['deps']:
-            return None
-        with _SHARED_BASE_LOCK:
-            _SHARED_BASE[core] = dict(rec, sha=base_sha)
-    return rec['result']
+        try:
+            save_atomic(path, dict(rec, sha=base_sha))
+        except OSError:
+            pass
+    return result
 
 
-def _shared_base_put(core: str, base_sha: str | None, task: Task, result) -> None:
-    if not core or not base_sha:
+def _shared_base_put(core: str, base_sha: str | None, task: Task, result, state_dir=None) -> None:
+    if not core or not base_sha or state_dir is None:
         return
-    with _SHARED_BASE_LOCK:
-        while len(_SHARED_BASE) >= SHARED_BASE_MAX:
-            _SHARED_BASE.pop(next(iter(_SHARED_BASE)))
-        _SHARED_BASE[core] = {'sha': base_sha, 'at': _now(), 'result': result, 'deps': _base_deps(task, result),
-                              'carry': bool(getattr(result, 'path', ()))}
+    try:
+        folder = Path(state_dir) / SHARED_BASE_DIR
+        folder.mkdir(parents=True, exist_ok=True)
+        old = sorted((f for f in folder.glob('*.json')), key=lambda f: f.stat().st_mtime)
+        for f in old[:max(0, len(old) - SHARED_BASE_MAX + 1)]:
+            f.unlink(missing_ok=True)
+        kept = dataclasses.asdict(result)
+        kept['path'] = [list(c) for c in kept.get('path') or ()]
+        save_atomic(_shared_base_file(state_dir, core),
+                    {'sha': base_sha, 'at': _now(), 'result': kept, 'deps': sorted(_base_deps(task, result)),
+                     'carry': bool(getattr(result, 'path', ()))})
+    except (OSError, TypeError, ValueError):
+        pass
 
 
-def _held_base(row: dict, key: str | None, kind: str | None = None, state_dir: Path | None = None):
-    """The red base kept on the row for this key while it is fresh; None when absent, stale, foreign or unreadable
-    (a damaged record only costs a new measurement). A code task's record must carry the path of its failing tests
-    (GateResult.path; a record written before the trace existed is measured once more)."""
+def _held_base(row: dict, key: str | None, kind: str | None = None, state_dir: Path | None = None,
+               core: str | None = None, base_sha: str | None = None, root=None):
+    """The red base kept on the row while it is fresh; None when absent, stale, foreign or unreadable (a damaged
+    record only costs a new measurement). It is the row's when the key matches, or when the core (tests and file
+    bytes) matches and the commit moved over files the base does not depend on (the same carry rule as the shared
+    store). A code task's record must carry the path of its failing tests (GateResult.path)."""
     held = row.get('base_red')
-    if not key or not isinstance(held, dict) or held.get('key') != key:
+    if not isinstance(held, dict) or not key:
         return None
     try:
+        if held.get('key') != key and not (core and base_sha and held.get('core') == core and _carry_ok(
+                root, held.get('sha'), base_sha, held.get('carry'), held.get('deps'))):
+            return None
         if not 0 <= _now() - float(held['at']) < BASE_CACHE_S:
             return None
         if kind == 'code' and 'path' not in held['result'] and 'path_file' not in held['result']:
             return None
-        fields = {k: tuple(v) if isinstance(v, list) else v for k, v in held['result'].items()}
+        fields = dict(held['result'])
         if 'path_file' in fields:       # <id>: the trace lives in its own file beside the state; it is put back for the result
             name = Path(str(fields.pop('path_file'))).name
             if state_dir is None or not (Path(state_dir) / TRACE_DIR / name).is_file():
@@ -530,10 +574,8 @@ def _held_base(row: dict, key: str | None, kind: str | None = None, state_dir: P
             trace = agent_factory_load_trace(state_dir, row)
             if trace is None:
                 return None             # the file is there but unreadable (torn write, garbage): measure once more
-            fields['path'] = tuple(tuple(p) for p in trace)
-        if 'path' in fields:
-            fields['path'] = tuple(tuple(p) for p in fields['path'])
-        return gate.GateResult(**fields)
+            fields['path'] = [list(p) for p in trace]
+        return _gate_result(fields)
     except (TypeError, ValueError, KeyError, AttributeError):
         return None
 
@@ -1120,6 +1162,10 @@ def _squash(text: str) -> str:
     return ' '.join(str(text).split())
 
 
+RUBRIC_INVALID_TAG = 'critic rubric:'
+RUBRIC_INVALID_TRIES = 3     # invalid answers of different models one critic seat tolerates before the call is a reviewer fault
+
+
 def rubric_problems(answer: dict, haystack: str) -> list[str]:
     """Why an answer of the critic is not an approval: the cited test line must literally be in the code shown, the fix
     must name the value it changes, and no assert independent of the code under test may be listed. A missing or
@@ -1264,6 +1310,9 @@ def review_candidate(task: Task, workdir: Path, model: str, invoke, *,
             seen = '\n'.join([v.decode('utf-8', 'replace') if isinstance(v, bytes) else str(v)
                               for v in shown.values()] + ([] if tests_shown else [diff]))
             problems = rubric_problems(answer, seen)
+            invalid = [p for p in problems if p.startswith(RUBRIC_INVALID_TAG) and 'independent_asserts' not in p]
+            if invalid:       # not a verdict of the candidate: the next model of the chain is asked in its place
+                raise RubricInvalid('; '.join(invalid))
             if problems:
                 return False, problems + reasons
         if answer['approved']:
@@ -2628,6 +2677,13 @@ VGS_K_MAX = 6
 VGS_ALTS = 2          # the unions after the first one that may still go to the gates in a pass (3 gates in all)
 
 
+def vgs_input_key(task: Task) -> str:
+    """W-a2: the fingerprint of the ensemble's input (the card's contract): a pass with no answer at all is deferred under
+    it, and the same input that got no answer ESCALATE_AFTER - 1 times in a row is not asked of the ensemble again."""
+    contract = json.dumps(K.contract_of(task), sort_keys=True, ensure_ascii=False, default=str)
+    return 'vgs0:' + sha256((task.id + '|' + contract).encode('utf-8', 'replace')).hexdigest()[:16]
+
+
 def vgs_k(free: int) -> int:
     """W-vgs 3: the ensemble size on the small tier: min(6, free small channels x 2), at least 3 with two channels;
     0 (the old path) when no small channel is free now."""
@@ -2642,8 +2698,10 @@ class VgsPlan:
     temperature, channel)`` -> ``(rc, out, err)`` (raises ENS.ChannelRefused for a refused channel), and the pass's
     telemetry (``stats``) with the alternates for the gates (``alts``: (file, bytes) pairs, best first)."""
 
-    def __init__(self, k: int, ask, channel_names=None):
+    def __init__(self, k: int, ask, channel_names=None, capacity=None):
         self.k, self.ask, self.channels = int(k), ask, list(channel_names or [])
+        self.capacity = capacity      # W-a2: the head's free small places (ENS.Ensemble ``capacity``), None: no head
+        self.input_key = ''           # W-a2: vgs_input_key of the card: a pass with no answer is deferred under it
         self.stats = dict(k=0, asked=0, answered=0, valid=0, unique=0, votes_top=0, retries_503=0)
         self.alts: list = []          # (file, bytes, model) of the next unions, best first
         self.winners: set = set()     # the models that wrote the standing candidate's parts
@@ -2853,12 +2911,12 @@ def edit_parts(task: Task, parts: list, workdir: Path, call, failing: str = '', 
             finally:
                 shutil.rmtree(folder, ignore_errors=True)
 
-        ens = ENS.Ensemble(vgs.k, ask, part_verifier(parts, file, root), channels=vgs.channels)
+        ens = ENS.Ensemble(vgs.k, ask, part_verifier(parts, file, root), channels=vgs.channels, capacity=vgs.capacity)
         found = ens.run()
         vgs.record(ens.stats)
         if not found and not ens.stats.get('answered') and not ens.rejected:
             # W-vgs3 1: not one answer of a model (channel refusals, the term): the channel's fault, not the part's
-            raise ChannelFault({'kind': 'transient', 'ensemble_no_answer': True})
+            raise ChannelFault({'kind': 'transient', 'ensemble_no_answer': True, 'input_key': vgs.input_key or vgs_input_key(task)})
         if not found:
             seen: dict = {}
             for why in ens.rejected:
@@ -3292,9 +3350,10 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
         finally:
             stages[name] = round(stages.get(name, 0.0) + time.monotonic() - t0, 3)
 
-    def release(reason: str, seconds: float, infra: bool | None = None) -> dict:
-        """No strike, attempt not spent: back to READY, postponed. ``infra`` only for real faults."""
-        return end(lambda s, r: (defer(s, tid, token, reason, seconds), None), reason=reason,
+    def release(reason: str, seconds: float, infra: bool | None = None, key: str = '') -> dict:
+        """No strike, attempt not spent: back to READY, postponed. ``infra`` only for real faults. ``key``: the input's
+        fingerprint kept in defer_streak (W-a2)."""
+        return end(lambda s, r: (defer(s, tid, token, reason, seconds, key=key), None), reason=reason,
                    wait_s=round(float(seconds), 1), infra=(reason in INFRA_DEFERS) if infra is None else infra)
 
     def block(reason: str, detail: str = '', *, infra: bool = False, keep: bool = False) -> dict:
@@ -3808,8 +3867,8 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
             return block('context_too_large', error.info.get('message', ''))
         if kind == 'balance':
             return release('balance', soonest(error.wait_s or channels.BALANCE_COOL_S))
-        if kind == 'transient':
-            return release('transient', 60)
+        if kind == 'transient':     # W-a2: an ensemble with no answer at all is counted on its input
+            return release('transient', 60, key=str(error.info.get('input_key') or ''))
         if kind == 'network':
             # the machine has no network: every channel fails the same way, so the loop brake decides (a series
             # of these stops the factory instead of spending the daily call budget on passes that cannot work)
@@ -4058,12 +4117,13 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                 return end(lambda s, r: (fail_row(s, tid, token, 'reslice:stale'), None), reason='reslice:stale',
                            reason_detail=detail)
         key = _base_key(base_sha, task, ctx['baseline'])
-        held = _held_base(row, key, task.kind, checkpoint.parent)
         core, shared = None, None
         if key and task.kind != 'unit_test':
             core = _base_core(root, task, ctx['baseline'])
-            if held is None:      # W-base 2: another card's measure, or this one's on the commit before a base_moved
-                shared = _shared_base_get(core, base_sha, root)
+        held = _held_base(row, key, task.kind, checkpoint.parent, core, base_sha, root)
+        if core:
+            if held is None:      # W-a3: another executor's measure (disk), or this one's on the commit before a base_moved
+                shared = _shared_base_get(core, base_sha, root, checkpoint.parent)
                 held = shared
         verdict, base = None, None        # the red base may still be running in the background: closures read None, never an unbound name
         if held is not None:
@@ -4095,7 +4155,7 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
             base_fresh = False
             keep_red = (key and verdict == 'red' and not base.env_reason and task.kind != 'unit_test')
             if keep_red and shared is None:
-                _shared_base_put(core, base_sha, task, base)
+                _shared_base_put(core, base_sha, task, base, checkpoint.parent)
 
             def note_base(state, row):
                 row.pop('base_red', None)
@@ -4107,7 +4167,8 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                         except (OSError, ValueError, TypeError, IndexError):
                             kept.pop('path_file', None)
                             return          # no place for the trace: no record, the base is measured again next pass
-                    row['base_red'] = {'key': key, 'at': _now(), 'result': kept}
+                    row['base_red'] = {'key': key, 'at': _now(), 'result': kept, 'core': core, 'sha': base_sha,
+                                       'deps': sorted(_base_deps(task, base)), 'carry': bool(getattr(base, 'path', ()))}
             ck.commit(note_base)
 
         def bank_base():
@@ -4638,8 +4699,14 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                 has ONE candidate; from the second, two candidates of different models at once (the tournament), which
                 go to the gates as they are ready: the first green one stands. The gates run once per candidate, over the
                 union of its parts, and there are no repair rounds inside the pass: a red gate ends the candidate."""
-                plan_k = 0
-                if configured and VGS_ON and not os.environ.get('FACTORY_NO_VGS'):
+                plan_k, main_step = 0, False
+                vgs_key = vgs_input_key(task)
+                if defer_streak(ck.read(), tid, 'transient', vgs_key) + 1 >= ESCALATE_AFTER:
+                    # W-a2: this very input got no answer of the ensemble pass after pass: the input changes (the main step,
+                    # one call per part), it is not asked again the same way
+                    main_step = True
+                    events.append('vgs_input_changed')
+                if not main_step and configured and VGS_ON and not os.environ.get('FACTORY_NO_VGS'):
                     try:    # W-vgs 3/6: the small tier leads and has free channels now; else the old path
                         if 'small' not in skip_for(0, attempt, feedback, small_follow_up):
                             live_small = live_quotas()
@@ -4685,6 +4752,8 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                         # answer (a preference: with no other model free the call takes any, below)
                         out = sorted(mine | own | (set(older) - mine))
                         skip = skip_for(k, attempt, feedback, small_follow_up)
+                        if main_step and 'small' not in skip and channels.main_open(configured, live_quotas(), os.environ):
+                            skip = tuple(skip) + ('small',)     # W-a2: the main step while it has an open channel
 
                         def booked(model, k=k, own=own, part_key=part_key):
                             own.add(model)
@@ -4741,7 +4810,17 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                         raise ENS.ChannelRefused(str(error)) from error
                     return rc, out, err, (got[-1] if got else None)
 
-                vgs = VgsPlan(plan_k, vgs_ask, small_models if len(small_models) > 1 else None) if plan_k else None
+                small_ids = [c['id'] for c in configured if channels.tier_of(c) == 'small' and not channels.is_reserve(c)]
+
+                def vgs_capacity():
+                    """W-a2: the head's free places of the small channels; None without a head (HeadDown: it does not answer)."""
+                    state = (Path(ledger).parent / factory_head.STATE_NAME) if ledger is not None else None
+                    return factory_head.capacity(state, small_ids) if state is not None and state.exists() else None
+
+                vgs = VgsPlan(plan_k, vgs_ask, small_models if len(small_models) > 1 else None,
+                              capacity=vgs_capacity) if plan_k else None
+                if vgs is not None:
+                    vgs.input_key = vgs_key
 
                 def vgs_gates(found):
                     """W-vgs 4: the first union was red: the next ready unions go to the gates in turn (no new model call),
@@ -5138,6 +5217,8 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
             pass_wait[0] -= seconds
             time.sleep(seconds)
 
+        invalid_models = []   # models whose answer broke the rubric on this candidate: none of them is asked for the seat again
+
         def invoke(call_task, directory, preferred, **kwargs):
             tries = DRY_REVIEW_TRIES if dry_now() else 1     # W-dry 2: Gemma again and again while the edit channels are dry
             for number in range(1, tries + 1):
@@ -5148,7 +5229,7 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                     return RW.retry_own_window(
                         lambda: RW.retry_overload(
                             lambda: past_day_limit(lambda: call('review', call_task, lambda _retry: directory, preferred,
-                                         kwargs['prompt_override'], exclude_model=authors() + (look_again or critics),
+                                         kwargs['prompt_override'], exclude_model=authors() + list(look_again or critics) + invalid_models,
                                          fast_retry='small')),
                             lambda err: isinstance(err, ChannelFault) and bool((err.info or {}).get('fast_retry')),
                             total_s=max(0.0, min(RW.RETRY_TOTAL_S, pass_wait[0])), sleep=pass_sleep,
@@ -5187,9 +5268,16 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                 """One critic's (ok, why). fac-41: a second voice that finds no independent model now may be the FIRST critic's
                 model, shown that critic's answer and asked to check both; a fault of that look re-raises the original one."""
                 try:
-                    return timed('review_s', lambda: review_candidate(
-                        task, ctx['workdir'], review_model, invoke, baseline=ctx['baseline'], scratch=staging,
-                        lens=REVIEW_LENSES[n], prior=tuple(said), rejected=told, rubric=True, execution=exec_text))
+                    for attempt in range(RUBRIC_INVALID_TRIES):
+                        try:
+                            return timed('review_s', lambda: review_candidate(
+                                task, ctx['workdir'], review_model, invoke, baseline=ctx['baseline'], scratch=staging,
+                                lens=REVIEW_LENSES[n], prior=tuple(said), rejected=told, rubric=True, execution=exec_text))
+                        except RubricInvalid:
+                            events.append('review_invalid_vote_%d' % (attempt + 1))
+                            if attempt + 1 >= RUBRIC_INVALID_TRIES or not calls or not calls[-1].get('model'):
+                                raise
+                            invalid_models.append(calls[-1]['model'])
                 except (NoIndependentReviewer, channels.ChannelUnavailable, ChannelFault):
                     if n != 1 or len(votes) != 1 or not critics or critics[0] in authors():
                         raise

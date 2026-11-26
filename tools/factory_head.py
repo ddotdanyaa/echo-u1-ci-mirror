@@ -212,6 +212,16 @@ class Head:
         except OSError:
             pass
 
+    def capacity(self, allowed) -> dict:
+        """W-a2: the free places of the ``allowed`` channels now: live channels (not shut by a 429) x PER_CHANNEL, minus the
+        calls in flight on them and the tickets queued for them. An ensemble opens no more branches than this."""
+        with self.lock:
+            now = self.clock()
+            live = [cid for cid in allowed if cid in self.ch and not (self.closed.get(cid) and self.closed[cid][0] > now)]
+            places = sum(max(0, PER_CHANNEL - self.flight.get(cid, 0)) for cid in live)
+            queued = sum(1 for t in self.pending if set(t.allowed) & set(live))
+            return {'live': len(live), 'free': max(0, places - queued)}
+
     def stats(self) -> dict:
         """stats.json 'head': per channel ok / 503 / 429 of the last hour, tokens booked in the last minute; queue by role."""
         with self.lock:
@@ -254,6 +264,8 @@ def serve(channels, env, state_file, *, folder=None, post=None) -> tuple:
                     return self._reply(200, {'ticket': head.submit(data)})
                 if self.path == '/wait':
                     return self._reply(200, head.result(int(data['ticket']), min(30.0, float(data.get('wait') or 20))))
+                if self.path == '/capacity':
+                    return self._reply(200, head.capacity(list(data.get('channels') or [])))
             except (ValueError, KeyError, TypeError) as error:
                 return self._reply(400, {'error': type(error).__name__})
             self._reply(404, {})
@@ -279,6 +291,18 @@ def _rpc(state_file, path, payload, timeout):
                                      headers={'X-Head-Token': state['token'], 'Content-Type': 'application/json'})
     with _NO_PROXY.open(request, timeout=timeout) as response:
         return json.loads(response.read())
+
+
+def capacity(state_file, channels) -> int:
+    """W-a2: the free places of ``channels`` in the head (Head.capacity); HeadDown when the head does not answer at once
+    (the ensemble then takes its old path)."""
+    if time.time() < _DOWN['until']:
+        raise HeadDown('resting')
+    try:
+        return max(0, int(_rpc(state_file, '/capacity', {'channels': list(channels)}, ANSWER_WAIT_S)['free']))
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        _DOWN['until'] = time.time() + DOWN_REST_S
+        raise HeadDown(type(error).__name__) from error
 
 
 def ask(state_file, role, tokens, body, channels, *, deadline_s=120.0, call_timeout_s=90.0, priority=None) -> dict:

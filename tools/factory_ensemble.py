@@ -63,19 +63,35 @@ class Ensemble:
     is asked AGAIN (W-vgs2) until the common term ends: 503 -> the next channel of the circle after 2, 4, 8, 12, 12 s
     (+-30 %); 429 of the minute -> that channel rests ``wait_s``, another one at once; 429 of the day -> the channel is out.
     ``sleep(seconds)`` / ``rng`` are for tests. ``run()`` -> the valid candidates, votes descending, then the earlier
-    arrival first."""
+    arrival first.
+    W-a2: ``capacity()`` -> the free places of the small channels in the head (factory_head.capacity), None / an
+    exception = the head does not answer. With a live head the head is the ONE owner of retries, channel hops and window
+    waits: a branch is one ticket (``ask(n, temperature, None)``: the head picks the channel), a refusal ends the branch
+    with no pause of its own, and the branches open at once are the head's free places (plus the ones already open),
+    never more than k. Without an answering head the old path above (the branch's own circle and pauses) stays."""
 
     def __init__(self, k, ask, verify, channels=None, temperatures=TEMPERATURES, first_good_s=FIRST_GOOD_S,
-                 total_s=TOTAL_S, clock=time.monotonic, sleep=None, rng=None):
+                 total_s=TOTAL_S, clock=time.monotonic, sleep=None, rng=None, capacity=None):
         self.k, self.ask, self.verify = max(1, int(k)), ask, verify
         self.channels = list(channels) if channels else [None]
         self.temperatures = tuple(temperatures)
         self.first_good_s, self.total_s, self.clock = first_good_s, total_s, clock
-        self.sleep, self.rng = sleep, rng or random.Random()
-        self.stats = dict(k=self.k, asked=0, answered=0, valid=0, unique=0, votes_top=0, refused=0, retries_503=0)
+        self.sleep, self.rng, self.capacity = sleep, rng or random.Random(), capacity
+        self.stats = dict(k=self.k, asked=0, answered=0, valid=0, unique=0, votes_top=0, refused=0, retries_503=0,
+                          open_max=0, head=0)
         self.refused_by = {name: 0 for name in REFUSAL_KINDS}      # W-prio3: every refusal of a branch by its kind
         self.rejected: list = []        # (why) of the answers the verifier threw out
         self.early = False
+
+    def _free(self):
+        """The head's free places now, or None when there is no head or it does not answer."""
+        if self.capacity is None:
+            return None
+        try:
+            free = self.capacity()
+        except Exception:       # noqa: BLE001 - a head that does not answer is the old path
+            return None
+        return None if free is None else max(0, int(free))
 
     def run(self) -> list:
         events: queue.Queue = queue.Queue()
@@ -153,22 +169,75 @@ class Ensemble:
                     if others >= OTHER_REFUSALS_MAX:
                         break
                     continue
-                with lock:
-                    self.stats['answered'] += 1
-                try:
-                    ok, why, key = self.verify(answer)
-                except Exception as error:          # noqa: BLE001 - a verifier that fails rejects
-                    ok, why, key = False, 'verify failed: %s' % error, ''
-                events.put((n, answer, ok, why, key))
+                checked(n, answer)
                 return
             events.put((n, None, None, 'no channel answered', ''))
 
-        threads = [threading.Thread(target=worker, args=(n,), daemon=True) for n in range(self.k)]
-        for t in threads:
-            t.start()
+        def checked(n: int, answer) -> None:
+            with lock:
+                self.stats['answered'] += 1
+            try:
+                ok, why, key = self.verify(answer)
+            except Exception as error:          # noqa: BLE001 - a verifier that fails rejects
+                ok, why, key = False, 'verify failed: %s' % error, ''
+            events.put((n, answer, ok, why, key))
+
+        def head_branch(n: int) -> None:
+            """W-a2: one ticket of the head; the head hops, retries and waits the windows. A refusal ends the branch."""
+            with lock:
+                self.stats['asked'] += 1
+            try:
+                try:
+                    answer = self.ask(n, self.temperatures[n % len(self.temperatures)], None)
+                finally:
+                    with lock:
+                        asking[0] -= 1          # its ticket left the head: the place is free again
+            except ChannelRefused as refused:
+                with lock:
+                    self.stats['refused'] += 1
+                    self.refused_by[REFUSAL_NAMES.get(refused.kind, 'other')] += 1
+                    if refused.kind in ('yield', 'sem', 'minute_local'):
+                        self.stats['asked'] -= 1            # no request went out: not an attempt
+                events.put((n, None, None, 'head refused: %s' % refused.kind, ''))
+                return
+            except Exception as error:          # noqa: BLE001 - a broken call is no answer
+                with lock:
+                    self.stats['refused'] += 1
+                    self.rejected.append('ask failed: %s' % error)
+                events.put((n, None, None, 'ask failed', ''))
+                return
+            checked(n, answer)
+
+        launched, limit, next_poll, poll_now = 0, self.k, 0.0, True
+        asking = [0]        # head branches whose ticket is in the head now
+
+        def launch_more(done: int) -> None:
+            """Open branches up to the limit: k without a head, else the head's free places plus our tickets in it now."""
+            nonlocal launched, limit, next_poll, poll_now
+            if launched >= self.k:
+                return
+            if self.capacity is not None and (poll_now or time.monotonic() >= next_poll):
+                free = self._free()
+                next_poll, poll_now = time.monotonic() + 1.0, False
+                with lock:
+                    limit = self.k if free is None else min(self.k, max(1, asking[0] + free))
+                self.stats['head'] = int(free is not None)
+            head = bool(self.stats['head'])
+            while launched < self.k:
+                with lock:
+                    if (asking[0] if head else launched - done) >= limit:
+                        break
+                    if head:
+                        asking[0] += 1
+                    self.stats['open_max'] = max(self.stats['open_max'], asking[0] if head else launched - done + 1)
+                threading.Thread(target=head_branch if head else worker, args=(launched,), daemon=True).start()
+                launched += 1
+
         groups: dict = {}
         arrived, done, first_good = 0, 0, None
+        launch_more(0)
         while done < self.k:
+            launch_more(done)
             now = self.clock()
             limit = self.total_s if first_good is None else min(self.total_s, (first_good - start) + self.first_good_s)
             wait = start + limit - now
@@ -179,6 +248,7 @@ class Ensemble:
             except queue.Empty:
                 continue
             done += 1
+            poll_now = True         # a place came free: ask the head again
             if ok is None:
                 continue
             if not ok:

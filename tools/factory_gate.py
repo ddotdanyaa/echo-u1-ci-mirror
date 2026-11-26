@@ -1309,7 +1309,7 @@ def _key_lookups(expr, loop_var=None) -> list:
     return found
 
 
-def _word_counts(nodes) -> 'Counter':
+def _word_counts(nodes) -> dict:
     from collections import Counter
     out = Counter()
     for node in nodes:

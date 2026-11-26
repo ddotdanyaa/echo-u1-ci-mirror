@@ -890,8 +890,54 @@ def no_money():
     return gone
 
 
-def ladder(rung, *, rungs, red=False, dry=False, base_debt=False, gone=()):
-    """W-base0: a row of the old baseline debt (base_debt) is sliced by the free steps only, always: no paid, no agent.
+YIELD_WINDOW = 400          # W-a4: the cohort window: the rows of the latest first contracts
+YIELD_MIN_ROWS = 10         # W-a4: an engine's yield is confirmed from this many settled rows of its first contracts
+YIELD_SETTLE_S = 6 * 3600   # W-a4: an unmerged row counts as a miss of its first engine once its first contract is this old
+PROBE_EVERY = 10            # W-a4: the engine of the worst confirmed yield leads one row in PROBE_EVERY (the probe of the bandit)
+
+
+def yield_step(engine):
+    """W-a4: the step of the ladder a contract's engine stands for: 'free+free_main' -> 'free', 'agent+solver' -> 'agent'."""
+    return str(engine or '').split('+')[0]
+
+
+def engine_yield(cohort, now):
+    """W-a4: the measured yield of each step over the cohort window: of the rows whose FIRST contract it made, the share that
+    merged in the end (in any of the row's generations, whatever step made the merged card). A row still young and unmerged
+    is not counted yet. ``cohort`` = {row: {'engine', 'at', 'merged'}}."""
+    recs = [r for r in (cohort or {}).values() if isinstance(r, dict) and r.get('engine')]
+    recs = sorted(recs, key=lambda r: float(r.get('at') or 0))[-YIELD_WINDOW:]
+    out = {}
+    for rec in recs:
+        merged = bool(rec.get('merged'))
+        if not merged and now - float(rec.get('at') or 0) < YIELD_SETTLE_S:
+            continue
+        cell = out.setdefault(yield_step(rec['engine']), {'rows': 0, 'merged': 0})
+        cell['rows'] += 1
+        cell['merged'] += merged
+    for cell in out.values():
+        cell['yield'] = round(cell['merged'] / cell['rows'], 4)
+    return out
+
+
+def by_yield(order, yields, probe=False):
+    """W-a4: the steps in ``order`` reordered by the measured yield: the best confirmed step leads, the worst confirmed one
+    goes last, except on a probe row (one in PROBE_EVERY) where it leads. No confirmed data: ``order`` as it was."""
+    known = {e: float(yields[e]['yield']) for e in order
+             if isinstance((yields or {}).get(e), dict) and int(yields[e].get('rows') or 0) >= YIELD_MIN_ROWS}
+    if not known:
+        return list(order)
+    best = max(known, key=lambda e: (known[e], -order.index(e)))
+    worst = min(known, key=lambda e: (known[e], order.index(e)))
+    rest = [e for e in order if e not in (best, worst)]
+    if worst == best:
+        return [best] + rest
+    return [worst, best] + rest if probe else [best] + rest + [worst]
+
+
+def ladder(rung, *, rungs, red=False, dry=False, base_debt=False, gone=(), yields=None, probe=False):
+    """W-a4: ``yields`` (engine_yield of the cohort) reorders the available steps by measured yield (by_yield); without it the order is the fixed one.
+    W-base0: a row of the old baseline debt (base_debt) is sliced by the free steps only, always: no paid, no agent.
     W-prio 2: ``gone`` = the paid steps without money: they are skipped (no unavailable fault each pass); the order of the remaining steps is the usual one (dry/red/rung)."""
     if gone:
         rungs = tuple(e for e in rungs if e not in gone)
@@ -907,7 +953,7 @@ def ladder(rung, *, rungs, red=False, dry=False, base_debt=False, gone=()):
         order = ('paid', 'agent', 'free', 'free_main', 'free_small')
     else:               # W-hard 2: from the second rung Claude Code (it reads the code) goes first, then paid
         order = ('agent', 'paid', 'free', 'free_main', 'free_small')
-    return [engine for engine in order if engine in rungs]
+    return by_yield([engine for engine in order if engine in rungs], yields, probe)
 
 
 _PRIVATE_PARTS = frozenset(('.git', '.ssh', 'secrets_local', 'secrets', 'private', 'credentials', 'tokens', 'evidence',
@@ -1693,7 +1739,9 @@ def _small_vote(ask, system, user, *, packet, root, named_ok=False, k=SMALL_K):
 
     channels = list(getattr(ask, 'channels', None) or []) or None
     started = time.monotonic()
-    ens = ENS.Ensemble(k, branch, verify, channels=channels, temperatures=SMALL_TEMPERATURES, total_s=SMALL_TOTAL_S)
+    capacity = getattr(ask, 'capacity', None)      # W-a2: with a live head a branch is one ticket, open = its free places
+    ens = ENS.Ensemble(k, branch, verify, channels=channels, temperatures=SMALL_TEMPERATURES, total_s=SMALL_TOTAL_S,
+                       capacity=capacity)
     stats, refused_by, rejected = dict(ens.stats), dict(ens.refused_by), list(ens.rejected)
     with (getattr(ask, 'gate', None) or contextlib.nullcontext()):      # W-gslice 3: the places of the ensembles, editors first
         found = ens.run()
@@ -1702,7 +1750,8 @@ def _small_vote(ask, system, user, *, packet, root, named_ok=False, k=SMALL_K):
         if k < SMALL_K_MAX and not found and left > 1:
             # W-exact 2: the only voice was void (no valid contract): ONE more, another temperature and channel, within the term
             third = ENS.Ensemble(1, branch, verify, channels=(channels[k % len(channels):] + channels[:k % len(channels)])
-                                 if channels else None, temperatures=(SMALL_TEMPERATURES[k % len(SMALL_TEMPERATURES)],), total_s=left)
+                                 if channels else None, temperatures=(SMALL_TEMPERATURES[k % len(SMALL_TEMPERATURES)],), total_s=left,
+                                 capacity=capacity)
             more = third.run()
             by_key = {c.key: c for c in found}
             for c in more:
@@ -1779,7 +1828,7 @@ def note_sample(folder, engine, message, raw):
         pass
 
 
-def contract_for(packet, *, rung, root, asks, named_ok=False, red_given=None, skip=None, samples=None):
+def contract_for(packet, *, rung, root, asks, named_ok=False, red_given=None, skip=None, samples=None, yields=None, probe=False):
     """`skip` is the cache of the row's wait record ({engine: {'kind', 'fault', 'answer'}}): a step that already answered
     this row with a flaw on this version and sha is not asked again in the repeat (its answer counts as given when any
     other step answers now); a step that refused ('prompt oversize') is not asked at all."""
@@ -1800,7 +1849,7 @@ def contract_for(packet, *, rung, root, asks, named_ok=False, red_given=None, sk
     cache = dict(skip)
     dry = bool(packet.get('edit_dry'))
     base_debt = bool(packet.get('base_debt')) or F.is_base_debt(str(packet.get('bid', '')))
-    for engine in [e for e in ladder(rung, rungs=tuple(asks), red=red, dry=dry, base_debt=base_debt, gone=no_money()) if e not in skip]:
+    for engine in [e for e in ladder(rung, rungs=tuple(asks), red=red, dry=dry, base_debt=base_debt, gone=no_money(), yields=yields, probe=probe) if e not in skip]:
         user, rounds, shrunk, fixed, idle = initial, 0, False, False, 0
         if again.get(engine):
             user += ('\nYour earlier answer for this row was rejected: ' + again[engine] + '\nReturn a corrected contract.')
