@@ -1,0 +1,1 @@
+tests/test_factory_e880_scenes.py::test_scene_transitions_sequence
