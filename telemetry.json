@@ -1,0 +1,428 @@
+{
+ "accepted": 76,
+ "free_ram_gb": 2.05,
+ "funnel": {
+  "accepted": 76,
+  "claimed": 1327,
+  "coded": 199,
+  "found_in_backlog": "unknown",
+  "gate_pass": 150,
+  "known_to_loop": 874,
+  "promoted": 146,
+  "ready": 31,
+  "reviewed": 404,
+  "triaged": 680
+ },
+ "model": {
+  "cohere/command-a-03-2025": {
+   "calls": 46,
+   "calls_usage_unknown": 0,
+   "errors": {},
+   "http_429": 0,
+   "tokens_in": 93172,
+   "tokens_out": 12146
+  },
+  "cohere/command-a-plus-05-2026": {
+   "calls": 13,
+   "calls_usage_unknown": 9,
+   "errors": {
+    "other": 1,
+    "transient": 8
+   },
+   "http_429": 0,
+   "tokens_in": 5678,
+   "tokens_out": 452
+  },
+  "cohere/north-mini-code-1.0": {
+   "calls": 7,
+   "calls_usage_unknown": 3,
+   "errors": {
+    "transient": 3
+   },
+   "http_429": 0,
+   "tokens_in": 10515,
+   "tokens_out": 346
+  },
+  "google/gemini-3-flash-preview": {
+   "calls": 68,
+   "calls_usage_unknown": 44,
+   "errors": {
+    "rate_day": 43,
+    "transient": 1
+   },
+   "http_429": 43,
+   "tokens_in": 62669,
+   "tokens_out": 8576
+  },
+  "google/gemini-3.1-flash-lite": {
+   "calls": 1712,
+   "calls_usage_unknown": 139,
+   "errors": {
+    "rate_day": 10,
+    "rate_minute": 10,
+    "transient": 119
+   },
+   "http_429": 10,
+   "tokens_in": 8834878,
+   "tokens_out": 621315
+  },
+  "google/gemini-3.1-flash-lite-preview": {
+   "calls": 511,
+   "calls_usage_unknown": 116,
+   "errors": {
+    "rate_day": 15,
+    "rate_minute": 9,
+    "transient": 92
+   },
+   "http_429": 18,
+   "tokens_in": 1012808,
+   "tokens_out": 156586
+  },
+  "google/gemini-3.5-flash": {
+   "calls": 55,
+   "calls_usage_unknown": 45,
+   "errors": {
+    "rate_day": 42,
+    "rate_minute": 1,
+    "transient": 2
+   },
+   "http_429": 42,
+   "tokens_in": 30545,
+   "tokens_out": 1824
+  },
+  "google/gemini-3.5-flash-lite": {
+   "calls": 2009,
+   "calls_usage_unknown": 49,
+   "errors": {
+    "rate_day": 13,
+    "transient": 36
+   },
+   "http_429": 13,
+   "tokens_in": 11157331,
+   "tokens_out": 654681
+  },
+  "google/gemini-3.6-flash": {
+   "calls": 152,
+   "calls_usage_unknown": 73,
+   "errors": {
+    "rate_day": 27,
+    "rate_minute": 13,
+    "transient": 33
+   },
+   "http_429": 27,
+   "tokens_in": 416172,
+   "tokens_out": 20302
+  },
+  "google/gemini-3.7-flash": {
+   "calls": 42,
+   "calls_usage_unknown": 41,
+   "errors": {
+    "rate_day": 29,
+    "rate_minute": 3,
+    "transient": 9
+   },
+   "http_429": 29,
+   "tokens_in": 9121,
+   "tokens_out": 14
+  },
+  "google/gemini-3.8-flash": {
+   "calls": 42,
+   "calls_usage_unknown": 39,
+   "errors": {
+    "rate_day": 26,
+    "rate_minute": 2,
+    "transient": 11
+   },
+   "http_429": 26,
+   "tokens_in": 21237,
+   "tokens_out": 15
+  },
+  "google/gemini-4-hydrogen": {
+   "calls": 26,
+   "calls_usage_unknown": 25,
+   "errors": {
+    "rate_day": 18,
+    "transient": 7
+   },
+   "http_429": 18,
+   "tokens_in": 2852,
+   "tokens_out": 507
+  },
+  "google/gemini-robotics-er-2-preview": {
+   "calls": 36,
+   "calls_usage_unknown": 26,
+   "errors": {
+    "rate_day": 24,
+    "rate_minute": 1,
+    "transient": 1
+   },
+   "http_429": 24,
+   "tokens_in": 32055,
+   "tokens_out": 1605
+  },
+  "google/gemma-4-26b-a4b-it": {
+   "calls": 6408,
+   "calls_usage_unknown": 4075,
+   "errors": {
+    "rate_minute": 98,
+    "timeout": 247,
+    "transient": 3730
+   },
+   "http_429": 74,
+   "tokens_in": 5767428,
+   "tokens_out": 982678
+  },
+  "google/gemma-4-31b-it": {
+   "calls": 5482,
+   "calls_usage_unknown": 4224,
+   "errors": {
+    "other": 1,
+    "rate_minute": 93,
+    "timeout": 346,
+    "transient": 3784
+   },
+   "http_429": 58,
+   "tokens_in": 3165464,
+   "tokens_out": 328879
+  },
+  "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free": {
+   "calls": 140,
+   "calls_usage_unknown": 3,
+   "errors": {
+    "rate_day": 2,
+    "rate_minute": 1
+   },
+   "http_429": 2,
+   "tokens_in": 744121,
+   "tokens_out": 158302
+  },
+  "other": {
+   "calls": 65,
+   "calls_usage_unknown": 6,
+   "errors": {
+    "model_missing": 4,
+    "transient": 3
+   },
+   "http_429": 0,
+   "tokens_in": 1154192,
+   "tokens_out": 66710
+  }
+ },
+ "promoted": 146,
+ "rows_recognized": 92951,
+ "schema": 3,
+ "side": {
+  "blocked": 20,
+  "parked": 0,
+  "requeued": 11
+ },
+ "skipped_files": 0,
+ "source_sha": "shaf109dba0be6d",
+ "span": {
+  "answer": {
+   "calls": 0,
+   "calls_usage_unknown": 0,
+   "errors": {},
+   "http_429": 0,
+   "rows": 546,
+   "status": {
+    "applied": 526,
+    "deferred": 2,
+    "rejected": 18
+   },
+   "tokens_in": 0,
+   "tokens_out": 0
+  },
+  "gate": {
+   "calls": 0,
+   "calls_usage_unknown": 0,
+   "errors": {},
+   "http_429": 0,
+   "rows": 11483,
+   "status": {
+    "ok": 8532,
+    "other": 2951
+   },
+   "tokens_in": 0,
+   "tokens_out": 0
+  },
+  "infra": {
+   "calls": 0,
+   "calls_usage_unknown": 0,
+   "errors": {},
+   "http_429": 0,
+   "rows": 5942,
+   "status": {
+    "brake": 8,
+    "brake_cleared": 1,
+    "cleared": 161,
+    "deferred": 1854,
+    "error": 1144,
+    "other": 2685,
+    "parked": 18,
+    "released": 47,
+    "run_failed": 24
+   },
+   "tokens_in": 0,
+   "tokens_out": 0
+  },
+  "loop": {
+   "calls": 0,
+   "calls_usage_unknown": 0,
+   "errors": {},
+   "http_429": 0,
+   "rows": 13739,
+   "status": {
+    "BLOCKED": 583,
+    "FAILED": 905,
+    "READY": 2897,
+    "REVIEW": 149,
+    "WAITING_CHANNEL": 925,
+    "added": 16,
+    "brake": 15,
+    "deferred": 1715,
+    "empty": 124,
+    "infra": 28,
+    "ok": 4889,
+    "other": 1331,
+    "refused": 2,
+    "requeued": 11,
+    "stop": 149
+   },
+   "tokens_in": 0,
+   "tokens_out": 0
+  },
+  "other": {
+   "calls": 0,
+   "calls_usage_unknown": 0,
+   "errors": {},
+   "http_429": 0,
+   "rows": 27826,
+   "status": {
+    "added": 45,
+    "applied": 2088,
+    "error": 143,
+    "failed": 61,
+    "ok": 357,
+    "other": 24938,
+    "rejected": 23,
+    "requeued": 38
+   },
+   "tokens_in": 0,
+   "tokens_out": 0
+  },
+  "promote": {
+   "calls": 0,
+   "calls_usage_unknown": 0,
+   "errors": {},
+   "http_429": 0,
+   "rows": 167,
+   "status": {
+    "other": 154,
+    "refused": 2,
+    "requeued": 11
+   },
+   "tokens_in": 0,
+   "tokens_out": 0
+  },
+  "review": {
+   "calls": 2423,
+   "calls_usage_unknown": 1087,
+   "errors": {
+    "model_missing": 1,
+    "rate_day": 135,
+    "rate_minute": 29,
+    "timeout": 30,
+    "transient": 892
+   },
+   "http_429": 149,
+   "rows": 4819,
+   "status": {
+    "approved": 164,
+    "error": 1087,
+    "ok": 3568
+   },
+   "tokens_in": 5841335,
+   "tokens_out": 161686
+  },
+  "run": {
+   "calls": 14391,
+   "calls_usage_unknown": 7830,
+   "errors": {
+    "model_missing": 3,
+    "other": 2,
+    "rate_day": 114,
+    "rate_minute": 202,
+    "timeout": 563,
+    "transient": 6947
+   },
+   "http_429": 235,
+   "rows": 27827,
+   "status": {
+    "BLOCKED": 634,
+    "FAILED": 1003,
+    "READY": 5010,
+    "REVIEW": 164,
+    "WAITING_CHANNEL": 987,
+    "error": 7831,
+    "ok": 12151,
+    "other": 47
+   },
+   "tokens_in": 26678903,
+   "tokens_out": 2853252
+  },
+  "triage": {
+   "calls": 0,
+   "calls_usage_unknown": 0,
+   "errors": {},
+   "http_429": 0,
+   "rows": 602,
+   "status": {
+    "added": 99,
+    "empty": 495,
+    "hold_dropped": 3,
+    "other": 5
+   },
+   "tokens_in": 0,
+   "tokens_out": 0
+  }
+ },
+ "status": {
+  "BLOCKED": 1217,
+  "FAILED": 1908,
+  "READY": 7907,
+  "REVIEW": 313,
+  "WAITING_CHANNEL": 1912,
+  "added": 160,
+  "applied": 2614,
+  "approved": 164,
+  "brake": 23,
+  "brake_cleared": 1,
+  "cleared": 161,
+  "deferred": 3571,
+  "empty": 619,
+  "error": 10205,
+  "failed": 61,
+  "hold_dropped": 3,
+  "infra": 28,
+  "ok": 29497,
+  "other": 32111,
+  "parked": 18,
+  "refused": 4,
+  "rejected": 41,
+  "released": 47,
+  "requeued": 60,
+  "run_failed": 24,
+  "stop": 149
+ },
+ "summary": "ok",
+ "tasks_now": {
+  "BLOCKED": 20,
+  "DONE": 68,
+  "FAILED": 1361,
+  "PROMOTED": 116,
+  "READY": 31,
+  "RUNNING": 1
+ },
+ "unrecognized_rows": 0
+}
