@@ -1,0 +1,1 @@
+tests/registry/test_fn_5_09.py::test_zz_dbg[rainbow]
