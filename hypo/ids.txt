@@ -1,0 +1,1 @@
+tests/test_u17_half_duplex.py::test_only_a_half_duplex_line_lowers_the_cap
