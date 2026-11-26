@@ -1,0 +1,250 @@
+tests/break/answer_route/test_b_search_route.py::test_b15_what_the_gate_does_not_see_still_does_not_leave_for_the_public_search[health-of-a-relative]
+tests/break/answer_route/test_b_search_route.py::test_b21_the_link_to_the_model_falls_in_the_middle_of_its_answer_the_text_road_answers_whole
+tests/break/kind_question/test_b_kq_change.py::test_b04_a_correction_of_a_number_reaches_the_job_with_the_question_it_corrects
+tests/break/kind_question/test_b_kq_change.py::test_b05_the_same_form_with_the_numbers_turned_gets_its_own_job_and_the_old_answer_is_not_said_again
+tests/break/kind_question/test_b_kq_numbers_long.py::test_b19_a_long_task_said_in_pieces_with_a_correction_reaches_the_job_whole_and_is_answered_once
+tests/break/kind_question/test_b_kq_repeat.py::test_b11_a_repeat_asked_inside_a_stop_says_the_portion_once_and_the_stop_holds
+tests/break/portion_speech/test_b_portion.py::test_b11_a_changed_topic_silences_the_old_story_for_good
+tests/break/world/test_w_host_world.py::test_w22_the_phone_line_drops_in_the_middle_of_the_answer_the_host_ends_cleanly_without_errors
+tests/break/world/test_w_noise.py::test_w10_the_voice_of_the_app_heard_back_by_its_own_microphone_is_not_a_repeat[in_flight_whole]
+tests/break/world/test_w_noise.py::test_w10_the_voice_of_the_app_heard_back_by_its_own_microphone_is_not_a_repeat[tail_whole]
+tests/registry/test_fn_2_01.py::test_1_a_question_by_form_without_a_mark_goes_to_the_model_and_is_answered_by_its_content[\u041f\u043e\u0434\u0441\u043a\u0430\u0436\u0438 \u043c\u043d\u0435 \u0441\u0442\u043e\u043b\u0438\u0446\u0443 \u041d\u043e\u0440\u0432\u0435\u0433\u0438\u0438-\u043c\u043d\u0435 \u0441\u0442\u043e\u043b\u0438\u0446\u0443 \u041d\u043e\u0440\u0432\u0435\u0433\u0438\u0438-\u041e\u0441\u043b\u043e - \u0441\u0442\u043e\u043b\u0438\u0446\u0430 \u041d\u043e\u0440\u0432\u0435\u0433\u0438\u0438.-question_imperative]
+tests/registry/test_fn_2_01.py::test_1_a_question_by_form_without_a_mark_goes_to_the_model_and_is_answered_by_its_content[\u0421\u043a\u0430\u0436\u0438 \u043f\u043e\u0436\u0430\u043b\u0443\u0439\u0441\u0442\u0430 \u043f\u043e\u0447\u0435\u043c\u0443 \u0437\u0430\u043a\u0440\u044b\u0442 \u043c\u043e\u0441\u0442-\u043f\u043e\u0447\u0435\u043c\u0443 \u0437\u0430\u043a\u0440\u044b\u0442 \u043c\u043e\u0441\u0442-\u041c\u043e\u0441\u0442 \u0437\u0430\u043a\u0440\u044b\u0442 \u043d\u0430 \u0440\u0435\u043c\u043e\u043d\u0442 \u0434\u043e \u043f\u044f\u0442\u043d\u0438\u0446\u044b.-question_word]
+tests/registry/test_fn_2_01.py::test_1_a_question_by_form_without_a_mark_goes_to_the_model_and_is_answered_by_its_content[\u0442\u0430\u043a \u0441\u043a\u043e\u043b\u044c\u043a\u043e \u0441\u0442\u043e\u0438\u0442 \u0431\u0438\u043b\u0435\u0442 \u0434\u043e \u041e\u043c\u0441\u043a\u0430-\u0441\u043a\u043e\u043b\u044c\u043a\u043e \u0441\u0442\u043e\u0438\u0442 \u0431\u0438\u043b\u0435\u0442 \u0434\u043e \u041e\u043c\u0441\u043a\u0430-\u0411\u0438\u043b\u0435\u0442 \u0434\u043e \u041e\u043c\u0441\u043a\u0430 \u0441\u0442\u043e\u0438\u0442 1900 \u0440\u0443\u0431\u043b\u0435\u0439.-question_word]
+tests/registry/test_fn_2_05.py::test_a_wrong_number_or_a_half_is_not_counted_and_the_right_repeat_after_it_is
+tests/registry/test_fn_2_06.py::test_ear_and_cloud_hear_two_numbers_the_cloud_is_trusted_then_asked_again[\u0441\u0442\u0430\u0442\u044c\u044f]
+tests/registry/test_fn_2_06.py::test_ear_and_cloud_hear_two_numbers_the_cloud_is_trusted_then_asked_again[\u0441\u0447\u0451\u0442]
+tests/registry/test_fn_5_05a.py::test_the_live_profile_after_the_person_went_on_two_places_repeats_up_to_the_cycle_ceiling_without_commands
+tests/registry/test_fn_5_05b.py::test_said_dictiruy_medlenno_silence_after_a_cough_waits_for_the_hand_and_then_repeats
+tests/registry/test_fn_5_05b.py::test_said_hvatit_diktovat_gives_the_silence_timer_back_for_the_next_question
+tests/registry/test_fn_5_06.py::test_the_next_portion_is_sent_with_the_end_of_the_repeat_once_the_pace_is_known
+tests/registry/test_fn_5_09.py::test_next_portions_are_ordinary_size_and_make_the_whole_answer[baikal]
+tests/registry/test_fn_5_09.py::test_next_portions_are_ordinary_size_and_make_the_whole_answer[rainbow]
+tests/registry/test_fn_5_09.py::test_next_portions_are_ordinary_size_and_make_the_whole_answer[speed]
+tests/registry/test_fn_6_05.py::test_the_work_per_question_does_not_grow_with_the_call
+tests/test_a2_same_question.py::test_a_start_of_the_cloud_with_the_roles_turned_round_leaves_the_question_to_the_final[numbers]
+tests/test_a_u94_2_claim.py::test_an_answer_is_not_spoken_for_a_claim_of_another_turn
+tests/test_a_u94_2_claim.py::test_the_engine_hands_the_generator_the_turn_and_the_revision_it_claimed
+tests/test_ack_commands.py::<collection>
+tests/test_c16_ear_job.py::test_a_wrong_repeat_is_said_again_as_soon_as_its_final_came
+tests/test_c22_speed.py::test_the_cloud_s_question_mark_is_the_form_the_ear_did_not_hear[0]
+tests/test_c22_speed.py::test_the_cloud_s_question_mark_is_the_form_the_ear_did_not_hear[3]
+tests/test_c22_speed.py::test_the_cloud_s_question_mark_is_the_form_the_ear_did_not_hear[5]
+tests/test_c22_speed.py::test_the_search_question_opens_on_two_witnesses_and_the_source_job_starts_at_once[0]
+tests/test_c22_speed.py::test_the_search_question_opens_on_two_witnesses_and_the_source_job_starts_at_once[2]
+tests/test_c22_speed.py::test_the_search_question_opens_on_two_witnesses_and_the_source_job_starts_at_once[4]
+tests/test_c24_rank2.py::test_chatter_around_a_known_question_is_not_a_reason_to_refuse[\u041b\u0438\u0432\u043e\u043d\u0441\u043a\u0430\u044f \u0432\u043e\u0439\u043d\u0430 \u0447\u0435\u043c \u0437\u0430\u043a\u043e\u043d\u0447\u0438\u043b\u0430\u0441\u044c-\u0442\u043e, \u043c\u044b \u0432\u044b\u0438\u0433\u0440\u0430\u043b\u0438 \u0445\u043e\u0442\u044c-b01496]
+tests/test_c24_rank2.py::test_chatter_around_a_known_question_is_not_a_reason_to_refuse[\u0421\u043e\u043b\u044f\u043d\u043e\u0439 \u0431\u0443\u043d\u0442 \u0438\u0437-\u0437\u0430 \u0447\u0435\u0433\u043e \u0431\u044b\u043b, \u043d\u0435\u0443\u0436\u0435\u043b\u0438 \u0438\u0437-\u0437\u0430 \u0441\u043e\u043b\u0438-b01516]
+tests/test_c24_rank2.py::test_chatter_around_a_known_question_is_not_a_reason_to_refuse[\u0437\u0430\u0447\u0435\u043c \u0418\u0432\u0430\u043d \u0413\u0440\u043e\u0437\u043d\u044b\u0439 \u0432\u0432\u0451\u043b \u043e\u043f\u0440\u0438\u0447\u043d\u0438\u043d\u0443, \u043e\u043d \u0447\u0442\u043e, \u0441 \u0443\u043c\u0430 \u0441\u043e\u0448\u0451\u043b-b01490]
+tests/test_c24_rank2.py::test_chatter_around_a_known_question_is_not_a_reason_to_refuse[\u043f\u043e\u0447\u0435\u043c\u0443 \u043f\u0440\u043e\u0438\u0437\u043e\u0448\u0451\u043b \u0446\u0435\u0440\u043a\u043e\u0432\u043d\u044b\u0439 \u0440\u0430\u0441\u043a\u043e\u043b, \u043d\u0435\u0443\u0436\u0435\u043b\u0438 \u0438\u0437-\u0437\u0430 \u0434\u0432\u0443\u0445 \u043f\u0430\u043b\u044c\u0446\u0435\u0432-b01524]
+tests/test_c24_rank2.py::test_chatter_around_a_known_question_is_not_a_reason_to_refuse[\u0447\u0442\u043e \u0442\u0430\u043a\u043e\u0435 \u0441\u0442\u0430\u0433\u0444\u043b\u044f\u0446\u0438\u044f, \u043e\u0431\u044a\u044f\u0441\u043d\u0438 \u043a\u0430\u043a \u0434\u0440\u0443\u0433\u0443-b01389]
+tests/test_c24_rank2.py::test_what_the_bank_does_not_say_stays_a_refusal[\u0413\u043e\u0434\u0443\u043d\u043e\u0432 \u043f\u0440\u0430\u0432\u0434\u0430 \u0446\u0430\u0440\u0435\u0432\u0438\u0447\u0430 \u0443\u0431\u0438\u043b \u0438\u043b\u0438 \u044d\u0442\u043e \u043d\u0430\u0433\u043e\u0432\u043e\u0440]
+tests/test_c24_rank2.py::test_what_the_bank_does_not_say_stays_a_refusal[\u041a\u0430\u043a\u0430\u044f \u0441\u0435\u0439\u0447\u0430\u0441 \u043a\u043b\u044e\u0447\u0435\u0432\u0430\u044f \u0441\u0442\u0430\u0432\u043a\u0430?]
+tests/test_c24_rank2.py::test_what_the_bank_does_not_say_stays_a_refusal[\u041b\u0436\u0435\u0434\u043c\u0438\u0442\u0440\u0438\u0439 \u044d\u0442\u043e\u0442 \u043e\u0442\u043a\u0443\u0434\u0430 \u0432\u0437\u044f\u043b\u0441\u044f \u0438 \u043f\u043e\u0447\u0435\u043c\u0443 \u0435\u043c\u0443 \u043f\u043e\u0432\u0435\u0440\u0438\u043b\u0438]
+tests/test_c24_rank2.py::test_what_the_bank_does_not_say_stays_a_refusal[\u041f\u043e\u0447\u0435\u043c\u0443 \u043f\u043e\u0441\u043b\u0435 \u0424\u0451\u0434\u043e\u0440\u0430 \u0418\u0432\u0430\u043d\u043e\u0432\u0438\u0447\u0430 \u043d\u0430\u0447\u0430\u043b\u0430\u0441\u044c \u0421\u043c\u0443\u0442\u0430?]
+tests/test_c25_a_veto.py::test_after_the_number_veto_the_help_starts_at_the_number
+tests/test_c25_a_veto.py::test_an_answer_held_back_for_a_newer_question_gives_no_older_plan_back
+tests/test_c25_b_cases.py::test_a_loose_paraphrase_of_a_bank_question_is_answered_locally[\u0413\u0434\u0435 \u0432\u043f\u0435\u0440\u0432\u044b\u0435 \u0432\u043e\u0437\u043d\u0438\u043a \u0442\u0435\u0440\u043c\u0438\u043d \u0444\u0438\u043d\u0430\u043d\u0441\u044b?]
+tests/test_c25_b_cases.py::test_a_loose_paraphrase_of_a_bank_question_is_answered_locally[\u041a\u043e\u0433\u0434\u0430 \u0438 \u0433\u0434\u0435 \u043f\u043e\u044f\u0432\u0438\u043b\u0441\u044f \u0442\u0435\u0440\u043c\u0438\u043d \u0444\u0438\u043d\u0430\u043d\u0441\u044b?]
+tests/test_c25_b_cases.py::test_a_loose_paraphrase_of_a_bank_question_is_answered_locally[\u0427\u0442\u043e \u0438 \u0433\u0434\u0435 \u0432\u043e\u0437\u043d\u0438\u043a \u0442\u0435\u0440\u043c\u0438\u043d \u0444\u0438\u043d\u0430\u043d\u0441\u044b?]
+tests/test_c25_b_cases.py::test_a_loose_paraphrase_of_a_bank_question_is_answered_locally[\u043a\u043e\u0433\u0434\u0430 \u0438 \u0433\u0434\u0435 \u043f\u043e\u044f\u0432\u0438\u043b\u0441\u044f \u0442\u0435\u0440\u043c\u0438\u043d \u0444\u0438\u043d\u0430\u043d\u0441\u044b]
+tests/test_c25_b_latency.py::test_a_question_after_a_long_preface_opens_its_job_on_the_ear_s_text[money-\u0435\u0441\u043b\u0438 \u0443 \u043c\u0435\u043d\u044f \u0431\u044b\u043b\u043e 60 \u0440\u0443\u0431\u043b\u0435\u0439 \u0438 \u044f \u043f\u043e\u0442\u0440\u0430\u0442\u0438\u043b 30 \u0440\u0443\u0431\u043b\u0435\u0439, \u0441\u043a\u043e\u043b\u044c\u043a\u043e \u0434\u0435\u043d\u0435\u0433 \u043e\u0441\u0442\u0430\u043b\u043e\u0441\u044c?-0]
+tests/test_c25_b_latency.py::test_a_question_after_a_long_preface_opens_its_job_on_the_ear_s_text[money-\u0435\u0441\u043b\u0438 \u0443 \u043c\u0435\u043d\u044f \u0431\u044b\u043b\u043e 60 \u0440\u0443\u0431\u043b\u0435\u0439 \u0438 \u044f \u043f\u043e\u0442\u0440\u0430\u0442\u0438\u043b 30 \u0440\u0443\u0431\u043b\u0435\u0439, \u0441\u043a\u043e\u043b\u044c\u043a\u043e \u0434\u0435\u043d\u0435\u0433 \u043e\u0441\u0442\u0430\u043b\u043e\u0441\u044c?-1]
+tests/test_c25_b_latency.py::test_a_question_after_a_long_preface_opens_its_job_on_the_ear_s_text[money-\u0435\u0441\u043b\u0438 \u0443 \u043c\u0435\u043d\u044f \u0431\u044b\u043b\u043e 60 \u0440\u0443\u0431\u043b\u0435\u0439 \u0438 \u044f \u043f\u043e\u0442\u0440\u0430\u0442\u0438\u043b 30 \u0440\u0443\u0431\u043b\u0435\u0439, \u0441\u043a\u043e\u043b\u044c\u043a\u043e \u0434\u0435\u043d\u0435\u0433 \u043e\u0441\u0442\u0430\u043b\u043e\u0441\u044c?-2]
+tests/test_c25_b_latency.py::test_a_question_after_a_long_preface_opens_its_job_on_the_ear_s_text[year-\u0432 \u043a\u0430\u043a\u043e\u043c \u0433\u043e\u0434\u0443 \u0431\u044b\u043b\u0430 \u041a\u0443\u043b\u0438\u043a\u043e\u0432\u0441\u043a\u0430\u044f \u0431\u0438\u0442\u0432\u0430?-0]
+tests/test_c25_b_latency.py::test_a_question_after_a_long_preface_opens_its_job_on_the_ear_s_text[year-\u0432 \u043a\u0430\u043a\u043e\u043c \u0433\u043e\u0434\u0443 \u0431\u044b\u043b\u0430 \u041a\u0443\u043b\u0438\u043a\u043e\u0432\u0441\u043a\u0430\u044f \u0431\u0438\u0442\u0432\u0430?-1]
+tests/test_c25_b_latency.py::test_a_question_after_a_long_preface_opens_its_job_on_the_ear_s_text[year-\u0432 \u043a\u0430\u043a\u043e\u043c \u0433\u043e\u0434\u0443 \u0431\u044b\u043b\u0430 \u041a\u0443\u043b\u0438\u043a\u043e\u0432\u0441\u043a\u0430\u044f \u0431\u0438\u0442\u0432\u0430?-2]
+tests/test_c25_b_latency.py::test_a_word_problem_opens_its_job_on_the_ear_s_text[0]
+tests/test_c25_b_latency.py::test_a_word_problem_opens_its_job_on_the_ear_s_text[1]
+tests/test_c25_b_latency.py::test_a_word_problem_opens_its_job_on_the_ear_s_text[2]
+tests/test_c25_b_latency.py::test_a_word_problem_opens_its_job_on_the_ear_s_text[3]
+tests/test_call_context_wiring.py::test_the_next_call_uses_the_changed_files_with_no_restart_in_between
+tests/test_chaos.py::test_a_question_the_ear_stood_for_whose_job_breaks_is_not_left_in_silence[model_cut]
+tests/test_chaos.py::test_a_question_the_ear_stood_for_whose_job_breaks_is_not_left_in_silence[model_hang]
+tests/test_chaos.py::test_after_the_fault_the_next_question_is_answered_and_nothing_is_stuck[1-no_audio]
+tests/test_chaos.py::test_after_the_fault_the_next_question_is_answered_and_nothing_is_stuck[4-model_cut]
+tests/test_chaos.py::test_after_the_fault_the_next_question_is_answered_and_nothing_is_stuck[4-model_hang]
+tests/test_controlled_media.py::test_short_followup_search_keeps_topic_without_sending_the_whole_history
+tests/test_e871_stand_controller_settings.py::test_stand_controller_gets_the_call_settings_ear_job_on
+tests/test_early_ack_reconcile.py::test_a_context_follow_up_after_the_portion_keeps_its_route_and_its_topic
+tests/test_echo_sapi_provider.py::EchoSapiProviderTests::test_native_provider_has_unique_id_and_local_irina_schema
+tests/test_echo_sapi_provider.py::EchoSapiProviderTests::test_provider_is_not_available_off_windows
+tests/test_echo_sapi_provider.py::EchoSapiProviderTests::test_synthesis_uses_profile_worker_and_coerces_output_to_wav
+tests/test_echo_sapi_provider.py::EchoSapiProviderTests::test_warm_and_release_manage_owned_worker
+tests/test_echo_sapi_provider.py::EchoSapiProviderTests::test_worker_failure_reaches_the_caller_there_is_no_command_fallback
+tests/test_f3_reaction.py::test_a_start_with_its_neighbours_is_helped_inside_the_owners_window[\u043e\u0431\u0449\u0438\u0435_\u0443\u0441\u043b\u043e\u0432\u0438\u044f_\u0443\u0441\u0442\u0430\u043d\u043e\u0432\u043b\u0435\u043d\u0438\u044f_\u043d\u0430\u043b\u043e\u0433\u043e\u0432-\u0438_\u0441\u0431\u043e\u0440\u043e\u0432.]
+tests/test_f4_noise.py::test_a_voice_still_opens_it
+tests/test_f5_bank.py::test_kind_of_the_entry_not_of_one_form
+tests/test_f6_stress.py::test_open_episodes_of_the_heavy_rehearsals[\u0420101-2-missed]
+tests/test_first_cue_clock.py::test_every_first_cue_is_right_and_no_invariant_breaks
+tests/test_g23_old_answer.py::test_no_old_answer_after_a_newer_question[\u0420076-1]
+tests/test_g23_old_answer.py::test_no_old_answer_after_a_newer_question[\u0420087-0]
+tests/test_g37_backlog.py::test_a_done_row_names_a_test_or_a_report
+tests/test_g38_speed.py::test_a_personal_question_is_prepared_before_the_final
+tests/test_g3_matrix.py::test_dev[bare]
+tests/test_g3_matrix.py::test_dev[by_question]
+tests/test_g3_matrix.py::test_dev[correction]
+tests/test_g3_matrix.py::test_dev[followup]
+tests/test_g3_matrix.py::test_dev[paraphrase]
+tests/test_g3_matrix.py::test_dev[partial]
+tests/test_g3_matrix.py::test_dev[wrong]
+tests/test_g3_matrix.py::test_holdout[by_question]
+tests/test_g3_matrix.py::test_holdout[correction]
+tests/test_g3_matrix.py::test_holdout[followup]
+tests/test_g3_matrix.py::test_holdout[partial]
+tests/test_g3_matrix.py::test_holdout[wrong]
+tests/test_g3_matrix.py::test_no_position_is_ever_lost_and_nothing_is_confirmed_twice[correction-dev]
+tests/test_g3_matrix.py::test_no_position_is_ever_lost_and_nothing_is_confirmed_twice[correction-holdout]
+tests/test_g3_matrix.py::test_no_position_is_ever_lost_and_nothing_is_confirmed_twice[followup-dev]
+tests/test_g3_matrix.py::test_no_position_is_ever_lost_and_nothing_is_confirmed_twice[followup-holdout]
+tests/test_g3_matrix.py::test_no_position_is_ever_lost_and_nothing_is_confirmed_twice[paraphrase-dev]
+tests/test_g3_matrix.py::test_the_named_lookups_do_not_grow[paraphrase-dev]
+tests/test_go_on_property.py::test_a_question_the_ear_heard_is_no_try_at_the_portion
+tests/test_go_on_property.py::test_the_owner_walks_through_an_answer[13]
+tests/test_go_on_property.py::test_the_owner_walks_through_an_answer[16]
+tests/test_go_on_property.py::test_the_owner_walks_through_an_answer[20]
+tests/test_go_on_property.py::test_the_owner_walks_through_an_answer[23]
+tests/test_go_on_property.py::test_the_owner_walks_through_an_answer[25]
+tests/test_go_on_property.py::test_the_owner_walks_through_an_answer[28]
+tests/test_go_on_property.py::test_the_owner_walks_through_an_answer[29]
+tests/test_go_on_property.py::test_the_owner_walks_through_an_answer[34]
+tests/test_go_on_property.py::test_the_owner_walks_through_an_answer[35]
+tests/test_go_on_property.py::test_the_owner_walks_through_an_answer[36]
+tests/test_go_on_property.py::test_the_owner_walks_through_an_answer[3]
+tests/test_go_on_property.py::test_the_owner_walks_through_an_answer[40]
+tests/test_go_on_property.py::test_the_owner_walks_through_an_answer[41]
+tests/test_go_on_property.py::test_the_owner_walks_through_an_answer[44]
+tests/test_go_on_property.py::test_the_owner_walks_through_an_answer[46]
+tests/test_go_on_property.py::test_the_owner_walks_through_an_answer[48]
+tests/test_go_on_property.py::test_the_owner_walks_through_an_answer[50]
+tests/test_go_on_property.py::test_the_owner_walks_through_an_answer[54]
+tests/test_go_on_property.py::test_the_owner_walks_through_an_answer[55]
+tests/test_go_on_property.py::test_the_owner_walks_through_an_answer[5]
+tests/test_go_on_property.py::test_the_owner_walks_through_an_answer_as_the_ear_hears_it[15]
+tests/test_go_on_property.py::test_the_owner_walks_through_an_answer_as_the_ear_hears_it[18]
+tests/test_go_on_property.py::test_the_owner_walks_through_an_answer_as_the_ear_hears_it[25]
+tests/test_go_on_property.py::test_the_owner_walks_through_an_answer_as_the_ear_hears_it[34]
+tests/test_go_on_property.py::test_the_owner_walks_through_an_answer_as_the_ear_hears_it[40]
+tests/test_go_on_property.py::test_the_owner_walks_through_an_answer_as_the_ear_hears_it[42]
+tests/test_go_on_property.py::test_the_owner_walks_through_an_answer_as_the_ear_hears_it[45]
+tests/test_go_on_property.py::test_the_owner_walks_through_an_answer_as_the_ear_hears_it[46]
+tests/test_go_on_property.py::test_the_owner_walks_through_an_answer_as_the_ear_hears_it[52]
+tests/test_go_on_property.py::test_the_owner_walks_through_an_answer_as_the_ear_hears_it[53]
+tests/test_go_on_property.py::test_the_owner_walks_through_an_answer_as_the_ear_hears_it[6]
+tests/test_go_on_property.py::test_the_rest_of_a_portion_said_in_two_breaths_is_no_try_at_the_next
+tests/test_go_on_property.py::test_what_is_not_the_portion_stays[another question]
+tests/test_h28_quantity_scene.py::test_silence_repeats_with_no_mode_for_about_a_minute
+tests/test_h2_brain.py::test_a_declined_lookup_question_says_nothing
+tests/test_h2_brain.py::test_a_question_the_classifier_opened_and_the_job_declined_gives_the_plan_back[\u041d\u0443 \u0447\u0442\u043e, \u0434\u0430\u0432\u0430\u0439\u0442\u0435 \u0437\u0430\u0434\u0430\u0432\u0430\u0439\u0442\u0435 \u043b\u044e\u0431\u043e\u0439 \u0432\u043e\u043f\u0440\u043e\u0441, \u0441\u043e\u0431\u0441\u0442\u0432\u0435\u043d\u043d\u043e, \u0433\u043e\u0442\u043e\u0432]
+tests/test_h2_brain.py::test_a_sentence_that_ends_in_digits_is_a_sentence_for_the_talk_after_it[\u041e\u0442\u0432\u0435\u0442 25. \u0425\u043e\u0447\u0435\u0448\u044c \u0435\u0449\u0451 \u043f\u0440\u0438\u043c\u0435\u0440?-\u041e\u0442\u0432\u0435\u0442 25.]
+tests/test_h2_brain.py::test_the_remarks_of_the_call_say_nothing_whatever_the_cloud_replies[\u041d\u0443 \u0447\u0442\u043e, \u0434\u0430\u0432\u0430\u0439\u0442\u0435 \u0437\u0430\u0434\u0430\u0432\u0430\u0439\u0442\u0435 \u043b\u044e\u0431\u043e\u0439 \u0432\u043e\u043f\u0440\u043e\u0441, \u0441\u043e\u0431\u0441\u0442\u0432\u0435\u043d\u043d\u043e, \u0433\u043e\u0442\u043e\u0432]
+tests/test_h3_tempo.py::test_a_hesitation_brings_the_portion[empty]
+tests/test_h3_tempo.py::test_a_hesitation_over_the_time_brings_the_portion_1_5_s_after_it[empty]
+tests/test_h3_tempo.py::test_a_hesitation_that_ends_just_before_the_time_does_not_reset_it[empty]
+tests/test_h3_tempo.py::test_a_late_final_does_not_put_an_armed_timer_off
+tests/test_h3_tempo.py::test_a_start_with_its_neighbours[\u043e\u0431\u0449\u0438\u0435_\u0443\u0441\u043b\u043e\u0432\u0438\u044f_\u0443\u0441\u0442\u0430\u043d\u043e\u0432\u043b\u0435\u043d\u0438\u044f_\u043d\u0430\u043b\u043e\u0433\u043e\u0432-1.2-\u0438_\u0441\u0431\u043e\u0440\u043e\u0432.]
+tests/test_h3_tempo.py::test_an_error_of_the_recognizer_is_no_hesitation
+tests/test_h3_tempo.py::test_the_whole_call_of_20_34_with_the_ear_of_its_log
+tests/test_h3_tempo.py::test_the_whole_call_with_the_job_late[3.5-act]
+tests/test_h3_tempo.py::test_the_whole_call_with_the_job_late[3.5-shadow]
+tests/test_h3_tempo.py::test_the_whole_portion_is_a_portion_again_after_the_window_of_a_try
+tests/test_h4_ear_first.py::test_a_decline_gives_no_plan_back_over_what_the_ear_is_about_to_open
+tests/test_h4_ear_first.py::test_a_remark_before_the_question_in_the_same_turn_takes_nothing_up
+tests/test_h4_ear_first.py::test_a_repeat_said_before_the_question_in_the_same_turn_takes_the_answer_up
+tests/test_h4_ear_first.py::test_a_sentence_that_ends_with_the_job_counts
+tests/test_h4_ear_first.py::test_nor_the_topic_of_a_follow_up[a-topic-before]
+tests/test_h4_ear_first.py::test_the_model_that_asked_for_a_search_is_answered_when_the_job_has_spoken[before_it_opened]
+tests/test_h4_ear_first.py::test_the_model_that_asked_for_a_search_on_that_turn_is_answered_all_the_same[a-question]
+tests/test_h4_ear_first.py::test_the_model_that_asked_for_a_search_on_that_turn_is_answered_all_the_same[a-reference]
+tests/test_h4_ear_first.py::test_the_model_that_asked_for_a_search_on_that_turn_is_answered_all_the_same[a-remark]
+tests/test_h4_ear_first.py::test_the_question_of_a_turn_cut_by_the_cloud_opens_nothing_twice
+tests/test_h4_ear_first.py::test_the_repeat_in_a_turn_that_also_holds_what_came_before_the_question
+tests/test_h4_ear_first.py::test_the_repeat_in_the_questions_turn_is_a_repeat[twenty-five]
+tests/test_h5_live.py::test_a_question_the_ear_opens_in_that_breath_keeps_its_prepared_job
+tests/test_h5_live.py::test_a_short_reference_waits_for_a_turn_announced_as_late_as_on_the_phone
+tests/test_h6.py::test_r10_speech_begun_at_the_portion_before_holds_the_timer_too
+tests/test_h7.py::test_a_new_question_cancels_both
+tests/test_h7.py::test_the_answer_in_play_was_not_the_suspect[finished-no_ear]
+tests/test_h7.py::test_the_answer_in_play_was_not_the_suspect[first_portion-no_ear]
+tests/test_h7.py::test_the_answer_in_play_was_not_the_suspect[second_portion-no_ear]
+tests/test_i1b_lecture_scenes.py::test_the_question_of_a_lecture_is_answered_under_every_shape_of_the_packets
+tests/test_ladder.py::test_bank_questions_are_owned_by_one_row
+tests/test_ladder.py::test_l0_one_clean_bank_question_is_answered_right[4]
+tests/test_ladder.py::test_l2_a_dotted_number_said_in_parts_is_the_same_number[18]
+tests/test_marathon.py::test_nothing_is_left_up_after_an_answer
+tests/test_night_bench_answer_rows.py::test_one_more_answered_question_is_appended_to_the_projection_not_a_rebuild_of_it
+tests/test_night_bench_answer_rows.py::test_the_answer_of_another_question_is_not_superseded_by_the_next_answer
+tests/test_night_memory_stand.py::test_5_the_time_in_the_hook_does_not_grow_with_the_call
+tests/test_owner_census.py::test_the_real_list_is_well_formed
+tests/test_p03_kind_ids.py::test_u153_a_question_is_a_question[\u0442\u0430\u043a \u0447\u0442\u043e \u0442\u0430\u043a\u043e\u0435 \u0438\u043d\u0435\u0440\u0446\u0438\u044f]
+tests/test_p04_quiet_cue.py::test_the_call_stays_quiet_on_a_report[\u0421\u043f\u0430\u0441\u0438\u0431\u043e, \u0447\u0442\u043e \u043f\u0440\u0438\u0448\u043b\u0438]
+tests/test_q1_quick.py::test_the_turn_not_announced_yet_the_search_waits_for_it
+tests/test_r07_tail_table.py::test_what_is_cued_after_what_the_listener_said[swap-tlk6@ear]
+tests/test_r07_tail_table.py::test_what_is_cued_after_what_the_listener_said[swap-tlk6@final]
+tests/test_r31_6_last_words.py::test_more_words_than_the_portion_has_say_the_portion_whole
+tests/test_r31_6_last_words.py::test_the_last_three_words_of_the_portion_are_said_again_not_the_whole_portion
+tests/test_r_e22_3_cloud_for_late_job.py::test_a_refused_cloud_text_leaves_the_job_alive_and_it_answers
+tests/test_r_u147_next_answer.py::test_u147_after_one_failure_the_next_question_is_answered_within_three_seconds[2-link]
+tests/test_r_u147_next_answer.py::test_u147_after_one_failure_the_next_question_is_answered_within_three_seconds[2-model_hang]
+tests/test_r_u147_next_answer.py::test_u147_after_one_failure_the_next_question_is_answered_within_three_seconds[2-search]
+tests/test_registry_coverage.py::test_no_test_of_the_registry_is_an_orphan
+tests/test_registry_coverage.py::test_the_figures_of_the_intonation_record_have_a_source_and_say_whose_voices_they_are
+tests/test_registry_coverage.py::test_there_is_one_record_a_function_and_its_name_is_its_number
+tests/test_ru_alignment.py::RussianAlignmentTests::test_partial_and_asr_typo_repeat_current_without_acceptance
+tests/test_s5_privacy_shapes.py::test_a_public_question_with_numbers_stays_public_and_is_searched[\u0441\u0442\u0430\u0442\u044c\u044f 422 \u041d\u041a]
+tests/test_s5_privacy_shapes.py::test_a_public_question_with_numbers_stays_public_and_is_searched[\u0441\u0447\u0451\u0442 62]
+tests/test_s6_segmentation.py::test_every_punctuated_answer_gets_a_first_cue_and_its_words_arrive_in_order
+tests/test_s6_state_machine.py::test_random_event_sequences_keep_every_invariant
+tests/test_silence_kinds.py::test_breath_cough_laugh_are_no_speech_and_bring_the_portion[breath]
+tests/test_stable_partial_ack.py::test_a_new_call_stays_quiet_until_an_explicit_repeat
+tests/test_t_classes.py::test_f02_a_question_inside_a_statement_is_taken_whole[dev-so_it_means]
+tests/test_t_new_classes.py::test_n14_no_issued_portion_is_heavier_than_the_listener_can_repeat[construction]
+tests/test_t_new_classes.py::test_n14_no_issued_portion_is_heavier_than_the_listener_can_repeat[physics]
+tests/test_task_c_live_replay.py::test_the_first_cue_of_a_real_answer_is_short_and_comes_sooner[cause_blue_sky]
+tests/test_task_c_live_replay.py::test_the_first_cue_of_a_real_answer_is_short_and_comes_sooner[neg_sound_vacuum]
+tests/test_task_c_live_replay.py::test_the_long_cues_of_that_night_are_gone_and_the_median_arrives_earlier
+tests/test_u15_one_form_verdict.py::test_the_one_form_verdict_combines_the_classifier_and_the_text_gate
+tests/test_u19_s5_voice_lang.py::RefusedMarkup::test_lang_fallback_is_counted
+tests/test_u24_id_query.py::test_repo_u29_finds_bank_test_and_data
+tests/test_u54_ear_tail.py::test_a_word_after_the_issued_tail_cuts_the_cue
+tests/test_u56_push_guard.py::test_this_repo_has_no_key_and_no_call_text_in_its_tracked_files
+tests/test_u60_reads_ahead.py::test_reading_three_portions_beyond_the_cued_one_cues_the_last
+tests/test_u60_reads_ahead.py::test_reading_two_portions_beyond_the_cued_one_cues_the_next_unread
+tests/test_ux_call_trace_host.py::test_a_phone_call_leaves_the_chain_words_then_decision_then_cue
+tests/test_ux_call_trace_host.py::test_a_provider_error_and_the_spoken_diagnostic_are_in_the_trace
+tests/test_w10_two_witnesses.py::test_on_no_word_of_the_cloud_is_no_second_witness
+tests/test_w10_two_witnesses.py::test_on_the_stable_piece_that_agrees_releases_the_sound_before_the_final
+tests/test_w11_retrieval.py::test_compound_answers_the_first_part
+tests/test_w1f_utterance.py::test_a_wrong_number_repeat_of_the_first_cue_stays_a_try_at_it
+tests/test_w3_replays.py::test_e34_year_question_cloud_yes_then_job_fails_then_second_job_answers
+tests/test_w3_replays.py::test_e43_no_final_from_the_cloud_the_ears_text_goes_to_the_job_within_the_bound
+tests/test_w3_skeptic.py::test_a_late_ear_text_of_the_question_in_flight_is_not_said_twice
+tests/test_w5_m_e19.py::test_e19_through_the_controller_the_condition_said_at_minute_5_stands_whole_in_the_request_at_minute_40
+tests/test_w8_repeat_guard.py::test_the_own_cue_heard_back_in_drop_mode_is_not_an_ack
+tests/test_w9_arch.py::test_map_a_deaf_cloud_with_a_shadow_ear_is_silence
+tests/test_w9_call_report.py::CallReportTests::test_report_lands_next_to_journal_with_steps_summing_to_the_interval
+tests/test_w9_rehearsal.py::test_a_broken_controller_turns_the_board_red[stale-old_answer]
+tests/verify/kind_a/test_v_E08_2.py::test_a_follow_up_of_the_others_to_a_question_to_a_named_person_sounds_nothing[\u0410\u0433\u0430, \u0441\u0435\u0439\u0447\u0430\u0441 \u043f\u043e\u0441\u043c\u043e\u0442\u0440\u044e.]
+tests/verify/kind_a/test_v_E08_2.py::test_a_follow_up_of_the_others_to_a_question_to_a_named_person_sounds_nothing[\u0414\u0430, \u043e\u0442\u043f\u0440\u0430\u0432\u0438\u043b\u0430, \u0432\u0447\u0435\u0440\u0430 \u0435\u0449\u0451.]
+tests/verify/kind_a/test_v_E08_2.py::test_a_follow_up_of_the_others_to_a_question_to_a_named_person_sounds_nothing[\u0414\u0430.]
+tests/verify/kind_a/test_v_E20.py::test_a_role_that_is_not_asking_the_listener_leaves_the_call_where_it_was[breaks_in_to_the_speaker]
+tests/verify/kind_b/test_v_E42.py::test_a_hold_word_at_the_start_of_a_whole_question_stops_nothing_and_the_job_is_asked[\u0421\u0435\u043a\u0443\u043d\u0434\u043e\u0447\u043a\u0443, \u0430 \u043a\u0430\u043a\u0430\u044f \u0441\u0442\u0430\u0432\u043a\u0430 \u043f\u043e \u0432\u043a\u043b\u0430\u0434\u0443 \u0432 2021 \u0433\u043e\u0434\u0443]
+tests/verify/legacy/test_v_U202.py::test_the_ceilings_of_the_ratchet_follow_the_step_in_the_same_commit
+tests/verify/legacy/test_v_U202.py::test_the_owners_of_the_tree_are_cut_to_the_next_big_step_of_twenty
+tests/verify/portion/test_v_F9.py::test_the_cycle_is_bounded_it_is_no_loop_with_nobody_there
+tests/verify/portion/test_v_N5.py::test_a_stop_after_the_first_words_goes_on_from_the_next_word[garbled_start]
+tests/verify/portion/test_v_N5.py::test_a_stop_in_the_middle_goes_on_from_the_next_word
+tests/verify/question/test_v_E87.py::test_a_late_correction_in_the_final_takes_the_prepared_job_back[\u0421\u043a\u043e\u043b\u044c\u043a\u043e \u0431\u0443\u0434\u0435\u0442 \u0432\u043e\u0441\u0435\u043c\u044c\u0434\u0435\u0441\u044f\u0442 \u0440\u0430\u0437\u0434\u0435\u043b\u0438\u0442\u044c \u043d\u0430 \u0447\u0435\u0442\u044b\u0440\u0435, \u043d\u0435\u0442, \u043d\u0430 \u043f\u044f\u0442\u044c]
+tests/verify/question/test_v_E87.py::test_a_late_correction_in_the_final_takes_the_prepared_job_back[\u0421\u043a\u043e\u043b\u044c\u043a\u043e \u0431\u0443\u0434\u0435\u0442 \u0432\u043e\u0441\u0435\u043c\u044c\u0434\u0435\u0441\u044f\u0442 \u0440\u0430\u0437\u0434\u0435\u043b\u0438\u0442\u044c \u043d\u0430 \u0447\u0435\u0442\u044b\u0440\u0435, \u043d\u0435\u0442, \u043d\u0435 \u043d\u0430 \u0447\u0435\u0442\u044b\u0440\u0435, \u0430 \u043d\u0430 \u0434\u0432\u0430]
+tests/verify/question/test_v_E87_1.py::test_the_roles_of_the_table_of_e87_are_not_one_meaning_in_either_direction[before-after]
+tests/verify/question/test_v_E87_1.py::test_the_roles_of_the_table_of_e87_are_not_one_meaning_in_either_direction[date-before-after]
+tests/verify/question/test_v_E87_1.py::test_the_roles_of_the_table_of_e87_are_not_one_meaning_in_either_direction[for-me-him]
+tests/verify/question/test_v_E87_1.py::test_the_roles_of_the_table_of_e87_are_not_one_meaning_in_either_direction[he-and-i]
+tests/verify/question/test_v_E87_1.py::test_the_roles_of_the_table_of_e87_are_not_one_meaning_in_either_direction[he-or-i]
+tests/verify/question/test_v_E87_1.py::test_the_roles_of_the_table_of_e87_are_not_one_meaning_in_either_direction[he-or-she]
+tests/verify/question/test_v_E87_1.py::test_the_roles_of_the_table_of_e87_are_not_one_meaning_in_either_direction[i-or-you]
+tests/verify/question/test_v_E87_1.py::test_the_roles_of_the_table_of_e87_are_not_one_meaning_in_either_direction[me-or-him]
+tests/verify/question/test_v_E87_1.py::test_the_roles_of_the_table_of_e87_are_not_one_meaning_in_either_direction[must-may]
+tests/verify/question/test_v_E87_1.py::test_the_roles_of_the_table_of_e87_are_not_one_meaning_in_either_direction[not-over-must]
+tests/verify/question/test_v_E87_1.py::test_the_roles_of_the_table_of_e87_are_not_one_meaning_in_either_direction[not-subject]
+tests/verify/question/test_v_E87_1.py::test_the_roles_of_the_table_of_e87_are_not_one_meaning_in_either_direction[or-and]
