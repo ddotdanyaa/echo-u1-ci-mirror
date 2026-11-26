@@ -87,3 +87,14 @@ def test_history_is_the_prior_when_the_cohort_is_empty():
     assert got["agent"]["rows"] == 248
     thin = {"free_small": {"made": A.PRIOR_MIN - 1, "merged": 0}}
     assert A.engine_yield({}, NOW, thin) == {}
+
+
+def test_yfloor_weak_step_waits_when_the_strong_ones_are_gone():
+    prior = {e: dict(made=m, merged=g) for e, (m, g) in TABLE.items()}
+    yields = A.engine_yield({}, NOW, prior)
+    assert round(yields["free_small"]["yield"], 4) == 0.0031 and round(yields["agent"]["yield"], 3) == 0.129
+    assert A.weak_steps(("free", "free_main", "free_small"), yields) == {"free_small"}      # agent (gone) sets the bar: 0.0129
+    assert A.weak_steps(("free_small",), yields) == {"free_small"}
+    assert A.weak_steps(("agent", "free_small"), yields) == {"free_small"}
+    assert A.weak_steps(("free", "paid"), yields) == set()
+    assert A.weak_steps(("free_small",), {}) == set()

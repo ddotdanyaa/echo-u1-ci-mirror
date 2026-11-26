@@ -5465,6 +5465,14 @@ class Loop:
                 asks = left
             cached = dict(self._wait_record(ls, row).get("engines") or {})
             yields, probe = self._yield_pick(ls)       # W-a4: the steps ordered by the cohort's measured yield
+            weak = A.weak_steps(tuple(asks), yields) if not probe and not boxed else set()
+            if weak & set(asks):                       # W-yfloor: a step under a tenth of the best measured yield does not slice: the row waits, no fine
+                left = {k: v for k, v in asks.items() if k not in weak}
+                self.event("slice", backlog_id=row, status="weak", engine=",".join(sorted(weak & set(asks))),
+                           rung=rung, ladder=",".join(left))
+                if not left:
+                    raise SliceWait()
+                asks = left
             ctx = dict(root=root, gen=gen, rung=rung, cause=cause, ladder=",".join(asks), boxed=boxed)
             task_copy, state_copy, ls_copy = copy.deepcopy((tasks, state, ls))
             dry_now = self._edit_dry(state)       # W-dry 1: with the edit channels dry the contract asks for finished code
