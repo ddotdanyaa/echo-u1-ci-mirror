@@ -4,25 +4,30 @@ sends {role, tokens, body, channels in order, deadline} and gets the answer or w
 
 The rules (W-bucket, 27.11):
   1. A bucket is one channel (key + model): no merging of keys into one project.
-  2. Books by the fact: a 200 charges usage.prompt_tokens; a 500 / 502 / 503 / 504 (the server's overload: it ran
-     nothing) gives the estimate back to the bucket, the minute window and the shared ledger, the request stays counted
-     for the day (fac-59: the old "charged in full" emptied the bucket with refusals while tpm_busy was far below the
-     ceiling); an exception / timeout (nothing known of the call) keeps the full estimate and the request. The
-     estimate is learned per role (the fact over the caller's tokens).
+  2. Books by the fact: a 200 charges usage.prompt_tokens; a 500 / 502 / 503 / 504 stays charged as sent (fac-81: Google
+     counts the input tokens of a REFUSED request in the per-minute token quota: 24 h to 28.11, the accepted calls of a
+     channel in the minute before its per-minute 429 held a median 3,217 tokens, accepted + refused 17,908; the bucket, the
+     minute window and the shared ledger keep the estimate, no refund); an exception / timeout (nothing known of the call)
+     keeps the full estimate too. The estimate is learned per role (the fact over the caller's tokens).
   3. Even pace with no bunches: a token bucket per channel (capacity tpm_eff, refilled continuously, tpm_eff 0.9 x tpm,
      x0.9 on a per-minute 429 down to 0.6 x tpm, x1.03 per 10 clean minutes up to 0.95 x tpm), plus the 60 s window of
      what was sent, a minimum gap of 60 / (0.8 x rpm) between two sends and the day count against rpd.
-  4. 503 (fac-66; the direct measure of 27.11: Google answers it in 0.5-0.7 s and an immediate repeat of the same
-     request passes, 26b 1-3 tries, 31b 2-7, no 429 from the quick repeats): a refusal of ONE request, not a model that
-     is down. No pause of the channel, no probe: the ticket goes back to the queue at once (the other key of the model
-     first; a channel that refused it twice is left for the next tier, the last tier takes it back), up to MAX_503_TRIES refusals within its deadline; the refused send does not take the
-     rpm gap (the 503 ran nothing). Spent: the ticket is given back as an expired one (the caller's transient fault).
+  4. 500 / 502 / 503 / 504 (fac-66, fac-81): a refusal of ONE request, not a model that is down, but a state of the CHANNEL
+     for some seconds (a call within 3 s after a 503 passes 10 % on the same channel, 33 % on the other key, the model's usual
+     rate on the other model): the channel rests COOL_503_S (closed, reason refused_503) and the ticket goes at once to another
+     OPEN channel (the other key first; a channel that refused it REFUSED_SKIP times is left for the next tier, the last tier
+     takes it back), else it waits for the earliest within its deadline, up to MAX_503_TRIES refusals; the refused send does
+     not take the rpm gap. No model-wide pause, no probe. Spent: the ticket is given back as an expired one.
   5. 429 by quotaId: PerMinute (or none) empties the bucket and closes the channel for retryDelay or 60 s + U(0, 5) s;
      PerDay closes it until the provider's day reset and notes the ledger's day gate.
   6. A ticket waits in the head until its deadline (DEADLINE_S of waiting + the call time on top) and is never sent with
      less than its call time left: then it is given back at once with the head's ETA.
   7. Places (free / grant / capacity) are counted in tokens: per channel floor(tokens free within PLACE_S / estimate),
      minus the tokens already queued. Queue order: review, repair, edit / code, the rest.
+  8. Among the channels of a tier that are ready now the one with the higher PASS RATE goes first: ok / (ok + 503) of the
+     head's own last hour, from 10 calls on; a channel without a rate takes the best known rate of its tier (it is still
+     tried). The usual rate does not depend on the prompt or the minute's fill (26b 45-53 %, 31b 14-25 %): pacing does not
+     remove refusals, it stops paying for them twice; the choice sends the calls where they pass.
 The old cooling marks of the shared ledger (model / channel / group cool, breaker, day probe) are not read here: the
 head's own buckets decide. Bookings of the other processes (day count, the minute window) are still counted."""
 import collections
@@ -52,6 +57,8 @@ FILL, FLOOR, CEIL = 0.9, 0.6, 0.95       # tpm_eff: start / lowest after per-min
 LEARN_DOWN, LEARN_UP, CLEAN_S = 0.9, 1.03, 600.0
 RPM_FILL = 0.8           # the minimum gap between two sends to one channel is 60 / (0.8 x rpm)
 REFUSED_SKIP = 2         # fac-66: refusals from ONE channel after which this ticket leaves it for the next tier (the last tier takes it back)
+COOL_503_S = 10          # fac-81: a refusal is a state of the channel: the next Gemma call within 3 s passes 10 % on the same channel (n=2,694), 33 % on the other key, 20-40 s later 49-62 %
+RATE_MIN_CALLS = 10      # fac-81: ok + 503 calls of the last hour a channel needs before it has a pass rate
 MAX_503_TRIES = 8        # fac-66: refusals (500 / 502 / 503 / 504) one ticket takes before it is given back (measure: 31b needed up to 7)
 MINUTE_CLOSE_S, MINUTE_JITTER_S = 60.0, 5.0
 PLACE_S = 30.0           # free / grant: the tokens a channel frees within this many seconds
@@ -111,7 +118,7 @@ def _quota_of(raw, now) -> tuple:
 class _Ticket:
     def __init__(self, seq, n, req, now, remote=False):
         self.seq, self.n, self.remote, self.polled, self.done_at = seq, n, remote, now, None
-        self.tries503, self.avoid, self.sent_at, self.prev_last, self.refused = 0, None, None, None, {}    # fac-66: refusals taken, the channel that refused last
+        self.tries503, self.sent_at, self.prev_last, self.refused = 0, None, None, {}    # fac-66: refusals taken, per channel
         self.role, self.tokens = str(req.get('role') or ''), max(1, int(req.get('tokens') or 1))
         self.prio = int(req['priority']) if req.get('priority') is not None else PRIORITY.get(self.role, 3)
         self.card = PRIORITY.get(self.role, 3) <= CARD_PRIO     # fac-61: by the ROLE (review, repair, edit, code); the number the loop puts on slice / aux does not make them a card's
@@ -236,6 +243,15 @@ class Head:
         wait, why = max(waits)
         return max(0.0, wait), why
 
+    def _rates(self, now) -> dict:
+        """fac-81: channel -> ok / (ok + 503) of the head's own last hour; a channel with fewer than RATE_MIN_CALLS such calls has none."""
+        seen = {}
+        for at, cid, kind in self.hist:
+            if kind in ('ok', '503') and now - at <= 3600:
+                row = seen.setdefault(cid, [0, 0])
+                row[kind == '503'] += 1
+        return {cid: row[0] / (row[0] + row[1]) for cid, row in seen.items() if row[0] + row[1] >= RATE_MIN_CALLS}
+
     def _stock(self, cid, now) -> float:
         b = self.b[cid]
         return min(b['level'], b['eff'] - sum(n for _, n in self._window(cid, now)))
@@ -338,6 +354,7 @@ class Head:
             # fac-51: channel -> [tokens, tickets] of the more urgent tickets that wait for it in this pass: a later ticket
             # sees that queue as its own wait, so a tier that gives it no place within SPILL_S spills to the next tier
             ahead = {}
+            rates = self._rates(now)
             for cid in [k for k, t in self.tickets.items() if t.done_at is not None and now - t.done_at > KEEP_DONE_S]:
                 del self.tickets[cid]                    # an answer nobody came for
             for t in sorted(self.pending, key=lambda x: x.rank(now)):
@@ -352,13 +369,14 @@ class Head:
                 tiers = self._tiers(t)
                 for at, tier in enumerate(tiers):
                     ready, near = [], (INF, None, 'no_channel')
+                    known = max((rates[c] for c in tier if c in rates), default=0.0)     # fac-81: no rate = the best known of the tier
                     for i, cid in enumerate(tier):
                         wait, why = self._eta(cid, t.est, now)
                         own = min(own, max(0.0, wait))
                         queue = ahead.get(cid)
                         if wait <= 0 and not queue:
                             score, stock = self._score(cid, t.est, now)
-                            ready.append((t.refused.get(cid, 0) >= REFUSED_SKIP, cid == t.avoid, -score, -stock, i, cid))   # fac-66: the channel that just refused goes last
+                            ready.append((t.refused.get(cid, 0) >= REFUSED_SKIP, -rates.get(cid, known), -score, -stock, i, cid))   # fac-66: a channel that refused it twice goes last; fac-81: the higher pass rate first
                             continue
                         if queue and (wait <= 0 or why in PACING):     # the tickets ahead pass first: their tokens and gaps
                             b = self.b[cid]                # the queue's tokens beyond the bucket's level, its gaps after ours
@@ -377,7 +395,7 @@ class Head:
                     if near[0] < best[0]:
                         best = near
                     if near[0] + (now - t.born if at == 0 else 0.0) <= SPILL_S and near[2] in PACING:
-                        break        # only the even pace holds this tier a moment: wait for it, never spill to the next tier
+                        break        # only the even pace holds this tier a moment: wait for it, never spill to the next tier (a rest after 503 does not hold)
                     # fac-51: on the FIRST tier the moment counts from the ticket's birth (a review the small tier cannot
                     # place within SPILL_S of its arrival leaves it for good, never back and forth); a later tier holds it
                     # whenever its own wait is within SPILL_S, whatever its age: an old review waits 5 s for main, it does
@@ -463,15 +481,12 @@ class Head:
             elif kind == 'net':         # no connection: the channel rests briefly, the model is not paused, the ticket moves on
                 b['closed'], b['why'] = max(b['closed'], now + NET_CLOSE_S), 'network'
                 self._retry(t, status, raw)
-            elif kind == '503':         # fac-66: a refusal of one request: no pause, no probe; the ticket is sent again at once
-                if status in OVERLOAD:  # fac-59: the server ran nothing: the estimate goes back, the request stays counted
-                    b['level'] = min(b['eff'], b['level'] + t.est)
-                    t.entry[1] = 0
-                    C.reconcile(self.q, ch, at, t.est, 0)
-                    if b['last'] == t.sent_at and t.prev_last is not None:
-                        b['last'] = t.prev_last          # fac-66: its 0.6 s refusal does not take the channel's rpm gap
+            elif kind == '503':         # fac-81: Google counted the refused request: the estimate stays charged (bucket, window, ledger)
+                if now + COOL_503_S > b['closed']:      # ... and the channel rests: the ticket goes to another open channel
+                    b['closed'], b['why'] = now + COOL_503_S, 'refused_503'
+                if b['last'] == t.sent_at and t.prev_last is not None:
+                    b['last'] = t.prev_last          # fac-66: its 0.6 s refusal does not take the channel's rpm gap
                 t.tries503 += 1
-                t.avoid = cid
                 t.refused[cid] = t.refused.get(cid, 0) + 1
                 if t.tries503 >= MAX_503_TRIES:      # spent: given back like an expired ticket (the caller's transient fault)
                     self._finish(t, status, raw, ch=None, expired=True, held={'reason': 'overload_tries', 'wait_s': 0.0},
