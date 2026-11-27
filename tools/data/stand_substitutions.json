@@ -1,0 +1,458 @@
+{
+ "about": "U23 / R31-1: the places where the test stand puts a fake instead of a real component. Convention checked by tests/test_u23_locks.py: a class named Fake*/Stub*/Mock*/Dummy*/Scripted*/*Clock/VirtualLoop/VirtualAsyncio or a function fake_*/stub_* in tests/ or tools/replay/ must be listed (file+name; nested ones count). Entries with by_convention=false are voluntary (the stand scripted parts with other names). Real server, phone, SAPI voice and models live on the laptop; no number from a fake is a measurement.",
+ "entries": [
+  {
+   "file": "tests/helpers_always_answer.py",
+   "name": "Clock",
+   "replaces": "clock",
+   "what": "time for fast_text/reserve_text: monotonic() follows the virtual loop, the rest is the real module",
+   "why": "the always-answer rig runs a whole call in virtual time"
+  },
+  {
+   "file": "tests/helpers_r_vad.py",
+   "name": "ScriptedModel",
+   "replaces": "sherpa-silero",
+   "what": "the boundary of sherpa-onnx VadModel (silero): window_size/is_speech/reset, verdict k = script[k]",
+   "why": "the real silero model is not here (laptop only), and sherpa exits the whole process on a wrong window size, so the fake records such calls"
+  },
+  {
+   "file": "tests/helpers_s6_ack.py",
+   "name": "FakeClock",
+   "replaces": "clock",
+   "what": "a hand-advanced clock (a callable or object with now/monotonic) injected instead of time.monotonic/time.time",
+   "why": "the test moves time by hand: exact timings are asserted with no sleep, and no number from it is a laptop or phone measurement"
+  },
+  {
+   "file": "tests/helpers_s6_ack.py",
+   "name": "FakeSource",
+   "replaces": "gpt-live",
+   "what": "the GPT-Live helper pipe: records every frame the product would send",
+   "why": "no real model call in tests; the test reads what the product sent"
+  },
+  {
+   "file": "tests/helpers_s6_fault.py",
+   "name": "FakeBridge",
+   "replaces": "gpt-live",
+   "what": "the Conduit Watch helper pipe (start/send/receive/close like ThreadedHelperBridge)",
+   "why": "fault injection: a corrupt pipe, EOF and a timeout on demand"
+  },
+  {
+   "file": "tests/helpers_s6_fault.py",
+   "name": "FakeSearchModule",
+   "replaces": "lookup",
+   "what": "api._echo_quick_lookup_module(): the Hermes quick lookup that serve.lookup calls",
+   "why": "no network search here; the plan says what a lookup returns or raises"
+  },
+  {
+   "file": "tests/helpers_s6_fault.py",
+   "name": "FakeSource",
+   "replaces": "gpt-live",
+   "what": "what connect() returns: the GPT-Live helper pipe as NativeMediaSocket sees it",
+   "why": "the production wire runs on a recorded fake pipe, with injected faults"
+  },
+  {
+   "file": "tests/helpers_s6_fault.py",
+   "name": "FakeWS",
+   "replaces": "phone",
+   "what": "the phone websocket as serve uses it: query_params, receive_text, send_text, close",
+   "why": "there is no phone here; the fake is the phone end of the wire"
+  },
+  {
+   "file": "tests/helpers_s6_fault.py",
+   "name": "FakeWorker",
+   "replaces": "sapi",
+   "what": "profile_sapi_worker(home): the persistent SAPI worker process; synthesize runs on a worker thread",
+   "why": "no Windows SAPI voice on the cloud; the plan sets what synthesis returns, how long it takes (virtual) and when it fails"
+  },
+  {
+   "file": "tests/helpers_s6_fault.py",
+   "name": "VirtualLoop",
+   "replaces": "clock",
+   "what": "the asyncio event loop with virtual time (selector loop whose clock jumps to the next timer)",
+   "why": "a 15 s synthesis timeout costs microseconds and audible-within-20-s is asserted exactly"
+  },
+  {
+   "file": "tests/helpers_s6_state.py",
+   "name": "FakeClock",
+   "replaces": "clock",
+   "what": "a hand-advanced clock (a callable or object with now/monotonic) injected instead of time.monotonic/time.time",
+   "why": "the test moves time by hand: exact timings are asserted with no sleep, and no number from it is a laptop or phone measurement"
+  },
+  {
+   "file": "tests/helpers_s6_state.py",
+   "name": "FakeSource",
+   "replaces": "gpt-live",
+   "what": "what the product would send to the GPT-Live helper (frames; a quiet note is listed separately)",
+   "why": "state tests read the model-visible calls with no model"
+  },
+  {
+   "file": "tests/helpers_s6_state.py",
+   "name": "VirtualAsyncio",
+   "replaces": "clock",
+   "what": "asyncio.sleep/time on the stand clock instead of the real one",
+   "why": "a scene of minutes runs at once and deterministically"
+  },
+  {
+   "file": "tests/helpers_t_new_classes.py",
+   "name": "Clock",
+   "replaces": "clock",
+   "what": "a hand-advanced clock (a callable or object with now/monotonic) injected instead of time.monotonic/time.time",
+   "why": "the test moves time by hand: exact timings are asserted with no sleep, and no number from it is a laptop or phone measurement"
+  },
+  {
+   "file": "tests/registry/test_fn_8_11.py",
+   "name": "fake_modules",
+   "replaces": "modules",
+   "what": "installs fake modules into sys.modules (the names given by the test)",
+   "why": "the heavy or Windows-only modules are not installed in the cloud"
+  },
+  {
+   "file": "tests/test_answer_watchdog.py",
+   "name": "Clock",
+   "replaces": "clock",
+   "what": "a hand-advanced clock (a callable or object with now/monotonic) injected instead of time.monotonic/time.time",
+   "why": "the test moves time by hand: exact timings are asserted with no sleep, and no number from it is a laptop or phone measurement"
+  },
+  {
+   "file": "tests/test_audit_g10.py",
+   "name": "Clock",
+   "replaces": "clock",
+   "what": "a hand-advanced clock (a callable or object with now/monotonic) injected instead of time.monotonic/time.time",
+   "why": "the test moves time by hand: exact timings are asserted with no sleep, and no number from it is a laptop or phone measurement"
+  },
+  {
+   "file": "tests/test_audit_g10.py",
+   "name": "FClock",
+   "replaces": "clock",
+   "what": "a hand-advanced clock (a callable or object with now/monotonic) injected instead of time.monotonic/time.time",
+   "why": "the test moves time by hand: exact timings are asserted with no sleep, and no number from it is a laptop or phone measurement"
+  },
+  {
+   "file": "tests/test_audit_g10.py",
+   "name": "Fake",
+   "replaces": "text-model",
+   "what": "the fast text channel (callable request, cancelled) that records runs",
+   "why": "no OpenAI text call in tests"
+  },
+  {
+   "file": "tests/test_controlled_host_sapi.py",
+   "name": "FakeWorker",
+   "replaces": "sapi",
+   "what": "the SAPI worker of controlled_host: returns engine samples and records events",
+   "why": "no SAPI here; the host path is tested with synthesized samples"
+  },
+  {
+   "file": "tests/test_e76_end_intonation.py",
+   "name": "fake_request",
+   "replaces": "sapi",
+   "what": "SapiWorkerManager.request: writes a short valid WAV and records (text, ssml)",
+   "why": "the voice is Windows SAPI on the laptop; the test checks the SSML and text the product asked for, not the sound"
+  },
+  {
+   "file": "tests/test_ear_shadow.py",
+   "name": "FakeRecognizer",
+   "replaces": "ear",
+   "what": "the recognizer boundary: keeps the audio of each stream, finish returns the next scripted text (or raises)",
+   "why": "the real sherpa recognizer and its model are on the laptop"
+  },
+  {
+   "file": "tests/test_ear_shadow.py",
+   "name": "ScriptedDetector",
+   "replaces": "sherpa-silero",
+   "what": "the SpeechOnset contract of local_ear (feed -> onset/speech/None, speaking), driven by a script",
+   "why": "no real VAD (silero) here; the script says what each packet is"
+  },
+  {
+   "file": "tests/test_first_cue_never_silent.py",
+   "name": "Clock",
+   "replaces": "clock",
+   "what": "a hand-advanced clock (a callable or object with now/monotonic) injected instead of time.monotonic/time.time",
+   "why": "the test moves time by hand: exact timings are asserted with no sleep, and no number from it is a laptop or phone measurement"
+  },
+  {
+   "file": "tests/test_h1_fast_text.py",
+   "name": "Clock",
+   "replaces": "clock",
+   "what": "a hand-advanced clock (a callable or object with now/monotonic) injected instead of time.monotonic/time.time",
+   "why": "the test moves time by hand: exact timings are asserted with no sleep, and no number from it is a laptop or phone measurement"
+  },
+  {
+   "file": "tests/test_h1_fast_text.py",
+   "name": "FakeEar",
+   "replaces": "ear",
+   "what": "the shadow ear as fast_text sees it: records what is given and whether it acts",
+   "why": "the real ear needs the local recognizer"
+  },
+  {
+   "file": "tests/test_h1_fast_text.py",
+   "name": "FakeHttp",
+   "replaces": "http",
+   "what": "the httpx client: stream(method, url) returns the scripted response and records calls",
+   "why": "no network call to the OpenAI text model"
+  },
+  {
+   "file": "tests/test_h1_fast_text.py",
+   "name": "FakeResponse",
+   "replaces": "http",
+   "what": "a streaming HTTP response with a status and SSE lines",
+   "why": "the same: what the cloud sends is scripted"
+  },
+  {
+   "file": "tests/test_h1_fast_text.py",
+   "name": "FakeRun",
+   "replaces": "text-model",
+   "what": "one scripted streaming request: what the cloud-less channel yields, and when",
+   "why": "the test decides latency and failure of the text model"
+  },
+  {
+   "file": "tests/test_h1_fast_text.py",
+   "name": "FakeStream",
+   "replaces": "text-model",
+   "what": "the stream factory (request, cancelled) -> FakeRun; keeps the runs",
+   "why": "no OpenAI text call"
+  },
+  {
+   "file": "tests/test_in_speech_correction.py",
+   "name": "Clock",
+   "replaces": "clock",
+   "what": "a hand-advanced clock (a callable or object with now/monotonic) injected instead of time.monotonic/time.time",
+   "why": "the test moves time by hand: exact timings are asserted with no sleep, and no number from it is a laptop or phone measurement"
+  },
+  {
+   "file": "tests/test_l3_ear_long.py",
+   "name": "Clock",
+   "replaces": "clock",
+   "what": "a hand-advanced clock (a callable or object with now/monotonic) injected instead of time.monotonic/time.time",
+   "why": "the test moves time by hand: exact timings are asserted with no sleep, and no number from it is a laptop or phone measurement"
+  },
+  {
+   "file": "tests/test_q1_quick.py",
+   "name": "StubController",
+   "replaces": "controller",
+   "what": "what the feed asks of the controller: the open cloud turn (ledger.latest_user) and prefetch_candidate of a text",
+   "why": "the feed is tested without the whole controller"
+  },
+  {
+   "file": "tests/test_roads_channel.py",
+   "name": "Clock",
+   "replaces": "clock",
+   "what": "a hand-advanced clock (a callable or object with now/monotonic) injected instead of time.monotonic/time.time",
+   "why": "the test moves time by hand: exact timings are asserted with no sleep, and no number from it is a laptop or phone measurement"
+  },
+  {
+   "file": "tests/test_sapi_resident.py",
+   "name": "Clock",
+   "replaces": "clock",
+   "what": "a hand-advanced clock (a callable or object with now/monotonic) injected instead of time.monotonic/time.time",
+   "why": "the test moves time by hand: exact timings are asserted with no sleep, and no number from it is a laptop or phone measurement"
+  },
+  {
+   "file": "tests/test_sapi_resident.py",
+   "name": "FakeTimer",
+   "replaces": "clock",
+   "what": "threading.Timer: runs the function when the test fires it, never by itself",
+   "why": "the resident-worker idle timer is tested without waiting"
+  },
+  {
+   "file": "tests/test_sapi_worker.py",
+   "name": "FakePipe",
+   "replaces": "process",
+   "what": "a text pipe (stdout of the worker): a queue of lines, closed flag",
+   "why": "the PowerShell SAPI child process does not exist here"
+  },
+  {
+   "file": "tests/test_sapi_worker.py",
+   "name": "FakeProcess",
+   "replaces": "sapi",
+   "what": "the PowerShell SAPI child process (modes: normal, delay, ...) with stdin/stdout fakes",
+   "why": "the worker protocol is tested with scripted child behaviour"
+  },
+  {
+   "file": "tests/test_sapi_worker.py",
+   "name": "FakeStdin",
+   "replaces": "process",
+   "what": "stdin of the fake worker process: its writes drive the fake process",
+   "why": "part of FakeProcess"
+  },
+  {
+   "file": "tests/test_speech_text_wiring.py",
+   "name": "FakeVoice",
+   "replaces": "sapi",
+   "what": "a synthesizer that keeps what it was asked to say and writes a short valid WAV",
+   "why": "the speech text is checked before the real voice"
+  },
+  {
+   "file": "tests/test_task2_stuck_endless_complete.py",
+   "name": "Clock",
+   "replaces": "clock",
+   "what": "a hand-advanced clock (a callable or object with now/monotonic) injected instead of time.monotonic/time.time",
+   "why": "the test moves time by hand: exact timings are asserted with no sleep, and no number from it is a laptop or phone measurement"
+  },
+  {
+   "file": "tests/test_task_c_unpunctuated.py",
+   "name": "Clock",
+   "replaces": "clock",
+   "what": "a hand-advanced clock (a callable or object with now/monotonic) injected instead of time.monotonic/time.time",
+   "why": "the test moves time by hand: exact timings are asserted with no sleep, and no number from it is a laptop or phone measurement"
+  },
+  {
+   "file": "tests/test_turn_policy.py",
+   "name": "Clock",
+   "replaces": "clock",
+   "what": "a hand-advanced clock (a callable or object with now/monotonic) injected instead of time.monotonic/time.time",
+   "why": "the test moves time by hand: exact timings are asserted with no sleep, and no number from it is a laptop or phone measurement"
+  },
+  {
+   "file": "tests/test_u15_addressed.py",
+   "name": "Stub",
+   "replaces": "controller",
+   "what": "the controller as the addressed-judge reads it: clock, cue_log, ledger snapshot/history",
+   "why": "the judge is tested without the whole controller"
+  },
+  {
+   "file": "tests/test_u19_s5_voice_lang.py",
+   "name": "fake_request",
+   "replaces": "sapi",
+   "what": "SapiWorkerManager.request: writes a short valid WAV and records (text, ssml)",
+   "why": "the voice language is checked in the request, not in the sound"
+  },
+  {
+   "file": "tests/test_u21_semantic_probe.py",
+   "name": "fake_encode",
+   "replaces": "embedding",
+   "what": "the sentence encoder: a 64-dim trigram hash vector",
+   "why": "the real embedding model is not here; only the probe logic is tested"
+  },
+  {
+   "file": "tests/test_ux_call_trace.py",
+   "name": "Clock",
+   "replaces": "clock",
+   "what": "a hand-advanced clock (a callable or object with now/monotonic) injected instead of time.monotonic/time.time",
+   "why": "the test moves time by hand: exact timings are asserted with no sleep, and no number from it is a laptop or phone measurement"
+  },
+  {
+   "file": "tests/test_ux_duplex.py",
+   "name": "Clock",
+   "replaces": "clock",
+   "what": "a hand-advanced clock (a callable or object with now/monotonic) injected instead of time.monotonic/time.time",
+   "why": "the test moves time by hand: exact timings are asserted with no sleep, and no number from it is a laptop or phone measurement"
+  },
+  {
+   "file": "tests/test_v5_answer_gate.py",
+   "name": "Fake",
+   "replaces": "controller",
+   "what": "the v5 machine: tick(now) returns no actions",
+   "why": "the tap is tested on its own"
+  },
+  {
+   "file": "tests/test_v5_step0_facts.py",
+   "name": "Clock",
+   "replaces": "clock",
+   "what": "a hand-advanced clock (a callable or object with now/monotonic) injected instead of time.monotonic/time.time",
+   "why": "the test moves time by hand: exact timings are asserted with no sleep, and no number from it is a laptop or phone measurement"
+  },
+  {
+   "file": "tests/test_v5_step1a_tap.py",
+   "name": "Fake",
+   "replaces": "controller",
+   "what": "the v5 machine: tick(now) returns scripted actions (cancel, speak)",
+   "why": "the tap records what a machine would do"
+  },
+  {
+   "file": "tests/test_w2_own_voice.py",
+   "name": "Clock",
+   "replaces": "clock",
+   "what": "a hand-advanced clock (a callable or object with now/monotonic) injected instead of time.monotonic/time.time",
+   "why": "the test moves time by hand: exact timings are asserted with no sleep, and no number from it is a laptop or phone measurement"
+  },
+  {
+   "file": "tests/test_w5_near.py",
+   "name": "Clock",
+   "replaces": "clock",
+   "what": "a hand-advanced clock (a callable or object with now/monotonic) injected instead of time.monotonic/time.time",
+   "why": "the test moves time by hand: exact timings are asserted with no sleep, and no number from it is a laptop or phone measurement"
+  },
+  {
+   "file": "tools/replay/ddmin.py",
+   "name": "Scripted",
+   "replaces": "phone",
+   "what": "a conversation played from a list of moves [index, t, kind, barge]; the listener decides nothing",
+   "why": "ddmin shrinks a failing conversation by replaying subsets of its moves"
+  },
+  {
+   "file": "tools/replay/stand.py",
+   "name": "Mind",
+   "replaces": "text-model",
+   "what": "the text model as an ideal one: it knows what each utterance meant (the stand tells it) and answers that, or a dash, or a command mark",
+   "why": "the replay stand has no cloud; latency and failure of the model come from the seed",
+   "by_convention": false
+  },
+  {
+   "file": "tools/replay/stand.py",
+   "name": "Recognizer",
+   "replaces": "ear",
+   "what": "the ear worker with no thread (as test_h3_tempo.Recognizer)",
+   "why": "the stand drives the ear by hand, the text of an utterance comes when the seed says",
+   "by_convention": false
+  },
+  {
+   "file": "tools/replay/no_cloud.py",
+   "name": "StandWire",
+   "replaces": "wire",
+   "what": "NativeMediaSocket whose quiet local-mode retries wait on the stand clock",
+   "why": "a real sleep would push the whole virtual clock by the delay at once",
+   "by_convention": false
+  },
+  {
+   "file": "tools/replay/no_cloud.py",
+   "name": "Refused",
+   "replaces": "gpt-live",
+   "what": "the helper that cannot be opened (06.11): connect raises until cloud_up",
+   "why": "replays the no-cloud call; not a measurement of the real cloud",
+   "by_convention": false
+  },
+  {
+   "file": "tools/replay/no_cloud.py",
+   "name": "Deaf",
+   "replaces": "gpt-live",
+   "what": "the helper that opens and never answers (no user turn, no answer)",
+   "why": "the second kind of no-cloud",
+   "by_convention": false
+  },
+  {
+   "file": "tests/helpers_fast_fake.py",
+   "name": "Clock",
+   "replaces": "clock",
+   "what": "a hand-advanced clock (a callable returning a settable time) injected instead of time.monotonic/time.time",
+   "why": "the test moves time by hand: exact timings are asserted with no sleep, and no number from it is a laptop or phone measurement"
+  },
+  {
+   "file": "tests/test_u31_open_stages.py",
+   "name": "Clock",
+   "replaces": "clock",
+   "what": "a hand-advanced clock (a callable returning a settable time) injected instead of time.monotonic/time.time",
+   "why": "the test moves time by hand: exact timings are asserted with no sleep, and no number from it is a laptop or phone measurement"
+  },
+  {
+   "file": "tests/test_u89_journal_three_hours.py",
+   "name": "Clock",
+   "replaces": "clock",
+   "what": "a hand-advanced clock (a callable returning a settable time) injected instead of time.monotonic/time.time",
+   "why": "the test moves time by hand: exact timings are asserted with no sleep, and no number from it is a laptop or phone measurement"
+  },
+  {
+   "file": "tests/helpers_fast_fake.py",
+   "name": "Fake",
+   "replaces": "text-model",
+   "what": "the stream factory (request, cancelled) that records each run and gives back its generator",
+   "why": "the first-road text stream is scripted word by word, with no network and no model"
+  },
+  {
+   "file": "tests/test_codex_road.py",
+   "name": "fake_first_road",
+   "replaces": "text-model",
+   "what": "codex_road.primary: records the resolved transport and credentials and streams one short word",
+   "why": "the choice of the first road is checked in what it is given, not in a real model answer"
+  }
+ ]
+}

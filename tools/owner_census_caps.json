@@ -1,0 +1,5 @@
+{
+ "note": "The ceiling of owners a family may have: tests/test_owner_census.py fails when a family is above its number, and tests/test_extension_slots.py when the toys raise it. The numbers only go DOWN, and only in the commit that deletes the owner. Written from `python -m tools.owner_census` on c2ce23f1 (13.11 base c1d2434: 132). TARGET: one owner a family (9), and at most 15 in all with no family above 2.",
+ "families": {"kind": 11, "question": 15, "answer": 13, "portion": 13, "timers": 27, "speech": 12, "memory": 15, "modes": 10, "route": 9},
+ "target": {"total": 15, "per_family": 2, "wanted": 9}
+}
