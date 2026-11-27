@@ -1,0 +1,6 @@
+tests/test_a2_same_question.py
+tests/test_ack_commands.py
+tests/test_ack_lead_in.py
+tests/test_ack_normalisation.py
+tests/test_b_ruling.py
+tests/test_c16_ear_job.py
