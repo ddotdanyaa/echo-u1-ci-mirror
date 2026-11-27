@@ -5902,10 +5902,11 @@ class Loop:
             must_code, last = False, ""
             if not boxed:
                 working = {k: v for k, v in asks.items() if k not in gone}
-                if working:
+                strong = [k for k in ("agent", "paid") if k in allowed and k in barred and k not in gone]
+                if working and not strong:
                     asks = working
-                else:                                  # a bar moves the row UP the ladder; at the top the strongest step that works now slices it
-                    pool = [k for k in ("agent", "paid", "free_main", "free", "free_small") if k in allowed and k not in gone]
+                else:                                  # a bar moves the row UP the ladder; a barred strong step that works now takes it again, no hand-down
+                    pool = strong or [k for k in ("agent", "paid", "free_main", "free", "free_small") if k in allowed and k not in gone]
                     if not pool:
                         raise SliceWait()              # no step at all can work now: the row waits
                     last = pool[0]
@@ -6012,6 +6013,8 @@ class Loop:
             if result.get("repaired"):
                 extra["repaired"] = list(result["repaired"])      # W-free 1: what the machine mended in the contract
             portion = dict(engine=engine, rung=job.ctx["rung"])
+            if packet.get("must_code"):
+                portion["must_code"] = True        # the card is made under the strong step's own code: its death ends the row
             if outcome == "fix":
                 prior = [t for t in tasks.values() if t.kind == "code" and F.row_of(t.backlog_id or t.id) == row]
                 prior.sort(key=lambda t: (int((re.search(r"_r(\d+)$", t.id) or [None, "0"])[1]), t.id))
@@ -6395,8 +6398,12 @@ class Loop:
                 hist["seen"].append(tid)
                 m = re.search(r"_r(\d+)$", tid)
                 gens.setdefault(m.group(1) if m else "0", []).append(str(rec.get("engine") or ""))
+                if rec.get("must_code"):
+                    hist["code_died"] = True       # the strong step's own code did not pass: one escalation, the row ends
         for engines in gens.values():
             hist["failed_gens"] += 1
+            if hist.get("code_died"):
+                hist["failed_gens"] = max(hist["failed_gens"], HARD_FAILED_GENS)
             engine = next((e for e in engines if e), "")
             if engine:
                 hist["red"][engine] = hist["red"].get(engine, 0) + F.RESLICE_AFTER
@@ -6481,7 +6488,8 @@ class Loop:
             ls.setdefault("quarantine", {})[bid] = {"version": version, "ladder": ladder, "at": now, "why": "reslice budget exhausted"}
             if hard:
                 ls["quarantine"][bid].update(kind="failed_gens", rev=str(A.CONTRACT_REV),
-                                             why="%d generations reached a red fix" % ls["row_hist"][bid]["failed_gens"])
+                                             why=("the strong step's own code did not pass" if ls["row_hist"][bid].get("code_died")
+                                                  else "%d generations reached a red fix" % ls["row_hist"][bid]["failed_gens"]))
             ls.get("to_slice", {}).pop(bid, None)
             ls.get("slice_wait", {}).pop(bid, None)
             self.save_ls(ls)
@@ -6618,6 +6626,8 @@ class Loop:
                 rec = state["tasks"][tid]
                 if tid in ids and portion.get("engine"):
                     rec["engine"] = portion["engine"]
+                    if portion.get("must_code"):
+                        rec["must_code"] = True
                 if F.row_of(task.backlog_id or tid) == row and tid not in ids and rec["status"] in ("READY", "BLOCKED", "FAILED"):
                     rec.update(status="FAILED", reason="superseded:reslice%d" % gen)
         self._slice_record(ls, row, gen, cause, now)
