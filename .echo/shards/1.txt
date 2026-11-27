@@ -1,0 +1,6 @@
+tests/registry/test_fn_6_06.py
+tests/registry/test_fn_7_06.py
+tests/test_c22_reviewfix_local_host.py
+tests/test_call_context_wiring.py
+tests/test_controlled_host_binding_ranges.py
+tests/test_controlled_host_sapi.py
