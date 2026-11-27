@@ -1,0 +1,6 @@
+tests/registry/test_fn_6_03.py
+tests/test_b_ruling_lock.py
+tests/test_m1_memory.py
+tests/test_m2_open.py
+tests/test_m9_ledger.py
+tests/test_n02_topic_in_play.py
