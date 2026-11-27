@@ -1772,6 +1772,7 @@ class Loop:
             return out
         self._tick("bg_poll", self._bg_poll)  # a finished background triage / hold pick is applied here, in this thread
         self._tick("sweep", self._sweep_tick, now)  # the red-guard supply follows the loop's own results and a periodic cloud sweep
+        self._tick("phantoms", self._phantoms_tick, now, every=self.TICK_MIN_S)  # fac-71: idempotent, cheap
         self._tick("links", self._links_tick, now, every=self.TICK_MIN_S)  # the owner's words are linked to backlog rows in their own slot (4.2)
         self._tick("release", self._release_tick, now)  # the final build: a full cloud sweep in its own slot, then the acceptance of merged rows
         self._tick("bisect", self._bisect_tick, now, every=self.TICK_MIN_S)  # W-bisect: the history search of the baseline debt (one cloud run at a time, behind the cards and the build)
@@ -3776,10 +3777,10 @@ class Loop:
             try:
                 task_a = tasks.get(tid)
                 # a card with a non-empty `more` fixed only part of the row (the barrier of _closes_row): the debt closes by two full builds
-                if (task_a is None or not (Loop._contract(task_a).get("more") or row.get("reds_left"))) and REL.close_debt(self.cfg.state_dir, bid):     # a merged and accepted rel-base-<n>: its file leaves the debt
+                if (task_a is None or not (Loop._next_step(Loop._contract(task_a)) or row.get("reds_left"))) and REL.close_debt(self.cfg.state_dir, bid):     # a merged and accepted rel-base-<n>: its file leaves the debt
                     self.event("release", status="debt_closed", backlog_id=bid, reason="baseline debt row accepted")
                 from tools import factory_gate as _fg
-                if task_a is not None and _fg.is_rig_task(task_a) and not (Loop._contract(task_a).get("more") or row.get("reds_left")):
+                if task_a is not None and _fg.is_rig_task(task_a) and not (Loop._next_step(Loop._contract(task_a)) or row.get("reds_left")):
                     # W-rig (deliberate second way to close debt): the task says the ids leave the baseline debt at once, without the two
                     # green builds of W-part; a rig card replaces the test stand itself, its ids were verified in the cloud run of the candidate
                     spec = Loop._contract(task_a).get("test") or {}
@@ -3843,7 +3844,7 @@ class Loop:
         """A promoted task closes its backlog row only when it is the whole row's code task: a test sub-task or one part of
         a cut row shares the backlog ID but proves nothing about the row (the parents path closes a cut row)."""
         return (task is not None and getattr(task, "kind", "code") == "code"
-                and not Loop._contract(task).get("more")
+                and not Loop._next_step(Loop._contract(task))
                 and getattr(task, "backlog_id", "") not in (parents or {}))
 
     def _sync_stale_rows(self, ids, sha_of=None) -> int:
@@ -4403,6 +4404,46 @@ class Loop:
             return value if isinstance(value, dict) else {}
         except (ValueError, TypeError):
             return {}
+
+    @staticmethod
+    def _next_step(contract) -> str:
+        """fac-71: the real next step of a contract ('' = none). An author's signature in `more` ("author: <model>") is not a step."""
+        more = str((contract or {}).get("more") or "").strip()
+        return "" if more.lower().startswith("author:") else more
+
+    PHANTOM_DONE = re.compile(r"^\s*Merged\s+(\S+?):\s*author:", re.I)
+
+    def _clear_phantoms(self, ls) -> int:
+        """fac-71 (idempotent): a to_slice row whose `done` is "Merged <tid>: author: ..." came back for a signature, not for a step.
+        Without a guard it leaves the queue and is recorded as merged (the closure of its merge commit); with a guard it stays,
+        as "still red: <guard>", with no link to the old contract. Returns how many rows it changed; the caller saves ls."""
+        rows, cleared, kept = ls.get("to_slice") or {}, [], 0
+        for bid, row in list(rows.items()):
+            m = self.PHANTOM_DONE.match(str((row or {}).get("done") or ""))
+            if not m:
+                continue
+            if row.get("guard"):
+                row["done"] = F.redact("still red: " + str(row["guard"]))
+                kept += 1
+                continue
+            rows.pop(bid)
+            cleared.append((bid, m.group(1)))
+        unclosed = []
+        for bid, tid in cleared:
+            sha = (ls.get("slicer_merges") or {}).get(tid)
+            if sha and bid not in (ls.get("parents") or {}):        # as _closes_row: one part of a cut row does not close the row
+                self._write_closure(tid, bid, {"commit": sha}, "promoted")
+            else:
+                unclosed.append(bid)
+        if cleared or kept:
+            self.event("slice", status="phantom_cleared", cleared=len(cleared), kept_with_guard=kept, not_closed=len(unclosed),
+                       reason=(",".join(b for b, _ in cleared) + " | no_record_or_cut_row:" + ",".join(unclosed))[:300])
+        return len(cleared) + kept
+
+    def _phantoms_tick(self, now=None) -> None:
+        ls = self.ls()
+        if self._clear_phantoms(ls):
+            self.save_ls(ls)
 
     def _slice_light(self, budget, text, *, max_tokens, role, temperature=0):
         """W-path A: one slicing call that does not give up at the first refusal. 429/500/503: the channel is cooled by
@@ -5733,6 +5774,35 @@ class Loop:
                 out[entry["run_id"]] = entry
         return out
 
+    @staticmethod
+    def _merged_already(contract, root) -> bool:
+        """fac-71: True when every SEARCH/REPLACE block of every part of a fix contract is already in the snapshot: its REPLACE text
+        stands in the file exactly once and its SEARCH text nowhere else (0 times, or only inside the REPLACE). A part with no
+        blocks, an unreadable file or any live SEARCH: False (the usual path)."""
+        from tools import factory_solver as SOL
+        try:
+            parts = contract.get("parts") if isinstance(contract, dict) and contract.get("decision") == "fix" else None
+            if not isinstance(parts, list) or not parts:
+                return False
+            for part in parts:
+                code = part.get("code") if isinstance(part, dict) else None
+                blocks = SOL.parse_blocks(code) if isinstance(code, str) else []
+                if not blocks:
+                    return False
+                text = (Path(root) / F.safe_path(part.get("file"))).read_bytes().decode("utf-8-sig").replace(chr(13) + chr(10), chr(10))
+                for search, replace in blocks:
+                    if not replace.strip() or not search or text.count(replace) != 1:
+                        return False
+                    lo = text.index(replace)
+                    hi, at = lo + len(replace), text.find(search)
+                    while at != -1:                 # a SEARCH anywhere but wholly inside the one REPLACE is live code
+                        if at < lo or at + len(search) > hi:
+                            return False
+                        at = text.find(search, at + 1)
+            return True
+        except Exception:       # noqa: BLE001  not provable: the usual path decides
+            return False
+
     def _box_contract(self, row, root):
         """The valid contract of the box, or None; the file goes to used/ or (with its faults) to refused/: it is read once.
         W-intake: ready code without the proof of a green cloud run on an ancestor of the current base goes to rejected/ with the
@@ -5741,6 +5811,10 @@ class Loop:
         path = self.cfg.state_dir / "contracts" / (row + ".json")
         try:
             contract = json.loads(path.read_text(encoding="utf-8"))
+            if self._merged_already(contract, root):        # fac-71: the code of the contract is in the base: no card, no refusal
+                self._box_file(row, path, "used")
+                self.event("slice", backlog_id=row, status="box_merged_already", engine=A.BOX_ENGINE)
+                return None
             faults = A.validate(contract, root, bid=row, engine=A.BOX_ENGINE, base_ok=self._proof_base_ok,
                                 proofs=self._proof_ledger())
             if not faults and contract.get("decision") != "fix":
@@ -8561,11 +8635,18 @@ class Loop:
             self.event("run", task_id=tid, status="scope_add", events=["scope_add:" + p for p in new[len(old):]])
 
     @staticmethod
+    def _review_returned(res: dict) -> bool:
+        """fac-72: a ready card sent back to its author by a critic (ready_return text starts with review:)."""
+        return str(res.get("ready_return") or "").startswith("review:")
+
+    @staticmethod
     def _ran_model_or_gate(res: dict, calls: list, st, rkey: str) -> bool:
         """The run reached the model or the gates (so a failure is about the pipeline), and it was
         not a wait, a budget stop or a block BEFORE the model."""
         blocked = str(res.get("blocked_reason") or "")
         waits = {"cloud_down", "cloud_busy", "reslice:stale", "SliceWait"}
+        if Loop._review_returned(res):      # fac-72: a ready card refused by the critics: the pipeline judged it, not a wait
+            return True
         if (st in waits or rkey in waits or blocked in waits or res.get("channel_reason") in waits):
             return False
         if (st in ("WAITING_CHANNEL", "IDLE", "NO_RESULT") or rkey in CHANNEL_REASONS
@@ -8627,7 +8708,7 @@ class Loop:
             c.get("returncode") == 0 and not c.get("error_class") and not c.get("provider_error")
             and ((c.get("output_tokens") or 0) > 0 or (c.get("steps") or 0) > 0
                  or (c.get("tool_events") or 0) > 0) for c in calls)
-        candidate = (st == "REVIEW" or res.get("cross_review") is not None
+        candidate = (st == "REVIEW" or res.get("cross_review") is not None or Loop._review_returned(res)
                      or rkey.startswith(("review:", "weakening:"))
                      or (rkey.startswith("gate:") and rkey != "gate:no_changes"
                          and "timeout" not in rkey and Loop._gate_collected(res)))
@@ -8702,7 +8783,7 @@ class Loop:
                 if isinstance(rec, dict):
                     rec["merged"] = True
             left = list(state["tasks"].get(tid, {}).get("reds_left") or ())       # W-part 3: other reds of the same file stay: the row is not done
-            more = self._contract(task).get("more") or ("still red in the same file: " + ", ".join(left[:6]) if left else "")
+            more = self._next_step(self._contract(task)) or ("still red in the same file: " + ", ".join(left[:6]) if left else "")
             if task and task.kind == "code" and more:
                 bid = F.row_of(task.backlog_id or tid)
                 step = ls.setdefault("row_steps", {}).get(bid, 0) + 1
@@ -9429,6 +9510,10 @@ class Loop:
                 self.err("rel decision lift", e)
             self._build_router_table()
             self._discover_keys()
+            try:
+                self._phantoms_tick()                # fac-71: author signatures that came back to the slicer as steps
+            except Exception as e:  # noqa: BLE001 - housekeeping
+                self.err("phantom clear", e)
             self._start_head()
             while True:
                 if self.stop.exists():

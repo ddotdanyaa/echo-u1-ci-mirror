@@ -5743,6 +5743,8 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
             report['reason_detail'] = scrub(redact(str(error)))[:300]
             return release_or_block('reviewer_failed', INFRA_DEFER_S)
         if not approved:
+            if ready_card(task):        # fac-72: ready code is never reworked by a model: the critics' remarks go to its author
+                return ready_return(scrub(redact('review: ' + '; '.join(reasons))))
             return reject('review', 'review: ' + '; '.join(reasons), '; '.join(reasons), changed)
         # owner rule 4: the paid control critic sees only would-be promotions (free chain approved, gates passed).
         # A reject goes back like a free critic's; the catch enters the error-class registry the free review reads.
@@ -5757,6 +5759,8 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
             if paid_critic.blocks(paid):
                 paid_critic.record_class(task, paid)
                 why = scrub(redact('paid critic [%s]: %s' % (paid['class'], paid['reason'] or paid['symptom'])))
+                if ready_card(task):    # fac-72: the catch is in the registry above; the card goes back to its author with the reason
+                    return ready_return('review: ' + why)
                 return reject('review', 'review: ' + why, why, changed)
         reviewed = staging / "for-review" / tid
         if reviewed.exists():
