@@ -1716,7 +1716,31 @@ class Loop:
         self._lap("early.act", t0)
         if act["action"] != "RUN":
             return None
-        return self._fill(act, tasks, state, ls, now)[0]
+        before = set(self.pool.tids())
+        out = self._fill(act, tasks, state, ls, now)[0]
+        if out is None:
+            self._settle_started(set(self.pool.tids()) - before)
+        return out
+
+    EARLY_SETTLE_S = 1.0      # the most the heavy ticks wait for the runners of the early fill to take their cards
+
+    def _settle_started(self, tids) -> None:
+        """The runners started by the early fill take their cards (``began`` in the state) before the heavy ticks run, so those
+        ticks do not compete with the booting runners for the state lock and the CPU. Bounded; a runner that ended is not waited for."""
+        if not tids:
+            return
+        t0, c0 = time.monotonic(), self.clock()
+        while time.monotonic() - t0 < self.EARLY_SETTLE_S:
+            try:
+                rows = self.load()[1]["tasks"]
+            except (OSError, ValueError, KeyError, TypeError):
+                return
+            alive = {w.tid for w in self.pool.workers.values() if w.owned is not None and w.owned.poll() is None}
+            waiting = [t for t in tids if t in alive and not (rows.get(t) or {}).get("began")]
+            if not waiting:
+                break
+            time.sleep(0.02)
+        self._lap("early.settle", c0)
 
     def _step(self) -> Outcome:
         cfg, now = self.cfg, self.clock()
