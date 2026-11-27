@@ -93,8 +93,14 @@ def test_yfloor_weak_step_waits_when_the_strong_ones_are_gone():
     prior = {e: dict(made=m, merged=g) for e, (m, g) in TABLE.items()}
     yields = A.engine_yield({}, NOW, prior)
     assert round(yields["free_small"]["yield"], 4) == 0.0031 and round(yields["agent"]["yield"], 3) == 0.129
-    assert A.weak_steps(("free", "free_main", "free_small"), yields) == {"free_small"}      # agent (gone) sets the bar: 0.0129
+    assert A.weak_steps(("free", "free_main", "free_small"), yields) == {"free", "free_main", "free_small"}      # agent (gone) sets the bar: half of 0.129
     assert A.weak_steps(("free_small",), yields) == {"free_small"}
     assert A.weak_steps(("agent", "free_small"), yields) == {"free_small"}
-    assert A.weak_steps(("free", "paid"), yields) == set()
+    assert A.weak_steps(("free", "paid"), yields) == {"free"}      # the floor is half of the best writer
     assert A.weak_steps(("free_small",), {}) == set()
+
+
+def test_only_the_weakest_writer_of_the_measured_table_is_weak():
+    yields = {e: {'yield': v, 'rows': A.YIELD_MIN_ROWS} for e, v in (('agent', 0.33), ('free_main', 0.29), ('free', 0.22), ('free_small', 0.07))}
+    assert A.YIELD_FLOOR == 0.5
+    assert A.weak_steps(('agent', 'free_main', 'free', 'free_small'), yields) == {'free_small'}

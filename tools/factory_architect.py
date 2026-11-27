@@ -191,12 +191,12 @@ _TEST_PATH = re.compile(r'(?:^|/)(?:tests?/|test_[^/]*\.py$)|_test\.py$')
 def codes_ok(packet) -> bool:
     """parts[].code may be asked from paid/agent: from rung 2 (W-hard 3), and at any rung while the edit channels are
     dry (W-dry 1: the card with ready code needs no edit channel at all)."""
-    return bool(isinstance(packet, dict) and ((packet.get('rung') or 0) >= 2 or packet.get('edit_dry')))
+    return bool(isinstance(packet, dict) and ((packet.get('rung') or 0) >= 2 or packet.get('edit_dry') or packet.get('must_code')))
 
 
-DRY_RULE = ('The free edit channels are out for the day, so the editor cannot write the change: give EVERY part of the fix '
-            'its "code" (the whole new text of each named function, or a SEARCH/REPLACE block for a non-Python file). A '
-            'part without code waits for a channel that is not coming.')
+DRY_RULE = ('The editors cannot write this change (the free edit channels are out for the day, or they already failed on an '
+            'instruction for this row): give EVERY part of the fix its "code" (the whole new text of each named function, or a '
+            'SEARCH/REPLACE block for a non-Python file). A part without code waits for an editor that is not coming.')
 
 
 SEARCH_LITERAL = 'search_literal'      # <id> / variant C: the contract gives the SEARCH lines, the free editors write only the REPLACE
@@ -213,7 +213,7 @@ def search_literal_on(packet, engine) -> bool:
     """<id>: the light rows ask a free slicer for the literal SEARCH: a free step, rung < 2 (the row has not escalated), the edit
     channels open (a dry day wants ready code instead)."""
     return (str(engine or '') in FREE_RUNGS and isinstance(packet, dict) and (packet.get('rung') or 0) < 2
-            and not packet.get('edit_dry'))
+            and not packet.get('edit_dry') and not packet.get('must_code'))
 
 
 def search_once(text, search):
@@ -327,16 +327,16 @@ def build_prompt(packet, engine=''):
               + ((RED_RULE + '\n' + (RED_AGENT_RULE if engine == 'agent' else RED_OTHER_RULE) + '\n' + RIG_RULE + '\n') if is_red(packet)
                  else NOT_CODE_RULE + '\n' + SPLIT_RULE + '\n') + (PUBLISHED_ONLY_RULE + '\n' if packet.get('publishable') else '') +
               (TEST_CODE_RULE + '\n' if engine in ('paid', 'agent') else '') +
-              (FREE_PROOF_RULE + '\n' if engine in FREE_RUNGS else '') +
+              (FREE_PROOF_RULE + '\n' if engine in FREE_RUNGS else '') + (GREEN_PROOF_RULE + '\n' if packet.get('green_proof') else '') +
               (VAGUE_RULE + '\n' if engine else '') +
               (DECISION_EXAMPLE + '\n' if engine in FREE_RUNGS else '') +
               (PART_CODE_RULE + '\n' if engine in ('paid', 'agent') and codes_ok(packet) else '') +
               (SEARCH_LITERAL_RULE + '\n' if literal else '') +
               (HOLD_RULE + '\n' if engine in ('paid', 'agent') and (packet.get('rung') or 0) >= 2 else '') +
-              (DRY_RULE + '\n' if engine in ('paid', 'agent') and packet.get('edit_dry') else '') +
+              (DRY_RULE + '\n' if engine in ('paid', 'agent') and (packet.get('edit_dry') or packet.get('must_code')) else '') +
               'Schema: ' + json.dumps(schema, ensure_ascii=False) + '\nExamples:\n' +
               '\n'.join(str(e) for e in packet.get('examples', [])))
-    user = '\n'.join(f'{k}: {v}' for k, v in packet.items() if k not in ('examples', 'known_ids', 'rung', 'red_given', 'edit_dry', 'base_debt', 'trace_path', 'bisect_key', 'guard_red', 'guard_green'))
+    user = '\n'.join(f'{k}: {v}' for k, v in packet.items() if k not in ('examples', 'known_ids', 'rung', 'red_given', 'edit_dry', 'must_code', 'base_debt', 'trace_path', 'bisect_key', 'guard_red', 'guard_green'))
     return system, user
 
 
@@ -1111,7 +1111,7 @@ def by_yield(order, yields, probe=False):
     return [worst, best] + rest if probe else [best] + rest + [worst]
 
 
-YIELD_FLOOR = 0.1           # W-yfloor: a step whose confirmed yield is below this share of the best MEASURED step's yield (even one unavailable now) does not slice a row
+YIELD_FLOOR = 0.5           # a step whose confirmed yield is below this share of the best MEASURED step's yield (even one unavailable now) does not write contracts while a better writer exists
 
 
 def weak_steps(order, yields):
@@ -1125,14 +1125,24 @@ def weak_steps(order, yields):
     return {e for e in order if e in known and known[e] < YIELD_FLOOR * top}
 
 
-def ladder(rung, *, rungs, red=False, dry=False, base_debt=False, gone=(), yields=None, probe=False):
+def debt_agent_ok() -> bool:
+    """The free-only limit of a debt row is a money rule of the API key: the agent step may serve it when the key cannot pay and
+    the subscription rung of the same ladder is open (the one expression the loop and the ladder share)."""
+    try:
+        return not key_can_pay() and sub_available()
+    except Exception:       # an aid: on any doubt the debt row keeps the free steps only
+        return False
+
+
+def ladder(rung, *, rungs, red=False, dry=False, base_debt=False, gone=(), yields=None, probe=False, sub_agent=False):
     """W-a4: ``yields`` (engine_yield of the cohort) reorders the available steps by measured yield (by_yield); without it the order is the fixed one.
-    W-base0: a row of the old baseline debt (base_debt) is sliced by the free steps only, always: no paid, no agent.
+    W-base0: a row of the old baseline debt (base_debt) is sliced by the free steps only: no paid, no agent; except ``sub_agent``
+    (the key cannot pay and the subscription rung is open, passed explicitly): then the agent goes first.
     W-prio 2: ``gone`` = the paid steps without money: they are skipped (no unavailable fault each pass); the order of the remaining steps is the usual one (dry/red/rung)."""
     if gone:
         rungs = tuple(e for e in rungs if e not in gone)
     if base_debt:
-        order = ('free', 'free_main', 'free_small')
+        order = ('agent', 'free', 'free_main', 'free_small') if sub_agent else ('free', 'free_main', 'free_small')
     elif dry and not red:      # W-dry 1: the edit channels are dry: agent, then paid give the finished code; the free steps last
         order = ('agent', 'paid', 'free', 'free_main', 'free_small')
     elif red:           # W-pay 2: a row with a ready red test: the agent reads the code itself and mends a flaw in one re-ask
@@ -1295,10 +1305,18 @@ FREE_PROOF_RULE = ('Answer not_code / cannot_reproduce / already_fixed only with
                    'name of an existing test or function as file.py::name; a name that is not in the tree is no answer.')
 
 
-def no_fix_proof(contract, root):
+GREEN_PROOF_RULE = ('The packet carries green_proof: the gate ran those tests on the base and they PASS (base_sha). If the row names nothing '
+                    'else that is red, answer already_fixed (or cannot_reproduce) and name one of them as file.py::name in "proof": it is accepted.')
+
+
+def no_fix_proof(contract, root, packet=None):
     """W-supply 2: the proof of a free step's not_code / cannot_reproduce / already_fixed, checked mechanically: a file.py::name
     (in contract['proof'] or in 'why') whose file exists in the tree and whose symbol (test, function, class) is defined in it.
+    fac-74: the gate's proof of the row (packet['green_proof'], green tests on an ancestor of the base) is a proof for any engine.
     Returns the proof text or ''."""
+    gp = (packet or {}).get('green_proof') if isinstance(packet, dict) else None
+    if isinstance(gp, dict) and gp.get('tests') and str(contract.get('decision', '')).split(':')[0] in ('already_fixed', 'cannot_reproduce'):
+        return 'gate: ' + str(gp['tests'][0])
     raw = contract.get('proof')
     text = ' '.join(str(x) for x in (raw if isinstance(raw, list) else [raw])) if raw else ''
     if isinstance(raw, dict):
@@ -1923,7 +1941,7 @@ def _small_vote(ask, system, user, *, packet, root, named_ok=False, k=SMALL_K):
             return False, bad, ''
         if decision == 'fix' and (bad := reach_fault(contract, packet, root)):
             return False, bad, ''
-        if decision not in ('fix', 'split') and str(decision).split(':')[0] in NO_FIX_PROOF and not no_fix_proof(contract, root):
+        if decision not in ('fix', 'split') and str(decision).split(':')[0] in NO_FIX_PROOF and not no_fix_proof(contract, root, packet):
             return False, 'no proof: %s needs the name of an existing test or function' % decision, ''
         return True, '', contract_key(contract)
 
@@ -2037,9 +2055,10 @@ def contract_for(packet, *, rung, root, asks, named_ok=False, red_given=None, sk
             again[e] = str(v.get('fault') or '')[:300]
             del skip[e]
     cache = dict(skip)
-    dry = bool(packet.get('edit_dry'))
+    dry = bool(packet.get('edit_dry') or packet.get('must_code'))
     base_debt = bool(packet.get('base_debt')) or F.is_base_debt(str(packet.get('bid', '')))
-    for engine in [e for e in ladder(rung, rungs=tuple(asks), red=red, dry=dry, base_debt=base_debt, gone=no_money(), yields=yields, probe=probe) if e not in skip]:
+    for engine in [e for e in ladder(rung, rungs=tuple(asks), red=red, dry=dry, base_debt=base_debt, gone=no_money(), yields=yields, probe=probe,
+                                      sub_agent=base_debt and debt_agent_ok()) if e not in skip]:
         user, rounds, shrunk, fixed, idle = initial, 0, False, False, 0
         if again.get(engine):
             user += ('\nYour earlier answer for this row was rejected: ' + again[engine] + '\nReturn a corrected contract.')
@@ -2125,7 +2144,7 @@ def contract_for(packet, *, rung, root, asks, named_ok=False, red_given=None, sk
                 if (dry and not dry_asked and contract['decision'] == 'fix' and engine in ('paid', 'agent')
                         and not all(isinstance(p, dict) and p.get('code') for p in contract.get('parts') or [])):
                     dry_asked = True        # W-dry 1: one re-ask for the code of every part; then the card stands as it is
-                    user += '\nThe edit channels are dry: ' + DRY_RULE + '\nReturn the full contract again, every part with its code.'
+                    user += '\nThe editors cannot write this change: ' + DRY_RULE + '\nReturn the full contract again, every part with its code.'
                     continue
                 if contract['decision'] == 'fix' and (bad := reach_fault(contract, packet, root)):
                     if reach_asked:
@@ -2146,7 +2165,7 @@ def contract_for(packet, *, rung, root, asks, named_ok=False, red_given=None, sk
                     _stamp_part_codes(contract, root)
                 if contract['decision'] not in ('fix', 'split') and engine in FREE_RUNGS:
                     decision = contract['decision']
-                    if decision.split(':')[0] in NO_FIX_PROOF and not no_fix_proof(contract, root):
+                    if decision.split(':')[0] in NO_FIX_PROOF and not no_fix_proof(contract, root, packet):
                         # W-supply 2: a free step's "nothing to fix" counts only with a name the machine can find
                         raise ContractFault('no proof: %s needs the name of an existing test or function (file.py::name)' % decision)
                     if decision not in votes:
@@ -2387,7 +2406,7 @@ def price_per_merged(by_engine) -> dict:
 
 
 SUB_LIMIT_PCT = 99                  # the owner's stop for the subscription: the weekly percent from which the rung is closed
-SUB_FIVE_HOUR_PCT = 90              # the reserve of the five-hour window: keeps the coordinator's and the owner's own chat alive
+SUB_FIVE_HOUR_PCT = 100             # the factory takes the whole five-hour window: the rung closes only when the window is spent or rejected, until its reset
 SUB_PAUSE_S = 3600
 AGENT_SUB_FAULT = 'agent sub login'
 _SUB_LOGIN_WORDS = re.compile(r'not logged in|please run /login|/login|login required|invalid api key|authentication[_ ]error|oauth', re.I)
@@ -2458,7 +2477,7 @@ def _window_closed(row, pct_key, status_key, resets_key, limit, now, needs_reset
 
 def sub_available(now=None) -> bool:
     """The subscription rung of the ladder (the same one the builders climb): closed without the settings file, while the
-    weekly percent is at the stop or the five-hour window at its reserve (each until its own reset), or while a window is
+    weekly percent is at the stop or the five-hour window is spent (each until its own reset), or while a window is
     rejected; a missing or stale usage file does not forbid; a refused login pauses it for an hour."""
     now = time.time() if now is None else now
     if not _sub_settings_file().is_file():

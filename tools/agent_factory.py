@@ -151,18 +151,15 @@ REDACT_EXTRA = re.compile(
     r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}|"
     r"[A-Za-z]:[\\/]+Users[\\/]+[^\\/\s\"'<>|:]+"
 )
-# 21.11 (owner): the ONLY private class is passwords, API keys, tokens, .env, SECRETS_LOCAL, call recordings and call
-# logs. A task whose title/goal names one is never sent to a free model (privacy_safe False); everything else is
-# sendable. Words about call LOGIC, the owner, proxy, backlog ids or times are code work, not private. The importer
+# Owner: the ONLY private class is secrets: passwords, API keys, tokens, the env file, the local secrets folder.
+# A task whose title/goal names one is never sent to a free model (privacy_safe False); everything else is
+# sendable, a row about calls or personal matters goes through the factory like any other (recording and log FILES
+# are still never published: the mirror scanner is separate). The importer
 # classifies the rows first (agent_factory_import.PRIVATE); this regex is the same class as a second, narrow net.
 PRIVATE_CLASS = re.compile(
     r"(?i)(?:\.env\b|secrets?[_ -]?local|\bpasswords?\b|парол\w*|"
     r"\bapi[ _-]?keys?\b|\b(?:private|secret|access)\s+keys?\b|(?:секретн|приватн)\w*\s+ключ\w*|ключ\w*\s+api\b|\bapi[ _-]?ключ\w*|"
-    r"\b(?:auth|access|bearer|api|bot|oauth|secret|refresh)[ _-]?tokens?\b|токен\w*\s+(?:доступа|бота|авторизац\w*)|"
-    r"\b(?:call|звон)\w*\s+(?:recordings?|logs?|audio|transcripts?|запис(?:и|ь|ей)|журнал\w*|логи?|логов|аудио|"
-    r"транскрипт\w*)\b|"
-    r"\b(?:recordings?|logs?|transcripts?)\s+of\s+(?:the\s+)?calls?\b|"
-    r"\b(?:запис(?:и|ь|ей)|журнал\w*|логи?|логов|аудио\w*|транскрипт\w*)\s+звон\w*)"
+    r"\b(?:auth|access|bearer|api|bot|oauth|secret|refresh)[ _-]?tokens?\b|токен\w*\s+(?:доступа|бота|авторизац\w*))"
 )
 
 
@@ -291,7 +288,7 @@ def read_plan(plan: object) -> dict[str, Task]:
     """Tasks require explicit scope, dependencies and privacy classification.
 
     21.11: a task is private only when the row says so or its title/goal names the owner's private class
-    (passwords, keys, tokens, .env, SECRETS_LOCAL, call recordings and logs: PRIVATE_CLASS); a private task is
+    (passwords, keys, tokens, the env file, the local secrets folder: PRIVATE_CLASS); a private task is
     never sent to a free third-party model. A row without privacy_safe is sendable otherwise.
     """
     data = plan.get("tasks") if isinstance(plan, dict) else plan
