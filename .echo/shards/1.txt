@@ -1,0 +1,7 @@
+tests/break/portion_speech/test_b_memory.py
+tests/test_a_e88_calls.py
+tests/test_ack_latency_simulation.py
+tests/test_always_answer_host.py
+tests/test_answer_owner.py
+tests/test_answer_progress_watchdog.py
+tests/test_spoken_diagnostics.py

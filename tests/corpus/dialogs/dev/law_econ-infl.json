@@ -1,0 +1,35 @@
+{
+ "id": "law_econ-infl",
+ "split": "dev",
+ "area": "law_econ",
+ "kind": "qa",
+ "source": {
+  "name": "authored for ECHO (this repository), general knowledge, no external text copied",
+  "license": "CC0-1.0",
+  "kind": "authored",
+  "url": null
+ },
+ "turns": [
+  {
+   "user": "Что такое инфляция?",
+   "expected": "рост общего уровня цен",
+   "length": "short",
+   "kind": "question",
+   "gap_s": 6.0
+  },
+  {
+   "user": "А что тогда происходит с покупательной способностью денег?",
+   "expected": "она снижается",
+   "length": "short",
+   "kind": "question",
+   "gap_s": 6.0
+  },
+  {
+   "user": "Скажи подробно, чем плоха высокая инфляция.",
+   "expected": "обесцениваются сбережения и растёт неопределённость",
+   "length": "long",
+   "kind": "question",
+   "gap_s": 9
+  }
+ ]
+}
