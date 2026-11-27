@@ -1,0 +1,792 @@
+"""Paid control critic (owner ~14:30, rule 4): the free review chain approved a candidate and the gates passed;
+only then one call to the Anthropic Messages API judges it again. Every catch is written to the error-class registry,
+and the free review prompt reads the relevant entries, so the free contour keeps the quality when the key is switched
+off. The key is read at run time from an env file outside the repository and travels only in the x-api-key header; it is
+never logged, stored in a result or written to the registry. A missing key or budget means the step is skipped silently.
+Never an Opus model: refused in code (refuse_opus), whatever the env file says."""
+from __future__ import annotations
+
+import datetime
+from contextlib import contextmanager
+import math
+import time
+import uuid
+import json
+import os
+from pathlib import Path
+import re
+import urllib.error
+import urllib.request
+
+URL = 'https://api.anthropic.com/v1/messages'
+API_VERSION = '2023-06-01'
+MODELS = ('claude-sonnet-5-5', 'claude-haiku-5-5')      # the first is asked, the second is the fallback
+PAIR = ('claude-haiku-5-5', 'claude-haiku-4-5')         # two voices of a finished agent card when no free reviewer answers (neither is its author)
+DEFAULT_ENV = r'C:\agent-factory\secrets\anthropic.env'
+DEFAULT_DIR = r'C:\agent-factory\echo'
+ALLOWANCE_FIRST_USD = 120.0
+ALLOWANCE_SECOND_USD = 145.0      # 23.11: the owner's 130 became 145
+ALLOWANCE_REST_USD = 55.0         # the rest, spread evenly over 24.11 - 30.11
+ALLOWANCE_REST_DAYS = 7
+ALLOWANCE_DAILY_USD = ALLOWANCE_REST_USD / ALLOWANCE_REST_DAYS
+ALLOWANCE_TOTAL_USD = 200.0
+ALLOWANCE_FROM = '2026-11-22'
+UNKNOWN_RESERVE_USD = 5.0
+TIMEOUT_S = 90
+DIFF_LIMIT = 30000
+GOAL_LIMIT = 3000
+FAIL_LIMIT = 3000
+PART_LIMIT = 7000    # one hunk of the diff shown to the paid critic is cut here; the parts share DIFF_LIMIT
+LESSONS_MAX = 400
+LESSONS_COUNT = 3
+# USD per million tokens (input, output). Source: the claude-api skill's model table (cached 2026-11-03, Anthropic
+# first-party prices): Sonnet 5.5 $2 / $10; Haiku 5.5 $0.10 / $0.50 for prompts up to 100K tokens, $0.50 / $2.50 above.
+PRICES = {'claude-sonnet-5-5': (2.0, 10.0, 2.5, 0.2), 'claude-haiku-5-5': (0.10, 0.50, 0.125, 0.01),
+          'claude-haiku-4-5': (1.0, 5.0, 1.25, 0.1)}
+HAIKU_LONG = (0.50, 2.50, 0.625, 0.05)
+HAIKU_LONG_FROM = 100_000
+
+
+def refuse_opus(model: str) -> None:
+    """Owner: no API Opus. A hard refusal, not a setting."""
+    if 'opus' in str(model).lower():
+        raise ValueError('an Opus model is never used by the paid critic: %s' % model)
+
+
+def env_path() -> Path:
+    return Path(os.environ.get('FACTORY_PAID_ENV') or DEFAULT_ENV)
+
+
+def state_dir() -> Path:
+    return Path(os.environ.get('FACTORY_PAID_DIR') or DEFAULT_DIR)
+
+
+def load_env(path: Path) -> dict:
+    out = {}
+    try:
+        text = path.read_text(encoding='utf-8-sig')
+    except OSError:
+        return out
+    for line in text.splitlines():
+        line = line.strip()
+        if line and not line.startswith('#') and '=' in line:
+            name, value = line.split('=', 1)
+            out[name.strip()] = value.strip().strip('"\'')
+    return out
+
+
+def usd_for(model: str, tokens_in: int, tokens_out: int,
+            cache_creation_input_tokens: int = 0, cache_read_input_tokens: int = 0) -> float:
+    price = PRICES.get(model) or max(PRICES.values())
+    if model == 'claude-haiku-5-5' and tokens_in + cache_creation_input_tokens + cache_read_input_tokens > HAIKU_LONG_FROM:
+        price = HAIKU_LONG
+    # Five-minute cache writes cost 1.25x base input; reads cost 0.1x (Anthropic prompt-caching docs).
+    return (tokens_in * price[0] + tokens_out * price[1] + cache_creation_input_tokens * price[2]
+            + cache_read_input_tokens * price[3]) / 1e6
+
+
+def _today() -> str:
+    return datetime.date.today().isoformat()
+
+
+def allowance(day: str) -> float:
+    days = max(0, (datetime.date.fromisoformat(day) - datetime.date.fromisoformat(ALLOWANCE_FROM)).days)
+    if days == 0:
+        return ALLOWANCE_FIRST_USD
+    steps = min(ALLOWANCE_REST_DAYS, days - 1)      # 23.11 -> 0 steps; 24.11 -> 1; 30.11 and later -> 7
+    if steps >= ALLOWANCE_REST_DAYS:
+        return ALLOWANCE_TOTAL_USD
+    return min(ALLOWANCE_TOTAL_USD, ALLOWANCE_SECOND_USD + ALLOWANCE_DAILY_USD * steps)
+
+
+def allowance_left_by_day(spent=0.0, until='2026-11-30', since=None):
+    """Allowance still free at the end of each day up to ``until`` (list of {day, allowance, left})."""
+    first = datetime.date.fromisoformat(since or _today())
+    last = datetime.date.fromisoformat(until)
+    return [{'day': (first + datetime.timedelta(days=i)).isoformat(),
+             'allowance': round(allowance((first + datetime.timedelta(days=i)).isoformat()), 2),
+             'left': round(allowance((first + datetime.timedelta(days=i)).isoformat()) - float(spent), 2)}
+            for i in range(max(0, (last - first).days + 1))]
+
+
+def _spend_file() -> Path:
+    return state_dir() / 'paid_spend.json'
+
+
+def _spend_row() -> dict:
+    try:
+        row = json.loads(_retry_perm(lambda: _spend_file().read_text(encoding='utf-8')))
+    except FileNotFoundError:
+        row = {}
+    if not isinstance(row, dict):
+        raise ValueError('invalid paid spend state')
+    if row and 'total_usd' not in row:
+        row['total_usd'] = float(row.get('usd', 0)) + UNKNOWN_RESERVE_USD
+    if row.get('date') != _today():
+        row.update(date=_today(), usd=0.0, coder_usd=0.0, day_roles={})
+    return row
+
+
+def spent_today() -> float:
+    return float(_spend_row().get('usd', 0))
+
+
+def coder_spent_today() -> float:
+    return float(_spend_row().get('coder_usd', 0))
+
+
+def spent_total() -> float:
+    return float(_spend_row().get('total_usd', 0))
+
+
+def architect_spent_total() -> float:
+    return float(_spend_row().get('architect_total_usd', 0))
+
+
+def _external(path_name, fields):
+    path = os.environ.get(path_name)
+    if not path:
+        return 0.0
+    try:
+        row = json.loads(_retry_perm(lambda: Path(path).read_text(encoding='utf-8-sig')))
+    except FileNotFoundError:
+        return 0.0
+    amount = sum(float(row.get(f, 0)) for f in fields)
+    if not math.isfinite(amount) or amount < 0:
+        raise ValueError('invalid builders spend')
+    return amount
+
+
+def _left(day, row):
+    return allowance(day) - float(row.get('total_usd', 0)) - float(row.get('reserved_usd', 0)) - _external(
+        'FACTORY_BUILDERS_SPEND', ('total_usd', 'reserved_usd'))
+
+
+def left(day) -> float:
+    return _left(day, _spend_row())
+
+
+@contextmanager
+def _spend_lock():
+    directory = state_dir()
+    directory.mkdir(parents=True, exist_ok=True)
+    lock = directory / 'paid_spend.lock'
+    deadline = time.monotonic() + 30
+    while True:
+        try:
+            lock.mkdir()
+            break
+        except (FileExistsError, PermissionError):     # Windows: PermissionError while the old lock folder is being removed
+            try:
+                if time.time() - lock.stat().st_mtime > 30:
+                    lock.rmdir()
+                    continue
+            except (FileNotFoundError, PermissionError):
+                if time.monotonic() >= deadline:
+                    raise TimeoutError('paid spend lock busy')
+                time.sleep(0.005)
+                continue
+            if time.monotonic() >= deadline:
+                raise TimeoutError('paid spend lock busy')
+            time.sleep(0.005)
+    try:
+        yield
+    finally:
+        _retry_perm(lock.rmdir)
+
+
+def _retry_perm(action, tries=8, pause=0.05):
+    """Windows answers PermissionError while another process holds the file for a moment (a read racing a replace,
+    a lock folder being removed): the operation is repeated after a short pause, the last error is raised."""
+    for attempt in range(tries):
+        try:
+            return action()
+        except PermissionError:
+            if attempt == tries - 1:
+                raise
+            time.sleep(pause)
+
+
+def _write_spend(row):
+    path = _spend_file()
+    tmp = path.with_name(path.name + '.' + uuid.uuid4().hex + '.tmp')
+    try:
+        _retry_perm(lambda: tmp.write_text(json.dumps(row), encoding='utf-8'))
+        _retry_perm(lambda: os.replace(tmp, path))
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def _amount(usd):
+    usd = float(usd)
+    if not math.isfinite(usd) or usd < 0:
+        raise ValueError('invalid spend amount')
+    return usd
+
+
+def _add(row, usd, *, coder=False, architect=False, agent=False, critic=False):
+    for name, enabled in (('usd', True), ('total_usd', True), ('coder_usd', coder),
+                          ('architect_total_usd', architect), ('agent_total_usd', agent), ('critic_total_usd', critic)):
+        if enabled:
+            row[name] = round(float(row.get(name, 0)) + usd, 9)
+    for name in ('total_usd', 'architect_total_usd', 'agent_total_usd', 'critic_total_usd', 'credit_dead_until'):
+        row.setdefault(name, 0.0)
+    role = 'agent' if agent else 'critic' if critic else 'architect' if architect else 'coder' if coder else ''
+    if role and usd:
+        roles = row.get('day_roles') if isinstance(row.get('day_roles'), dict) else {}
+        roles[role] = round(float(roles.get(role, 0)) + usd, 9)
+        row['day_roles'] = roles
+
+
+def add_spend(usd, architect=False, agent=False, critic=False):
+    usd = _amount(usd)
+    with _spend_lock():
+        row = _spend_row()
+        _add(row, usd, architect=architect, agent=agent, critic=critic)
+        _write_spend(row)
+
+
+BOOKING_TTL_S = 1800
+
+
+def _pid_alive(pid, created) -> bool:
+    """True when the process `pid` lives and was started no later than the booking (a reused pid is another process)."""
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return False
+    if pid <= 0:
+        return False
+    if pid == os.getpid():
+        return True
+    try:
+        import psutil
+    except ImportError:
+        psutil = None
+    if psutil is not None:
+        try:
+            return psutil.Process(pid).create_time() <= float(created) + 2
+        except psutil.Error:
+            return False
+    if os.name == 'nt':
+        try:
+            import ctypes
+            handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)      # QUERY_LIMITED_INFORMATION
+            if not handle:
+                return False
+            try:
+                code = ctypes.c_ulong()
+                ok = ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(code))
+                return bool(ok) and code.value == 259                           # STILL_ACTIVE
+            finally:
+                ctypes.windll.kernel32.CloseHandle(handle)
+        except (OSError, AttributeError):
+            return True                                                          # cannot verify: the age limit decides
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True
+    return True
+
+
+def _bookings(row, now=None) -> list:
+    """The row's bookings {id, usd, pid, created}. The old number reserved_usd without a list becomes one booking
+    without an owner (pid None) that expires like any other."""
+    now = time.time() if now is None else now
+    found = row.get('bookings')
+    if isinstance(found, list):
+        return [b for b in found if isinstance(b, dict) and float(b.get('usd', 0) or 0) > 0]
+    old = float(row.get('reserved_usd', 0) or 0)
+    if old > 0:
+        return [{'id': uuid.uuid4().hex, 'usd': old, 'pid': None, 'created': now}]
+    return []
+
+
+def _set_bookings(row, bookings):
+    row['bookings'] = bookings
+    row['reserved_usd'] = round(sum(float(b['usd']) for b in bookings), 9)
+
+
+def _live_bookings(bookings, now) -> list:
+    live = []
+    for b in bookings:
+        if now - float(b.get('created', 0)) > BOOKING_TTL_S:
+            continue
+        if b.get('pid') is not None and not _pid_alive(b.get('pid'), b.get('created', 0)):
+            continue
+        live.append(b)                                  # no owner (the old number): lives until the age limit
+    return live
+
+
+def reserve(usd, architect=False, critic=False) -> bool:
+    usd = _amount(usd)
+    with _spend_lock():
+        row = _spend_row()
+        now = time.time()
+        _set_bookings(row, _live_bookings(_bookings(row, now), now))          # a dead process's or stale booking goes
+        available = _left(_today(), row)
+        waiting = _external('FACTORY_BUILDERS_WAITING', ('usd',))
+        if float(row.get('credit_dead_until', 0)) > now or available < usd + waiting:
+            _write_spend(row)
+            return False
+        _add(row, 0.0)
+        _set_bookings(row, _bookings(row, now) + [{'id': uuid.uuid4().hex, 'usd': usd, 'pid': os.getpid(), 'created': now}])
+        _write_spend(row)
+        return True
+
+
+def settle(reserved, actual, architect=False, agent=False, critic=False, coder=False):
+    reserved, actual = _amount(reserved), _amount(actual)
+    with _spend_lock():
+        row = _spend_row()
+        bookings = _bookings(row)
+        mine = [b for b in bookings if b.get('pid') == os.getpid() and abs(float(b['usd']) - reserved) < 1e-9]
+        same = mine or [b for b in bookings if b.get('pid') is None and abs(float(b['usd']) - reserved) < 1e-9]
+        if same:                                        # only an ownerless (migrated) booking is a fallback; never another process's
+            bookings.remove(min(same, key=lambda b: float(b.get('created', 0))))
+        _set_bookings(row, bookings)
+        _add(row, actual, coder=coder, architect=architect, agent=agent, critic=critic)
+        _write_spend(row)
+
+
+class CreditExhausted(ValueError):
+    pass
+
+
+def mark_credit_dead(now=None):
+    with _spend_lock():
+        row = _spend_row()
+        row['credit_dead_until'] = (time.time() if now is None else now) + 3600
+        _write_spend(row)
+
+
+def credit_dead(now=None) -> bool:
+    return float(_spend_row().get('credit_dead_until', 0)) > (time.time() if now is None else now)
+
+
+AGENT_PAUSE_S = 3600
+
+
+def key_available() -> bool:
+    """The one answer to "is there a paid key we may use now": the key sits in the file of env_path() (the key is
+    never printed or returned) and the API credit is not marked dead. Read on every call, so a revived key counts."""
+    if os.environ.get('PYTEST_CURRENT_TEST') and not os.environ.get('FACTORY_PAID_ENV'):
+        return False                                    # a test never looks at the real key
+    try:
+        return bool(load_env(env_path()).get('ANTHROPIC_API_KEY', '')) and not credit_dead()
+    except (ValueError, TypeError, OSError):
+        return False
+
+
+def mark_agent_credit_dead(now=None):
+    """Claude Code (stage "agent") was refused for lack of credit: only that stage waits an hour. The API key's own
+    credit_dead_until stays untouched: paid and the critic go on."""
+    with _spend_lock():
+        row = _spend_row()
+        row['agent_dead_until'] = (time.time() if now is None else now) + AGENT_PAUSE_S
+        _write_spend(row)
+
+
+def agent_credit_dead(now=None) -> bool:
+    try:
+        return float(_spend_row().get('agent_dead_until', 0)) > (time.time() if now is None else now)
+    except (ValueError, TypeError, OSError):
+        return False
+
+
+def day_report() -> dict:
+    """Today's spend by role and what is still allowed (for stats.json). No key, no secrets."""
+    row = _spend_row()
+    roles = {name: round(float(value), 6) for name, value in (row.get('day_roles') or {}).items()}
+    return dict(day=_today(), usd=round(float(row.get('usd', 0)), 6), by_role=roles,
+                left=round(_left(_today(), row), 6), credit_dead=float(row.get('credit_dead_until', 0)) > time.time(),
+                agent_paused=float(row.get('agent_dead_until', 0)) > time.time())
+
+
+def check_credit(status, raw):
+    try:
+        error = json.loads(raw).get('error', {})
+    except (ValueError, AttributeError):
+        return
+    if (status == 402 and error.get('type') == 'billing_error') or (status == 400 and
+            'credit balance' in str(error.get('message', '')).lower()):
+        mark_credit_dead()
+        raise CreditExhausted('credit exhausted')
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):      # the key must never follow a redirect to another host
+        return None
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
+
+
+def _post(url: str, headers: dict, body: dict, timeout: float) -> tuple[int | None, bytes]:
+    request = urllib.request.Request(url, data=json.dumps(body).encode('utf-8'), method='POST', headers=headers)
+    try:
+        with _OPENER.open(request, timeout=timeout) as response:
+            return response.status, response.read()
+    except urllib.error.HTTPError as error:
+        try:
+            return error.code, error.read()
+        except OSError:
+            return error.code, b''
+    except (OSError, ValueError) as error:
+        return None, type(error).__name__.encode()
+
+
+ASK = ('You are the control critic of an automated code factory. Free critics already approved this candidate and the '
+       'task tests pass. Find a defect they missed: hard-coding to the test, lost behaviour, a stub, scope creep, a '
+       'wrong fix of the real cause. The task tests are the specification: never dispute what a test expects. Answer '
+       'ONLY with JSON {"verdict":"approve"|"reject","reason":"the concrete defect or empty","class":"short-kebab-slug '
+       'naming the class of the defect or empty","symptom":"one sentence a weaker reviewer could check for",'
+       '"evidence":"the line of the candidate diff that shows the defect, copied character for character, or the name '
+       'of the failing test; a reject without it is only advice"}.\n')
+
+
+QUOTE_MIN = 6        # a quoted diff line shorter than this (without spaces) is too short to be a concrete quote
+FRAGMENT_MIN = 12    # a quoted piece of a longer diff line counts from this length (without spaces)
+TEST_NAME = re.compile(r'\btest_\w+')
+
+
+def grounded(answer: dict, diff: str, failure: str = '') -> bool:
+    """VARIANTS_1426 step 4 (c): a paid reject blocks only with a concrete quote of a line of the diff (its evidence,
+    or a `quoted` fragment of its reason, compared without whitespace and without the +/- mark) or the name of a red
+    test (one the failure text names). Anything else is advice."""
+    said = ' '.join(str(answer.get(k) or '') for k in ('evidence', 'reason', 'symptom'))
+    if set(TEST_NAME.findall(said)) & set(TEST_NAME.findall(failure or '')):
+        return True
+    lines = set()
+    for line in str(diff or '').splitlines():
+        if line.startswith(('+++', '---', '@@')):
+            continue
+        bare = re.sub(r'\s+', '', line[1:] if line[:1] in '+- ' else line)
+        if len(bare) >= QUOTE_MIN:
+            lines.add(bare)
+    quotes = [str(answer.get('evidence') or '')] + re.findall(r'`([^`\n]+)`', said)
+    for quote in quotes:
+        for piece in str(quote).splitlines():
+            bare = re.sub(r'\s+', '', piece.lstrip('+- '))
+            if len(bare) >= QUOTE_MIN and any(bare == line or (len(bare) >= FRAGMENT_MIN and bare in line)
+                                              for line in lines):
+                return True
+    return False
+
+
+def failure_text(text: str) -> str:
+    """The failure text shown to the paid critic, at most FAIL_LIMIT: its tail, preceded by the names of the red tests
+    of the whole text (a head cut away must not take the name a grounded reject cites, review fix 4)."""
+    text = str(text or '')
+    if len(text) <= FAIL_LIMIT:
+        return text
+    names = list(dict.fromkeys(TEST_NAME.findall(text)))
+    head = ('Red tests named: ' + ', '.join(names))[:FAIL_LIMIT // 4] + '\n' if names else ''
+    return head + text[len(text) - (FAIL_LIMIT - len(head)):]
+
+
+def blocks(result) -> bool:
+    """The paid verdict fails the candidate: a grounded reject (step 4 (c)) that another model did not refute (fac-84: a reject
+    is a claim; one nobody could check still fails it); an ungrounded reject is advice."""
+    return (isinstance(result, dict) and result.get('verdict') == 'reject' and result.get('blocking') is True
+            and result.get('confirmed') is not False)
+
+
+def refuted(result) -> bool:
+    """A reject of the result was refuted by another model: it is advice, the candidate is not failed by it."""
+    return isinstance(result, dict) and result.get('confirmed') is False
+
+
+def advice_event(result) -> str:
+    """The event of a paid reject that does not fail the candidate: 'paid_refuted', 'paid_advice' (no quoted line), or ''."""
+    if refuted(result):
+        return 'paid_refuted'
+    return 'paid_advice' if isinstance(result, dict) and result.get('verdict') == 'reject' and not blocks(result) else ''
+
+
+ASK_TEST = ('You are the control critic of an automated code factory. This card writes ONLY a test: the fix is a later '
+            'card, so the code under test stays unchanged and the new test is expected to FAIL now. A missing source fix '
+            'is never a defect. Free critics already approved it. Check: (1) the change holds only the test (no source '
+            'edit); (2) the test checks the behaviour of the contract below (given/when/then), calling the real code; '
+            '(3) it fails now for the reason named in red_now_because; (4) it is not empty, not a stub, not a bare '
+            'name check; (5) it does not pin down the present defective behaviour. Answer ONLY with JSON '
+            '{"verdict":"approve"|"reject","reason":"the concrete defect or empty","class":"short-kebab-slug naming the '
+            'class of the defect or empty","symptom":"one sentence a weaker reviewer could check for"}.\n')
+
+
+def _parse(raw: bytes, verdicts=('approve', 'reject')):
+    try:
+        data = json.loads(raw.decode('utf-8', 'replace'))
+        text = ''.join(b.get('text', '') for b in data['content'] if isinstance(b, dict) and b.get('type') == 'text')
+        answer, _ = json.JSONDecoder().raw_decode(text[text.index('{'):])
+        usage = data.get('usage') or {}
+        tin, tout = int(usage.get('input_tokens') or 0), int(usage.get('output_tokens') or 0)
+    except (ValueError, KeyError, TypeError, AttributeError):
+        return None
+    if not isinstance(answer, dict) or answer.get('verdict') not in verdicts:
+        return None
+    return answer, tin, tout
+
+
+def _slug(text: str) -> str:
+    return re.sub(r'[^a-z0-9]+', '-', str(text).lower()).strip('-')[:60] or 'unnamed'
+
+
+def _review_source(task, baseline, workdir):
+    """Verbatim tests and named function regions, bounded across both snapshots."""
+    from tools import agent_factory as F, factory_cards as K
+    if baseline is None or workdir is None:
+        return ''
+    try:
+        contract = json.loads(getattr(task, 'contract', '') or '{}')
+        parts = {p['file']: p for p in contract.get('parts', [])}
+    except (ValueError, TypeError, KeyError):
+        parts = {}
+    chunks, remaining = [], 60000
+    files = list(getattr(task, 'tests', ())) + list(getattr(task, 'touch_files', ()))
+    for file in dict.fromkeys(files):
+        try:
+            F.safe_path(file)
+        except ValueError:
+            continue
+        for label, root in (('BEFORE', baseline), ('AFTER', Path(workdir))):
+            try:
+                if isinstance(root, dict):     # the runner's snapshot: {name: bytes}
+                    if file not in root or len(root[file]) > 2_000_000:
+                        continue
+                    text = root[file].decode('utf-8-sig', 'replace')
+                else:
+                    root = Path(root)
+                    path = root / file
+                    if not path.resolve().is_relative_to(root.resolve()):
+                        continue
+                    if path.stat().st_size > 2_000_000:
+                        continue
+                    text = path.read_text(encoding='utf-8-sig')
+                part = parts.get(file)
+                where = ''
+                if part:
+                    where, text = K.part_view(text, part.get('symbols', []), part.get('anchor', ''), cap=60000)
+                    where = ' ' + where if part.get('symbols') else ''      # the line header and the class the region stands in
+            except (OSError, UnicodeError, ValueError, SyntaxError):
+                continue
+            chunk = label + ' ' + file + where + '\n' + F.redact(text)
+            chunks.append(chunk[:remaining])
+            remaining -= min(remaining, len(chunk))
+            if remaining <= 0:
+                return '\n'.join(chunks)
+    return '\n'.join(chunks)
+
+
+def available() -> bool:
+    """Whether ``control`` could spend now (a key, live credit, budget left): the same guards, no call, nothing booked.
+    The review precheck uses it to keep the paid second voice reachable (W-review fix 2)."""
+    if os.environ.get('PYTEST_CURRENT_TEST') and not os.environ.get('FACTORY_PAID_ENV'):
+        return False
+    try:
+        return bool(load_env(env_path()).get('ANTHROPIC_API_KEY', '')) and not credit_dead() and left(_today()) > 0
+    except (ValueError, TypeError, OSError, TimeoutError):
+        return False
+
+
+def agent_card(task) -> bool:
+    """The contract's code was written by the agent model (MODELS[0]): that model is excluded as its reviewer, the next one votes."""
+    try:
+        contract = json.loads(getattr(task, 'contract', '') or '{}')
+    except (ValueError, TypeError):
+        return False
+    return isinstance(contract, dict) and contract.get('author') == MODELS[0]
+
+
+def pair(task, diff: str, failure: str = '', exclude_model=(), *, baseline=None, workdir=None) -> dict | None:
+    """Both voices of PAIR on a card of the agent model, for a candidate no free reviewer answered about: the rule of two
+    models stays, the waiting for an overloaded free model does not. Each voice judges on its own; a grounded reject of one
+    is confirmed by the OTHER voice (fac-84) and fails the card unless refuted; a missing voice is None (the free wait)."""
+    if not agent_card(task):
+        return None
+    barred = {str(m).rpartition('/')[2] for m in exclude_model}
+    if barred & set(PAIR):
+        return None
+    got, refusal = [], None
+    for model in PAIR:
+        partner = tuple(m for m in PAIR if m != model)
+        one = control(task, diff, failure, [m for m in MODELS + PAIR if m != model], baseline=baseline, workdir=workdir,
+                      models=(model,), confirm_with=partner)
+        if one is None:
+            return None
+        got.append(one)
+        if blocks(one):
+            break
+        if refuted(one):
+            refusal = refusal or one
+    last = got[-1]
+    total = dict(model='+'.join(PAIR), voices=[g['model'] for g in got] if blocks(last) else list(PAIR),
+                 usd=round(sum(g['usd'] for g in got), 6), tokens_in=sum(g['tokens_in'] for g in got),
+                 tokens_out=sum(g['tokens_out'] for g in got))
+    if blocks(last):
+        return dict(last, **{k: total[k] for k in ('voices', 'usd', 'tokens_in', 'tokens_out')})
+    if refusal is not None and not refuted(last):
+        last = dict(last, confirmed=False, refuted_by=refusal.get('refuted_by'))
+    return dict(last, **total)
+
+
+def control(task, diff: str, failure: str = '', exclude_model: str = '', *, baseline=None, workdir=None, models=None, confirm_with=None) -> dict | None:
+    """One paid judgement of a candidate, or None (no key, no budget, a refused model, any fault). The free verdict
+    stands when None. The dict never holds the key. ``exclude_model``: the coder's model never judges its own
+    candidate (a paid coder's Sonnet is judged by Haiku or not at all)."""
+    if os.environ.get('PYTEST_CURRENT_TEST') and not os.environ.get('FACTORY_PAID_ENV'):
+        return None                                     # a test never spends the real key
+    from tools import agent_factory as F
+    if F.is_base_debt(task) and not agent_card(task):      # a finished card of the agent step needs one cent for its last vote, not a search
+        return None                                     # W-base0: the old baseline debt never spends the paid money (the free panel stays)
+    try:
+        key = load_env(env_path()).get('ANTHROPIC_API_KEY', '')
+        if not key or credit_dead():
+            return None
+        return _control(task, diff, failure, exclude_model, baseline, workdir, key, models or MODELS, confirm_with)
+    except (ValueError, TypeError, OSError, TimeoutError):
+        return None                                     # a broken state file or a busy lock: no paid voice, never a fault
+
+
+def _control(task, diff, failure, exclude_model, baseline, workdir, key, models, confirm_with=None):
+    from tools import factory_cards as K
+    spec = K.test_spec(task)
+    context = ('Task: %s\nTask text:\n%s\nGuard test failure text (what the tests failed on before the fix):\n%s\n'
+               'Candidate diff:\n%s\n') % (getattr(task, 'title', ''), str(getattr(task, 'goal', '') or '')[:GOAL_LIMIT],
+                                           failure[-FAIL_LIMIT:], diff[:DIFF_LIMIT])
+    if spec:
+        context += '\nContract of the new test:\n' + spec + '\n'
+    context += '\nTests and source regions:\n' + _review_source(task, baseline, workdir)
+    note = K.stand_note(task)
+    prompt = note + (ASK_TEST if spec or getattr(task, 'kind', '') == 'unit_test' else ASK) + context
+    try:
+        multifile = len(json.loads(getattr(task, 'contract', '') or '{}').get('parts', [])) > 1
+    except (ValueError, TypeError, AttributeError):
+        multifile = False
+    approvals, total_usd, total_in, total_out = [], 0.0, 0, 0
+    barred = {str(m).rpartition('/')[2] for m in (exclude_model if isinstance(exclude_model, (list, tuple, set, frozenset)) else [exclude_model])}
+    wanted = min(2, sum(m not in barred for m in models)) if multifile else 1      # an author among the two never made a second paid voice possible
+    for model in models:
+        try:
+            refuse_opus(model)
+        except ValueError:
+            continue
+        if model in barred:
+            continue
+        try:
+            got = _call(model, prompt, key)
+        except _Stop:
+            return None
+        if got[0] is None:
+            continue
+        (answer, tin, tout), usd = got
+        total_usd += usd
+        total_in += tin
+        total_out += tout
+        if multifile and answer['verdict'] == 'approve':
+            approvals.append(model)
+            if len(approvals) < wanted:
+                continue
+        result = dict(verdict=answer['verdict'], reason=str(answer.get('reason') or '')[:600],
+                      **{'class': _slug(answer.get('class') or '')}, symptom=str(answer.get('symptom') or '')[:300],
+                      evidence=str(answer.get('evidence') or '')[:300],
+                      blocking=answer['verdict'] == 'reject' and grounded(answer, diff[:DIFF_LIMIT], failure),
+                      model='+'.join(approvals) if len(approvals) > 1 else model, usd=round(total_usd, 6),
+                      tokens_in=total_in, tokens_out=total_out, confirmed=None)
+        if result['blocking']:          # fac-84: a grounded reject is a claim; another model confirms or refutes it
+            claim = dict(result, model=model)
+            second = _confirm(claim, note + CONFIRM + _claim_text(claim) + context, key, barred, confirm_with)
+            if second is not None:
+                result.update(usd=round(result['usd'] + second['usd'], 6), tokens_in=result['tokens_in'] + second['tokens_in'],
+                              tokens_out=result['tokens_out'] + second['tokens_out'])
+                result['confirmed_by'] = second['model']
+                if second['confirmed'] is not None:
+                    result['confirmed'] = second['confirmed']
+                if second['confirmed'] is False:
+                    result['refuted_by'] = second['model']
+        return result
+    return None
+
+
+class _Stop(Exception):
+    """No money reserved or the credit is dead: the paid voice stops here."""
+
+
+def _call(model, prompt, key, verdicts=('approve', 'reject')):
+    """One paid call: ``((answer, tokens_in, tokens_out) or None, usd)``; _Stop when nothing may be spent (money, dead credit)."""
+    body = dict(model=model, max_tokens=2000, output_config=dict(effort='medium'),
+                messages=[dict(role='user', content=prompt)])
+    if model.endswith('-4-5'):
+        body.pop('output_config')           # the older model knows no effort
+    headers = {'content-type': 'application/json', 'anthropic-version': API_VERSION, 'x-api-key': key}
+    estimate = usd_for(model, len(prompt.encode('utf-8')), 2000) * 1.3      # the price of THIS model: a Haiku vote booked as Sonnet was refused on money it does not need
+    if not reserve(estimate, critic=True):
+        raise _Stop()
+    usd = 0.0
+    try:
+        status, raw = _post(URL, headers, body, TIMEOUT_S)
+        check_credit(status, raw)
+        if status != 200:
+            return None, usd
+        usage = json.loads(raw).get('usage') or {}
+        usd = usd_for(model, usage.get('input_tokens', 0), usage.get('output_tokens', 0),
+                      usage.get('cache_creation_input_tokens', 0), usage.get('cache_read_input_tokens', 0))
+        return _parse(raw, verdicts), usd
+    except CreditExhausted:
+        raise _Stop()
+    except (ValueError, TypeError, OSError):
+        return None, usd
+    finally:
+        settle(estimate, usd, critic=True)
+
+
+CONFIRM = ('A critic of an automated code factory rejected the candidate below with the claim you will read. You do not '
+           'judge the candidate as a whole, only the claim. Is the claim TRUE of the code shown (check it against the diff '
+           'and the source regions, not against the critic\'s wording), and does it make the product or its test worse '
+           'than before the change? Answer ONLY with JSON {"verdict":"confirm"|"refute","reason":"...","evidence":"the line '
+           'that proves it, copied character for character"}.\n')
+
+
+def _claim_text(claim) -> str:
+    return 'Claim of the critic:\nReason: %s\nSymptom: %s\nEvidence: %s\n\n' % (claim['reason'], claim['symptom'], claim['evidence'])
+
+
+def _confirm(claim, prompt, key, barred, confirm_with=None):
+    """fac-84: ONE call to another model about a grounded reject: the first of MODELS + PAIR (order kept) that is not an author
+    (``barred``), not the model that made the claim and passes refuse_opus; ``confirm_with`` names the candidates instead
+    (the pair: the other voice). ``{confirmed: True|False|None, model, usd, tokens_in, tokens_out}`` or None when nobody
+    could be asked (no model, no money, dead credit, a fault); an unreadable answer is confirmed None."""
+    pool = tuple(confirm_with) if confirm_with else tuple(m for m in dict.fromkeys(MODELS + PAIR) if m not in barred)
+    for model in pool:
+        if model == claim['model']:
+            continue
+        try:
+            refuse_opus(model)
+            parsed, usd = _call(model, prompt, key, ('confirm', 'refute'))
+        except (_Stop, ValueError, TypeError, OSError, TimeoutError):
+            return None
+        tin, tout = (parsed[1], parsed[2]) if parsed else (0, 0)
+        return dict(confirmed=None if parsed is None else parsed[0]['verdict'] == 'confirm', model=model, usd=usd,
+                    tokens_in=tin, tokens_out=tout)
+    return None
+
+
+def record_class(task, result: dict, *, ts: str = '') -> None:
+    """A paid reject of a candidate the free chain approved: the free chain missed it, so it goes to the registry of
+    error classes (tools/factory_classes.py, the one registry)."""
+    from tools import factory_classes
+    try:
+        factory_classes.record_paid(getattr(task, 'id', ''), getattr(task, 'title', ''),
+                                    [str(f) for f in getattr(task, 'touch_files', ())][:8], result['class'],
+                                    result['symptom'] or result['reason'], ts=ts)
+    except OSError:
+        pass
+
+
+def lessons_for(task, failure: str = '') -> str:
+    """What the free critic is told of past catches: the matched class's short lesson and the paid catches related by
+    files, at most LESSONS_MAX characters (factory_classes.critic_lesson)."""
+    from tools import factory_classes
+    return factory_classes.critic_lesson(task, failure)
