@@ -2466,7 +2466,7 @@ def _window_closed(row, pct_key, status_key, resets_key, limit, now, needs_reset
 
 def sub_available(now=None) -> bool:
     """The subscription rung of the ladder (the same one the builders climb): closed without the settings file, while the
-    weekly percent is at the stop or the five-hour window at its reserve (each until its own reset), or while a window is
+    weekly percent is at the stop or the five-hour window is spent (each until its own reset), or while a window is
     rejected; a missing or stale usage file does not forbid; a refused login pauses it for an hour."""
     now = time.time() if now is None else now
     if not _sub_settings_file().is_file():
