@@ -1,0 +1,3 @@
+tests/test_s6_fault_injection.py
+tests/break/portion_speech/test_b_memory.py
+tests/verify/question/test_v_E35.py
