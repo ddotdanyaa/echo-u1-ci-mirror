@@ -1,9 +1,10 @@
 # Factory status (generated, structured data only)
 
-Generated: 2026-11-27T13:27:23Z
-Source commit: sha922f9c0e3fa9
+Generated: 2026-11-27T13:39:40Z
+Source commit: sha22721931edaf
 
 ## Commits (sha, time)
+- sha22721931 2026-11-27T16:38:03+03:00
 - sha922f9c0e 2026-11-27T16:26:00+03:00
 - sha3b82f739 2026-11-27T15:56:18+03:00
 - sha8191e540 2026-11-27T15:51:28+03:00
@@ -23,28 +24,27 @@ Source commit: sha922f9c0e3fa9
 - shaf1864055 2026-11-27T13:00:59+03:00
 - shacf9995ae 2026-11-27T12:59:34+03:00
 - sha03de496f 2026-11-27T12:55:41+03:00
-- sha3ab3bd8d 2026-11-27T12:54:21+03:00
 
 ## Funnel
 | step | count |
 |---|---|
 | accepted | 139 |
-| claimed | 1697 |
+| claimed | 1699 |
 | coded | 228 |
 | found_in_backlog | unknown |
 | gate_pass | 233 |
 | known_to_loop | 1053 |
 | promoted | 229 |
 | ready | 6 |
-| reviewed | 572 |
+| reviewed | 573 |
 | triaged | 831 |
 
-Side counters: blocked=1, parked=0, requeued=15
-Tasks now: BLOCKED=1, DONE=68, FAILED=1706, PROMOTED=196, READY=6, RUNNING=3
+Side counters: blocked=0, parked=0, requeued=15
+Tasks now: DONE=68, FAILED=1710, PROMOTED=196, READY=6
 Accepted: 139
 Promoted: 229
-Free RAM, GB: 3.16
-Telemetry rows: 123332 recognised, 0 unrecognised
+Free RAM, GB: 2.2
+Telemetry rows: 123624 recognised, 0 unrecognised
 
 ## Spend per model
 | model | calls | tokens_in | tokens_out | usage_unknown | http_429 | errors |
@@ -62,8 +62,8 @@ Telemetry rows: 123332 recognised, 0 unrecognised
 | google/gemini-3.8-flash | 69 | 21237 | 15 | 66 | 28 | 43 |
 | google/gemini-4-hydrogen | 77 | 27174 | 2032 | 68 | 18 | 28 |
 | google/gemini-robotics-er-2-preview | 86 | 58488 | 4068 | 69 | 27 | 29 |
-| google/gemma-4-26b-a4b-it | 11317 | 7342526 | 1166768 | 8389 | 212 | 4477 |
-| google/gemma-4-31b-it | 7992 | 3831545 | 381527 | 6509 | 193 | 4609 |
+| google/gemma-4-26b-a4b-it | 11435 | 7354768 | 1168945 | 8502 | 212 | 4477 |
+| google/gemma-4-31b-it | 8113 | 3841566 | 382230 | 6625 | 193 | 4609 |
 | openrouter/nvidia/nemotron-3-ultra-550b-a55b:free | 143 | 750953 | 158909 | 3 | 2 | 3 |
 | other | 65 | 1154192 | 66710 | 6 | 0 | 7 |
 
@@ -71,14 +71,14 @@ Telemetry rows: 123332 recognised, 0 unrecognised
 | span | rows | calls |
 |---|---|---|
 | answer | 552 | 0 |
-| gate | 13977 | 0 |
-| infra | 7691 | 0 |
-| loop | 17327 | 0 |
-| other | 45166 | 8117 |
+| gate | 13979 | 0 |
+| infra | 7693 | 0 |
+| loop | 17343 | 0 |
+| other | 45422 | 8346 |
 | promote | 254 | 0 |
-| review | 6342 | 3407 |
-| run | 31310 | 15670 |
-| triage | 713 | 0 |
+| review | 6344 | 3408 |
+| run | 31322 | 15679 |
+| triage | 715 | 0 |
 
 ## Channels (model ids)
 - 1db4ab-gemini-3-8-flash

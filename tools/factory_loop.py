@@ -7771,7 +7771,11 @@ class Loop:
             if not isinstance(state, dict):
                 state = self.load()[1]           # (W-tick 4: _fill hands the state it already read)
             unbooked = sum(1 for w in live if not (state["tasks"].get(w.tid, {}).get("began") or {}).get("booked"))
-            gate = self._head_gate(task, state)
+            try:
+                gate = self._head_gate(task, state)
+            except Exception as e:               # the head's state is unreadable: no head verdict, the ledger's count decides
+                self.err("capacity head gate", e)
+                gate = None
             if gate is None:
                 self._headroom_seen = self._headroom(task, state)
             else:                                # fac-68: the number is only the report's (stats.json headroom)
