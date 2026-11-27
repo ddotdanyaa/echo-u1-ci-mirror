@@ -1,0 +1,6 @@
+tests/test_c22_repeat_rule.py
+tests/test_c22_repeat_wiring.py
+tests/test_c24_a2.py
+tests/test_c24_landmark.py
+tests/test_c24_landmark_wiring.py
+tests/test_controlled_host_binding_ranges.py
