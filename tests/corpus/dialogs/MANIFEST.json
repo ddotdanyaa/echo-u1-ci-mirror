@@ -1,0 +1,32 @@
+{
+ "frozen": true,
+ "note": "holdout is frozen: change it only with a new manifest and a note in SOURCES.md; thresholds are not tuned on it",
+ "files": {
+  "dev/everyday-boil.json": "98b1df153e2d2a98eff42abb2b91a32e651d2ce049c31819e94f9c275aa80581",
+  "dev/everyday-units.json": "fbfbeda9db9c78d9aac76713c1683cd39291c63ea93687b8daa1f59963be104a",
+  "dev/everyday-bread.json": "6a38f103e0c79c86eea039f989910c2b66619086b2b0c179bc91109cc6e26bea",
+  "holdout/everyday-eggs.json": "0b039f74ad77811d5cfec7faa67e36762382123dd346ba84c684db86e7b4c042",
+  "dev/science_tech-light.json": "a2154d288383faf421c942cf7bb086ba1d9e2129193cf383a71b36f46b3b4582",
+  "dev/science_tech-memory.json": "683c9312ea47c08165814b19064d4ec05d4de31a956b7c5dc3a032e6723d729d",
+  "dev/science_tech-chem.json": "4a6f2aa424805bea1cada64fd36ed91c9afe1326e34413f041083e9692908735",
+  "holdout/science_tech-planets.json": "f722e3cd599b24001ab2cc373c57a6deb134d2dad9d212a3934cde41cb7d1d77",
+  "dev/humanities-war.json": "f0b5009d494b28ffb7e16a4253bf9f995e734ecac00057486b5103584759621e",
+  "dev/humanities-onegin.json": "47d4bcf947ccefa4eaa1c6a89bdff33b76d53bdc3dfd6078caf2cb4a40a03b36",
+  "dev/humanities-rus.json": "ecdabcf1352a2144ed86c14c5c15dd62d343dd79413e9c7c23da07dc908aba23",
+  "holdout/humanities-peter.json": "8e0fb414ade78cc3fd0c1ef42c3c33b8a8a298163cd3a47405ed43e575d2a28f",
+  "dev/law_econ-amort.json": "f5f3c88a12b15b311e0c9c4d393e2a533e5c505a758cdcc186f89d864412934e",
+  "dev/law_econ-infl.json": "baa268c99528123251dbce9283794a32a5bbd23137f133fbda1a705862895602",
+  "dev/law_econ-age.json": "cf4c0df0c13e7268db49325ba419c30126f0f12edb95b2a65f01b7a73754593f",
+  "holdout/law_econ-vat.json": "e14705a0552920aa346162d4ff74b99ca15155234d75fd27a7388676854c297d",
+  "dev/work-agenda.json": "78cd650a09b8e2438e3bce64ae966dd49f0eea84d5890f194f415fa2684b8f91",
+  "dev/work-refuse.json": "dc75bff7b11ff8121859becc55cce64c056db2adb722d22a95be2967db24375a",
+  "dev/work-after_talk.json": "e229804cac3ff6bd0b23740c19fa521332ba6d867f17f936b30d11f32b7742c5",
+  "holdout/work-retro.json": "6dc84c3efcb439e4e21efe13e85b7a6e0a8c7f378c96d8c42255c12e0061cf0f",
+  "dev/tangled-t1.json": "9d599662d539c5768ccb9acb5b3fee1e9aa657f8d3a4fcdf4a890cf32a640253",
+  "dev/tangled-t2.json": "85db38cc24120ad120ae6ab9b124d3d95e8976386e103c55e4455826b26e196b",
+  "dev/tangled-t3.json": "554f96dc401104578404a34f646ac34a6f7a57d5e227c0ba385f5cfa51045963",
+  "dev/tangled-t4.json": "ce6a77f0f4c322a92ec48d4c14a19579b3d1044ca28924c20e02e0a1c9e385bd"
+ },
+ "dev_sha256": "42122245cc97efb88c048cfb10fafec77f4b3cb9c611ab11d836f797da0a3f7f",
+ "holdout_sha256": "44878584256967d49d87080865c967e25416e814f6ca14b99730cdf2a8cfc8be"
+}
