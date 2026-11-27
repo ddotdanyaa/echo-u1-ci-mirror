@@ -1,0 +1,6 @@
+tests/registry/test_fn_2_06.py
+tests/registry/test_fn_2_08.py
+tests/test_b_ruling.py
+tests/test_bad_network.py
+tests/test_c22_reviewfix_instant.py
+tests/test_c23_ear_extra.py
