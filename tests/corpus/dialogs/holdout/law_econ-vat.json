@@ -1,0 +1,28 @@
+{
+ "id": "law_econ-vat",
+ "split": "holdout",
+ "area": "law_econ",
+ "kind": "qa",
+ "source": {
+  "name": "authored for ECHO (this repository), general knowledge, no external text copied",
+  "license": "CC0-1.0",
+  "kind": "authored",
+  "url": null
+ },
+ "turns": [
+  {
+   "user": "Что такое НДС?",
+   "expected": "налог на добавленную стоимость",
+   "length": "short",
+   "kind": "question",
+   "gap_s": 6.0
+  },
+  {
+   "user": "А дебет и кредит это что?",
+   "expected": "две стороны бухгалтерской записи по счёту",
+   "length": "short",
+   "kind": "question",
+   "gap_s": 8
+  }
+ ]
+}
