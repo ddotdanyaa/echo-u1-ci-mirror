@@ -178,10 +178,10 @@ def test_an_already_green_block_goes_to_the_head_question_at_once_not_to_reruns(
             if out.action in ("UNBLOCK", "ESCALATE"):
                 return out.action
         return None
-    assert first("already_green") == "ESCALATE"
+    assert first("already_green") != "UNBLOCK"             # fac-74: the proof book takes the card before the term: never lifted, never rerun
     row = e.state()["tasks"]["T" "2"]
-    assert row["status"] == "FAILED" and row["reason"] == "escalated:already_green"
-    assert "escalated:already_green" in (e.state_dir / "opus_questions.md").read_text(encoding="utf-8")
+    assert row["status"] == "FAILED" and row["reason"] in ("reslice:stale", "superseded:already_green")
+    assert "T" "2" in loop.ls()["green_proof"].get("B2", {}).get("tids", [])
     e.set_row("T" "2", status="BLOCKED", blocked_reason="scope_violation", blocked_at=e.clock.t - 400,
               block_until=e.clock.t - 1, reason=None)
     assert first("scope_violation") == "UNBLOCK"           # the neighbour: a model-made block is still lifted
