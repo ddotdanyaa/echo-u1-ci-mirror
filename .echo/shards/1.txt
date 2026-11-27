@@ -1,0 +1,6 @@
+tests/test_b_ruling.py
+tests/test_extension_slots.py
+tests/test_fable_owner_verdict.py
+tests/test_factory_resolution_decisions.py
+tests/test_factory_resolution_unknown_kind_shape.py
+tests/test_h2_brain.py
