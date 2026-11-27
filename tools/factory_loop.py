@@ -3446,6 +3446,8 @@ class Loop:
             if known or (guard and guard != "rel" and known is None):     # red: the old requeue sends it back; unknown: the card waits as it did
                 continue
             rec = book.setdefault(row, {"tests": [], "base_sha": str(self.base_sha), "at": now, "tids": []})
+            if str(rec.get("base_sha")) != str(self.base_sha):      # the base moved: what was green on the old base proves nothing here
+                rec["tests"] = []
             for tid, tests in cards:
                 if tid not in rec["tids"]:
                     rec["tids"].append(tid)
@@ -3459,7 +3461,7 @@ class Loop:
                 supersede += [t for t, _ in cards]
                 self.event("supply", status="green_close", backlog_id=row, reason="the gate: %s is green on base %s; the row waits for the "
                            "two-build rule, no slicing" % (self.rs(close, 80), str(self.base_sha)[:12]))
-            elif len(rec["tids"]) >= GREEN_PROOF_BLOCKS and not guard and not (ls.get("arch_decision") or {}).get(row) and row not in (ls.get("holds") or {}):
+            elif len(rec["tids"]) >= GREEN_PROOF_BLOCKS and not guard and str(((ls.get("arch_decision") or {}).get(row) or {}).get("decision") or "") != "already_fixed" and row not in (ls.get("holds") or {}):
                 why = "no red: checks %s pass on base %s" % (", ".join(all_tests[:4]) or "-", str(self.base_sha)[:12])
                 ls.setdefault("holds", {})[row] = self._scrub(why)[:300]
                 ls.setdefault("hold_ver", {})[row] = F.slicer_version()
@@ -5870,8 +5872,8 @@ class Loop:
         return dict(bid=row, title=safe(title), priority=entry.get("priority") or backlog.get("priority") or 9,
                     **dossier, **({"red_given": True} if red_given else {}),
                     **({"guard_test": str(entry["guard"])} if entry.get("guard") else {}),
-                    **({"green_proof": dict(tests=list(self.ls()["green_proof"][row]["tests"])[:6], base_sha=str(self.ls()["green_proof"][row]["base_sha"])[:12])}
-                       if self._green_proof_valid(row) else {}),
+                    **({"green_proof": dict(tests=list(gp["tests"])[:6], base_sha=str(gp["base_sha"])[:12])}
+                       if (gp := (ls.get("green_proof") or {}).get(row)) and self._green_proof_valid(row) else {}),
                     **({"bisect_clue": bisect_clue, "bisect_key": bisect_key} if bisect_clue else {}),
                     **({"trace_path": [[t[0], t[1]] for t in row_trace]} if red_given and row_trace else {}), quotes=[s for q in quotes if (s := safe(q))], hints=hints,
                     examples=[s for x in CL.contract_examples([f for f in files if isinstance(f, str)], k=2)
@@ -6270,8 +6272,8 @@ class Loop:
         """The mechanical proof of a no-fix answer on the CURRENT base: the row's guard is green in the sweep of this base, or the
         test the answer names (file.py::name, an existing one) is green in that sweep (cloud). '' when there is none."""
         from tools import factory_autofeed as AF, factory_architect as A
-        if self._green_proof_valid(row):
-            return "gate"                           # fac-74: the gate's already_green verdict of the row's own card is the proof
+        if str((contract or {}).get("decision") or "") in self.NO_FIX_FREE and self._green_proof_valid(row):
+            return "gate"                           # fac-74: the gate's verdict proves already_fixed / cannot_reproduce only, not duplicate_of
         if not Loop._sweep_is_of_base(self):
             return ""
         entry = (self.ls().get("to_slice") or {}).get(row) or {}

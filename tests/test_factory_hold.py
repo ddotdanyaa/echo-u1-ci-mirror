@@ -185,3 +185,15 @@ def test_an_already_green_block_goes_to_the_head_question_at_once_not_to_reruns(
     e.set_row("T" "2", status="BLOCKED", blocked_reason="scope_violation", blocked_at=e.clock.t - 400,
               block_until=e.clock.t - 1, reason=None)
     assert first("scope_violation") == "UNBLOCK"           # the neighbour: a model-made block is still lifted
+
+
+def test_an_already_green_block_of_a_rel_row_still_escalates_at_once(tmp_path, monkeypatch):
+    """fac-74: the old path _auto_unblock -> F.escalate stays for rows the proof book skips (rel- rows; red / unknown guard)."""
+    e = Env(tmp_path, monkeypatch, tasks=_pair())
+    loop = e.loop(triage_fn=lambda **kw: EMPTY)
+    e.set_row("T" "2", status="BLOCKED", blocked_reason="already_green", blocked_at=e.clock.t - 400,
+              block_until=e.clock.t - 1, backlog_id="rel-B2")
+    acts = [loop.step().action for _ in range(4)]
+    assert "ESCALATE" in acts and "UNBLOCK" not in acts
+    assert e.state()["tasks"]["T" "2"]["status"] == "FAILED"
+    assert "T" "2" in (e.state_dir / "opus_questions.md").read_text(encoding="utf-8")
