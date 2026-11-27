@@ -1,0 +1,1 @@
+tests/test_factory_e34_no_search.py::test_no_search_is_quiet
