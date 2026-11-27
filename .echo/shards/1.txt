@@ -1,0 +1,6 @@
+tests/test_c22_first_cue_open_end.py
+tests/test_c22_reviewfix_first_cue.py
+tests/test_c25_b_cases.py
+tests/test_c7_number_first_cue.py
+tests/test_f1_meaning_portions.py
+tests/test_f3_process_sentences.py
