@@ -4501,7 +4501,7 @@ class Loop:
                 if PK.key_available():              # read now, on every slicing: a revived key brings the stage back
                     asks[engine] = A.ask_paid
             elif engine == "agent" and callable(getattr(A, "ask_agent", None)) and shutil.which("claude"):
-                if (PK.key_available() and not PK.agent_credit_dead()) or A.sub_available():     # the key pays, or the subscription rung of the same ladder
+                if A.key_can_pay() or A.sub_available():     # the key pays, or the subscription rung of the same ladder
                     asks[engine] = lambda system, user, _root=root: A.ask_agent(system, user, cwd=_root)
         return asks
 
