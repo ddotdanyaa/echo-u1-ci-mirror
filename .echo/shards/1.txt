@@ -1,0 +1,6 @@
+tests/registry/test_fn_6_03.py
+tests/test_m1_memory.py
+tests/test_m9_ledger.py
+tests/test_night_bench_answer_rows.py
+tests/test_night_bench_call_began_clock.py
+tests/test_night_bench_card_numbers_growth.py

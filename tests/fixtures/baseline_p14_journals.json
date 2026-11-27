@@ -1,0 +1,4084 @@
+{
+ "passport": {
+  "set": "50 call journals of the owner laptop (n=50 of N=56 files read; 6 not a call)",
+  "profile": "as recorded in each journal (profiles differ between calls)",
+  "checker": {
+   "measure_sha256": "e215971d1da2c70283bae280033250da8e1096ddccadddc4746f9f7b9786de6f",
+   "harvest_sha256": "769378057d8d6509f90b9f146f4dce7a78079560845268620f77e95f34550fb5"
+  },
+  "load": "none: a function of the journal text, the same on any machine; no latency of a machine is in a number",
+  "clock": "journal ms of each call",
+  "privacy": "counts only; no utterance text, no journal file is in the repo",
+  "pin": {
+   "sha": "b76d1790ea4ceeadd3f956c0fac129c6e33594ab",
+   "dirty": false,
+   "measurer": "e215971d1da2c70283bae280033250da8e1096ddccadddc4746f9f7b9786de6f",
+   "brain": "4bc87190aac856cb02f37999708fc02dd149b7b5b1b08b60cf2176b5f750efbb",
+   "profile": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+  }
+ },
+ "corpus": {
+  "dev": 1,
+  "holdout": 0,
+  "rest": 49
+ },
+ "total": {
+  "questions": 132,
+  "cues": 310,
+  "repeats": 53,
+  "loops": 6,
+  "stale": 9,
+  "failures": 0,
+  "silent": 17,
+  "stuck": 6,
+  "back": 0,
+  "timeouts": 2
+ },
+ "split": {
+  "right": 34,
+  "premature": 0,
+  "stale": 4,
+  "none": 36,
+  "N": 74
+ },
+ "stages": {
+  "paths": {
+   "plain": {
+    "episodes": 55,
+    "stages": {
+     "pause": {
+      "n": 55,
+      "min": 300,
+      "median": 300,
+      "p90": 300,
+      "max": 300
+     },
+     "ear": {
+      "n": 55,
+      "min": 30,
+      "median": 127,
+      "p90": 178,
+      "max": 283
+     },
+     "start": {
+      "n": 52,
+      "min": 0,
+      "median": 26,
+      "p90": 1258,
+      "max": 3973
+     },
+     "model": {
+      "n": 52,
+      "min": 494,
+      "median": 1220,
+      "p90": 3130,
+      "max": 4351
+     },
+     "pick": {
+      "n": 55,
+      "min": 0,
+      "median": 14,
+      "p90": 3353,
+      "max": 19611
+     },
+     "voice": {
+      "n": 55,
+      "min": 0,
+      "median": 361,
+      "p90": 9649,
+      "max": 15519
+     }
+    },
+    "total": {
+     "median": 4998,
+     "p90": 11620
+    },
+    "closure_bad": 4
+   },
+   "search": {
+    "episodes": 0,
+    "stages": {},
+    "total": {
+     "median": null,
+     "p90": null
+    },
+    "closure_bad": 0
+   }
+  },
+  "passport": {
+   "calls_with_episodes": 25,
+   "calls": 50,
+   "episodes": 55,
+   "meets_20": true,
+   "clock": "journal ms of each call (server clock); no laptop or cloud wall clock is in a number"
+  }
+ },
+ "calls": [
+  {
+   "call": "20261108-120135-6dc9eed08e9b",
+   "corpus": "dev",
+   "minutes": 2.14,
+   "counters": {
+    "finals": 4,
+    "ear": 7,
+    "cues": 18,
+    "jobs": 5,
+    "decisions": 30,
+    "questions": 3,
+    "repeats": 0,
+    "loops": 2,
+    "stale": 0,
+    "failures": 0,
+    "silent": 1,
+    "stuck": 0,
+    "back": 0,
+    "timeouts": 0
+   },
+   "latency_proxy": {
+    "n": 2,
+    "N": 2,
+    "flags": {
+     "none": 2
+    },
+    "median_s": 4.965,
+    "within_3": 0,
+    "within_5": 1,
+    "within_8": 2
+   },
+   "split": {
+    "right": 2,
+    "premature": 0,
+    "stale": 0,
+    "none": 0,
+    "N": 2
+   },
+   "classes": {
+    "hold": {
+     "n": 0,
+     "linked": 2,
+     "unlinked": 0,
+     "stale_repeat": 0,
+     "not_from_job": 0
+    },
+    "false_question": {
+     "n": 0,
+     "of_retire_new_question": 2,
+     "undetermined": 0,
+     "with_empty_job": 0
+    },
+    "portion_loop": {
+     "n": 3,
+     "sec": 83.85,
+     "n4": 3,
+     "n_unknown_cause": 0
+    },
+    "unanswered": {
+     "n": 2,
+     "s5": 1,
+     "s15": 0,
+     "s30": 0
+    },
+    "repeat_over_speech": {
+     "n": 3,
+     "of_replay": 15
+    },
+    "empty_ear": {
+     "n": 0,
+     "share": 0.0,
+     "sec": 0.0,
+     "n_any": 0,
+     "sec_any": 0.0
+    },
+    "long_segment": {
+     "n": 0
+    },
+    "stale_cue": {
+     "n": 0
+    }
+   }
+  },
+  {
+   "call": "20261109-173946-b2ca3cd88016",
+   "corpus": "rest",
+   "minutes": 0.32,
+   "counters": {
+    "finals": 1,
+    "ear": 1,
+    "cues": 2,
+    "jobs": 2,
+    "decisions": 3,
+    "questions": 1,
+    "repeats": 0,
+    "loops": 0,
+    "stale": 0,
+    "failures": 0,
+    "silent": 0,
+    "stuck": 0,
+    "back": 0,
+    "timeouts": 0
+   },
+   "latency_proxy": {
+    "n": 0,
+    "N": 1,
+    "flags": {
+     "unanchored": 1
+    }
+   },
+   "split": {
+    "right": 0,
+    "premature": 0,
+    "stale": 0,
+    "none": 1,
+    "N": 1
+   },
+   "classes": {
+    "hold": {
+     "n": 0,
+     "linked": 0,
+     "unlinked": 1,
+     "stale_repeat": 0,
+     "not_from_job": 0
+    },
+    "false_question": {
+     "n": 0,
+     "of_retire_new_question": 0,
+     "undetermined": 0,
+     "with_empty_job": 0
+    },
+    "portion_loop": {
+     "n": 0,
+     "sec": 0.0,
+     "n4": 0,
+     "n_unknown_cause": 0
+    },
+    "unanswered": {
+     "n": 1,
+     "s5": 0,
+     "s15": 0,
+     "s30": 0
+    },
+    "repeat_over_speech": {
+     "n": 0,
+     "of_replay": 1
+    },
+    "empty_ear": {
+     "n": 0,
+     "share": 0.0,
+     "sec": 0.0,
+     "n_any": 0,
+     "sec_any": 0.0
+    },
+    "long_segment": {
+     "n": 0
+    },
+    "stale_cue": {
+     "n": 0
+    }
+   }
+  },
+  {
+   "call": "20261109-174016-130078539bf8",
+   "corpus": "rest",
+   "minutes": 0.3,
+   "counters": {
+    "finals": 1,
+    "ear": 1,
+    "cues": 3,
+    "jobs": 2,
+    "decisions": 4,
+    "questions": 1,
+    "repeats": 0,
+    "loops": 0,
+    "stale": 0,
+    "failures": 0,
+    "silent": 0,
+    "stuck": 0,
+    "back": 0,
+    "timeouts": 0
+   },
+   "latency_proxy": {
+    "n": 0,
+    "N": 1,
+    "flags": {
+     "unanchored": 1
+    }
+   },
+   "split": {
+    "right": 0,
+    "premature": 0,
+    "stale": 0,
+    "none": 1,
+    "N": 1
+   },
+   "classes": {
+    "hold": {
+     "n": 0,
+     "linked": 0,
+     "unlinked": 1,
+     "stale_repeat": 0,
+     "not_from_job": 0
+    },
+    "false_question": {
+     "n": 0,
+     "of_retire_new_question": 0,
+     "undetermined": 0,
+     "with_empty_job": 0
+    },
+    "portion_loop": {
+     "n": 1,
+     "sec": 9.61,
+     "n4": 0,
+     "n_unknown_cause": 0
+    },
+    "unanswered": {
+     "n": 1,
+     "s5": 0,
+     "s15": 0,
+     "s30": 0
+    },
+    "repeat_over_speech": {
+     "n": 1,
+     "of_replay": 2
+    },
+    "empty_ear": {
+     "n": 0,
+     "share": 0.0,
+     "sec": 0.0,
+     "n_any": 0,
+     "sec_any": 0.0
+    },
+    "long_segment": {
+     "n": 0
+    },
+    "stale_cue": {
+     "n": 0
+    }
+   }
+  },
+  {
+   "call": "20261109-200215-55993b5388ba",
+   "corpus": "rest",
+   "minutes": 0.41,
+   "counters": {
+    "finals": 1,
+    "ear": 1,
+    "cues": 1,
+    "jobs": 2,
+    "decisions": 3,
+    "questions": 1,
+    "repeats": 0,
+    "loops": 0,
+    "stale": 0,
+    "failures": 0,
+    "silent": 0,
+    "stuck": 0,
+    "back": 0,
+    "timeouts": 0
+   },
+   "latency_proxy": {
+    "n": 1,
+    "N": 1,
+    "flags": {
+     "none": 1
+    },
+    "median_s": 4.25,
+    "within_3": 0,
+    "within_5": 1,
+    "within_8": 1
+   },
+   "split": {
+    "right": 1,
+    "premature": 0,
+    "stale": 0,
+    "none": 0,
+    "N": 1
+   },
+   "classes": {
+    "hold": {
+     "n": 0,
+     "linked": 0,
+     "unlinked": 1,
+     "stale_repeat": 0,
+     "not_from_job": 0
+    },
+    "false_question": {
+     "n": 0,
+     "of_retire_new_question": 0,
+     "undetermined": 0,
+     "with_empty_job": 0
+    },
+    "portion_loop": {
+     "n": 0,
+     "sec": 0.0,
+     "n4": 0,
+     "n_unknown_cause": 0
+    },
+    "unanswered": {
+     "n": 1,
+     "s5": 0,
+     "s15": 0,
+     "s30": 0
+    },
+    "repeat_over_speech": {
+     "n": 0,
+     "of_replay": 0
+    },
+    "empty_ear": {
+     "n": 0,
+     "share": 0.0,
+     "sec": 0.0,
+     "n_any": 0,
+     "sec_any": 0.0
+    },
+    "long_segment": {
+     "n": 0
+    },
+    "stale_cue": {
+     "n": 0
+    }
+   }
+  },
+  {
+   "call": "20261109-200250-2e392aebb4a2",
+   "corpus": "rest",
+   "minutes": 0.32,
+   "counters": {
+    "finals": 1,
+    "ear": 1,
+    "cues": 1,
+    "jobs": 2,
+    "decisions": 3,
+    "questions": 1,
+    "repeats": 0,
+    "loops": 0,
+    "stale": 0,
+    "failures": 0,
+    "silent": 0,
+    "stuck": 0,
+    "back": 0,
+    "timeouts": 0
+   },
+   "latency_proxy": {
+    "n": 0,
+    "N": 1,
+    "flags": {
+     "unanchored": 1
+    }
+   },
+   "split": {
+    "right": 0,
+    "premature": 0,
+    "stale": 0,
+    "none": 1,
+    "N": 1
+   },
+   "classes": {
+    "hold": {
+     "n": 0,
+     "linked": 0,
+     "unlinked": 1,
+     "stale_repeat": 0,
+     "not_from_job": 0
+    },
+    "false_question": {
+     "n": 0,
+     "of_retire_new_question": 0,
+     "undetermined": 0,
+     "with_empty_job": 0
+    },
+    "portion_loop": {
+     "n": 0,
+     "sec": 0.0,
+     "n4": 0,
+     "n_unknown_cause": 0
+    },
+    "unanswered": {
+     "n": 1,
+     "s5": 0,
+     "s15": 0,
+     "s30": 0
+    },
+    "repeat_over_speech": {
+     "n": 0,
+     "of_replay": 0
+    },
+    "empty_ear": {
+     "n": 0,
+     "share": 0.0,
+     "sec": 0.0,
+     "n_any": 0,
+     "sec_any": 0.0
+    },
+    "long_segment": {
+     "n": 0
+    },
+    "stale_cue": {
+     "n": 0
+    }
+   }
+  },
+  {
+   "call": "20261109-201722-383b33a35a13",
+   "corpus": "rest",
+   "minutes": 0.08,
+   "counters": {
+    "finals": 0,
+    "ear": 0,
+    "cues": 0,
+    "jobs": 0,
+    "decisions": 0,
+    "questions": 0,
+    "repeats": 0,
+    "loops": 0,
+    "stale": 0,
+    "failures": 0,
+    "silent": 0,
+    "stuck": 0,
+    "back": 0,
+    "timeouts": 0
+   },
+   "latency_proxy": {
+    "n": 0,
+    "N": 0
+   },
+   "split": {
+    "right": 0,
+    "premature": 0,
+    "stale": 0,
+    "none": 0,
+    "N": 0
+   },
+   "classes": {
+    "hold": {
+     "n": 0,
+     "linked": 0,
+     "unlinked": 0,
+     "stale_repeat": 0,
+     "not_from_job": 0
+    },
+    "false_question": {
+     "n": 0,
+     "of_retire_new_question": 0,
+     "undetermined": 0,
+     "with_empty_job": 0
+    },
+    "portion_loop": {
+     "n": 0,
+     "sec": 0.0,
+     "n4": 0,
+     "n_unknown_cause": 0
+    },
+    "unanswered": {
+     "n": 0,
+     "s5": 0,
+     "s15": 0,
+     "s30": 0
+    },
+    "repeat_over_speech": {
+     "n": 0,
+     "of_replay": 0
+    },
+    "empty_ear": {
+     "n": 0,
+     "sec": 0.0,
+     "n_any": 0,
+     "sec_any": 0.0
+    },
+    "long_segment": {
+     "n": 0
+    },
+    "stale_cue": {
+     "n": 0
+    }
+   }
+  },
+  {
+   "call": "20261109-201729-7f980326cf5b",
+   "corpus": "rest",
+   "minutes": 0.03,
+   "counters": {
+    "finals": 0,
+    "ear": 0,
+    "cues": 0,
+    "jobs": 0,
+    "decisions": 0,
+    "questions": 0,
+    "repeats": 0,
+    "loops": 0,
+    "stale": 0,
+    "failures": 0,
+    "silent": 0,
+    "stuck": 0,
+    "back": 0,
+    "timeouts": 0
+   },
+   "latency_proxy": {
+    "n": 0,
+    "N": 0
+   },
+   "split": {
+    "right": 0,
+    "premature": 0,
+    "stale": 0,
+    "none": 0,
+    "N": 0
+   },
+   "classes": {
+    "hold": {
+     "n": 0,
+     "linked": 0,
+     "unlinked": 0,
+     "stale_repeat": 0,
+     "not_from_job": 0
+    },
+    "false_question": {
+     "n": 0,
+     "of_retire_new_question": 0,
+     "undetermined": 0,
+     "with_empty_job": 0
+    },
+    "portion_loop": {
+     "n": 0,
+     "sec": 0.0,
+     "n4": 0,
+     "n_unknown_cause": 0
+    },
+    "unanswered": {
+     "n": 0,
+     "s5": 0,
+     "s15": 0,
+     "s30": 0
+    },
+    "repeat_over_speech": {
+     "n": 0,
+     "of_replay": 0
+    },
+    "empty_ear": {
+     "n": 0,
+     "sec": 0.0,
+     "n_any": 0,
+     "sec_any": 0.0
+    },
+    "long_segment": {
+     "n": 0
+    },
+    "stale_cue": {
+     "n": 0
+    }
+   }
+  },
+  {
+   "call": "20261109-201747-95b6f0c6eba9",
+   "corpus": "rest",
+   "minutes": 0.33,
+   "counters": {
+    "finals": 1,
+    "ear": 1,
+    "cues": 1,
+    "jobs": 2,
+    "decisions": 3,
+    "questions": 1,
+    "repeats": 0,
+    "loops": 0,
+    "stale": 0,
+    "failures": 0,
+    "silent": 0,
+    "stuck": 0,
+    "back": 0,
+    "timeouts": 0
+   },
+   "latency_proxy": {
+    "n": 0,
+    "N": 0
+   },
+   "split": {
+    "right": 0,
+    "premature": 0,
+    "stale": 0,
+    "none": 0,
+    "N": 0
+   },
+   "classes": {
+    "hold": {
+     "n": 0,
+     "linked": 1,
+     "unlinked": 0,
+     "stale_repeat": 0,
+     "not_from_job": 0
+    },
+    "false_question": {
+     "n": 0,
+     "of_retire_new_question": 0,
+     "undetermined": 0,
+     "with_empty_job": 0
+    },
+    "portion_loop": {
+     "n": 0,
+     "sec": 0.0,
+     "n4": 0,
+     "n_unknown_cause": 0
+    },
+    "unanswered": {
+     "n": 0,
+     "s5": 0,
+     "s15": 0,
+     "s30": 0
+    },
+    "repeat_over_speech": {
+     "n": 0,
+     "of_replay": 0
+    },
+    "empty_ear": {
+     "n": 0,
+     "share": 0.0,
+     "sec": 0.0,
+     "n_any": 0,
+     "sec_any": 0.0
+    },
+    "long_segment": {
+     "n": 0
+    },
+    "stale_cue": {
+     "n": 0
+    }
+   }
+  },
+  {
+   "call": "20261109-201809-46c77fb574d4",
+   "corpus": "rest",
+   "minutes": 0.28,
+   "counters": {
+    "finals": 1,
+    "ear": 1,
+    "cues": 1,
+    "jobs": 1,
+    "decisions": 3,
+    "questions": 1,
+    "repeats": 0,
+    "loops": 0,
+    "stale": 0,
+    "failures": 0,
+    "silent": 0,
+    "stuck": 0,
+    "back": 0,
+    "timeouts": 0
+   },
+   "latency_proxy": {
+    "n": 0,
+    "N": 1,
+    "flags": {
+     "unanchored": 1
+    }
+   },
+   "split": {
+    "right": 0,
+    "premature": 0,
+    "stale": 0,
+    "none": 1,
+    "N": 1
+   },
+   "classes": {
+    "hold": {
+     "n": 0,
+     "linked": 1,
+     "unlinked": 0,
+     "stale_repeat": 0,
+     "not_from_job": 0
+    },
+    "false_question": {
+     "n": 0,
+     "of_retire_new_question": 0,
+     "undetermined": 0,
+     "with_empty_job": 0
+    },
+    "portion_loop": {
+     "n": 0,
+     "sec": 0.0,
+     "n4": 0,
+     "n_unknown_cause": 0
+    },
+    "unanswered": {
+     "n": 1,
+     "s5": 0,
+     "s15": 0,
+     "s30": 0
+    },
+    "repeat_over_speech": {
+     "n": 0,
+     "of_replay": 0
+    },
+    "empty_ear": {
+     "n": 0,
+     "share": 0.0,
+     "sec": 0.0,
+     "n_any": 0,
+     "sec_any": 0.0
+    },
+    "long_segment": {
+     "n": 0
+    },
+    "stale_cue": {
+     "n": 0
+    }
+   }
+  },
+  {
+   "call": "20261109-202347-13ede4825010",
+   "corpus": "rest",
+   "minutes": 0.77,
+   "counters": {
+    "finals": 1,
+    "ear": 1,
+    "cues": 2,
+    "jobs": 4,
+    "decisions": 11,
+    "questions": 2,
+    "repeats": 0,
+    "loops": 0,
+    "stale": 0,
+    "failures": 0,
+    "silent": 0,
+    "stuck": 0,
+    "back": 0,
+    "timeouts": 0
+   },
+   "latency_proxy": {
+    "n": 0,
+    "N": 0
+   },
+   "split": {
+    "right": 0,
+    "premature": 0,
+    "stale": 0,
+    "none": 0,
+    "N": 0
+   },
+   "classes": {
+    "hold": {
+     "n": 1,
+     "med_s": 3.71,
+     "max_s": 3.71,
+     "linked": 2,
+     "unlinked": 0,
+     "stale_repeat": 0,
+     "not_from_job": 0
+    },
+    "false_question": {
+     "n": 0,
+     "of_retire_new_question": 1,
+     "undetermined": 0,
+     "with_empty_job": 0
+    },
+    "portion_loop": {
+     "n": 0,
+     "sec": 0.0,
+     "n4": 0,
+     "n_unknown_cause": 0
+    },
+    "unanswered": {
+     "n": 0,
+     "s5": 0,
+     "s15": 0,
+     "s30": 0
+    },
+    "repeat_over_speech": {
+     "n": 0,
+     "of_replay": 0
+    },
+    "empty_ear": {
+     "n": 0,
+     "share": 0.0,
+     "sec": 0.0,
+     "n_any": 0,
+     "sec_any": 0.0
+    },
+    "long_segment": {
+     "n": 0
+    },
+    "stale_cue": {
+     "n": 0
+    }
+   }
+  },
+  {
+   "call": "20261109-202524-7b9bcc50eaf1",
+   "corpus": "rest",
+   "minutes": 0.25,
+   "counters": {
+    "finals": 1,
+    "ear": 1,
+    "cues": 1,
+    "jobs": 0,
+    "decisions": 2,
+    "questions": 1,
+    "repeats": 0,
+    "loops": 0,
+    "stale": 0,
+    "failures": 0,
+    "silent": 0,
+    "stuck": 0,
+    "back": 0,
+    "timeouts": 0
+   },
+   "latency_proxy": {
+    "n": 0,
+    "N": 0
+   },
+   "split": {
+    "right": 0,
+    "premature": 0,
+    "stale": 0,
+    "none": 0,
+    "N": 0
+   },
+   "classes": {
+    "hold": {
+     "n": 0,
+     "linked": 0,
+     "unlinked": 0,
+     "stale_repeat": 0,
+     "not_from_job": 1
+    },
+    "false_question": {
+     "n": 0,
+     "of_retire_new_question": 0,
+     "undetermined": 0,
+     "with_empty_job": 0
+    },
+    "portion_loop": {
+     "n": 0,
+     "sec": 0.0,
+     "n4": 0,
+     "n_unknown_cause": 0
+    },
+    "unanswered": {
+     "n": 0,
+     "s5": 0,
+     "s15": 0,
+     "s30": 0
+    },
+    "repeat_over_speech": {
+     "n": 0,
+     "of_replay": 0
+    },
+    "empty_ear": {
+     "n": 0,
+     "share": 0.0,
+     "sec": 0.0,
+     "n_any": 0,
+     "sec_any": 0.0
+    },
+    "long_segment": {
+     "n": 0
+    },
+    "stale_cue": {
+     "n": 0
+    }
+   }
+  },
+  {
+   "call": "20261109-205157-107f0122bd41",
+   "corpus": "rest",
+   "minutes": 2.38,
+   "counters": {
+    "finals": 4,
+    "ear": 13,
+    "cues": 0,
+    "jobs": 5,
+    "decisions": 14,
+    "questions": 5,
+    "repeats": 0,
+    "loops": 0,
+    "stale": 0,
+    "failures": 0,
+    "silent": 5,
+    "stuck": 0,
+    "back": 0,
+    "timeouts": 0
+   },
+   "latency_proxy": {
+    "n": 0,
+    "N": 4,
+    "flags": {
+     "no_cue": 4
+    }
+   },
+   "split": {
+    "right": 0,
+    "premature": 0,
+    "stale": 0,
+    "none": 4,
+    "N": 4
+   },
+   "classes": {
+    "hold": {
+     "n": 0,
+     "linked": 0,
+     "unlinked": 0,
+     "stale_repeat": 0,
+     "not_from_job": 0
+    },
+    "false_question": {
+     "n": 4,
+     "of_retire_new_question": 4,
+     "undetermined": 0,
+     "with_empty_job": 4
+    },
+    "portion_loop": {
+     "n": 0,
+     "sec": 0.0,
+     "n4": 0,
+     "n_unknown_cause": 0
+    },
+    "unanswered": {
+     "n": 4,
+     "s5": 4,
+     "s15": 4,
+     "s30": 4
+    },
+    "repeat_over_speech": {
+     "n": 0,
+     "of_replay": 0
+    },
+    "empty_ear": {
+     "n": 0,
+     "share": 0.0,
+     "sec": 0.0,
+     "n_any": 1,
+     "sec_any": 0.5
+    },
+    "long_segment": {
+     "n": 0
+    },
+    "stale_cue": {
+     "n": 0
+    }
+   }
+  },
+  {
+   "call": "20261109-205443-7babd1562ad8",
+   "corpus": "rest",
+   "minutes": 0.03,
+   "counters": {
+    "finals": 0,
+    "ear": 0,
+    "cues": 0,
+    "jobs": 0,
+    "decisions": 0,
+    "questions": 0,
+    "repeats": 0,
+    "loops": 0,
+    "stale": 0,
+    "failures": 0,
+    "silent": 0,
+    "stuck": 0,
+    "back": 0,
+    "timeouts": 0
+   },
+   "latency_proxy": {
+    "n": 0,
+    "N": 0
+   },
+   "split": {
+    "right": 0,
+    "premature": 0,
+    "stale": 0,
+    "none": 0,
+    "N": 0
+   },
+   "classes": {
+    "hold": {
+     "n": 0,
+     "linked": 0,
+     "unlinked": 0,
+     "stale_repeat": 0,
+     "not_from_job": 0
+    },
+    "false_question": {
+     "n": 0,
+     "of_retire_new_question": 0,
+     "undetermined": 0,
+     "with_empty_job": 0
+    },
+    "portion_loop": {
+     "n": 0,
+     "sec": 0.0,
+     "n4": 0,
+     "n_unknown_cause": 0
+    },
+    "unanswered": {
+     "n": 0,
+     "s5": 0,
+     "s15": 0,
+     "s30": 0
+    },
+    "repeat_over_speech": {
+     "n": 0,
+     "of_replay": 0
+    },
+    "empty_ear": {
+     "n": 0,
+     "sec": 0.0,
+     "n_any": 0,
+     "sec_any": 0.0
+    },
+    "long_segment": {
+     "n": 0
+    },
+    "stale_cue": {
+     "n": 0
+    }
+   }
+  },
+  {
+   "call": "20261109-205452-583bcf459d84",
+   "corpus": "rest",
+   "minutes": 2.97,
+   "counters": {
+    "finals": 7,
+    "ear": 15,
+    "cues": 13,
+    "jobs": 3,
+    "decisions": 59,
+    "questions": 5,
+    "repeats": 1,
+    "loops": 0,
+    "stale": 0,
+    "failures": 0,
+    "silent": 1,
+    "stuck": 0,
+    "back": 0,
+    "timeouts": 0
+   },
+   "latency_proxy": {
+    "n": 1,
+    "N": 3,
+    "flags": {
+     "none": 1,
+     "unanchored": 1,
+     "no_cue": 1
+    },
+    "median_s": 2.433,
+    "within_3": 1,
+    "within_5": 1,
+    "within_8": 1
+   },
+   "split": {
+    "right": 1,
+    "premature": 0,
+    "stale": 0,
+    "none": 2,
+    "N": 3
+   },
+   "classes": {
+    "hold": {
+     "n": 0,
+     "linked": 0,
+     "unlinked": 1,
+     "stale_repeat": 0,
+     "not_from_job": 3
+    },
+    "false_question": {
+     "n": 0,
+     "of_retire_new_question": 4,
+     "undetermined": 0,
+     "with_empty_job": 0
+    },
+    "portion_loop": {
+     "n": 1,
+     "sec": 17.66,
+     "n4": 0,
+     "n_unknown_cause": 0
+    },
+    "unanswered": {
+     "n": 3,
+     "s5": 1,
+     "s15": 1,
+     "s30": 0
+    },
+    "repeat_over_speech": {
+     "n": 0,
+     "of_replay": 6
+    },
+    "empty_ear": {
+     "n": 0,
+     "share": 0.0,
+     "sec": 0.0,
+     "n_any": 0,
+     "sec_any": 0.0
+    },
+    "long_segment": {
+     "n": 0
+    },
+    "stale_cue": {
+     "n": 1
+    }
+   }
+  },
+  {
+   "call": "20261110-103925-2c530725227e",
+   "corpus": "rest",
+   "minutes": 2.14,
+   "counters": {
+    "finals": 8,
+    "ear": 25,
+    "cues": 12,
+    "jobs": 5,
+    "decisions": 47,
+    "questions": 4,
+    "repeats": 3,
+    "loops": 0,
+    "stale": 0,
+    "failures": 0,
+    "silent": 1,
+    "stuck": 0,
+    "back": 0,
+    "timeouts": 0
+   },
+   "latency_proxy": {
+    "n": 2,
+    "N": 3,
+    "flags": {
+     "none": 2,
+     "no_cue": 1
+    },
+    "median_s": 3.738,
+    "within_3": 1,
+    "within_5": 1,
+    "within_8": 2
+   },
+   "split": {
+    "right": 2,
+    "premature": 0,
+    "stale": 0,
+    "none": 1,
+    "N": 3
+   },
+   "classes": {
+    "hold": {
+     "n": 0,
+     "linked": 3,
+     "unlinked": 0,
+     "stale_repeat": 0,
+     "not_from_job": 0
+    },
+    "false_question": {
+     "n": 0,
+     "of_retire_new_question": 3,
+     "undetermined": 0,
+     "with_empty_job": 0
+    },
+    "portion_loop": {
+     "n": 2,
+     "sec": 28.2,
+     "n4": 0,
+     "n_unknown_cause": 0
+    },
+    "unanswered": {
+     "n": 3,
+     "s5": 2,
+     "s15": 0,
+     "s30": 0
+    },
+    "repeat_over_speech": {
+     "n": 0,
+     "of_replay": 6
+    },
+    "empty_ear": {
+     "n": 3,
+     "share": 0.12,
+     "sec": 3.8,
+     "n_any": 7,
+     "sec_any": 5.5
+    },
+    "long_segment": {
+     "n": 0
+    },
+    "stale_cue": {
+     "n": 0
+    }
+   }
+  },
+  {
+   "call": "20261110-143700-72babd2db95d",
+   "corpus": "rest",
+   "minutes": 0.17,
+   "counters": {
+    "finals": 0,
+    "ear": 0,
+    "cues": 1,
+    "jobs": 0,
+    "decisions": 0,
+    "questions": 1,
+    "repeats": 0,
+    "loops": 0,
+    "stale": 0,
+    "failures": 0,
+    "silent": 0,
+    "stuck": 0,
+    "back": 0,
+    "timeouts": 0
+   },
+   "latency_proxy": {
+    "n": 0,
+    "N": 0
+   },
+   "split": {
+    "right": 0,
+    "premature": 0,
+    "stale": 0,
+    "none": 0,
+    "N": 0
+   },
+   "classes": {
+    "hold": {
+     "n": 0,
+     "linked": 0,
+     "unlinked": 0,
+     "stale_repeat": 0,
+     "not_from_job": 0
+    },
+    "false_question": {
+     "n": 0,
+     "of_retire_new_question": 0,
+     "undetermined": 0,
+     "with_empty_job": 0
+    },
+    "portion_loop": {
+     "n": 0,
+     "sec": 0.0,
+     "n4": 0,
+     "n_unknown_cause": 0
+    },
+    "unanswered": {
+     "n": 0,
+     "s5": 0,
+     "s15": 0,
+     "s30": 0
+    },
+    "repeat_over_speech": {
+     "n": 0,
+     "of_replay": 0
+    },
+    "empty_ear": {
+     "n": 0,
+     "sec": 0.0,
+     "n_any": 0,
+     "sec_any": 0.0
+    },
+    "long_segment": {
+     "n": 0
+    },
+    "stale_cue": {
+     "n": 0
+    }
+   }
+  },
+  {
+   "call": "20261110-233423-8cc89455c9f2",
+   "corpus": "rest",
+   "minutes": 0.42,
+   "counters": {
+    "finals": 0,
+    "ear": 0,
+    "cues": 0,
+    "jobs": 0,
+    "decisions": 0,
+    "questions": 0,
+    "repeats": 0,
+    "loops": 0,
+    "stale": 0,
+    "failures": 0,
+    "silent": 0,
+    "stuck": 0,
+    "back": 0,
+    "timeouts": 0
+   },
+   "latency_proxy": {
+    "n": 0,
+    "N": 0
+   },
+   "split": {
+    "right": 0,
+    "premature": 0,
+    "stale": 0,
+    "none": 0,
+    "N": 0
+   },
+   "classes": {
+    "hold": {
+     "n": 0,
+     "linked": 0,
+     "unlinked": 0,
+     "stale_repeat": 0,
+     "not_from_job": 0
+    },
+    "false_question": {
+     "n": 0,
+     "of_retire_new_question": 0,
+     "undetermined": 0,
+     "with_empty_job": 0
+    },
+    "portion_loop": {
+     "n": 0,
+     "sec": 0.0,
+     "n4": 0,
+     "n_unknown_cause": 0
+    },
+    "unanswered": {
+     "n": 0,
+     "s5": 0,
+     "s15": 0,
+     "s30": 0
+    },
+    "repeat_over_speech": {
+     "n": 0,
+     "of_replay": 0
+    },
+    "empty_ear": {
+     "n": 0,
+     "sec": 0.0,
+     "n_any": 0,
+     "sec_any": 0.0
+    },
+    "long_segment": {
+     "n": 0
+    },
+    "stale_cue": {
+     "n": 0
+    }
+   }
+  },
+  {
+   "call": "20261111-053014-3dc215896bc9",
+   "corpus": "rest",
+   "minutes": 0.12,
+   "counters": {
+    "finals": 0,
+    "ear": 0,
+    "cues": 1,
+    "jobs": 0,
+    "decisions": 0,
+    "questions": 1,
+    "repeats": 0,
+    "loops": 0,
+    "stale": 0,
+    "failures": 0,
+    "silent": 0,
+    "stuck": 0,
+    "back": 0,
+    "timeouts": 0
+   },
+   "latency_proxy": {
+    "n": 0,
+    "N": 0
+   },
+   "split": {
+    "right": 0,
+    "premature": 0,
+    "stale": 0,
+    "none": 0,
+    "N": 0
+   },
+   "classes": {
+    "hold": {
+     "n": 0,
+     "linked": 0,
+     "unlinked": 0,
+     "stale_repeat": 0,
+     "not_from_job": 0
+    },
+    "false_question": {
+     "n": 0,
+     "of_retire_new_question": 0,
+     "undetermined": 0,
+     "with_empty_job": 0
+    },
+    "portion_loop": {
+     "n": 0,
+     "sec": 0.0,
+     "n4": 0,
+     "n_unknown_cause": 0
+    },
+    "unanswered": {
+     "n": 0,
+     "s5": 0,
+     "s15": 0,
+     "s30": 0
+    },
+    "repeat_over_speech": {
+     "n": 0,
+     "of_replay": 0
+    },
+    "empty_ear": {
+     "n": 0,
+     "sec": 0.0,
+     "n_any": 0,
+     "sec_any": 0.0
+    },
+    "long_segment": {
+     "n": 0
+    },
+    "stale_cue": {
+     "n": 0
+    }
+   }
+  },
+  {
+   "call": "20261111-080330-99055845ddaf",
+   "corpus": "rest",
+   "minutes": 0.48,
+   "counters": {
+    "finals": 0,
+    "ear": 1,
+    "cues": 1,
+    "jobs": 2,
+    "decisions": 1,
+    "questions": 1,
+    "repeats": 0,
+    "loops": 0,
+    "stale": 0,
+    "failures": 0,
+    "silent": 0,
+    "stuck": 0,
+    "back": 0,
+    "timeouts": 0
+   },
+   "latency_proxy": {
+    "n": 0,
+    "N": 0
+   },
+   "split": {
+    "right": 0,
+    "premature": 0,
+    "stale": 0,
+    "none": 0,
+    "N": 0
+   },
+   "classes": {
+    "hold": {
+     "n": 0,
+     "linked": 0,
+     "unlinked": 0,
+     "stale_repeat": 0,
+     "not_from_job": 0
+    },
+    "false_question": {
+     "n": 0,
+     "of_retire_new_question": 0,
+     "undetermined": 0,
+     "with_empty_job": 0
+    },
+    "portion_loop": {
+     "n": 0,
+     "sec": 0.0,
+     "n4": 0,
+     "n_unknown_cause": 0
+    },
+    "unanswered": {
+     "n": 0,
+     "s5": 0,
+     "s15": 0,
+     "s30": 0
+    },
+    "repeat_over_speech": {
+     "n": 0,
+     "of_replay": 0
+    },
+    "empty_ear": {
+     "n": 0,
+     "share": 0.0,
+     "sec": 0.0,
+     "n_any": 0,
+     "sec_any": 0.0
+    },
+    "long_segment": {
+     "n": 0
+    },
+    "stale_cue": {
+     "n": 0
+    }
+   }
+  },
+  {
+   "call": "20261111-080450-80ef6ed20607",
+   "corpus": "rest",
+   "minutes": 0.31,
+   "counters": {
+    "finals": 0,
+    "ear": 1,
+    "cues": 2,
+    "jobs": 0,
+    "decisions": 4,
+    "questions": 1,
+    "repeats": 0,
+    "loops": 0,
+    "stale": 0,
+    "failures": 0,
+    "silent": 0,
+    "stuck": 0,
+    "back": 0,
+    "timeouts": 0
+   },
+   "latency_proxy": {
+    "n": 0,
+    "N": 1,
+    "flags": {
+     "unanchored": 1
+    }
+   },
+   "split": {
+    "right": 0,
+    "premature": 0,
+    "stale": 0,
+    "none": 1,
+    "N": 1
+   },
+   "classes": {
+    "hold": {
+     "n": 0,
+     "linked": 0,
+     "unlinked": 0,
+     "stale_repeat": 0,
+     "not_from_job": 1
+    },
+    "false_question": {
+     "n": 0,
+     "of_retire_new_question": 0,
+     "undetermined": 0,
+     "with_empty_job": 0
+    },
+    "portion_loop": {
+     "n": 0,
+     "sec": 0.0,
+     "n4": 0,
+     "n_unknown_cause": 0
+    },
+    "unanswered": {
+     "n": 1,
+     "s5": 0,
+     "s15": 0,
+     "s30": 0
+    },
+    "repeat_over_speech": {
+     "n": 0,
+     "of_replay": 0
+    },
+    "empty_ear": {
+     "n": 0,
+     "share": 0.0,
+     "sec": 0.0,
+     "n_any": 0,
+     "sec_any": 0.0
+    },
+    "long_segment": {
+     "n": 0
+    },
+    "stale_cue": {
+     "n": 0
+    }
+   }
+  },
+  {
+   "call": "20261111-080539-d6a3170f3fea",
+   "corpus": "rest",
+   "minutes": 0.35,
+   "counters": {
+    "finals": 0,
+    "ear": 1,
+    "cues": 2,
+    "jobs": 1,
+    "decisions": 3,
+    "questions": 1,
+    "repeats": 0,
+    "loops": 0,
+    "stale": 0,
+    "failures": 0,
+    "silent": 0,
+    "stuck": 0,
+    "back": 0,
+    "timeouts": 0
+   },
+   "latency_proxy": {
+    "n": 1,
+    "N": 1,
+    "flags": {
+     "none": 1
+    },
+    "median_s": 1.027,
+    "within_3": 1,
+    "within_5": 1,
+    "within_8": 1
+   },
+   "split": {
+    "right": 1,
+    "premature": 0,
+    "stale": 0,
+    "none": 0,
+    "N": 1
+   },
+   "classes": {
+    "hold": {
+     "n": 0,
+     "linked": 1,
+     "unlinked": 0,
+     "stale_repeat": 0,
+     "not_from_job": 0
+    },
+    "false_question": {
+     "n": 0,
+     "of_retire_new_question": 0,
+     "undetermined": 0,
+     "with_empty_job": 0
+    },
+    "portion_loop": {
+     "n": 0,
+     "sec": 0.0,
+     "n4": 0,
+     "n_unknown_cause": 0
+    },
+    "unanswered": {
+     "n": 1,
+     "s5": 0,
+     "s15": 0,
+     "s30": 0
+    },
+    "repeat_over_speech": {
+     "n": 0,
+     "of_replay": 0
+    },
+    "empty_ear": {
+     "n": 0,
+     "share": 0.0,
+     "sec": 0.0,
+     "n_any": 0,
+     "sec_any": 0.0
+    },
+    "long_segment": {
+     "n": 0
+    },
+    "stale_cue": {
+     "n": 0
+    }
+   }
+  },
+  {
+   "call": "20261111-080605-7c2d9f4c1ae2",
+   "corpus": "rest",
+   "minutes": 0.32,
+   "counters": {
+    "finals": 0,
+    "ear": 1,
+    "cues": 2,
+    "jobs": 1,
+    "decisions": 3,
+    "questions": 1,
+    "repeats": 0,
+    "loops": 0,
+    "stale": 0,
+    "failures": 0,
+    "silent": 0,
+    "stuck": 0,
+    "back": 0,
+    "timeouts": 0
+   },
+   "latency_proxy": {
+    "n": 0,
+    "N": 0
+   },
+   "split": {
+    "right": 0,
+    "premature": 0,
+    "stale": 0,
+    "none": 0,
+    "N": 0
+   },
+   "classes": {
+    "hold": {
+     "n": 0,
+     "linked": 1,
+     "unlinked": 0,
+     "stale_repeat": 0,
+     "not_from_job": 0
+    },
+    "false_question": {
+     "n": 0,
+     "of_retire_new_question": 0,
+     "undetermined": 0,
+     "with_empty_job": 0
+    },
+    "portion_loop": {
+     "n": 0,
+     "sec": 0.0,
+     "n4": 0,
+     "n_unknown_cause": 0
+    },
+    "unanswered": {
+     "n": 0,
+     "s5": 0,
+     "s15": 0,
+     "s30": 0
+    },
+    "repeat_over_speech": {
+     "n": 0,
+     "of_replay": 0
+    },
+    "empty_ear": {
+     "n": 0,
+     "share": 0.0,
+     "sec": 0.0,
+     "n_any": 0,
+     "sec_any": 0.0
+    },
+    "long_segment": {
+     "n": 0
+    },
+    "stale_cue": {
+     "n": 0
+    }
+   }
+  },
+  {
+   "call": "20261111-080629-c511d846521e",
+   "corpus": "rest",
+   "minutes": 0.32,
+   "counters": {
+    "finals": 0,
+    "ear": 1,
+    "cues": 2,
+    "jobs": 0,
+    "decisions": 4,
+    "questions": 1,
+    "repeats": 0,
+    "loops": 0,
+    "stale": 0,
+    "failures": 0,
+    "silent": 0,
+    "stuck": 0,
+    "back": 0,
+    "timeouts": 0
+   },
+   "latency_proxy": {
+    "n": 0,
+    "N": 0
+   },
+   "split": {
+    "right": 0,
+    "premature": 0,
+    "stale": 0,
+    "none": 0,
+    "N": 0
+   },
+   "classes": {
+    "hold": {
+     "n": 0,
+     "linked": 0,
+     "unlinked": 0,
+     "stale_repeat": 0,
+     "not_from_job": 1
+    },
+    "false_question": {
+     "n": 0,
+     "of_retire_new_question": 0,
+     "undetermined": 0,
+     "with_empty_job": 0
+    },
+    "portion_loop": {
+     "n": 0,
+     "sec": 0.0,
+     "n4": 0,
+     "n_unknown_cause": 0
+    },
+    "unanswered": {
+     "n": 0,
+     "s5": 0,
+     "s15": 0,
+     "s30": 0
+    },
+    "repeat_over_speech": {
+     "n": 0,
+     "of_replay": 0
+    },
+    "empty_ear": {
+     "n": 0,
+     "share": 0.0,
+     "sec": 0.0,
+     "n_any": 0,
+     "sec_any": 0.0
+    },
+    "long_segment": {
+     "n": 0
+    },
+    "stale_cue": {
+     "n": 0
+    }
+   }
+  },
+  {
+   "call": "20261111-084102-7315f63aac8a",
+   "corpus": "rest",
+   "minutes": 8.13,
+   "counters": {
+    "finals": 0,
+    "ear": 70,
+    "cues": 45,
+    "jobs": 39,
+    "decisions": 208,
+    "questions": 15,
+    "repeats": 13,
+    "loops": 1,
+    "stale": 5,
+    "failures": 0,
+    "silent": 2,
+    "stuck": 1,
+    "back": 0,
+    "timeouts": 0
+   },
+   "latency_proxy": {
+    "n": 2,
+    "N": 10,
+    "flags": {
+     "none": 2,
+     "unanchored": 4,
+     "no_cue": 4
+    },
+    "median_s": 1.435,
+    "within_3": 2,
+    "within_5": 2,
+    "within_8": 2
+   },
+   "split": {
+    "right": 2,
+    "premature": 0,
+    "stale": 1,
+    "none": 7,
+    "N": 10
+   },
+   "classes": {
+    "hold": {
+     "n": 0,
+     "linked": 6,
+     "unlinked": 0,
+     "stale_repeat": 1,
+     "not_from_job": 4
+    },
+    "false_question": {
+     "n": 0,
+     "of_retire_new_question": 14,
+     "undetermined": 0,
+     "with_empty_job": 0
+    },
+    "portion_loop": {
+     "n": 3,
+     "sec": 101.93,
+     "n4": 3,
+     "n_unknown_cause": 0
+    },
+    "unanswered": {
+     "n": 10,
+     "s5": 2,
+     "s15": 0,
+     "s30": 0
+    },
+    "repeat_over_speech": {
+     "n": 0,
+     "of_replay": 16
+    },
+    "empty_ear": {
+     "n": 0,
+     "share": 0.0,
+     "sec": 0.0,
+     "n_any": 2,
+     "sec_any": 1.0
+    },
+    "long_segment": {
+     "n": 0
+    },
+    "stale_cue": {
+     "n": 0
+    }
+   }
+  },
+  {
+   "call": "20261111-102840-c85ce44d9d51",
+   "corpus": "rest",
+   "minutes": 0.66,
+   "counters": {
+    "finals": 0,
+    "ear": 1,
+    "cues": 2,
+    "jobs": 2,
+    "decisions": 4,
+    "questions": 1,
+    "repeats": 0,
+    "loops": 0,
+    "stale": 0,
+    "failures": 0,
+    "silent": 0,
+    "stuck": 0,
+    "back": 0,
+    "timeouts": 0
+   },
+   "latency_proxy": {
+    "n": 0,
+    "N": 0
+   },
+   "split": {
+    "right": 0,
+    "premature": 0,
+    "stale": 0,
+    "none": 0,
+    "N": 0
+   },
+   "classes": {
+    "hold": {
+     "n": 1,
+     "med_s": 2.42,
+     "max_s": 2.42,
+     "linked": 1,
+     "unlinked": 0,
+     "stale_repeat": 0,
+     "not_from_job": 0
+    },
+    "false_question": {
+     "n": 0,
+     "of_retire_new_question": 0,
+     "undetermined": 0,
+     "with_empty_job": 0
+    },
+    "portion_loop": {
+     "n": 0,
+     "sec": 0.0,
+     "n4": 0,
+     "n_unknown_cause": 0
+    },
+    "unanswered": {
+     "n": 0,
+     "s5": 0,
+     "s15": 0,
+     "s30": 0
+    },
+    "repeat_over_speech": {
+     "n": 0,
+     "of_replay": 0
+    },
+    "empty_ear": {
+     "n": 0,
+     "share": 0.0,
+     "sec": 0.0,
+     "n_any": 0,
+     "sec_any": 0.0
+    },
+    "long_segment": {
+     "n": 0
+    },
+    "stale_cue": {
+     "n": 0
+    }
+   }
+  },
+  {
+   "call": "20261111-102946-1667e43af176",
+   "corpus": "rest",
+   "minutes": 0.27,
+   "counters": {
+    "finals": 0,
+    "ear": 1,
+    "cues": 1,
+    "jobs": 0,
+    "decisions": 1,
+    "questions": 1,
+    "repeats": 0,
+    "loops": 0,
+    "stale": 0,
+    "failures": 0,
+    "silent": 0,
+    "stuck": 0,
+    "back": 0,
+    "timeouts": 0
+   },
+   "latency_proxy": {
+    "n": 0,
+    "N": 1,
+    "flags": {
+     "no_cue": 1
+    }
+   },
+   "split": {
+    "right": 0,
+    "premature": 0,
+    "stale": 0,
+    "none": 1,
+    "N": 1
+   },
+   "classes": {
+    "hold": {
+     "n": 0,
+     "linked": 0,
+     "unlinked": 0,
+     "stale_repeat": 0,
+     "not_from_job": 0
+    },
+    "false_question": {
+     "n": 0,
+     "of_retire_new_question": 0,
+     "undetermined": 0,
+     "with_empty_job": 0
+    },
+    "portion_loop": {
+     "n": 0,
+     "sec": 0.0,
+     "n4": 0,
+     "n_unknown_cause": 0
+    },
+    "unanswered": {
+     "n": 1,
+     "s5": 1,
+     "s15": 1,
+     "s30": 1
+    },
+    "repeat_over_speech": {
+     "n": 0,
+     "of_replay": 0
+    },
+    "empty_ear": {
+     "n": 0,
+     "share": 0.0,
+     "sec": 0.0,
+     "n_any": 0,
+     "sec_any": 0.0
+    },
+    "long_segment": {
+     "n": 0
+    },
+    "stale_cue": {
+     "n": 0
+    }
+   }
+  },
+  {
+   "call": "20261111-133030-1fbf1e88fdac",
+   "corpus": "rest",
+   "minutes": 0.12,
+   "counters": {
+    "finals": 0,
+    "ear": 0,
+    "cues": 0,
+    "jobs": 0,
+    "decisions": 1,
+    "questions": 1,
+    "repeats": 0,
+    "loops": 0,
+    "stale": 0,
+    "failures": 0,
+    "silent": 1,
+    "stuck": 0,
+    "back": 0,
+    "timeouts": 0
+   },
+   "latency_proxy": {
+    "n": 0,
+    "N": 0
+   },
+   "split": {
+    "right": 0,
+    "premature": 0,
+    "stale": 0,
+    "none": 0,
+    "N": 0
+   },
+   "classes": {
+    "hold": {
+     "n": 0,
+     "linked": 0,
+     "unlinked": 0,
+     "stale_repeat": 0,
+     "not_from_job": 0
+    },
+    "false_question": {
+     "n": 0,
+     "of_retire_new_question": 0,
+     "undetermined": 0,
+     "with_empty_job": 0
+    },
+    "portion_loop": {
+     "n": 0,
+     "sec": 0.0,
+     "n4": 0,
+     "n_unknown_cause": 0
+    },
+    "unanswered": {
+     "n": 0,
+     "s5": 0,
+     "s15": 0,
+     "s30": 0
+    },
+    "repeat_over_speech": {
+     "n": 0,
+     "of_replay": 0
+    },
+    "empty_ear": {
+     "n": 0,
+     "sec": 0.0,
+     "n_any": 0,
+     "sec_any": 0.0
+    },
+    "long_segment": {
+     "n": 0
+    },
+    "stale_cue": {
+     "n": 0
+    }
+   }
+  },
+  {
+   "call": "20261111-133053-82de97e5d80a",
+   "corpus": "rest",
+   "minutes": 0.36,
+   "counters": {
+    "finals": 0,
+    "ear": 1,
+    "cues": 1,
+    "jobs": 0,
+    "decisions": 0,
+    "questions": 1,
+    "repeats": 0,
+    "loops": 0,
+    "stale": 0,
+    "failures": 0,
+    "silent": 0,
+    "stuck": 0,
+    "back": 0,
+    "timeouts": 0
+   },
+   "latency_proxy": {
+    "n": 0,
+    "N": 0
+   },
+   "split": {
+    "right": 0,
+    "premature": 0,
+    "stale": 0,
+    "none": 0,
+    "N": 0
+   },
+   "classes": {
+    "hold": {
+     "n": 0,
+     "linked": 0,
+     "unlinked": 0,
+     "stale_repeat": 0,
+     "not_from_job": 0
+    },
+    "false_question": {
+     "n": 0,
+     "of_retire_new_question": 0,
+     "undetermined": 0,
+     "with_empty_job": 0
+    },
+    "portion_loop": {
+     "n": 0,
+     "sec": 0.0,
+     "n4": 0,
+     "n_unknown_cause": 0
+    },
+    "unanswered": {
+     "n": 0,
+     "s5": 0,
+     "s15": 0,
+     "s30": 0
+    },
+    "repeat_over_speech": {
+     "n": 0,
+     "of_replay": 0
+    },
+    "empty_ear": {
+     "n": 0,
+     "share": 0.0,
+     "sec": 0.0,
+     "n_any": 0,
+     "sec_any": 0.0
+    },
+    "long_segment": {
+     "n": 0
+    },
+    "stale_cue": {
+     "n": 0
+    }
+   }
+  },
+  {
+   "call": "20261111-133118-5b191e4fbe1d",
+   "corpus": "rest",
+   "minutes": 10.55,
+   "counters": {
+    "finals": 0,
+    "ear": 107,
+    "cues": 91,
+    "jobs": 42,
+    "decisions": 325,
+    "questions": 15,
+    "repeats": 18,
+    "loops": 3,
+    "stale": 1,
+    "failures": 0,
+    "silent": 0,
+    "stuck": 5,
+    "back": 0,
+    "timeouts": 0
+   },
+   "latency_proxy": {
+    "n": 5,
+    "N": 6,
+    "flags": {
+     "none": 3,
+     "unanchored": 1,
+     "late": 2
+    },
+    "median_s": 1.751,
+    "within_3": 3,
+    "within_5": 3,
+    "within_8": 3
+   },
+   "split": {
+    "right": 5,
+    "premature": 0,
+    "stale": 0,
+    "none": 1,
+    "N": 6
+   },
+   "classes": {
+    "hold": {
+     "n": 2,
+     "med_s": 2.8,
+     "max_s": 3.43,
+     "linked": 11,
+     "unlinked": 0,
+     "stale_repeat": 0,
+     "not_from_job": 3
+    },
+    "false_question": {
+     "n": 1,
+     "of_retire_new_question": 15,
+     "undetermined": 0,
+     "with_empty_job": 1
+    },
+    "portion_loop": {
+     "n": 15,
+     "sec": 318.62,
+     "n4": 10,
+     "n_unknown_cause": 0
+    },
+    "unanswered": {
+     "n": 6,
+     "s5": 1,
+     "s15": 0,
+     "s30": 0
+    },
+    "repeat_over_speech": {
+     "n": 2,
+     "of_replay": 58
+    },
+    "empty_ear": {
+     "n": 2,
+     "share": 0.019,
+     "sec": 1.5,
+     "n_any": 9,
+     "sec_any": 5.3
+    },
+    "long_segment": {
+     "n": 0
+    },
+    "stale_cue": {
+     "n": 0
+    }
+   }
+  },
+  {
+   "call": "20261111-134154-59b8c6f469d6",
+   "corpus": "rest",
+   "minutes": 0.24,
+   "counters": {
+    "finals": 0,
+    "ear": 0,
+    "cues": 1,
+    "jobs": 0,
+    "decisions": 1,
+    "questions": 1,
+    "repeats": 0,
+    "loops": 0,
+    "stale": 0,
+    "failures": 0,
+    "silent": 0,
+    "stuck": 0,
+    "back": 0,
+    "timeouts": 0
+   },
+   "latency_proxy": {
+    "n": 0,
+    "N": 0
+   },
+   "split": {
+    "right": 0,
+    "premature": 0,
+    "stale": 0,
+    "none": 0,
+    "N": 0
+   },
+   "classes": {
+    "hold": {
+     "n": 0,
+     "linked": 0,
+     "unlinked": 0,
+     "stale_repeat": 0,
+     "not_from_job": 0
+    },
+    "false_question": {
+     "n": 0,
+     "of_retire_new_question": 0,
+     "undetermined": 0,
+     "with_empty_job": 0
+    },
+    "portion_loop": {
+     "n": 0,
+     "sec": 0.0,
+     "n4": 0,
+     "n_unknown_cause": 0
+    },
+    "unanswered": {
+     "n": 0,
+     "s5": 0,
+     "s15": 0,
+     "s30": 0
+    },
+    "repeat_over_speech": {
+     "n": 0,
+     "of_replay": 0
+    },
+    "empty_ear": {
+     "n": 0,
+     "sec": 0.0,
+     "n_any": 0,
+     "sec_any": 0.0
+    },
+    "long_segment": {
+     "n": 0
+    },
+    "stale_cue": {
+     "n": 0
+    }
+   }
+  },
+  {
+   "call": "20261111-140018-a2149b82aae1",
+   "corpus": "rest",
+   "minutes": 1.51,
+   "counters": {
+    "finals": 0,
+    "ear": 28,
+    "cues": 13,
+    "jobs": 5,
+    "decisions": 39,
+    "questions": 4,
+    "repeats": 2,
+    "loops": 0,
+    "stale": 0,
+    "failures": 0,
+    "silent": 1,
+    "stuck": 0,
+    "back": 0,
+    "timeouts": 0
+   },
+   "latency_proxy": {
+    "n": 1,
+    "N": 1,
+    "flags": {
+     "none": 1
+    },
+    "median_s": 4.756,
+    "within_3": 0,
+    "within_5": 1,
+    "within_8": 1
+   },
+   "split": {
+    "right": 1,
+    "premature": 0,
+    "stale": 0,
+    "none": 0,
+    "N": 1
+   },
+   "classes": {
+    "hold": {
+     "n": 1,
+     "med_s": 1.88,
+     "max_s": 1.88,
+     "linked": 1,
+     "unlinked": 0,
+     "stale_repeat": 0,
+     "not_from_job": 1
+    },
+    "false_question": {
+     "n": 0,
+     "of_retire_new_question": 3,
+     "undetermined": 0,
+     "with_empty_job": 0
+    },
+    "portion_loop": {
+     "n": 2,
+     "sec": 16.89,
+     "n4": 0,
+     "n_unknown_cause": 0
+    },
+    "unanswered": {
+     "n": 2,
+     "s5": 0,
+     "s15": 0,
+     "s30": 0
+    },
+    "repeat_over_speech": {
+     "n": 0,
+     "of_replay": 8
+    },
+    "empty_ear": {
+     "n": 9,
+     "share": 0.321,
+     "sec": 10.7,
+     "n_any": 18,
+     "sec_any": 13.8
+    },
+    "long_segment": {
+     "n": 0
+    },
+    "stale_cue": {
+     "n": 0
+    }
+   }
+  },
+  {
+   "call": "20261111-140607-9544478362ba",
+   "corpus": "rest",
+   "minutes": 6.06,
+   "counters": {
+    "finals": 0,
+    "ear": 47,
+    "cues": 16,
+    "jobs": 32,
+    "decisions": 100,
+    "questions": 12,
+    "repeats": 1,
+    "loops": 0,
+    "stale": 2,
+    "failures": 0,
+    "silent": 0,
+    "stuck": 0,
+    "back": 0,
+    "timeouts": 0
+   },
+   "latency_proxy": {
+    "n": 5,
+    "N": 8,
+    "flags": {
+     "none": 5,
+     "unanchored": 3
+    },
+    "median_s": 10.069,
+    "within_3": 0,
+    "within_5": 0,
+    "within_8": 0
+   },
+   "split": {
+    "right": 5,
+    "premature": 0,
+    "stale": 1,
+    "none": 2,
+    "N": 8
+   },
+   "classes": {
+    "hold": {
+     "n": 11,
+     "med_s": 8.27,
+     "max_s": 9.34,
+     "linked": 13,
+     "unlinked": 0,
+     "stale_repeat": 0,
+     "not_from_job": 1
+    },
+    "false_question": {
+     "n": 0,
+     "of_retire_new_question": 11,
+     "undetermined": 0,
+     "with_empty_job": 0
+    },
+    "portion_loop": {
+     "n": 0,
+     "sec": 0.0,
+     "n4": 0,
+     "n_unknown_cause": 0
+    },
+    "unanswered": {
+     "n": 8,
+     "s5": 8,
+     "s15": 0,
+     "s30": 0
+    },
+    "repeat_over_speech": {
+     "n": 0,
+     "of_replay": 1
+    },
+    "empty_ear": {
+     "n": 15,
+     "share": 0.319,
+     "sec": 42.2,
+     "n_any": 19,
+     "sec_any": 43.8
+    },
+    "long_segment": {
+     "n": 9
+    },
+    "stale_cue": {
+     "n": 0
+    }
+   }
+  },
+  {
+   "call": "20261111-145110-e565389eb303",
+   "corpus": "rest",
+   "minutes": 0.12,
+   "counters": {
+    "finals": 0,
+    "ear": 0,
+    "cues": 1,
+    "jobs": 0,
+    "decisions": 1,
+    "questions": 1,
+    "repeats": 0,
+    "loops": 0,
+    "stale": 0,
+    "failures": 0,
+    "silent": 0,
+    "stuck": 0,
+    "back": 0,
+    "timeouts": 0
+   },
+   "latency_proxy": {
+    "n": 0,
+    "N": 0
+   },
+   "split": {
+    "right": 0,
+    "premature": 0,
+    "stale": 0,
+    "none": 0,
+    "N": 0
+   },
+   "classes": {
+    "hold": {
+     "n": 0,
+     "linked": 0,
+     "unlinked": 0,
+     "stale_repeat": 0,
+     "not_from_job": 0
+    },
+    "false_question": {
+     "n": 0,
+     "of_retire_new_question": 0,
+     "undetermined": 0,
+     "with_empty_job": 0
+    },
+    "portion_loop": {
+     "n": 0,
+     "sec": 0.0,
+     "n4": 0,
+     "n_unknown_cause": 0
+    },
+    "unanswered": {
+     "n": 0,
+     "s5": 0,
+     "s15": 0,
+     "s30": 0
+    },
+    "repeat_over_speech": {
+     "n": 0,
+     "of_replay": 0
+    },
+    "empty_ear": {
+     "n": 0,
+     "sec": 0.0,
+     "n_any": 0,
+     "sec_any": 0.0
+    },
+    "long_segment": {
+     "n": 0
+    },
+    "stale_cue": {
+     "n": 0
+    }
+   }
+  },
+  {
+   "call": "20261111-145734-35f081d49ad9",
+   "corpus": "rest",
+   "minutes": 8.55,
+   "counters": {
+    "finals": 0,
+    "ear": 105,
+    "cues": 25,
+    "jobs": 66,
+    "decisions": 233,
+    "questions": 15,
+    "repeats": 6,
+    "loops": 0,
+    "stale": 0,
+    "failures": 0,
+    "silent": 1,
+    "stuck": 0,
+    "back": 0,
+    "timeouts": 0
+   },
+   "latency_proxy": {
+    "n": 4,
+    "N": 7,
+    "flags": {
+     "none": 2,
+     "unanchored": 2,
+     "late": 2,
+     "no_cue": 1
+    },
+    "median_s": 13.107,
+    "within_3": 0,
+    "within_5": 0,
+    "within_8": 0
+   },
+   "split": {
+    "right": 4,
+    "premature": 0,
+    "stale": 1,
+    "none": 2,
+    "N": 7
+   },
+   "classes": {
+    "hold": {
+     "n": 9,
+     "med_s": 8.55,
+     "max_s": 15.48,
+     "linked": 12,
+     "unlinked": 0,
+     "stale_repeat": 0,
+     "not_from_job": 1
+    },
+    "false_question": {
+     "n": 0,
+     "of_retire_new_question": 14,
+     "undetermined": 0,
+     "with_empty_job": 0
+    },
+    "portion_loop": {
+     "n": 0,
+     "sec": 0.0,
+     "n4": 0,
+     "n_unknown_cause": 0
+    },
+    "unanswered": {
+     "n": 7,
+     "s5": 7,
+     "s15": 2,
+     "s30": 0
+    },
+    "repeat_over_speech": {
+     "n": 2,
+     "of_replay": 5
+    },
+    "empty_ear": {
+     "n": 16,
+     "share": 0.152,
+     "sec": 26.6,
+     "n_any": 27,
+     "sec_any": 32.3
+    },
+    "long_segment": {
+     "n": 8
+    },
+    "stale_cue": {
+     "n": 1
+    }
+   }
+  },
+  {
+   "call": "20261111-150619-7c66c4ce8ea2",
+   "corpus": "rest",
+   "minutes": 0.07,
+   "counters": {
+    "finals": 0,
+    "ear": 0,
+    "cues": 0,
+    "jobs": 0,
+    "decisions": 1,
+    "questions": 1,
+    "repeats": 0,
+    "loops": 0,
+    "stale": 0,
+    "failures": 0,
+    "silent": 1,
+    "stuck": 0,
+    "back": 0,
+    "timeouts": 0
+   },
+   "latency_proxy": {
+    "n": 0,
+    "N": 0
+   },
+   "split": {
+    "right": 0,
+    "premature": 0,
+    "stale": 0,
+    "none": 0,
+    "N": 0
+   },
+   "classes": {
+    "hold": {
+     "n": 0,
+     "linked": 0,
+     "unlinked": 0,
+     "stale_repeat": 0,
+     "not_from_job": 0
+    },
+    "false_question": {
+     "n": 0,
+     "of_retire_new_question": 0,
+     "undetermined": 0,
+     "with_empty_job": 0
+    },
+    "portion_loop": {
+     "n": 0,
+     "sec": 0.0,
+     "n4": 0,
+     "n_unknown_cause": 0
+    },
+    "unanswered": {
+     "n": 0,
+     "s5": 0,
+     "s15": 0,
+     "s30": 0
+    },
+    "repeat_over_speech": {
+     "n": 0,
+     "of_replay": 0
+    },
+    "empty_ear": {
+     "n": 0,
+     "sec": 0.0,
+     "n_any": 0,
+     "sec_any": 0.0
+    },
+    "long_segment": {
+     "n": 0
+    },
+    "stale_cue": {
+     "n": 0
+    }
+   }
+  },
+  {
+   "call": "20261112-093228-29ecf3c4041f",
+   "corpus": "rest",
+   "minutes": 0.32,
+   "counters": {
+    "finals": 0,
+    "ear": 1,
+    "cues": 1,
+    "jobs": 1,
+    "decisions": 1,
+    "questions": 1,
+    "repeats": 0,
+    "loops": 0,
+    "stale": 0,
+    "failures": 0,
+    "silent": 0,
+    "stuck": 0,
+    "back": 0,
+    "timeouts": 0
+   },
+   "latency_proxy": {
+    "n": 0,
+    "N": 0
+   },
+   "split": {
+    "right": 0,
+    "premature": 0,
+    "stale": 0,
+    "none": 0,
+    "N": 0
+   },
+   "classes": {
+    "hold": {
+     "n": 0,
+     "linked": 0,
+     "unlinked": 0,
+     "stale_repeat": 0,
+     "not_from_job": 0
+    },
+    "false_question": {
+     "n": 0,
+     "of_retire_new_question": 0,
+     "undetermined": 0,
+     "with_empty_job": 0
+    },
+    "portion_loop": {
+     "n": 0,
+     "sec": 0.0,
+     "n4": 0,
+     "n_unknown_cause": 0
+    },
+    "unanswered": {
+     "n": 0,
+     "s5": 0,
+     "s15": 0,
+     "s30": 0
+    },
+    "repeat_over_speech": {
+     "n": 0,
+     "of_replay": 0
+    },
+    "empty_ear": {
+     "n": 0,
+     "share": 0.0,
+     "sec": 0.0,
+     "n_any": 0,
+     "sec_any": 0.0
+    },
+    "long_segment": {
+     "n": 0
+    },
+    "stale_cue": {
+     "n": 0
+    }
+   }
+  },
+  {
+   "call": "20261113-010016-9fb603083b39",
+   "corpus": "rest",
+   "minutes": 0.29,
+   "counters": {
+    "finals": 1,
+    "ear": 1,
+    "cues": 1,
+    "jobs": 1,
+    "decisions": 4,
+    "questions": 1,
+    "repeats": 0,
+    "loops": 0,
+    "stale": 0,
+    "failures": 0,
+    "silent": 0,
+    "stuck": 0,
+    "back": 0,
+    "timeouts": 0
+   },
+   "latency_proxy": {
+    "n": 0,
+    "N": 1,
+    "flags": {
+     "unanchored": 1
+    }
+   },
+   "split": {
+    "right": 0,
+    "premature": 0,
+    "stale": 0,
+    "none": 1,
+    "N": 1
+   },
+   "classes": {
+    "hold": {
+     "n": 0,
+     "linked": 1,
+     "unlinked": 0,
+     "stale_repeat": 0,
+     "not_from_job": 0
+    },
+    "false_question": {
+     "n": 0,
+     "of_retire_new_question": 0,
+     "undetermined": 0,
+     "with_empty_job": 0
+    },
+    "portion_loop": {
+     "n": 0,
+     "sec": 0.0,
+     "n4": 0,
+     "n_unknown_cause": 0
+    },
+    "unanswered": {
+     "n": 1,
+     "s5": 0,
+     "s15": 0,
+     "s30": 0
+    },
+    "repeat_over_speech": {
+     "n": 0,
+     "of_replay": 0
+    },
+    "empty_ear": {
+     "n": 0,
+     "share": 0.0,
+     "sec": 0.0,
+     "n_any": 0,
+     "sec_any": 0.0
+    },
+    "long_segment": {
+     "n": 0
+    },
+    "stale_cue": {
+     "n": 0
+    }
+   }
+  },
+  {
+   "call": "20261113-010045-249e5b8b01ce",
+   "corpus": "rest",
+   "minutes": 0.31,
+   "counters": {
+    "finals": 1,
+    "ear": 1,
+    "cues": 1,
+    "jobs": 3,
+    "decisions": 3,
+    "questions": 1,
+    "repeats": 0,
+    "loops": 0,
+    "stale": 0,
+    "failures": 0,
+    "silent": 0,
+    "stuck": 0,
+    "back": 0,
+    "timeouts": 0
+   },
+   "latency_proxy": {
+    "n": 1,
+    "N": 1,
+    "flags": {
+     "none": 1
+    },
+    "median_s": 4.712,
+    "within_3": 0,
+    "within_5": 1,
+    "within_8": 1
+   },
+   "split": {
+    "right": 1,
+    "premature": 0,
+    "stale": 0,
+    "none": 0,
+    "N": 1
+   },
+   "classes": {
+    "hold": {
+     "n": 0,
+     "linked": 0,
+     "unlinked": 1,
+     "stale_repeat": 0,
+     "not_from_job": 0
+    },
+    "false_question": {
+     "n": 0,
+     "of_retire_new_question": 0,
+     "undetermined": 0,
+     "with_empty_job": 0
+    },
+    "portion_loop": {
+     "n": 0,
+     "sec": 0.0,
+     "n4": 0,
+     "n_unknown_cause": 0
+    },
+    "unanswered": {
+     "n": 1,
+     "s5": 0,
+     "s15": 0,
+     "s30": 0
+    },
+    "repeat_over_speech": {
+     "n": 0,
+     "of_replay": 0
+    },
+    "empty_ear": {
+     "n": 0,
+     "share": 0.0,
+     "sec": 0.0,
+     "n_any": 0,
+     "sec_any": 0.0
+    },
+    "long_segment": {
+     "n": 0
+    },
+    "stale_cue": {
+     "n": 0
+    }
+   }
+  },
+  {
+   "call": "20261113-010112-d8b7fa64111d",
+   "corpus": "rest",
+   "minutes": 0.28,
+   "counters": {
+    "finals": 1,
+    "ear": 1,
+    "cues": 1,
+    "jobs": 1,
+    "decisions": 3,
+    "questions": 1,
+    "repeats": 0,
+    "loops": 0,
+    "stale": 0,
+    "failures": 0,
+    "silent": 0,
+    "stuck": 0,
+    "back": 0,
+    "timeouts": 0
+   },
+   "latency_proxy": {
+    "n": 0,
+    "N": 1,
+    "flags": {
+     "unanchored": 1
+    }
+   },
+   "split": {
+    "right": 0,
+    "premature": 0,
+    "stale": 0,
+    "none": 1,
+    "N": 1
+   },
+   "classes": {
+    "hold": {
+     "n": 0,
+     "linked": 1,
+     "unlinked": 0,
+     "stale_repeat": 0,
+     "not_from_job": 0
+    },
+    "false_question": {
+     "n": 0,
+     "of_retire_new_question": 0,
+     "undetermined": 0,
+     "with_empty_job": 0
+    },
+    "portion_loop": {
+     "n": 0,
+     "sec": 0.0,
+     "n4": 0,
+     "n_unknown_cause": 0
+    },
+    "unanswered": {
+     "n": 1,
+     "s5": 0,
+     "s15": 0,
+     "s30": 0
+    },
+    "repeat_over_speech": {
+     "n": 0,
+     "of_replay": 0
+    },
+    "empty_ear": {
+     "n": 0,
+     "share": 0.0,
+     "sec": 0.0,
+     "n_any": 0,
+     "sec_any": 0.0
+    },
+    "long_segment": {
+     "n": 0
+    },
+    "stale_cue": {
+     "n": 0
+    }
+   }
+  },
+  {
+   "call": "20261113-010140-cd452450dbdb",
+   "corpus": "rest",
+   "minutes": 0.33,
+   "counters": {
+    "finals": 1,
+    "ear": 1,
+    "cues": 1,
+    "jobs": 3,
+    "decisions": 3,
+    "questions": 1,
+    "repeats": 0,
+    "loops": 0,
+    "stale": 0,
+    "failures": 0,
+    "silent": 0,
+    "stuck": 0,
+    "back": 0,
+    "timeouts": 0
+   },
+   "latency_proxy": {
+    "n": 1,
+    "N": 1,
+    "flags": {
+     "none": 1
+    },
+    "median_s": 4.671,
+    "within_3": 0,
+    "within_5": 1,
+    "within_8": 1
+   },
+   "split": {
+    "right": 1,
+    "premature": 0,
+    "stale": 0,
+    "none": 0,
+    "N": 1
+   },
+   "classes": {
+    "hold": {
+     "n": 0,
+     "linked": 0,
+     "unlinked": 1,
+     "stale_repeat": 0,
+     "not_from_job": 0
+    },
+    "false_question": {
+     "n": 0,
+     "of_retire_new_question": 0,
+     "undetermined": 0,
+     "with_empty_job": 0
+    },
+    "portion_loop": {
+     "n": 0,
+     "sec": 0.0,
+     "n4": 0,
+     "n_unknown_cause": 0
+    },
+    "unanswered": {
+     "n": 1,
+     "s5": 0,
+     "s15": 0,
+     "s30": 0
+    },
+    "repeat_over_speech": {
+     "n": 0,
+     "of_replay": 0
+    },
+    "empty_ear": {
+     "n": 0,
+     "share": 0.0,
+     "sec": 0.0,
+     "n_any": 0,
+     "sec_any": 0.0
+    },
+    "long_segment": {
+     "n": 0
+    },
+    "stale_cue": {
+     "n": 0
+    }
+   }
+  },
+  {
+   "call": "20261113-062637-d4ba319ecd6c",
+   "corpus": "rest",
+   "minutes": 1.27,
+   "counters": {
+    "finals": 1,
+    "ear": 1,
+    "cues": 1,
+    "jobs": 1,
+    "decisions": 5,
+    "questions": 1,
+    "repeats": 0,
+    "loops": 0,
+    "stale": 0,
+    "failures": 0,
+    "silent": 0,
+    "stuck": 0,
+    "back": 0,
+    "timeouts": 0
+   },
+   "latency_proxy": {
+    "n": 0,
+    "N": 1,
+    "flags": {
+     "unanchored": 1
+    }
+   },
+   "split": {
+    "right": 0,
+    "premature": 0,
+    "stale": 0,
+    "none": 1,
+    "N": 1
+   },
+   "classes": {
+    "hold": {
+     "n": 1,
+     "med_s": 2.65,
+     "max_s": 2.65,
+     "linked": 1,
+     "unlinked": 0,
+     "stale_repeat": 0,
+     "not_from_job": 0
+    },
+    "false_question": {
+     "n": 0,
+     "of_retire_new_question": 0,
+     "undetermined": 0,
+     "with_empty_job": 0
+    },
+    "portion_loop": {
+     "n": 0,
+     "sec": 0.0,
+     "n4": 0,
+     "n_unknown_cause": 0
+    },
+    "unanswered": {
+     "n": 1,
+     "s5": 1,
+     "s15": 0,
+     "s30": 0
+    },
+    "repeat_over_speech": {
+     "n": 0,
+     "of_replay": 0
+    },
+    "empty_ear": {
+     "n": 0,
+     "share": 0.0,
+     "sec": 0.0,
+     "n_any": 0,
+     "sec_any": 0.0
+    },
+    "long_segment": {
+     "n": 1
+    },
+    "stale_cue": {
+     "n": 0
+    }
+   }
+  },
+  {
+   "call": "20261113-062804-ea2708f209cf",
+   "corpus": "rest",
+   "minutes": 0.29,
+   "counters": {
+    "finals": 0,
+    "ear": 1,
+    "cues": 3,
+    "jobs": 1,
+    "decisions": 3,
+    "questions": 1,
+    "repeats": 0,
+    "loops": 0,
+    "stale": 0,
+    "failures": 0,
+    "silent": 0,
+    "stuck": 0,
+    "back": 0,
+    "timeouts": 0
+   },
+   "latency_proxy": {
+    "n": 1,
+    "N": 1,
+    "flags": {
+     "none": 1
+    },
+    "median_s": 2.297,
+    "within_3": 1,
+    "within_5": 1,
+    "within_8": 1
+   },
+   "split": {
+    "right": 1,
+    "premature": 0,
+    "stale": 0,
+    "none": 0,
+    "N": 1
+   },
+   "classes": {
+    "hold": {
+     "n": 0,
+     "linked": 1,
+     "unlinked": 0,
+     "stale_repeat": 0,
+     "not_from_job": 0
+    },
+    "false_question": {
+     "n": 0,
+     "of_retire_new_question": 0,
+     "undetermined": 0,
+     "with_empty_job": 0
+    },
+    "portion_loop": {
+     "n": 0,
+     "sec": 0.0,
+     "n4": 0,
+     "n_unknown_cause": 0
+    },
+    "unanswered": {
+     "n": 1,
+     "s5": 0,
+     "s15": 0,
+     "s30": 0
+    },
+    "repeat_over_speech": {
+     "n": 0,
+     "of_replay": 0
+    },
+    "empty_ear": {
+     "n": 0,
+     "share": 0.0,
+     "sec": 0.0,
+     "n_any": 0,
+     "sec_any": 0.0
+    },
+    "long_segment": {
+     "n": 0
+    },
+    "stale_cue": {
+     "n": 0
+    }
+   }
+  },
+  {
+   "call": "20261113-062837-a507e45426ec",
+   "corpus": "rest",
+   "minutes": 0.3,
+   "counters": {
+    "finals": 1,
+    "ear": 1,
+    "cues": 1,
+    "jobs": 1,
+    "decisions": 3,
+    "questions": 1,
+    "repeats": 0,
+    "loops": 0,
+    "stale": 0,
+    "failures": 0,
+    "silent": 0,
+    "stuck": 0,
+    "back": 0,
+    "timeouts": 0
+   },
+   "latency_proxy": {
+    "n": 0,
+    "N": 1,
+    "flags": {
+     "unanchored": 1
+    }
+   },
+   "split": {
+    "right": 0,
+    "premature": 0,
+    "stale": 0,
+    "none": 1,
+    "N": 1
+   },
+   "classes": {
+    "hold": {
+     "n": 0,
+     "linked": 1,
+     "unlinked": 0,
+     "stale_repeat": 0,
+     "not_from_job": 0
+    },
+    "false_question": {
+     "n": 0,
+     "of_retire_new_question": 0,
+     "undetermined": 0,
+     "with_empty_job": 0
+    },
+    "portion_loop": {
+     "n": 0,
+     "sec": 0.0,
+     "n4": 0,
+     "n_unknown_cause": 0
+    },
+    "unanswered": {
+     "n": 1,
+     "s5": 0,
+     "s15": 0,
+     "s30": 0
+    },
+    "repeat_over_speech": {
+     "n": 0,
+     "of_replay": 0
+    },
+    "empty_ear": {
+     "n": 0,
+     "share": 0.0,
+     "sec": 0.0,
+     "n_any": 0,
+     "sec_any": 0.0
+    },
+    "long_segment": {
+     "n": 0
+    },
+    "stale_cue": {
+     "n": 0
+    }
+   }
+  },
+  {
+   "call": "20261113-062906-d80344c40966",
+   "corpus": "rest",
+   "minutes": 0.33,
+   "counters": {
+    "finals": 1,
+    "ear": 1,
+    "cues": 1,
+    "jobs": 3,
+    "decisions": 3,
+    "questions": 1,
+    "repeats": 0,
+    "loops": 0,
+    "stale": 0,
+    "failures": 0,
+    "silent": 0,
+    "stuck": 0,
+    "back": 0,
+    "timeouts": 0
+   },
+   "latency_proxy": {
+    "n": 1,
+    "N": 1,
+    "flags": {
+     "none": 1
+    },
+    "median_s": 4.79,
+    "within_3": 0,
+    "within_5": 1,
+    "within_8": 1
+   },
+   "split": {
+    "right": 1,
+    "premature": 0,
+    "stale": 0,
+    "none": 0,
+    "N": 1
+   },
+   "classes": {
+    "hold": {
+     "n": 0,
+     "linked": 0,
+     "unlinked": 1,
+     "stale_repeat": 0,
+     "not_from_job": 0
+    },
+    "false_question": {
+     "n": 0,
+     "of_retire_new_question": 0,
+     "undetermined": 0,
+     "with_empty_job": 0
+    },
+    "portion_loop": {
+     "n": 0,
+     "sec": 0.0,
+     "n4": 0,
+     "n_unknown_cause": 0
+    },
+    "unanswered": {
+     "n": 1,
+     "s5": 0,
+     "s15": 0,
+     "s30": 0
+    },
+    "repeat_over_speech": {
+     "n": 0,
+     "of_replay": 0
+    },
+    "empty_ear": {
+     "n": 0,
+     "share": 0.0,
+     "sec": 0.0,
+     "n_any": 0,
+     "sec_any": 0.0
+    },
+    "long_segment": {
+     "n": 0
+    },
+    "stale_cue": {
+     "n": 0
+    }
+   }
+  },
+  {
+   "call": "20261113-062936-d1602b19346c",
+   "corpus": "rest",
+   "minutes": 0.28,
+   "counters": {
+    "finals": 1,
+    "ear": 1,
+    "cues": 1,
+    "jobs": 1,
+    "decisions": 3,
+    "questions": 1,
+    "repeats": 0,
+    "loops": 0,
+    "stale": 0,
+    "failures": 0,
+    "silent": 0,
+    "stuck": 0,
+    "back": 0,
+    "timeouts": 0
+   },
+   "latency_proxy": {
+    "n": 0,
+    "N": 1,
+    "flags": {
+     "unanchored": 1
+    }
+   },
+   "split": {
+    "right": 0,
+    "premature": 0,
+    "stale": 0,
+    "none": 1,
+    "N": 1
+   },
+   "classes": {
+    "hold": {
+     "n": 0,
+     "linked": 1,
+     "unlinked": 0,
+     "stale_repeat": 0,
+     "not_from_job": 0
+    },
+    "false_question": {
+     "n": 0,
+     "of_retire_new_question": 0,
+     "undetermined": 0,
+     "with_empty_job": 0
+    },
+    "portion_loop": {
+     "n": 0,
+     "sec": 0.0,
+     "n4": 0,
+     "n_unknown_cause": 0
+    },
+    "unanswered": {
+     "n": 1,
+     "s5": 0,
+     "s15": 0,
+     "s30": 0
+    },
+    "repeat_over_speech": {
+     "n": 0,
+     "of_replay": 0
+    },
+    "empty_ear": {
+     "n": 0,
+     "share": 0.0,
+     "sec": 0.0,
+     "n_any": 0,
+     "sec_any": 0.0
+    },
+    "long_segment": {
+     "n": 0
+    },
+    "stale_cue": {
+     "n": 0
+    }
+   }
+  },
+  {
+   "call": "20261113-063007-6254cf3028ff",
+   "corpus": "rest",
+   "minutes": 0.32,
+   "counters": {
+    "finals": 1,
+    "ear": 1,
+    "cues": 1,
+    "jobs": 3,
+    "decisions": 3,
+    "questions": 1,
+    "repeats": 0,
+    "loops": 0,
+    "stale": 0,
+    "failures": 0,
+    "silent": 0,
+    "stuck": 0,
+    "back": 0,
+    "timeouts": 0
+   },
+   "latency_proxy": {
+    "n": 1,
+    "N": 1,
+    "flags": {
+     "none": 1
+    },
+    "median_s": 5.494,
+    "within_3": 0,
+    "within_5": 0,
+    "within_8": 1
+   },
+   "split": {
+    "right": 1,
+    "premature": 0,
+    "stale": 0,
+    "none": 0,
+    "N": 1
+   },
+   "classes": {
+    "hold": {
+     "n": 0,
+     "linked": 0,
+     "unlinked": 1,
+     "stale_repeat": 0,
+     "not_from_job": 0
+    },
+    "false_question": {
+     "n": 0,
+     "of_retire_new_question": 0,
+     "undetermined": 0,
+     "with_empty_job": 0
+    },
+    "portion_loop": {
+     "n": 0,
+     "sec": 0.0,
+     "n4": 0,
+     "n_unknown_cause": 0
+    },
+    "unanswered": {
+     "n": 1,
+     "s5": 1,
+     "s15": 0,
+     "s30": 0
+    },
+    "repeat_over_speech": {
+     "n": 0,
+     "of_replay": 0
+    },
+    "empty_ear": {
+     "n": 0,
+     "share": 0.0,
+     "sec": 0.0,
+     "n_any": 0,
+     "sec_any": 0.0
+    },
+    "long_segment": {
+     "n": 0
+    },
+    "stale_cue": {
+     "n": 0
+    }
+   }
+  },
+  {
+   "call": "20261113-081134-c83720ceec2a",
+   "corpus": "rest",
+   "minutes": 9.56,
+   "counters": {
+    "finals": 28,
+    "ear": 97,
+    "cues": 30,
+    "jobs": 23,
+    "decisions": 177,
+    "questions": 14,
+    "repeats": 9,
+    "loops": 0,
+    "stale": 1,
+    "failures": 0,
+    "silent": 2,
+    "stuck": 0,
+    "back": 0,
+    "timeouts": 2
+   },
+   "latency_proxy": {
+    "n": 5,
+    "N": 12,
+    "flags": {
+     "none": 4,
+     "unanchored": 1,
+     "late": 1,
+     "no_cue": 6
+    },
+    "median_s": 5.527,
+    "within_3": 2,
+    "within_5": 2,
+    "within_8": 4
+   },
+   "split": {
+    "right": 5,
+    "premature": 0,
+    "stale": 1,
+    "none": 6,
+    "N": 12
+   },
+   "classes": {
+    "hold": {
+     "n": 0,
+     "linked": 4,
+     "unlinked": 0,
+     "stale_repeat": 3,
+     "not_from_job": 4
+    },
+    "false_question": {
+     "n": 1,
+     "of_retire_new_question": 10,
+     "undetermined": 0,
+     "with_empty_job": 1
+    },
+    "portion_loop": {
+     "n": 2,
+     "sec": 87.2,
+     "n4": 2,
+     "n_unknown_cause": 0
+    },
+    "unanswered": {
+     "n": 13,
+     "s5": 11,
+     "s15": 7,
+     "s30": 2
+    },
+    "repeat_over_speech": {
+     "n": 0,
+     "of_replay": 10
+    },
+    "empty_ear": {
+     "n": 2,
+     "share": 0.021,
+     "sec": 1.9,
+     "n_any": 5,
+     "sec_any": 3.5
+    },
+    "long_segment": {
+     "n": 0
+    },
+    "stale_cue": {
+     "n": 0
+    }
+   }
+  },
+  {
+   "call": "20261113-122651-d7cf7ecc8924",
+   "corpus": "rest",
+   "minutes": 1.24,
+   "counters": {
+    "finals": 0,
+    "ear": 19,
+    "cues": 2,
+    "jobs": 9,
+    "decisions": 16,
+    "questions": 2,
+    "repeats": 0,
+    "loops": 0,
+    "stale": 0,
+    "failures": 0,
+    "silent": 0,
+    "stuck": 0,
+    "back": 0,
+    "timeouts": 0
+   },
+   "latency_proxy": {
+    "n": 0,
+    "N": 0
+   },
+   "split": {
+    "right": 0,
+    "premature": 0,
+    "stale": 0,
+    "none": 0,
+    "N": 0
+   },
+   "classes": {
+    "hold": {
+     "n": 0,
+     "linked": 0,
+     "unlinked": 1,
+     "stale_repeat": 0,
+     "not_from_job": 0
+    },
+    "false_question": {
+     "n": 0,
+     "of_retire_new_question": 1,
+     "undetermined": 0,
+     "with_empty_job": 0
+    },
+    "portion_loop": {
+     "n": 0,
+     "sec": 0.0,
+     "n4": 0,
+     "n_unknown_cause": 0
+    },
+    "unanswered": {
+     "n": 0,
+     "s5": 0,
+     "s15": 0,
+     "s30": 0
+    },
+    "repeat_over_speech": {
+     "n": 0,
+     "of_replay": 0
+    },
+    "empty_ear": {
+     "n": 3,
+     "share": 0.158,
+     "sec": 5.8,
+     "n_any": 10,
+     "sec_any": 8.2
+    },
+    "long_segment": {
+     "n": 0
+    },
+    "stale_cue": {
+     "n": 0
+    }
+   }
+  },
+  {
+   "call": "20261113-122846-28afbf0c208f",
+   "corpus": "rest",
+   "minutes": 0.6,
+   "counters": {
+    "finals": 0,
+    "ear": 10,
+    "cues": 1,
+    "jobs": 2,
+    "decisions": 4,
+    "questions": 2,
+    "repeats": 0,
+    "loops": 0,
+    "stale": 0,
+    "failures": 0,
+    "silent": 1,
+    "stuck": 0,
+    "back": 0,
+    "timeouts": 0
+   },
+   "latency_proxy": {
+    "n": 0,
+    "N": 0
+   },
+   "split": {
+    "right": 0,
+    "premature": 0,
+    "stale": 0,
+    "none": 0,
+    "N": 0
+   },
+   "classes": {
+    "hold": {
+     "n": 0,
+     "linked": 0,
+     "unlinked": 0,
+     "stale_repeat": 0,
+     "not_from_job": 0
+    },
+    "false_question": {
+     "n": 0,
+     "of_retire_new_question": 1,
+     "undetermined": 1,
+     "with_empty_job": 0
+    },
+    "portion_loop": {
+     "n": 0,
+     "sec": 0.0,
+     "n4": 0,
+     "n_unknown_cause": 0
+    },
+    "unanswered": {
+     "n": 0,
+     "s5": 0,
+     "s15": 0,
+     "s30": 0
+    },
+    "repeat_over_speech": {
+     "n": 0,
+     "of_replay": 0
+    },
+    "empty_ear": {
+     "n": 3,
+     "share": 0.3,
+     "sec": 5.2,
+     "n_any": 7,
+     "sec_any": 7.4
+    },
+    "long_segment": {
+     "n": 0
+    },
+    "stale_cue": {
+     "n": 0
+    }
+   }
+  },
+  {
+   "call": "20261113-122939-8842851bf0ad",
+   "corpus": "rest",
+   "minutes": 0.59,
+   "counters": {
+    "finals": 0,
+    "ear": 7,
+    "cues": 2,
+    "jobs": 2,
+    "decisions": 7,
+    "questions": 2,
+    "repeats": 0,
+    "loops": 0,
+    "stale": 0,
+    "failures": 0,
+    "silent": 0,
+    "stuck": 0,
+    "back": 0,
+    "timeouts": 0
+   },
+   "latency_proxy": {
+    "n": 0,
+    "N": 0
+   },
+   "split": {
+    "right": 0,
+    "premature": 0,
+    "stale": 0,
+    "none": 0,
+    "N": 0
+   },
+   "classes": {
+    "hold": {
+     "n": 0,
+     "linked": 0,
+     "unlinked": 1,
+     "stale_repeat": 0,
+     "not_from_job": 0
+    },
+    "false_question": {
+     "n": 0,
+     "of_retire_new_question": 1,
+     "undetermined": 0,
+     "with_empty_job": 0
+    },
+    "portion_loop": {
+     "n": 0,
+     "sec": 0.0,
+     "n4": 0,
+     "n_unknown_cause": 0
+    },
+    "unanswered": {
+     "n": 0,
+     "s5": 0,
+     "s15": 0,
+     "s30": 0
+    },
+    "repeat_over_speech": {
+     "n": 0,
+     "of_replay": 0
+    },
+    "empty_ear": {
+     "n": 3,
+     "share": 0.429,
+     "sec": 6.3,
+     "n_any": 5,
+     "sec_any": 7.4
+    },
+    "long_segment": {
+     "n": 0
+    },
+    "stale_cue": {
+     "n": 0
+    }
+   }
+  }
+ ]
+}
