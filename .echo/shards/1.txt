@@ -1,0 +1,6 @@
+tests/test_b_ruling_lock.py
+tests/test_factory_e68_r7.py
+tests/test_m2_open.py
+tests/test_n02_topic_in_play.py
+tests/test_night_gate_lock.py
+tests/test_question_slot_sync.py
