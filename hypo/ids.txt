@@ -1,0 +1,1 @@
+tests/test_factory_e06_1_hold_sweep.py::test_hold_sweep_metrics_and_checks
