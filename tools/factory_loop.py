@@ -7773,7 +7773,7 @@ class Loop:
             unbooked = sum(1 for w in live if not (state["tasks"].get(w.tid, {}).get("began") or {}).get("booked"))
             try:
                 gate = self._head_gate(task, state)
-            except Exception as e:               # the head's state is unreadable: no head verdict, the ledger's count decides
+            except (OSError, ValueError, KeyError, TypeError) as e:   # the head's state is unreadable: no head verdict, the ledger's count decides
                 self.err("capacity head gate", e)
                 gate = None
             if gate is None:
@@ -9072,7 +9072,14 @@ class Loop:
                 return
             if not Path(self.cfg.channels).is_file():   # no registry: nothing to probe, and the pass already reported it
                 return
-            if self._headroom(None, state) > 0:
+            try:
+                gate = self._head_gate(None, state)
+            except (OSError, ValueError, KeyError, TypeError):
+                gate = None
+            # fac-68: with a live head the pool is dry only when no channel can take a ticket today (the head's own
+            # verdict); the ledger's headroom 0 is then just the head's queue, not a dry pool
+            dry = (gate == "quota") if gate is not None else self._headroom(None, state) <= 0
+            if not dry:
                 self._dry_since = None
                 return
             if self._dry_since is None:

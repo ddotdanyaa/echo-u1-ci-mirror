@@ -23,7 +23,8 @@ def _loop(free, live=0, peaks=(), headroom=99):
         pool=SimpleNamespace(workers={i: SimpleNamespace(owned=None, tid='T%d' % i) for i in range(live)}),
         _ending=lambda: False, _brake_due=None, cfg=SimpleNamespace(once=False),
         ls=lambda: {}, _peaks=list(peaks), err=lambda *a: None,
-        load=lambda: (None, {'tasks': {}}), _headroom=lambda task, state: headroom, _headroom_seen=None)
+        load=lambda: (None, {'tasks': {}}), _headroom=lambda task, state: headroom, _headroom_seen=None,
+        _head_gate=lambda t, s: None)
     stub._estimate = lambda: L.Loop._estimate(stub)
     stub._mem_plan = lambda live=None: L.Loop._mem_plan(stub, live)
     stub._floor = L.Loop._floor

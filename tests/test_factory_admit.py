@@ -85,3 +85,34 @@ def test_route_open_today_reads_the_day_not_the_minute(tmp_path):
     assert CH.route_open_today(ch, {"g1": {"request_times": [now - 1] * 499}}, env, now=now)
     assert not CH.route_open_today(ch, {"g1": {"request_times": [now - 1] * 500}}, env, now=now)
     assert not CH.route_open_today(ch, {}, {}, now=now)
+
+
+def test_route_open_today_ignores_a_channel_with_a_standing_dead_mark(tmp_path):
+    ch = CH.validate(json.loads(_channels(tmp_path).read_text(encoding="utf-8"))["channels"])
+    now = time.time()
+    env = {"ADMKEY": "k"}
+    dead = {"c1": {"key": CH._fingerprint(env, ch[0]), "since": now - 5, "reason": "key_invalid", "until": None}}
+    assert not CH.route_open_today(ch, {"dead": dead}, env, now=now)
+    assert CH.route_open_today(ch, {"dead": dead}, {"ADMKEY": "other"}, now=now)   # a new key: the mark no longer applies
+
+
+def _watch(tmp_path, monkeypatch, *, head, calls_today):
+    stub, state = _stub(tmp_path, monkeypatch, head=head, calls_today=calls_today)
+    stub._dry_since = None
+    stub._probed_at = 0.0
+    stub.event = lambda *a, **k: None
+    stub._headroom = lambda task, st: 0
+    L.Loop._watch_pool(stub, state, [{"status": "READY"}])
+    return stub
+
+
+def test_watchdog_does_not_call_the_pool_dry_when_the_live_head_has_an_open_channel(tmp_path, monkeypatch):
+    assert _watch(tmp_path, monkeypatch, head=True, calls_today=0)._dry_since is None
+
+
+def test_watchdog_calls_the_pool_dry_when_the_live_head_has_no_channel_open_today(tmp_path, monkeypatch):
+    assert _watch(tmp_path, monkeypatch, head=True, calls_today=500)._dry_since is not None
+
+
+def test_watchdog_without_a_head_reads_headroom_as_before(tmp_path, monkeypatch):
+    assert _watch(tmp_path, monkeypatch, head=False, calls_today=0)._dry_since is not None
