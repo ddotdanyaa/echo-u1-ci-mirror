@@ -1,0 +1,5 @@
+tests/registry/test_fn_2_09.py
+tests/test_cm_probes.py
+tests/test_u19_lang.py
+tests/test_u19_s4_answer_lang.py
+tests/test_w9_fast_no.py
