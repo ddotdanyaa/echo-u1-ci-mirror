@@ -1,0 +1,6 @@
+tests/test_c24_take_back_after_done.py
+tests/test_c25_a_veto.py
+tests/test_f6_stress.py
+tests/test_g23_old_answer.py
+tests/test_ladder.py
+tests/test_p14_shrink.py
