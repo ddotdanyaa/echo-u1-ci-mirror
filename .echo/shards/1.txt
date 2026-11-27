@@ -1,0 +1,1 @@
+tests/test_factory_e87_arith_by_code_course.py::test_course_code_before
