@@ -1,0 +1,28 @@
+{
+ "id": "everyday-units",
+ "split": "dev",
+ "area": "everyday",
+ "kind": "qa",
+ "source": {
+  "name": "authored for ECHO (this repository), general knowledge, no external text copied",
+  "license": "CC0-1.0",
+  "kind": "authored",
+  "url": null
+ },
+ "turns": [
+  {
+   "user": "Сколько граммов в килограмме?",
+   "expected": "тысяча граммов",
+   "length": "short",
+   "kind": "question",
+   "gap_s": 6.0
+  },
+  {
+   "user": "А сколько минут в сутках?",
+   "expected": "тысяча четыреста сорок минут",
+   "length": "short",
+   "kind": "question",
+   "gap_s": 6.0
+  }
+ ]
+}
