@@ -1,0 +1,6 @@
+tests/test_a_e88_calls.py
+tests/test_ack_normalisation.py
+tests/test_c24_a2.py
+tests/test_c7_year_repeats.py
+tests/test_controlled_host_binding_ranges.py
+tests/test_f3_process_sentences.py
