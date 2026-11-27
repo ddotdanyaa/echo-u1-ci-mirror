@@ -1,15 +1,15 @@
 {
  "accepted": 139,
- "free_ram_gb": 2.18,
+ "free_ram_gb": 3.41,
  "funnel": {
   "accepted": 139,
-  "claimed": 1700,
+  "claimed": 1701,
   "coded": 228,
   "found_in_backlog": "unknown",
   "gate_pass": 233,
   "known_to_loop": 1054,
   "promoted": 229,
-  "ready": 6,
+  "ready": 5,
   "reviewed": 573,
   "triaged": 832
  },
@@ -166,20 +166,20 @@
    "tokens_out": 4068
   },
   "google/gemma-4-26b-a4b-it": {
-   "calls": 11602,
-   "calls_usage_unknown": 8669,
+   "calls": 11704,
+   "calls_usage_unknown": 8768,
    "errors": {
     "rate_minute": 236,
     "timeout": 263,
     "transient": 3978
    },
    "http_429": 212,
-   "tokens_in": 7354768,
-   "tokens_out": 1168945
+   "tokens_in": 7364644,
+   "tokens_out": 1169969
   },
   "google/gemma-4-31b-it": {
-   "calls": 8282,
-   "calls_usage_unknown": 6793,
+   "calls": 8405,
+   "calls_usage_unknown": 6916,
    "errors": {
     "other": 1,
     "rate_minute": 228,
@@ -214,7 +214,7 @@
   }
  },
  "promoted": 229,
- "rows_recognized": 124381,
+ "rows_recognized": 124900,
  "schema": 3,
  "side": {
   "blocked": 0,
@@ -222,7 +222,7 @@
   "requeued": 15
  },
  "skipped_files": 0,
- "source_sha": "shafaa59f99dcb1",
+ "source_sha": "shac01269d1df50",
  "span": {
   "answer": {
    "calls": 0,
@@ -243,10 +243,10 @@
    "calls_usage_unknown": 0,
    "errors": {},
    "http_429": 0,
-   "rows": 13985,
+   "rows": 13989,
    "status": {
-    "ok": 10133,
-    "other": 3852
+    "ok": 10135,
+    "other": 3854
    },
    "tokens_in": 0,
    "tokens_out": 0
@@ -276,11 +276,11 @@
    "calls_usage_unknown": 0,
    "errors": {},
    "http_429": 0,
-   "rows": 17404,
+   "rows": 17447,
    "status": {
     "BLOCKED": 629,
-    "FAILED": 1151,
-    "READY": 3297,
+    "FAILED": 1152,
+    "READY": 3298,
     "REVIEW": 232,
     "WAITING_CHANNEL": 1000,
     "added": 16,
@@ -288,8 +288,8 @@
     "deferred": 2359,
     "empty": 125,
     "infra": 47,
-    "ok": 6187,
-    "other": 2177,
+    "ok": 6215,
+    "other": 2190,
     "refused": 2,
     "requeued": 15,
     "stop": 152
@@ -298,18 +298,18 @@
    "tokens_out": 0
   },
   "other": {
-   "calls": 8681,
-   "calls_usage_unknown": 8681,
+   "calls": 8903,
+   "calls_usage_unknown": 8903,
    "errors": {},
    "http_429": 0,
-   "rows": 46101,
+   "rows": 46565,
    "status": {
     "added": 64,
     "applied": 2512,
     "error": 143,
     "failed": 61,
     "ok": 438,
-    "other": 33937,
+    "other": 34179,
     "rejected": 26,
     "requeued": 43
    },
@@ -351,7 +351,7 @@
    "tokens_out": 203733
   },
   "run": {
-   "calls": 15680,
+   "calls": 15683,
    "calls_usage_unknown": 8132,
    "errors": {
     "model_missing": 3,
@@ -362,29 +362,29 @@
     "transient": 7138
    },
    "http_429": 313,
-   "rows": 31327,
+   "rows": 31334,
    "status": {
     "BLOCKED": 692,
-    "FAILED": 1266,
-    "READY": 6104,
+    "FAILED": 1267,
+    "READY": 6105,
     "REVIEW": 248,
     "WAITING_CHANNEL": 1063,
     "error": 8133,
-    "ok": 13774,
+    "ok": 13779,
     "other": 47
    },
-   "tokens_in": 28931776,
-   "tokens_out": 3212120
+   "tokens_in": 28941652,
+   "tokens_out": 3213144
   },
   "triage": {
    "calls": 0,
    "calls_usage_unknown": 0,
    "errors": {},
    "http_429": 0,
-   "rows": 717,
+   "rows": 718,
    "status": {
     "added": 107,
-    "empty": 602,
+    "empty": 603,
     "hold_dropped": 3,
     "other": 5
    },
@@ -394,8 +394,8 @@
  },
  "status": {
   "BLOCKED": 1321,
-  "FAILED": 2417,
-  "READY": 9401,
+  "FAILED": 2419,
+  "READY": 9403,
   "REVIEW": 480,
   "WAITING_CHANNEL": 2063,
   "added": 187,
@@ -405,13 +405,13 @@
   "brake_cleared": 1,
   "cleared": 190,
   "deferred": 4884,
-  "empty": 727,
+  "empty": 728,
   "error": 11101,
   "failed": 61,
   "hold_dropped": 3,
   "infra": 47,
-  "ok": 34968,
-  "other": 43938,
+  "ok": 35003,
+  "other": 44195,
   "parked": 18,
   "refused": 4,
   "rejected": 44,
@@ -423,9 +423,9 @@
  "summary": "ok",
  "tasks_now": {
   "DONE": 68,
-  "FAILED": 1711,
+  "FAILED": 1712,
   "PROMOTED": 196,
-  "READY": 6,
+  "READY": 5,
   "RUNNING": 1
  },
  "unrecognized_rows": 0

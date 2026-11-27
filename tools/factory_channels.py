@@ -50,7 +50,8 @@ OVERLOAD_STATUSES = (500, 502, 503, 504)   # the provider's model is overloaded 
 OVERLOAD_COOL_S = 5          # long enough for the retry and the next pass to take another channel
 OVERLOAD_COOL_MAX_S = 20      # a model that stays overloaded is tried 4 times an hour, not 30 (live 19.11: Gemma 4
                                # answered 503 to 11 of 17 reviews, each refusal took 0.6-43 s)
-OVERLOAD_FORGET_S = 1800       # no overload of the model for half an hour: the next one starts a new series
+OLD_OVERLOAD_COOL_MAX_S = 900  # fac-68b: the longest mark the old overload rule ever wrote: such marks on disk are cut when read
+OVERLOAD_FORGET_S = 1800      # no overload of the model for half an hour: the next one starts a new series
 # W-503 (live 23.11: 7 % of the calls of two healthy Gemini models answered 503, and every single one cooled the model on
 # BOTH keys for 120 s, doubling to 900 s: 24 channels were closed at 15:50 with 484 of 2000 requests spent). A 503 is
 # an overload only when it repeats: the series counts the model's 503s in a row with no success between them (a success
@@ -489,7 +490,7 @@ def _model_cool(state, channel, now=None) -> float:
             if isinstance(sources, dict) and sources.get(model) == 'overload':
                 return 0.0
             if (not (isinstance(sources, dict) and model in sources) and len(last) == 2
-                    and 0 <= value - last[1] <= OVERLOAD_COOL_MAX_S + 1):
+                    and 0 <= value - last[1] <= OLD_OVERLOAD_COOL_MAX_S + 1):
                 return 0.0
     if value > now + OVERLOAD_STEPS[-1]:
         # a mark made by the old overload rule (no source recorded, born from the model's last 503, up to 900 s) is cut
@@ -499,7 +500,7 @@ def _model_cool(state, channel, now=None) -> float:
         last = _numbers(runs.get(model)) if isinstance(runs, dict) else []
         probes = state.get('day_probe')
         if (not (isinstance(sources, dict) and model in sources) and len(last) == 2
-                and 0 <= value - last[1] <= OVERLOAD_COOL_MAX_S + 1
+                and 0 <= value - last[1] <= OLD_OVERLOAD_COOL_MAX_S + 1
                 and not (isinstance(probes, dict) and 'model:' + str(model) in probes)
                 and overload_healthy(state, model)):
             return float(now + OVERLOAD_STEPS[-1])
