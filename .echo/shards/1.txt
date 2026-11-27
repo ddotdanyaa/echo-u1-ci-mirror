@@ -1,0 +1,6 @@
+tests/registry/test_fn_5_06.py
+tests/test_bounded_scenario_matrix.py
+tests/test_c10_clarify.py
+tests/test_c23_grpC.py
+tests/test_c25_b_cases.py
+tests/test_c7_meta.py
