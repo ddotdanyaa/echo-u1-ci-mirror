@@ -1,0 +1,6 @@
+tests/test_a1_replay.py
+tests/test_c22_break_product.py
+tests/test_c22_speed.py
+tests/test_c23_fast_private_a7.py
+tests/test_c23_repeat_late.py
+tests/test_c24_a1_asks_no_try.py
