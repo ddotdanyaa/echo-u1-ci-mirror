@@ -488,8 +488,22 @@ def failure_text(text: str) -> str:
 
 
 def blocks(result) -> bool:
-    """The paid verdict fails the candidate: a grounded reject (step 4 (c)); an ungrounded reject is advice."""
-    return isinstance(result, dict) and result.get('verdict') == 'reject' and result.get('blocking') is True
+    """The paid verdict fails the candidate: a grounded reject (step 4 (c)) that another model did not refute (fac-84: a reject
+    is a claim; one nobody could check still fails it); an ungrounded reject is advice."""
+    return (isinstance(result, dict) and result.get('verdict') == 'reject' and result.get('blocking') is True
+            and result.get('confirmed') is not False)
+
+
+def refuted(result) -> bool:
+    """A reject of the result was refuted by another model: it is advice, the candidate is not failed by it."""
+    return isinstance(result, dict) and result.get('confirmed') is False
+
+
+def advice_event(result) -> str:
+    """The event of a paid reject that does not fail the candidate: 'paid_refuted', 'paid_advice' (no quoted line), or ''."""
+    if refuted(result):
+        return 'paid_refuted'
+    return 'paid_advice' if isinstance(result, dict) and result.get('verdict') == 'reject' and not blocks(result) else ''
 
 
 ASK_TEST = ('You are the control critic of an automated code factory. This card writes ONLY a test: the fix is a later '
@@ -502,7 +516,7 @@ ASK_TEST = ('You are the control critic of an automated code factory. This card 
             'class of the defect or empty","symptom":"one sentence a weaker reviewer could check for"}.\n')
 
 
-def _parse(raw: bytes):
+def _parse(raw: bytes, verdicts=('approve', 'reject')):
     try:
         data = json.loads(raw.decode('utf-8', 'replace'))
         text = ''.join(b.get('text', '') for b in data['content'] if isinstance(b, dict) and b.get('type') == 'text')
@@ -511,7 +525,7 @@ def _parse(raw: bytes):
         tin, tout = int(usage.get('input_tokens') or 0), int(usage.get('output_tokens') or 0)
     except (ValueError, KeyError, TypeError, AttributeError):
         return None
-    if not isinstance(answer, dict) or answer.get('verdict') not in ('approve', 'reject'):
+    if not isinstance(answer, dict) or answer.get('verdict') not in verdicts:
         return None
     return answer, tin, tout
 
@@ -552,11 +566,13 @@ def _review_source(task, baseline, workdir):
                         continue
                     text = path.read_text(encoding='utf-8-sig')
                 part = parts.get(file)
+                where = ''
                 if part:
-                    _, text = K.part_region(text, part.get('symbols', []), part.get('anchor', ''), cap=60000)
+                    where, text = K.part_view(text, part.get('symbols', []), part.get('anchor', ''), cap=60000)
+                    where = ' ' + where if part.get('symbols') else ''      # the line header and the class the region stands in
             except (OSError, UnicodeError, ValueError, SyntaxError):
                 continue
-            chunk = label + ' ' + file + '\n' + F.redact(text)
+            chunk = label + ' ' + file + where + '\n' + F.redact(text)
             chunks.append(chunk[:remaining])
             remaining -= min(remaining, len(chunk))
             if remaining <= 0:
@@ -586,24 +602,37 @@ def agent_card(task) -> bool:
 
 def pair(task, diff: str, failure: str = '', exclude_model=(), *, baseline=None, workdir=None) -> dict | None:
     """Both voices of PAIR on a card of the agent model, for a candidate no free reviewer answered about: the rule of two
-    models stays, the waiting for an overloaded free model does not. One reject decides; a missing voice is None (the free wait)."""
+    models stays, the waiting for an overloaded free model does not. Each voice judges on its own; a grounded reject of one
+    is confirmed by the OTHER voice (fac-84) and fails the card unless refuted; a missing voice is None (the free wait)."""
     if not agent_card(task):
         return None
     barred = {str(m).rpartition('/')[2] for m in exclude_model}
     if barred & set(PAIR):
         return None
-    got = []
+    got, refusal = [], None
     for model in PAIR:
-        one = control(task, diff, failure, [m for m in MODELS + PAIR if m != model], baseline=baseline, workdir=workdir, models=(model,))
+        partner = tuple(m for m in PAIR if m != model)
+        one = control(task, diff, failure, [m for m in MODELS + PAIR if m != model], baseline=baseline, workdir=workdir,
+                      models=(model,), confirm_with=partner)
         if one is None:
             return None
-        if one['verdict'] == 'reject':
-            return dict(one, voices=[g['model'] for g in got] + [model])
         got.append(one)
-    return dict(got[-1], model='+'.join(PAIR), voices=list(PAIR), usd=round(sum(g['usd'] for g in got), 6))
+        if blocks(one):
+            break
+        if refuted(one):
+            refusal = refusal or one
+    last = got[-1]
+    total = dict(model='+'.join(PAIR), voices=[g['model'] for g in got] if blocks(last) else list(PAIR),
+                 usd=round(sum(g['usd'] for g in got), 6), tokens_in=sum(g['tokens_in'] for g in got),
+                 tokens_out=sum(g['tokens_out'] for g in got))
+    if blocks(last):
+        return dict(last, **{k: total[k] for k in ('voices', 'usd', 'tokens_in', 'tokens_out')})
+    if refusal is not None and not refuted(last):
+        last = dict(last, confirmed=False, refuted_by=refusal.get('refuted_by'))
+    return dict(last, **total)
 
 
-def control(task, diff: str, failure: str = '', exclude_model: str = '', *, baseline=None, workdir=None, models=None) -> dict | None:
+def control(task, diff: str, failure: str = '', exclude_model: str = '', *, baseline=None, workdir=None, models=None, confirm_with=None) -> dict | None:
     """One paid judgement of a candidate, or None (no key, no budget, a refused model, any fault). The free verdict
     stands when None. The dict never holds the key. ``exclude_model``: the coder's model never judges its own
     candidate (a paid coder's Sonnet is judged by Haiku or not at all)."""
@@ -616,21 +645,22 @@ def control(task, diff: str, failure: str = '', exclude_model: str = '', *, base
         key = load_env(env_path()).get('ANTHROPIC_API_KEY', '')
         if not key or credit_dead():
             return None
-        return _control(task, diff, failure, exclude_model, baseline, workdir, key, models or MODELS)
+        return _control(task, diff, failure, exclude_model, baseline, workdir, key, models or MODELS, confirm_with)
     except (ValueError, TypeError, OSError, TimeoutError):
         return None                                     # a broken state file or a busy lock: no paid voice, never a fault
 
 
-def _control(task, diff, failure, exclude_model, baseline, workdir, key, models):
+def _control(task, diff, failure, exclude_model, baseline, workdir, key, models, confirm_with=None):
     from tools import factory_cards as K
     spec = K.test_spec(task)
-    prompt = (((ASK_TEST if spec or getattr(task, 'kind', '') == 'unit_test' else ASK)) + 'Task: %s\nTask text:\n%s\nGuard test failure text (what the tests failed on before the fix):\n%s\n'
-              'Candidate diff:\n%s\n') % (getattr(task, 'title', ''), str(getattr(task, 'goal', '') or '')[:GOAL_LIMIT],
-                                          failure[-FAIL_LIMIT:], diff[:DIFF_LIMIT])
+    context = ('Task: %s\nTask text:\n%s\nGuard test failure text (what the tests failed on before the fix):\n%s\n'
+               'Candidate diff:\n%s\n') % (getattr(task, 'title', ''), str(getattr(task, 'goal', '') or '')[:GOAL_LIMIT],
+                                           failure[-FAIL_LIMIT:], diff[:DIFF_LIMIT])
     if spec:
-        prompt += '\nContract of the new test:\n' + spec + '\n'
-    prompt = K.restate_note(task) + prompt
-    prompt += '\nTests and source regions:\n' + _review_source(task, baseline, workdir)
+        context += '\nContract of the new test:\n' + spec + '\n'
+    context += '\nTests and source regions:\n' + _review_source(task, baseline, workdir)
+    note = K.stand_note(task)
+    prompt = note + (ASK_TEST if spec or getattr(task, 'kind', '') == 'unit_test' else ASK) + context
     try:
         multifile = len(json.loads(getattr(task, 'contract', '') or '{}').get('parts', [])) > 1
     except (ValueError, TypeError, AttributeError):
@@ -645,33 +675,13 @@ def _control(task, diff, failure, exclude_model, baseline, workdir, key, models)
             continue
         if model in barred:
             continue
-        body = dict(model=model, max_tokens=2000, output_config=dict(effort='medium'),
-                    messages=[dict(role='user', content=prompt)])
-        if model.endswith('-4-5'):
-            body.pop('output_config')           # the older model knows no effort
-        headers = {'content-type': 'application/json', 'anthropic-version': API_VERSION, 'x-api-key': key}
-        estimate = usd_for(model, len(prompt.encode('utf-8')), 2000) * 1.3      # the price of THIS model: a Haiku vote booked as Sonnet was refused on money it does not need
-        if not reserve(estimate, critic=True):
-            return None
-        usd = 0.0
         try:
-            status, raw = _post(URL, headers, body, TIMEOUT_S)
-            check_credit(status, raw)
-            if status != 200:
-                continue
-            usage = json.loads(raw).get('usage') or {}
-            usd = usd_for(model, usage.get('input_tokens', 0), usage.get('output_tokens', 0),
-                          usage.get('cache_creation_input_tokens', 0), usage.get('cache_read_input_tokens', 0))
-            parsed = _parse(raw)
-            if parsed is None:
-                continue
-            answer, tin, tout = parsed
-        except CreditExhausted:
+            got = _call(model, prompt, key)
+        except _Stop:
             return None
-        except (ValueError, TypeError, OSError):
+        if got[0] is None:
             continue
-        finally:
-            settle(estimate, usd, critic=True)
+        (answer, tin, tout), usd = got
         total_usd += usd
         total_in += tin
         total_out += tout
@@ -679,11 +689,87 @@ def _control(task, diff, failure, exclude_model, baseline, workdir, key, models)
             approvals.append(model)
             if len(approvals) < wanted:
                 continue
-        return dict(verdict=answer['verdict'], reason=str(answer.get('reason') or '')[:600],
-                    **{'class': _slug(answer.get('class') or '')}, symptom=str(answer.get('symptom') or '')[:300],
-                    evidence=str(answer.get('evidence') or '')[:300],
-                    blocking=answer['verdict'] == 'reject' and grounded(answer, diff[:DIFF_LIMIT], failure),
-                    model='+'.join(approvals) if len(approvals) > 1 else model, usd=round(total_usd, 6), tokens_in=total_in, tokens_out=total_out)
+        result = dict(verdict=answer['verdict'], reason=str(answer.get('reason') or '')[:600],
+                      **{'class': _slug(answer.get('class') or '')}, symptom=str(answer.get('symptom') or '')[:300],
+                      evidence=str(answer.get('evidence') or '')[:300],
+                      blocking=answer['verdict'] == 'reject' and grounded(answer, diff[:DIFF_LIMIT], failure),
+                      model='+'.join(approvals) if len(approvals) > 1 else model, usd=round(total_usd, 6),
+                      tokens_in=total_in, tokens_out=total_out, confirmed=None)
+        if result['blocking']:          # fac-84: a grounded reject is a claim; another model confirms or refutes it
+            claim = dict(result, model=model)
+            second = _confirm(claim, note + CONFIRM + _claim_text(claim) + context, key, barred, confirm_with)
+            if second is not None:
+                result.update(usd=round(result['usd'] + second['usd'], 6), tokens_in=result['tokens_in'] + second['tokens_in'],
+                              tokens_out=result['tokens_out'] + second['tokens_out'])
+                result['confirmed_by'] = second['model']
+                if second['confirmed'] is not None:
+                    result['confirmed'] = second['confirmed']
+                if second['confirmed'] is False:
+                    result['refuted_by'] = second['model']
+        return result
+    return None
+
+
+class _Stop(Exception):
+    """No money reserved or the credit is dead: the paid voice stops here."""
+
+
+def _call(model, prompt, key, verdicts=('approve', 'reject')):
+    """One paid call: ``((answer, tokens_in, tokens_out) or None, usd)``; _Stop when nothing may be spent (money, dead credit)."""
+    body = dict(model=model, max_tokens=2000, output_config=dict(effort='medium'),
+                messages=[dict(role='user', content=prompt)])
+    if model.endswith('-4-5'):
+        body.pop('output_config')           # the older model knows no effort
+    headers = {'content-type': 'application/json', 'anthropic-version': API_VERSION, 'x-api-key': key}
+    estimate = usd_for(model, len(prompt.encode('utf-8')), 2000) * 1.3      # the price of THIS model: a Haiku vote booked as Sonnet was refused on money it does not need
+    if not reserve(estimate, critic=True):
+        raise _Stop()
+    usd = 0.0
+    try:
+        status, raw = _post(URL, headers, body, TIMEOUT_S)
+        check_credit(status, raw)
+        if status != 200:
+            return None, usd
+        usage = json.loads(raw).get('usage') or {}
+        usd = usd_for(model, usage.get('input_tokens', 0), usage.get('output_tokens', 0),
+                      usage.get('cache_creation_input_tokens', 0), usage.get('cache_read_input_tokens', 0))
+        return _parse(raw, verdicts), usd
+    except CreditExhausted:
+        raise _Stop()
+    except (ValueError, TypeError, OSError):
+        return None, usd
+    finally:
+        settle(estimate, usd, critic=True)
+
+
+CONFIRM = ('A critic of an automated code factory rejected the candidate below with the claim you will read. You do not '
+           'judge the candidate as a whole, only the claim. Is the claim TRUE of the code shown (check it against the diff '
+           'and the source regions, not against the critic\'s wording), and does it make the product or its test worse '
+           'than before the change? Answer ONLY with JSON {"verdict":"confirm"|"refute","reason":"...","evidence":"the line '
+           'that proves it, copied character for character"}.\n')
+
+
+def _claim_text(claim) -> str:
+    return 'Claim of the critic:\nReason: %s\nSymptom: %s\nEvidence: %s\n\n' % (claim['reason'], claim['symptom'], claim['evidence'])
+
+
+def _confirm(claim, prompt, key, barred, confirm_with=None):
+    """fac-84: ONE call to another model about a grounded reject: the first of MODELS + PAIR (order kept) that is not an author
+    (``barred``), not the model that made the claim and passes refuse_opus; ``confirm_with`` names the candidates instead
+    (the pair: the other voice). ``{confirmed: True|False|None, model, usd, tokens_in, tokens_out}`` or None when nobody
+    could be asked (no model, no money, dead credit, a fault); an unreadable answer is confirmed None."""
+    pool = tuple(confirm_with) if confirm_with else tuple(m for m in dict.fromkeys(MODELS + PAIR) if m not in barred)
+    for model in pool:
+        if model == claim['model']:
+            continue
+        try:
+            refuse_opus(model)
+            parsed, usd = _call(model, prompt, key, ('confirm', 'refute'))
+        except (_Stop, ValueError, TypeError, OSError, TimeoutError):
+            return None
+        tin, tout = (parsed[1], parsed[2]) if parsed else (0, 0)
+        return dict(confirmed=None if parsed is None else parsed[0]['verdict'] == 'confirm', model=model, usd=usd,
+                    tokens_in=tin, tokens_out=tout)
     return None
 
 

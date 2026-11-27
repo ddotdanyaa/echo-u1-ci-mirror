@@ -8557,6 +8557,7 @@ class Loop:
             self.event("paid_critic", task_id=tid or None, backlog_id=bid, status="ok", verdict=self.rs(paid.get("verdict")),
                        model=self.rs(paid.get("model")), usd=paid.get("usd"), tokens_in=self._num(paid, "tokens_in"),
                        tokens_out=self._num(paid, "tokens_out"), error_class=self.rs(paid.get("class")) or None,
+                       confirmed=paid.get("confirmed"), confirmed_by=self.rs(paid.get("confirmed_by")) or None,
                        base_sha=base)
         from tools import factory_classes as K_
         try:        # owner rule 3: the registry counts the failure by class; a pass says the lesson shown before it helped

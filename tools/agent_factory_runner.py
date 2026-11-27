@@ -1425,8 +1425,8 @@ def review_candidate(task: Task, workdir: Path, model: str, invoke, *,
         lessons = paid_critic.lessons_for(task, rejected or '')   # owner: catches of the paid critic that free critics missed
         goal = getattr(task, 'goal', '') or ''
         said_goal = ('Task text (what the coder was asked):\n' + redact(scrub_paths(goal))[:1500] + '\n') if goal else ''
-        restate = K.restate_note(task)
-        rubric = rubric and not restate      # the cited line of the old test is gone on purpose
+        restate = K.stand_note(task)        # fac-84: a restate card and any other stand-repair card have their own note
+        rubric = rubric and not restate      # the cited line of the old test is gone on purpose; a stand card has no cited line
         said_goal += restate
         spec = K.test_spec(task)      # W-critic 1: a test card's critics get the contract the test must meet
         said_goal += ('Contract of the new test:\n' + redact(spec)[:1500] + '\n') if spec else ''
@@ -5732,7 +5732,9 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                         if both is not None:
                             ctx['paid_done'] = both
                             events.append('paid_pair')
-                            approved = both['verdict'] != 'reject'
+                            approved = not paid_critic.blocks(both)      # fac-84: the same rule at all three places
+                            if paid_critic.advice_event(both):
+                                events.append(paid_critic.advice_event(both))
                             kept_log.extend(dict(model=m, ok=approved or m != both['voices'][-1], why=[]) for m in both['voices'])
                             if not approved:
                                 paid_critic.record_class(task, both)
@@ -5760,8 +5762,8 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                             events.append('paid_second_critic')
                             # step 4 (c): a reject without a quoted diff line or a red test name is advice
                             paid_no = paid_critic.blocks(paid_second)
-                            if paid_second['verdict'] == 'reject' and not paid_no:
-                                events.append('paid_advice')
+                            if paid_critic.advice_event(paid_second):
+                                events.append(paid_critic.advice_event(paid_second))
                             approved = not paid_no and (all(votes) or mech_ok)
                             kept_log.append(dict(model=str(paid_second.get('model') or 'paid'),   # W-review fix 6: the paid voice is a voice
                                                  ok=not paid_no, why=[]))
@@ -5837,8 +5839,8 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                                    exclude_model=authors(), baseline=ctx['baseline'], workdir=ctx['workdir'])    # no author of a part judges its own work
         if paid is not None:
             report['paid_critic'] = paid
-            if paid['verdict'] == 'reject' and not paid_critic.blocks(paid):
-                events.append('paid_advice')    # step 4 (c): no quoted diff line, no red test name: advice only
+            if paid_critic.advice_event(paid):
+                events.append(paid_critic.advice_event(paid))    # step 4 (c): no quoted diff line, no red test name: advice only; fac-84: a refuted reject too
             if paid_critic.blocks(paid):
                 paid_critic.record_class(task, paid)
                 why = scrub(redact('paid critic [%s]: %s' % (paid['class'], paid['reason'] or paid['symptom'])))

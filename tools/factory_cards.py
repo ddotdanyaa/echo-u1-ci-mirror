@@ -348,6 +348,53 @@ def restate_note(task) -> str:
             + '\nEvidence (verbatim, present in the tree):\n' + '\n'.join(rows) + '\n')
 
 
+def stand_note(task) -> str:
+    """fac-84: what the reviewers of a stand card are asked instead of the ordinary question. A restate card: its own note;
+    any other rig card: the stand-repair note (the program ``rig_weakens`` has already proven that no assert or raises
+    changed); '' for every other card. The one place both review stages read."""
+    from tools import factory_gate as G
+    kind = G.is_rig_task(task)
+    if kind == G.RESTATE:
+        return restate_note(task)
+    if not kind:
+        return ''
+    why = str(contract_of(task).get('why') or '')[:600]
+    return ('THIS IS A STAND-REPAIR CARD: its purpose is a change in the test stand (a fixture, a constructor call, a helper). '
+            'A program has already compared every assert and every pytest.raises of every test of the base file with the '
+            'ones of the candidate: none changed, none removed, no new skip / xfail / sleep / monkeypatch. Do not check that again and do not '
+            'reject the card because it changes a test file. Judge by these three questions only (they replace the ordinary checks):\n'
+            '1. Do the reason and the failure text show that the scene could not RUN because of the stand, not that the product '
+            'answered wrongly?\n2. Does the repaired stand still run the REAL product code on the same scene (nothing of the code '
+            'under test replaced by a mock or a constant, the inputs of the scene mean the same)?\n3. Is anything changed besides '
+            'the stand?\nReject only for a concrete defect by these three questions.\nWhy: ' + why + '\n')
+
+def region_clause(text, symbols) -> str:
+    """fac-84: ``, in class A.B`` for the definitions that enclose the named symbols (one clause per distinct chain, the
+    same ``_symbols`` map as ``part_region``); '' for a module-level function or constant."""
+    try:
+        found = _symbols(ast.parse(text))
+    except SyntaxError:
+        return ""
+    clauses = []
+    for name in symbols or []:
+        parts = name.split(".")[:-1]
+        if not parts:
+            continue
+        chain = ".".join(parts)
+        node = found.get(chain)
+        clause = ("class " if isinstance(node, ast.ClassDef) else "function " if node is not None else "") + chain
+        if clause not in clauses:
+            clauses.append(clause)
+    return ", in " + "; ".join(clauses) if clauses else ""
+
+
+def part_view(text, symbols, anchor="", cap=PART_REGION_CHARS) -> tuple[str, str]:
+    """fac-84: ``part_region`` with the enclosing definitions named in the header (a region of a method alone does not say
+    which class it stands in)."""
+    header, region = part_region(text, symbols, anchor, cap=cap)
+    return header + (region_clause(text, symbols) if symbols else ""), region
+
+
 def test_spec(task) -> str:
     """The contract of a test card as text for a critic (given / when / then / red now because); '' for any other
     task or a contract with no new test."""

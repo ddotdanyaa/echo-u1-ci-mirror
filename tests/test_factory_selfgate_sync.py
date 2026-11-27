@@ -61,7 +61,7 @@ def test_the_quarantine_of_the_second_instance_opens_by_itself_with_slicer_one_p
     from tools import agent_factory as F
     from tests.test_factory_loop import task_row
     from tools import factory_architect as A
-    assert A.CONTRACT_REV == "1.5"       # W-supply: free no-fix answers need proof, decision split; the old free rows are cut again
+    assert A.CONTRACT_REV == "1.6"       # fac-87: the author's rules for a change in tests, its code's review and the contract-time check; the quarantined rows get one new generation
     e = Env(tmp_path, monkeypatch, tasks=[task_row(1, backlog_id="fac-1"), task_row(3, backlog_id="fac-3")])
     e.set_row("T1", status="FAILED", reason="quarantine", q_ver="s0old")      # shelved by the slicer of before
     e.set_row("T3", status="FAILED", reason="quarantine", q_ver=F.slicer_version())     # shelved by this one: stays
