@@ -5064,8 +5064,13 @@ class Loop:
                 loop._sleep(loop.SOLVER_RETRY_S)
             raise SV.NoChannel(status)
         def cloud(r, ids, files):       # fac-88: a call in flight is a sign of life for as long as the batch itself may wait
-            from tools import echo_cloud as ec, factory_cloud_gate as CG
-            me.cloud_until = time.monotonic() + CG.SLOT_QUEUE_S + ec.QUEUED_MAX_S + CG.WAIT_S + 60.0     # the place, the queue, the wait (cloud_batch)
+            from tools import factory_cloud_gate as CG
+            try:
+                from tools import echo_cloud as ec
+                queued_max = ec.QUEUED_MAX_S
+            except ImportError:     # the module is not in the mirror tree: the cloud call itself then refuses, the bound only stays generous
+                queued_max = 900
+            me.cloud_until = time.monotonic() + CG.SLOT_QUEUE_S + queued_max + CG.WAIT_S + 60.0     # the place, the queue, the wait (cloud_batch)
             try:
                 return HY.cloud_batch(r, ids, files, tid="s" + str(packet.get("bid")))
             finally:
