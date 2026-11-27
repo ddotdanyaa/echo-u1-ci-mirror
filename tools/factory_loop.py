@@ -4215,7 +4215,10 @@ class Loop:
         ls = self.ls()
         if bid:  # durable across backlog edits; forgotten when the row's text changes
             try:
-                fingerprint = self.row_fingerprint(bid, self._row_hashes("text"))      # an unreadable backlog still raises: the answer waits
+                texts = self._row_hashes("text")       # an unreadable backlog still raises: the answer waits
+                fingerprint = self.row_fingerprint(bid, texts)
+                if bid not in texts:                   # a derived id is no row: its sentinel would be dropped by the next refresh, as before
+                    fingerprint = "unknown@"
                 if fingerprint.startswith("unknown@"):
                     if not tid:
                         raise F.InvalidPlan("row %s is not in the backlog: nothing to close" % bid)
@@ -7319,6 +7322,12 @@ class Loop:
             return young and current.startswith("unknown@")
         return bool(stored) and stored == current
 
+    def _hold_rewritten(self, stored, bid, texts=None) -> bool:
+        """fac-82: a hold is lifted only when the row's real text hash changed; a hold stamped unknown, or a row that is unknown now, stays."""
+        current = self.row_fingerprint(bid, texts)
+        stored = str(stored or "")
+        return not (stored.startswith("unknown@") or current.startswith("unknown@")) and stored != current
+
     def _row_hashes(self, field: str = "row") -> dict:
         """{backlog_id: hash}. field='text' hashes the wording only (evidence/state updates of the
         coordinator must not reopen a closed row); 'row' hashes the whole line."""
@@ -7352,7 +7361,7 @@ class Loop:
             for b, h in list(ls.get("hold_hash", {}).items()):  # rewritten row: back to triage
                 if b not in ls["holds"]:
                     ls["hold_hash"].pop(b, None)
-                elif not self.fingerprint_holds(h, b, texts) and (str(h).startswith("unknown@") or not self.row_fingerprint(b, texts).startswith("unknown@")):   # a row that left the backlog keeps its hold, as before
+                elif self._hold_rewritten(h, b, texts):   # an unknown stamp (either side) keeps the hold for good, as before: the day's term is for not_code only
                     ls["holds"].pop(b, None)
                     ls["hold_hash"].pop(b, None)
                     self.event("triage", status="hold_dropped", reason="row %s was rewritten" % b)
