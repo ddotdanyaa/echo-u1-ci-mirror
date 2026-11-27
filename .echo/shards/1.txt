@@ -1,0 +1,1 @@
+tests/test_factory_e06_1_adaptive.py::test_adaptive_interruption_on_others
