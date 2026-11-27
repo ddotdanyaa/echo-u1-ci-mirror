@@ -5899,7 +5899,7 @@ class Loop:
 
     def _slice_pool_cap(self):
         if _cloud_up(self.cloud_fn):
-            return max(1, factory_cloud_gate.MAX_LIVE)
+            return max(1, getattr(factory_cloud_gate, "MAX_LIVE", 30))
         cap = max(1, int((self.free_ram_fn() - LIGHT_FLOOR) / max(1, self._estimate())))
         if Path(self.cfg.channels).is_file():
             cap = min(cap, max(1, self._headroom(None, self.load()[1])))
@@ -7654,7 +7654,7 @@ class Loop:
             self._wake_cloud_defers()         # the first answer of the cloud: every card waiting for it starts now
         if not live:
             return ""
-        if cloud and len(live) >= factory_cloud_gate.MAX_LIVE:
+        if cloud and len(live) >= getattr(factory_cloud_gate, "MAX_LIVE", 30):     # (no gate module in the mirror: the same 30 as at the ceiling)
             return "cloud_cap"
         if self._ending() or self._brake_due is not None:
             return "ending"                      # STOP, the deadline or a due brake: the pool only drains
