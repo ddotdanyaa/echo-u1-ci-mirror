@@ -1,0 +1,35 @@
+{
+ "id": "science_tech-chem",
+ "split": "dev",
+ "area": "science_tech",
+ "kind": "qa",
+ "source": {
+  "name": "authored for ECHO (this repository), general knowledge, no external text copied",
+  "license": "CC0-1.0",
+  "kind": "authored",
+  "url": null
+ },
+ "turns": [
+  {
+   "user": "Из чего состоит молекула воды?",
+   "expected": "два атома водорода и один кислорода",
+   "length": "short",
+   "kind": "question",
+   "gap_s": 6.0
+  },
+  {
+   "user": "А углекислый газ какая формула?",
+   "expected": "це о два",
+   "length": "short",
+   "kind": "question",
+   "gap_s": 6.0
+  },
+  {
+   "user": "Коротко: зачем растениям углекислый газ?",
+   "expected": "для фотосинтеза",
+   "length": "short",
+   "kind": "question",
+   "gap_s": 6.0
+  }
+ ]
+}
