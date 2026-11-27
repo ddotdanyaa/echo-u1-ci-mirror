@@ -803,6 +803,7 @@ LOOP_YIELD_PRIORITY = 3          # the head's last level (fac-61: slice / aux ar
 RESLICE_SLEEP_S = 5
 SLICE_WAIT_S = 60
 SLICE_PAUSES = (60, 120, 300, 600)        # W-pay 2: the pause of a row's repeated wait grows
+UNKNOWN_FINGERPRINT_TTL_S = 86400.0     # fac-82: a book entry of a row whose text hash is unknown is looked at again after a day
 SLICE_STARVED_S = 600                    # W-prio2 2: no slice started or ended this long while a fresh row waits -> infra slicer_starved
 SLICE_STALE_S = 3600                      # W-prio2 3: a slicer older than this is dropped (its result is ignored)
 SLICE_WAIT_CALL_S = 120.0                # W-path A: the longest wait of one slicing call for a channel
@@ -979,8 +980,12 @@ class Loop:
     def err(self, where: str, e: BaseException) -> None:
         """A swallowed error is still an event (never a silent pass)."""
         try:
-            self.event("infra", status="error", reason="%s: %s: %s" % (
-                where, type(e).__name__, F.redact(str(e))[:200]))
+            tb = getattr(e, "__traceback__", None)
+            while tb is not None and tb.tb_next is not None:
+                tb = tb.tb_next
+            at = " @%s:%d" % (os.path.basename(tb.tb_frame.f_code.co_filename), tb.tb_lineno) if tb is not None else ""   # fac-82: the innermost line
+            self.event("infra", status="error", reason="%s: %s: %s%s" % (
+                where, type(e).__name__, F.redact(str(e))[:200], at))
         except OSError:
             pass
 
@@ -2569,12 +2574,8 @@ class Loop:
         """<id>: the head model says the row is not a change of the code (owner process, proxy, server, laptop, phone):
         the not_code book keeps it with a reason and a term (cfg.not_code_term_s). Unlike ``seen`` it survives backlog
         edits: only a change of the row's own text (its hash) or the end of the term gives it a fresh look."""
-        try:
-            digest = self._row_hashes("text").get(bid)
-        except Exception as e:
-            self.err("not_code: backlog unreadable", e)
-            digest = None
-        if not digest:      # the model already answered: not "later" (asked again at once), the normal 24 h repeat
+        digest = self.row_fingerprint(bid)
+        if digest.startswith("unknown@"):      # the model already answered: not "later" (asked again at once), the normal 24 h repeat
             return record("unbooked", model, tokens)
         ls = self.ls()
         self._not_code_set(ls, bid, why, digest)
@@ -2614,7 +2615,7 @@ class Loop:
         live = set()
         for bid, rec in list(book.items()):
             try:
-                ok = isinstance(rec, dict) and float(rec.get("until") or 0) > now and texts.get(bid) == rec.get("hash")
+                ok = isinstance(rec, dict) and float(rec.get("until") or 0) > now and self.fingerprint_holds(rec.get("hash"), bid, texts)
             except (TypeError, ValueError):
                 ok = False
             if ok:
@@ -3466,7 +3467,7 @@ class Loop:
                 ls.setdefault("holds", {})[row] = self._scrub(why)[:300]
                 ls.setdefault("hold_ver", {})[row] = F.slicer_version()
                 try:
-                    ls.setdefault("hold_hash", {})[row] = self._row_hashes("text")[row]
+                    ls.setdefault("hold_hash", {})[row] = self.row_fingerprint(row)
                 except Exception as exc:            # noqa: BLE001 - no fingerprint: the hold stays until the slicer version changes
                     self.err("green hold fingerprint", exc)
                 for key in ("to_slice", "slice_wait", "reslices"):
@@ -3596,12 +3597,8 @@ class Loop:
         rows = {b for b in rows if b and b not in book}
         if not rows:
             return 0
-        try:
-            hashes = self._row_hashes("text")
-        except Exception:
-            hashes = {}
         for bid in sorted(rows):
-            self._not_code_set(ls, bid, "fixture_private", hashes.get(bid, ""))
+            self._not_code_set(ls, bid, "fixture_private", self.row_fingerprint(bid))
             self.event("supply", status="not_code", backlog_id=bid, reason="fixture_private")
         self.save_ls(ls)
         return len(rows)
@@ -4218,8 +4215,11 @@ class Loop:
         ls = self.ls()
         if bid:  # durable across backlog edits; forgotten when the row's text changes
             try:
-                fingerprint = self._row_hashes("text").get(bid)
-                if not fingerprint:
+                texts = self._row_hashes("text")       # an unreadable backlog still raises: the answer waits
+                fingerprint = self.row_fingerprint(bid, texts)
+                if bid not in texts:                   # a derived id is no row: its sentinel would be dropped by the next refresh, as before
+                    fingerprint = "unknown@"
+                if fingerprint.startswith("unknown@"):
                     if not tid:
                         raise F.InvalidPlan("row %s is not in the backlog: nothing to close" % bid)
                     fingerprint = ""        # a task of a row we cannot see: close the task only
@@ -5687,9 +5687,10 @@ class Loop:
         entry_before = copy.deepcopy(self.ls().get("to_slice", {}).get(row)) if result.get("test_only") else None
         try:
             added = self._apply_portion(row, gen, portion, "first")
-            if entry_before is not None and added and result.get("guard"):      # test first: the row stays in the book with the new test as its red id
-                kept = self.ls()
-                kept.setdefault("to_slice", {})[row] = dict(entry_before, guard=str(result["guard"]))
+            if result.get("test_only") and added and result.get("guard"):      # test first: the row stays in the book with the new test as its red id
+                kept = self.ls()      # fac-82: also a row that had no entry (it was popped by _apply_portion): the entry is made
+                base_entry = entry_before if entry_before is not None else {"at": self.clock(), "hints": [], "priority": priority}
+                kept.setdefault("to_slice", {})[row] = dict(base_entry, guard=str(result["guard"]))
                 self.save_ls(kept)
         except F.LockBusy:          # W-ask 4c: the state is locked: the green candidate is kept as a spare, not lost
             keep = self.ls()
@@ -6840,13 +6841,13 @@ class Loop:
                 self._decision_set(ls, bid, kind, hold.get("question", ""), portion.get("engine", ""), now)
             if portion.get("engine") in self.ARCH_ENGINES and (kind in A_NO_FIX or kind.startswith("duplicate")):
                 try:        # the architect's own no-fix answer: kept until the row's text changes or the term ends
-                    ls.setdefault("hold_hash", {})[bid] = self._row_hashes("text")[bid]
+                    ls.setdefault("hold_hash", {})[bid] = self.row_fingerprint(bid)
                     ls.setdefault("hold_arch", {})[bid] = now + self.cfg.not_code_term_s
                 except Exception as e:
                     self.err("hold fingerprint", e)
         for rec in portion.get("not_code") or []:
             self._decision_set(ls, rec.get("backlog_id", row), "not_code", rec.get("reason", ""), portion.get("engine", ""), now)
-            self._not_code_set(ls, rec.get("backlog_id", row), rec.get("reason", ""), self._row_hashes("text").get(row, ""),
+            self._not_code_set(ls, rec.get("backlog_id", row), rec.get("reason", ""), self.row_fingerprint(rec.get("backlog_id", row)),
                                engine=portion.get("engine", ""))
         self.save_ls(ls)
         self.event("reslice", status="applied", backlog_id=row, gen=gen, added=len(added), cause=cause)
@@ -7181,14 +7182,9 @@ class Loop:
             ls.setdefault("to_slice", {}).setdefault(bid, dict(entry, at=now))
         self._sync_stale_rows(res.get("stale") or ())
         if res.get("not_code"):       # <id>: rows the triage cut by structure (documentation only) join the not_code book
-            try:
-                texts = self._row_hashes("text")
-            except Exception as e:
-                self.err("not_code: backlog unreadable", e)
-                texts = {}
             for x in res["not_code"]:
-                if isinstance(x, dict) and texts.get(x.get("backlog_id")):
-                    self._not_code_set(ls, x["backlog_id"], x.get("reason") or "", texts[x["backlog_id"]])
+                if isinstance(x, dict) and x.get("backlog_id"):
+                    self._not_code_set(ls, x["backlog_id"], x.get("reason") or "", self.row_fingerprint(x["backlog_id"]))
         if ls.get("head_scope"):
             # <id>: a picked scope is used up once the triage reported its row (tasks, a hold or a skip); a deferred
             # row keeps it for the next portion; a row that left the backlog loses it
@@ -7211,13 +7207,8 @@ class Loop:
         deferred = list(res.get("deferred") or [])  # postponed by the portion deadline: not seen
         events = [self.rs(str(x)) for x in (res.get("events") or [])[:10]]
         if new_holds:
-            try:
-                texts = self._row_hashes("text")
-                for b in new_holds:
-                    if b in texts:
-                        ls["hold_hash"][b] = texts[b]
-            except Exception as e:
-                self.err("hold fingerprint", e)
+            for b in new_holds:
+                ls["hold_hash"][b] = self.row_fingerprint(b)
         progress = bool(added) or bool(new_holds) or bool(queued)
         if ctx.get("topup"):                         # <id>: an empty top-up portion lengthens the wait of the next one
             ls["ready_triage_idle"] = 0 if progress else min(int(ls.get("ready_triage_idle") or 0) + 1, 4)
@@ -7304,6 +7295,39 @@ class Loop:
                 '--touch %s --tests %s --note "<указание кодеру>"' % (
                     self.dir, bid or "<ID>", " --task-id " + tid if tid else "", touch, tests))
 
+    def row_fingerprint(self, bid, texts=None) -> str:
+        """fac-82: the ONE way to the text hash of a row id.  A derived id (<row>.sN, <row>#N) takes its parent row's hash; a row the
+        backlog does not know (rel-*, a vanished row, an unreadable backlog) is ``unknown@<time>``: never "" and never an exception.
+        An unknown stamp is read by ``fingerprint_holds``."""
+        try:
+            hashes = texts if texts is not None else self._row_hashes("text")
+        except Exception:
+            hashes = {}
+        row = F.row_of(str(bid))
+        for key in (str(bid), row, re.sub(r"\.s\d+$", "", row)):
+            if hashes.get(key):
+                return hashes[key]
+        return "unknown@%d" % int(self.clock())
+
+    def fingerprint_holds(self, stored, bid, texts=None) -> bool:
+        """fac-82: a stored fingerprint still stands: the same real hash, or an unknown stamp younger than a day while the row is
+        still unknown (a row that became known has a text to compare: the unknown entry is looked at again)."""
+        current = self.row_fingerprint(bid, texts)
+        stored = str(stored or "")
+        if stored.startswith("unknown@"):
+            try:
+                young = self.clock() - float(stored.partition("@")[2]) < UNKNOWN_FINGERPRINT_TTL_S
+            except ValueError:
+                young = False
+            return young and current.startswith("unknown@")
+        return bool(stored) and stored == current
+
+    def _hold_rewritten(self, stored, bid, texts=None) -> bool:
+        """fac-82: a hold is lifted only when the row's real text hash changed; a hold stamped unknown, or a row that is unknown now, stays."""
+        current = self.row_fingerprint(bid, texts)
+        stored = str(stored or "")
+        return not (stored.startswith("unknown@") or current.startswith("unknown@")) and stored != current
+
     def _row_hashes(self, field: str = "row") -> dict:
         """{backlog_id: hash}. field='text' hashes the wording only (evidence/state updates of the
         coordinator must not reopen a closed row); 'row' hashes the whole line."""
@@ -7337,7 +7361,7 @@ class Loop:
             for b, h in list(ls.get("hold_hash", {}).items()):  # rewritten row: back to triage
                 if b not in ls["holds"]:
                     ls["hold_hash"].pop(b, None)
-                elif b in texts and texts[b] != h:
+                elif self._hold_rewritten(h, b, texts):   # an unknown stamp (either side) keeps the hold for good, as before: the day's term is for not_code only
                     ls["holds"].pop(b, None)
                     ls["hold_hash"].pop(b, None)
                     self.event("triage", status="hold_dropped", reason="row %s was rewritten" % b)
@@ -7483,7 +7507,8 @@ class Loop:
             if not (row["status"] == "FAILED" and F.is_terminal(row.get("reason"))):
                 live.add(bid)
         live |= {b for b, (_, st) in last_gen.items() if st == "PROMOTED"}
-        live |= {b for b, rows in by_row.items() if b not in last_gen and any(r["status"] == "PROMOTED" for _t, r, _x in rows)}
+        live |= {b for b, rows in by_row.items() if b not in last_gen       # fac-82: a merged test task alone is not the row
+                 and any(r["status"] == "PROMOTED" and (x is None or not self._test_only(x)) for _t, r, x in rows)}
         for bid, rec in open_rows.items():
             if F.is_private_text(str(rec.get("text") or "")):
                 private.add(bid)

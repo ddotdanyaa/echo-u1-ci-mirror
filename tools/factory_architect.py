@@ -163,11 +163,11 @@ TEST_CODE_RULE = ('For a new test (test.new) you MUST also give test.new.code: t
                   'test per named defect; it must fail on an assert (not on an import or a call error) now.')
 
 
-PART_CODE_RULE = ('From this rung a part MAY carry "code": for a .py file the WHOLE new text of every function named in '
+PART_CODE_RULE = ('Give EVERY part of a fix its "code": for a .py file the WHOLE new text of every function named in '
                   '"symbols" (one complete def each, every line, no "..." and no pass), for any other file one '
-                  '<<<<<<< SEARCH / ======= / >>>>>>> REPLACE block of exact lines. Write it only after you have read the '
-                  'code and the trace of the red test; the executor applies it without a model and every gate still '
-                  'judges it. Without code the editor writes the change from the instruction.')
+                  '<<<<<<< SEARCH / ======= / >>>>>>> REPLACE block of exact lines. The instruction stays: the reviewers read '
+                  'it. Write the code only after you have read the code and the trace of the red test; the executor applies '
+                  'it without a model and every gate still judges it.')
 HOLD_RULE = ('If the red test cannot be made green by the files and functions of THIS row without changing another row '
              '(its code, its test or its text), do not write another fix: answer decision "hold" and in "why" name the '
              'exact reason: the other row or file, the function, and what in the trace of the red test needs it.')
@@ -188,15 +188,16 @@ RED_OTHER_RULE = 'Any answer other than fix or need is refused from you and the 
 _TEST_PATH = re.compile(r'(?:^|/)(?:tests?/|test_[^/]*\.py$)|_test\.py$')
 
 
-def codes_ok(packet) -> bool:
-    """parts[].code may be asked from paid/agent: from rung 2 (W-hard 3), and at any rung while the edit channels are
-    dry (W-dry 1: the card with ready code needs no edit channel at all)."""
-    return bool(isinstance(packet, dict) and ((packet.get('rung') or 0) >= 2 or packet.get('edit_dry') or packet.get('must_code')))
+def author_code(engine) -> bool:
+    """The strong authors (paid, agent) have read the code when they answer: the code of every part of a fix is part of
+    their contract at any rung, from the first one (ready code is applied without a model and passes the cloud gate far
+    more often than an instruction re-typed by a free editor). The free steps never give it."""
+    return str(engine or '') in ('paid', 'agent')
 
 
 DRY_RULE = ('The editors cannot write this change (the free edit channels are out for the day, or they already failed on an '
-            'instruction for this row): give EVERY part of the fix its "code" (the whole new text of each named function, or a '
-            'SEARCH/REPLACE block for a non-Python file). A part without code waits for an editor that is not coming.')
+            'instruction for this row): the code of every part is all there is. A part without code waits for an editor '
+            'that is not coming.')
 
 
 SEARCH_LITERAL = 'search_literal'      # <id> / variant C: the contract gives the SEARCH lines, the free editors write only the REPLACE
@@ -313,7 +314,7 @@ def build_prompt(packet, engine=''):
     literal = search_literal_on(packet, engine)
     if literal:
         schema['parts'][0]['search'] = 'exact whole lines of the file that the change replaces (no new lines)'
-    if engine in ('paid', 'agent') and codes_ok(packet):
+    if author_code(engine):
         schema['parts'][0]['code'] = 'whole new text of each named function (up to %d characters)' % K.PART_CODE_MAX
     system = ('You are the architect; an editor implements your checked contract. Return one JSON object. '
               'Choose exactly one of test.use or test.new. Request source with {"need":[{"file":"path",'
@@ -330,7 +331,7 @@ def build_prompt(packet, engine=''):
               (FREE_PROOF_RULE + '\n' if engine in FREE_RUNGS else '') + (GREEN_PROOF_RULE + '\n' if packet.get('green_proof') else '') +
               (VAGUE_RULE + '\n' if engine else '') +
               (DECISION_EXAMPLE + '\n' if engine in FREE_RUNGS else '') +
-              (PART_CODE_RULE + '\n' if engine in ('paid', 'agent') and codes_ok(packet) else '') +
+              (PART_CODE_RULE + '\n' if author_code(engine) else '') +
               (SEARCH_LITERAL_RULE + '\n' if literal else '') +
               (HOLD_RULE + '\n' if engine in ('paid', 'agent') and (packet.get('rung') or 0) >= 2 else '') +
               (DRY_RULE + '\n' if engine in ('paid', 'agent') and (packet.get('edit_dry') or packet.get('must_code')) else '') +
@@ -2106,8 +2107,8 @@ def contract_for(packet, *, rung, root, asks, named_ok=False, red_given=None, sk
                         user += '\n' + LAST_NEED
                     rounds += 1
                     continue
-                if not (codes_ok(dict(packet, rung=rung)) and engine in ('paid', 'agent')):
-                    _drop_part_codes(contract)      # parts[].code is the escalation of rung >= 2 (or of the dry state), by paid or agent only
+                if not author_code(engine):
+                    _drop_part_codes(contract)      # parts[].code is the strong authors' (paid, agent) at any rung
                 if rung < 2 or engine not in ('paid', 'agent'):
                     if contract.get('decision') == 'hold':
                         raise ContractFault('hold is the answer of paid/agent at rung >= 2 only')
@@ -2141,10 +2142,10 @@ def contract_for(packet, *, rung, root, asks, named_ok=False, red_given=None, sk
                     continue
                 if errors:
                     raise ContractFault('; '.join(errors))
-                if (dry and not dry_asked and contract['decision'] == 'fix' and engine in ('paid', 'agent')
+                if (not dry_asked and contract['decision'] == 'fix' and author_code(engine)
                         and not all(isinstance(p, dict) and p.get('code') for p in contract.get('parts') or [])):
-                    dry_asked = True        # W-dry 1: one re-ask for the code of every part; then the card stands as it is
-                    user += '\nThe editors cannot write this change: ' + DRY_RULE + '\nReturn the full contract again, every part with its code.'
+                    dry_asked = True        # one re-ask for the code of every part; then the card stands as it is
+                    user += ('\nThe editors cannot write this change: ' + DRY_RULE if dry else '') + '\nReturn the full contract again, every part with its code.'
                     continue
                 if contract['decision'] == 'fix' and (bad := reach_fault(contract, packet, root)):
                     if reach_asked:
