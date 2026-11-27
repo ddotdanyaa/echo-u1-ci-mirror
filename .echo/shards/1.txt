@@ -1,0 +1,3 @@
+tests/test_speech_text.py
+tests/test_u78_degradation.py
+tests/test_w4_law.py
