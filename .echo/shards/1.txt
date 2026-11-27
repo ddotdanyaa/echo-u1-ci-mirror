@@ -1,0 +1,7 @@
+tests/break/answer_route/test_b_search_route.py
+tests/test_b_ruling.py
+tests/test_c24_e_classes.py
+tests/test_c8.py
+tests/test_cl2_map.py
+tests/test_cl2_pause.py
+tests/test_t_classes.py
