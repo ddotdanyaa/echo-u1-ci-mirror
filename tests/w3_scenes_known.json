@@ -1,0 +1,111 @@
+{
+ "n1_01_exam_accounting": {
+  "12": [
+   "says"
+  ],
+  "13": [
+   "says"
+  ]
+ },
+ "n1_01v1_exam_preface_long": {
+  "12": [
+   "says"
+  ],
+  "13": [
+   "says"
+  ]
+ },
+ "n1_01v2_exam_correction_late": {
+  "12": [
+   "says"
+  ],
+  "13": [
+   "says"
+  ]
+ },
+ "n1_01v3_exam_doubt_wording": {
+  "12": [
+   "says"
+  ],
+  "13": [
+   "says"
+  ]
+ },
+ "n1_03_tax_consultation": {
+  "12": [
+   "answer_complete"
+  ]
+ },
+ "n1_03v1_consult_long_pause": {
+  "12": [
+   "answer_complete"
+  ]
+ },
+ "n1_03v2_consult_other_code": {
+  "12": [
+   "answer_complete"
+  ]
+ },
+ "n1_h1_physics_exam_holdout": {
+  "7": [
+   "advance"
+  ],
+  "9": [
+   "ack",
+   "advance"
+  ]
+ },
+ "n1_h2_geography_defence_holdout": {
+  "2": [
+   "ack"
+  ]
+ },
+ "n2_d02_history_trip": {
+  "20": [
+   "audio",
+   "resumes"
+  ]
+ },
+ "n2_d05_talk_energy": {
+  "4": [
+   "new_responses",
+   "says_cue",
+   "short"
+  ],
+  "6": [
+   "plan_covers"
+  ],
+  "15": [
+   "resumes"
+  ]
+ },
+ "n2_d10_finance_startup": {
+  "22": [
+   "advance",
+   "audio",
+   "says"
+  ]
+ },
+ "n2_d11_history_exam": {
+  "16": [
+   "resumes"
+  ]
+ },
+ "n2_d16_work_supplier": {
+  "19": [
+   "resumes"
+  ]
+ },
+ "n2_h03_home_move": {
+  "17": [
+   "resumes",
+   "says_not"
+  ]
+ },
+ "n2_h05_history_city_walk": {
+  "17": [
+   "resumes",
+   "says_not"
+  ]
+ }
+}
