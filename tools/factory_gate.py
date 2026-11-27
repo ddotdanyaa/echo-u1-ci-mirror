@@ -586,6 +586,7 @@ def offer_companions(root, names):
     slot = _slot(root, create=True)
     slot.update(offer=tuple(_node(n) for n in names), root=str(root), xml=None, names=())
     _companion = slot
+    _start_base_run(root, names)
 
 
 def _take_companions(root, tests):
@@ -624,6 +625,85 @@ def _split_companions(root, xml_text, rc, tests, extra):
         return xml_text, rc
 
 
+_base_runs: dict = {}      # <id>: (str(base), its commit) -> [{'names': nodes, 'done': Event, 'xml': str | None}]
+
+
+def _base_sig(src):
+    """The commit of the base ``src`` (a base run of an empty sparse tree measures that commit), '' when it is no git tree;
+    a verdict measured on another commit is never read."""
+    try:
+        from . import factory_cloud_gate
+        return factory_cloud_gate._base_sha(src) or ''
+    except Exception:           # noqa: BLE001
+        return ''
+
+
+def _start_base_run(root, names):
+    """The base run of the neighbour tests ``names`` of the candidate tree ``root`` starts NOW, beside the candidate's own
+    run of them, not after it (live 26.11: neighbors_s median 171 s, up to 607 s - one cloud run on the candidate, then one
+    on the base per red name). Every card on the same base commit reads it (a base verdict is the same for all of them)."""
+    src = factory_tree.base_of(root)
+    nodes = tuple(dict.fromkeys(_node(n) for n in names))
+    if src is None or not nodes:
+        return
+    key = (str(src), _base_sig(src))
+    entry = {'names': nodes, 'done': threading.Event(), 'xml': None}
+    with _companions_lock:
+        runs = _base_runs.setdefault(key, [])
+        if any(set(nodes) <= set(e['names']) for e in runs):
+            return
+        runs.append(entry)
+        while sum(len(v) for v in _base_runs.values()) > COMPANION_SLOTS:
+            oldest = next(iter(_base_runs))
+            _base_runs[oldest].pop(0)
+            if not _base_runs[oldest]:
+                del _base_runs[oldest]
+
+    def run():
+        holder = None
+        try:
+            from . import factory_cloud_gate
+            holder = tempfile.mkdtemp(prefix='factory-nbase-')
+            tree = factory_tree.sparse_tree(src, holder, {})
+            got = factory_cloud_gate.attempt(tree, list(nodes), (), **({'self_repo': True} if SELF_REPO else {}))
+            if not _cloud_sign(factory_cloud_gate, got) and got and (SELF_REPO or got[2]):
+                entry['xml'] = got[0]
+        except Exception:       # noqa: BLE001  no answer: the base run of a red name runs itself, as before
+            entry['xml'] = None
+        finally:
+            entry['done'].set()
+            if holder:
+                shutil.rmtree(holder, ignore_errors=True)
+    threading.Thread(target=run, name='factory-neighbour-base', daemon=True).start()
+
+
+def _held_base_neighbours(root, tests):
+    """The verdict of ``tests`` (a base run: touched ()) from the base run of a candidate's neighbours that is already
+    going on the same base commit, or None (no such run, or it did not settle them: the base run goes on its own)."""
+    src = factory_tree.base_of(root)
+    if src is None:
+        return None
+    nodes = [_node(t) for t in tests]
+    with _companions_lock:
+        if not any(key[0] == str(src) for key in _base_runs):
+            return None
+    with _companions_lock:
+        runs = list(_base_runs.get((str(src), _base_sig(src)), ()))
+    entry = next((e for e in runs if nodes and set(nodes) <= set(e['names'])), None)
+    if entry is None:
+        return None
+    from . import factory_cloud_gate
+    if not entry['done'].wait(getattr(factory_cloud_gate, 'WAIT_S', 300) + 60) or not entry['xml']:
+        return None
+    try:
+        cases = [c for c in ET.fromstring(entry['xml']).iter('testcase') if any(_covered([c], n) for n in nodes)]
+    except (ET.ParseError, ValueError, TypeError):
+        return None
+    rc = 1 if any(c.find('failure') is not None or c.find('error') is not None for c in cases) else 0
+    result = _judge(cases, nodes, rc, '', Path(root))
+    return result if _conclusive(result) else None
+
+
 def _held_companions(root, names):
     """The testcases of the neighbour tests ``names`` from the candidate's own cloud run, or None (they did not ride in it)."""
     slot = _slot(root)
@@ -645,6 +725,9 @@ def _cloud_attempt(root, tests, touched, trace=()):
     same profile plugin and the JUnit comes back with the path of the failing tests (parse_junit fills GateResult.path)."""
     try:
         from . import factory_cloud_gate
+        held = _held_base_neighbours(root, tests) if not touched else None    # touched (): a base run
+        if held is not None:
+            return held
         if SELF_REPO:            # the second loop instance: the cloud only, the answer is the candidate's own run; no local fallback
             extra = []           # decided before taking: the offer is left for cloud_each, which runs the neighbours itself
             got = factory_cloud_gate.attempt(root, tests, touched, self_repo=True)
@@ -735,6 +818,7 @@ def cloud_each(root, names):
     try:
         cases = _held_companions(root, names)     # they rode in the candidate's own run: no second run
         if cases is None:
+            _start_base_run(root, names)          # their base run goes beside this one, not after it
             from . import factory_cloud_gate
             if SELF_REPO:                         # the neighbours too go to the factory's own mirror branch, not the product route
                 # `touched` here is the neighbours' own test files, not modules: they are only overlaid onto the mirror tree
@@ -1309,7 +1393,7 @@ def _key_lookups(expr, loop_var=None) -> list:
     return found
 
 
-def _word_counts(nodes) -> 'Counter':
+def _word_counts(nodes) -> dict:
     from collections import Counter
     out = Counter()
     for node in nodes:
@@ -1521,7 +1605,42 @@ def own_test_edit(path: str, kind=None, named=(), own_tests=None) -> bool:
     return bool(OWN_TEST_RE.fullmatch(canon)) and canon in {_canon(n) for n in named}
 
 
-def is_forbidden(path: str, kind=None, named=(), own_tests=None):
+# W-restate: a rig card of the agent step (never of a free model: to_tasks drops the mark) may say what an existing test expects anew:
+# the product's rule was replaced on purpose and the test still asks for the old one. Tests and asserts are not fewer, no skip.
+RESTATE, RESTATE_AUTHOR = 'restate', 'claude-sonnet-5-5'
+
+
+def is_rig_task(task):
+    """W-rig: True for a code task whose contract says ``rig: true`` (a test-stand card)."""
+    try:
+        contract = json.loads(getattr(task, 'contract', '') or '')
+    except (ValueError, TypeError):
+        return False
+    if not (isinstance(contract, dict) and contract.get('rig') is True and getattr(task, 'kind', 'code') == 'code'):
+        return False
+    return RESTATE if contract.get('restate') is True and contract.get('author') == RESTATE_AUTHOR else True
+
+
+RIG_MAX_ECHO = 3    # W-rig: a rig card touches tests/** and at most this many echo_sync/** files
+
+
+def rig_touch_faults(named) -> list[str]:
+    """W-rig: the shape of a rig card's touch_files: tests/** and up to RIG_MAX_ECHO files of echo_sync/**, nothing else."""
+    out, echo = [], 0
+    for raw in named:
+        canon = _canon(raw)
+        if canon is None:
+            out.append('%s: path outside the repository' % raw)
+        elif canon.startswith('echo_sync/'):
+            echo += 1
+        elif not canon.startswith(('tests/', 'tools/replay/')):      # tools/replay is the stand of the recorded calls, no product
+            out.append('%s: a rig card touches only tests/**, tools/replay/** and echo_sync/**' % canon)
+    if echo > RIG_MAX_ECHO:
+        out.append('a rig card names at most %d echo_sync files (%d named)' % (RIG_MAX_ECHO, echo))
+    return out
+
+
+def is_forbidden(path: str, kind=None, named=(), own_tests=None, rig=False):
     """The ONE rule of which paths a candidate may not write: the reason, or None when allowed.
 
     ``named``: the touch_files of the candidate's own task - only they open the factory's own code (OWNER_*), and, for the second
@@ -1541,6 +1660,8 @@ def is_forbidden(path: str, kind=None, named=(), own_tests=None):
             and canon not in {_canon(n) for n in named}):
         return "forbidden file (the factory's own code: only a task that names it)"
     if kind != 'unit_test' and parts[0] == 'tests' and not own_test_edit(path, kind, named, own_tests):
+        if rig and canon in {_canon(n) for n in named} and not rig_touch_faults(named):
+            return None             # W-rig: a rig card's own named files under tests/**
         return 'tests/** may be changed only by a unit_test task'
     return None
 
@@ -1573,15 +1694,214 @@ def candidate_findings(base_root, cand_files: dict, kind) -> tuple:
     return tuple(hollow), tuple(sorted(extra))
 
 
-def weakening_violations(base_root, cand_files: dict, kind, named=(), own_tests=None) -> list[str]:
+# Approximate by design: the words are counted per file as plain text, so a comment or a string can give a false refusal,
+# and a word moved from one file of the card to another is not caught.
+_RIG_MARK = re.compile(r'\b(skip|skipif|skipTest|xfail|sleep|monkeypatch)\b')
+
+
+def _is_raises(node) -> bool:
+    return isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in ('raises', 'warns')
+
+
+def _rig_checks(fn) -> list[str]:
+    """The assert / pytest.raises nodes of a test function (in source order) as ast.dump strings."""
+    out = []
+    for node in ast.walk(fn):
+        if isinstance(node, ast.Assert):
+            out.append(ast.dump(node))
+        elif _is_raises(node):
+            out.append(ast.dump(node))
+    return sorted(out)
+
+
+def _rig_tests(tree) -> dict:
+    """``{qualified name: function node}`` of every test_* function (module level and in classes)."""
+    found = {}
+
+    def walk(body, prefix):
+        for node in body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith('test'):
+                found[prefix + node.name] = node
+            elif isinstance(node, ast.ClassDef):
+                walk(node.body, prefix + node.name + '.')
+    walk(tree.body, '')
+    return found
+
+
+def rig_weakens(base_root, cand_files: dict, restate=False) -> list[str]:
+    """W-rig AST lock: the violations (``rig_weakens: <path>::<function>: ...``) of a rig candidate's tests/**/*.py files.
+    Per file: the number of test_* functions and of assert/pytest.raises never goes down; no assert/pytest.raises inside
+    a base test_* function is changed (ast.dump equal); skip/xfail/sleep/monkeypatch do not grow. Helpers, fixtures,
+    stand classes, constants and imports are free."""
+    out, root = [], Path(base_root)
+    for raw, text in sorted(cand_files.items()):
+        path = _canon(raw)
+        if path is None or not path.startswith('tests/') or not path.endswith('.py'):
+            continue
+        base_file = root / path
+        old = base_file.read_text(encoding='utf-8', errors='replace') if base_file.is_file() else ''
+        new = text or ''
+        marks = [[w for w in _RIG_MARK.findall(t) if w != 'monkeypatch' or path != 'tests/conftest.py'] for t in (new, old)]
+        if len(marks[0]) > len(marks[1]):       # W-pack: a fixture of tests/conftest.py may use monkeypatch; asserts stay locked
+            out.append(f'rig_weakens: {path}: new skip/xfail/sleep/monkeypatch')
+        try:
+            new_tree = ast.parse(new)
+        except (SyntaxError, ValueError, RecursionError):
+            out.append(f'rig_weakens: {path}: candidate does not parse')
+            continue
+        try:
+            old_tree = ast.parse(old)
+        except (SyntaxError, ValueError, RecursionError):
+            continue
+        old_fns, new_fns = _rig_tests(old_tree), _rig_tests(new_tree)
+        if len(new_fns) < len(old_fns):
+            out.append(f'rig_weakens: {path}: tests removed: ' + ', '.join(sorted(set(old_fns) - set(new_fns))))
+        for name, fn in sorted(old_fns.items()):
+            other = new_fns.get(name)
+            if other is None:
+                out.append(f'rig_weakens: {path}::{name}: test function is gone')
+                continue
+            was, now = _rig_checks(fn), _rig_checks(other)
+            if len(now) < len(was):
+                out.append(f'rig_weakens: {path}::{name}: assert/raises dropped {len(was)} -> {len(now)}')
+            elif was != now and not restate:
+                out.append(f'rig_weakens: {path}::{name}: an assert/raises changed')
+    return out
+
+
+BARE_ID = 'bare_id: '       # fac-52: the fault class of a test id without its parameter where the test is parametrized
+
+
+def _parametrized(text) -> set:
+    """The test functions ('name' or 'Class.name') of a test file's text under @...parametrize (on the function or on its class); by the AST, no run."""
+    try:
+        tree = ast.parse(text)
+    except (SyntaxError, ValueError, RecursionError):
+        return set()
+
+    def marked(node):
+        return any(isinstance(d, ast.Call) and isinstance(d.func, ast.Attribute) and d.func.attr == 'parametrize'
+                   for d in node.decorator_list)
+    out = set()
+
+    def walk(body, prefix, inherited):
+        for node in body:
+            if isinstance(node, ast.ClassDef):
+                walk(node.body, prefix + node.name + '.', inherited or marked(node))
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and (inherited or marked(node)):
+                out.add(prefix + node.name)
+    walk(tree.body, '', False)
+    return out
+
+
+def bare_ids(base_root, contract, texts: dict) -> list[str]:
+    """fac-52: the ids of test.use / test.also without a [parameter] whose test is parametrized (in ``texts`` {path: new text}, else
+    in the base file): the bare id takes in every parameter, a red one of the base among them, so the station sees a partial green
+    where the author's cloud run of the exact ids was green. The author must name the exact ids."""
+    spec = contract.get('test') if isinstance(contract.get('test'), dict) else {}
+    out, seen = [], {}
+    for tid in [spec.get('use')] + list(spec.get('also') or []):
+        if not isinstance(tid, str) or '::' not in tid or '[' in tid:
+            continue
+        path, _, name = tid.partition('::')
+        if path not in seen:
+            text = texts.get(path)
+            if text is None:
+                try:
+                    text = (Path(base_root) / path).read_text(encoding='utf-8-sig', errors='replace')
+                except OSError:
+                    text = ''
+            seen[path] = _parametrized(text)
+        if name.replace('::', '.') in seen[path]:
+            out.append(BARE_ID + '%s is parametrized: name the exact ids with [parameter]' % tid)
+    return out
+
+
+def _test_names(contract) -> set:
+    """The function names of the contract's own target tests (test.use and test.also, ``path::name`` or ``path::Class::name``)."""
+    spec = contract.get('test') if isinstance(contract.get('test'), dict) else {}
+    ids = [spec.get('use')] + list(spec.get('also') or [])
+    return {'.'.join(str(t).split('::')[1:]).split('[')[0] for t in ids if isinstance(t, str) and '::' in t}
+
+
+def contract_rules(base_root, contract, cand_files: dict, *, ready=None, by_files: bool = False) -> list[str]:
+    """W-intake: the ONE deterministic rule check of a contract's edit, shared by the author's cloud try (roots/cloudtry.py, before
+    the run) and the station's gate (agent_factory_runner). ``cand_files``: {repo path: new text} of the changed files. Faults, each
+    with its class: ``off_contract:`` the edit is outside the named parts (files, functions; a new function where a part says
+    add_after); ``test_touched:`` a base test function that is not the contract's target nor named by a part changed;
+    ``rig_weakens:`` a test is weaker (the AST lock); ``anchor:`` the anchor line of a part without symbols is neither in the base nor
+    in the new file; ``bare_id:`` (ready code) a target id without its [parameter] where the test is parametrized (fac-52). ``ready``:
+    the contract is an author's ready code (the station passes runner.ready_card; None: its parts carry code, as in cloudtry, whose
+    contracts are all ready code): a ladder step's card with code is not checked for bare ids (its proof is the station's own gate)."""
+    from . import factory_cards as K
+    root, out = Path(base_root), []
+
+    def rel(raw):           # the repository path as written (the case kept: the cloud's disk is case-sensitive)
+        clean = _clean(raw)
+        return raw if clean is None else posixpath.normpath('/'.join(clean))
+    parts = [dict(p, file=rel(p['file'])) for p in contract.get('parts') or []
+             if isinstance(p, dict) and isinstance(p.get('file'), str)]
+    texts = {}
+    for raw, text in cand_files.items():
+        path = rel(raw)
+        base_file = root / path
+        try:
+            old = base_file.read_text(encoding='utf-8-sig', errors='replace') if base_file.is_file() else ''
+        except OSError:
+            old = ''
+        texts[path] = (old, text or '')
+    touched = {}
+    for path, (old, new) in texts.items():
+        names = K.changed_symbols(old, new) if path.endswith('.py') else set()
+        if any(p['file'] == path and p.get('add_after') for p in parts):
+            names -= K.defined(new) - K.defined(old)
+        touched[path] = set() if by_files else names      # fac-69: code proven in the cloud: the border is the file of the parts
+    out += ['off_contract: ' + o for o in K.contract_conformance(touched, {'parts': parts})]
+    targets = _test_names(contract)
+    restate = (contract.get('rig') is True and contract.get('restate') is True
+               and contract.get('author') == RESTATE_AUTHOR)       # the same card as is_rig_task's RESTATE
+    for path, (old, new) in sorted(texts.items()):
+        if not (path.startswith('tests/') and path.endswith('.py')):
+            continue
+        if restate:             # a restate card (rig, its named author) restates an accepted test by design
+            break
+        named = {s for p in parts if p['file'] == path for s in p.get('symbols') or []}
+        try:
+            before, after = _rig_tests(ast.parse(old)), _rig_tests(ast.parse(new))
+        except (SyntaxError, ValueError, RecursionError):
+            continue            # a test that does not parse is the AST lock's refusal
+        out += ['test_touched: %s::%s' % (path, name) for name, fn in sorted(before.items())
+                if name not in targets and name not in named and name in after and ast.dump(fn) != ast.dump(after[name])]
+    out += rig_weakens(root, {p: new for p, (_, new) in texts.items()}, restate=restate)
+    for part in parts:
+        anchor, path = str(part.get('anchor') or ''), part['file']
+        if not anchor or part.get('symbols'):        # named functions are the target; the anchor is read only without them
+            continue
+        old, new = texts.get(path) or (None, None)
+        if old is None:
+            try:
+                old = new = (root / path).read_text(encoding='utf-8-sig', errors='replace')
+            except OSError:
+                old = new = ''
+        if anchor not in old.splitlines() and anchor not in new.splitlines():
+            out.append('anchor: %s: %r is not in the file' % (path, anchor))
+    if ready if ready is not None else any(p.get('code') or p.get('file_text') for p in parts):     # ready code: its proof holds for the exact ids only
+        out += bare_ids(root, contract, {p: new for p, (_, new) in texts.items()})
+    return out
+
+
+def weakening_violations(base_root, cand_files: dict, kind, named=(), own_tests=None, rig=False) -> list[str]:
     """Deterministic list of reasons a candidate weakens the checks (empty = clean); ``named`` as in is_forbidden."""
-    return weakening_check(base_root, cand_files, kind, named, own_tests)[0]
+    return weakening_check(base_root, cand_files, kind, named, own_tests, rig)[0]
 
 
-def weakening_check(base_root, cand_files: dict, kind, named=(), own_tests=None):
-    """``(violations, notes)``: notes are neutral remarks (a check that had to be skipped), not violations."""
+def weakening_check(base_root, cand_files: dict, kind, named=(), own_tests=None, rig=False):
+    """``(violations, notes)``: notes are neutral remarks (a check that had to be skipped), not violations.
+    ``rig``: a W-rig card (named tests/** open, the AST lock rig_weakens on top)."""
     out, notes = [], []
     root = Path(base_root)
+    if rig:
+        out.extend(rig_weakens(root, cand_files, restate=rig == RESTATE))
     extra = set()
     if kind == 'unit_test':
         for raw, text in cand_files.items():
@@ -1589,7 +1909,7 @@ def weakening_check(base_root, cand_files: dict, kind, named=(), own_tests=None)
                 extra |= _defined_names(text or '')
     for raw, text in sorted(cand_files.items()):
         path = _canon(raw)
-        reason = is_forbidden(raw, kind, named, own_tests)
+        reason = is_forbidden(raw, kind, named, own_tests, rig)
         if reason is not None:
             out.append(f'{raw if path is None else path}: {reason}')
             continue
@@ -1633,6 +1953,34 @@ def weakening_check(base_root, cand_files: dict, kind, named=(), own_tests=None)
             if old_names - new_names:
                 out.append(f'{path}: tests removed: ' + ', '.join(sorted(old_names - new_names)))
     return out, notes
+
+
+def target_names(contract) -> tuple:
+    """The functions ('test_x' or 'test_x[param]') the contract names as its target (test.use, test.also)."""
+    spec = contract.get('test') if isinstance(contract, dict) else None
+    if not isinstance(spec, dict) or not isinstance(spec.get('use'), str):
+        return ()
+    also = spec.get('also') if isinstance(spec.get('also'), (list, tuple)) else ()
+    return tuple(str(u).split('::')[-1] for u in (spec['use'], *also) if '::' in str(u))
+
+
+def _is_target(red_id, names) -> bool:
+    tail = str(red_id).split('::', 1)[-1]
+    return any(tail == n or ('[' not in n and tail.split('[', 1)[0] == n) for n in names)
+
+
+def partial_left(base: GateResult, cand: GateResult, targets) -> tuple | None:
+    """W-part 3: the red ids of the base the candidate leaves red, when it did what its contract asks: every target red on the base
+    (at least one) is green now and nothing is red that was not red on the base. None otherwise. A file often holds reds
+    of several causes; one card repairs one cause."""
+    red, was = set(cand.failed_ids), set(base.failed_ids)
+    if not targets or not base.junit_ok or not cand.junit_ok or cand.errors or not red or cand.failed != len(red):
+        return None
+    if cand.timed_out or cand.missing or not red <= was or cand.collected < base.collected or cand.skipped > base.skipped:
+        return None
+    if not any(_is_target(i, targets) for i in was) or any(_is_target(i, targets) for i in red):
+        return None
+    return tuple(sorted(red))
 
 
 def accept(base: GateResult, cand: GateResult, red_before_ok: bool):

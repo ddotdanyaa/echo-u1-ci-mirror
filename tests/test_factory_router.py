@@ -129,19 +129,21 @@ def test_a_failing_model_is_not_kept_by_the_memory():
 
 # ---- live reliability rating ----------------------------------------------------------------------
 
+# fac-43: the rating sort is gone from the code and edit calls (the router's score table orders them); it stays for review
+
 def test_route_order_puts_models_that_keep_failing_last_within_their_tier_only():
     base = [dict(A1, tier='main'), dict(B1, tier='main'), dict(A2, id='e', model='google/e', tier='escalation')]
     state = {}
-    assert [c['id'] for c in C.route_order(base, 'code', 1, 100, state=state)] == ['a1', 'b1', 'e']
+    assert [c['id'] for c in C.route_order(base, 'review', 1, 100, state=state)] == ['a1', 'b1', 'e']
     for i in range(8):
         C.note_outcome(state, base[0], i < 2, now=NOW + i)              # 2 of 8 succeeded: 0.25
-    assert [c['id'] for c in C.route_order(base, 'code', 1, 100, state=state)] == ['b1', 'a1', 'e']
-    assert [c['id'] for c in C.route_order(base, 'code', 1, 100)] == ['a1', 'b1', 'e']          # no state: as before
+    assert [c['id'] for c in C.route_order(base, 'review', 1, 100, state=state)] == ['b1', 'a1', 'e']
+    assert [c['id'] for c in C.route_order(base, 'review', 1, 100)] == ['a1', 'b1', 'e']          # no state: as before
 
 
 def test_the_preferred_model_stays_first_among_equally_healthy_models():
     base = [dict(A1, tier='main'), dict(B1, tier='main')]
-    assert C.route_order(base, 'code', 1, 100, preferred='google/b', state={})[0]['id'] == 'b1'
+    assert C.route_order(base, 'review', 1, 100, preferred='google/b', state={})[0]['id'] == 'b1'
 
 
 def test_a_better_rating_orders_healthy_models_and_few_calls_say_nothing():
@@ -150,11 +152,11 @@ def test_a_better_rating_orders_healthy_models_and_few_calls_say_nothing():
     for i in range(10):
         C.note_outcome(state, base[0], i < 8, now=NOW + i)              # 0.8
         C.note_outcome(state, base[1], True, now=NOW + i)               # 1.0
-    assert C.route_order(base, 'code', 1, 100, state=state)[0]['id'] == 'b1'
+    assert C.route_order(base, 'review', 1, 100, state=state)[0]['id'] == 'b1'
     young = {}
     C.note_outcome(young, base[0], False, now=NOW)
     assert C.rating(young, 'google/a') == 1.0
-    assert C.route_order(base, 'code', 1, 100, state=young)[0]['id'] == 'a1'
+    assert C.route_order(base, 'review', 1, 100, state=young)[0]['id'] == 'a1'
 
 
 def test_only_the_recent_window_counts():

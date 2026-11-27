@@ -307,10 +307,10 @@ def test_an_overloaded_model_is_cooled_so_the_next_try_takes_another_channel():
     channel = dict(id='c1', group='p', model='google/x', key_env='KEY', tpm=100000, rpd=100)
     state = {}
     done = C.apply_failure(state, channel, {'kind': 'transient', 'status': 503}, now=1000.0)
-    assert done == {'action': 'cool_channel', 'cool_s': 5}          # W-503: the first 503 is a hiccup of one channel
+    assert done == {'action': 'cool_channel', 'cool_s': C.OVERLOAD_STEPS[0]}          # W-503: the first 503 is a hiccup of one channel (fac-68b: seconds)
     done = C.apply_failure(state, channel, {'kind': 'transient', 'status': 503}, now=1001.0)
-    assert done == {'action': 'cool_model', 'cool_s': 15}           # the second in a row: the model
-    assert state['model_cool']['google/x'] == 1001.0 + 15
+    assert done == {'action': 'cool_model', 'cool_s': C.OVERLOAD_STEPS[1]}           # the second in a row: the model
+    assert state['model_cool']['google/x'] == 1001.0 + C.OVERLOAD_STEPS[1]
     sick = sick_state(channel)                                      # a model with under half good calls: the old rule
     done = C.apply_failure(sick, channel, {'kind': 'transient', 'status': 503}, now=1000.0)
     assert done == {'action': 'cool_model', 'cool_s': C.OVERLOAD_COOL_S}
@@ -333,11 +333,11 @@ def test_a_model_that_stays_overloaded_is_tried_less_often_and_a_quiet_half_hour
     for _ in range(5):                                 # each next try comes when the cooling is over
         cools.append(C.apply_failure(state, channel, {'kind': 'transient', 'status': 503}, now=now)['cool_s'])
         now += cools[-1]
-    assert cools == [120, 240, 480, C.OVERLOAD_COOL_MAX_S, C.OVERLOAD_COOL_MAX_S]
+    assert cools == [C.OVERLOAD_COOL_S, 2 * C.OVERLOAD_COOL_S, C.OVERLOAD_COOL_MAX_S, C.OVERLOAD_COOL_MAX_S, C.OVERLOAD_COOL_MAX_S]    # fac-68b: seconds
     now += C.OVERLOAD_FORGET_S
-    assert C.apply_failure(state, channel, {'kind': 'transient', 'status': 503}, now=now)['cool_s'] == 120
+    assert C.apply_failure(state, channel, {'kind': 'transient', 'status': 503}, now=now)['cool_s'] == C.OVERLOAD_COOL_S
     other = dict(channel, model='google/y')               # the series belongs to one model
-    assert C.apply_failure(state, other, {'kind': 'transient', 'status': 503}, now=now)['cool_s'] == 5   # healthy: W-503
+    assert C.apply_failure(state, other, {'kind': 'transient', 'status': 503}, now=now)['cool_s'] == C.OVERLOAD_STEPS[0]   # healthy: W-503
 
 
 def test_light_tokens_book_the_light_overhead_not_kilos():

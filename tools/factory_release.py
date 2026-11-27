@@ -107,6 +107,15 @@ def record_regressions(state_dir, names, row_of, at) -> None:
     _write_json(release_dir(state_dir) / "regressions.json", book)
 
 
+def reassign_regressions(state_dir, row_of) -> None:
+    """fac-67: tests of regressions.json move to another open row: ``row_of`` = {test name: row}."""
+    book = regressions(state_dir)
+    for name, row in row_of.items():
+        if name in book:
+            book[name] = dict(book[name], row=row)
+    _write_json(release_dir(state_dir) / "regressions.json", book)
+
+
 def _locked(path):
     """A lock file next to ``path`` (O_EXCL; a lock older than 30 s is taken over): two runs never read the same attempt number."""
     class _Lock:
@@ -198,7 +207,7 @@ def _shard_report(rec, results) -> dict:
 
 
 def run(*, sha, snapshot, state_dir, sweep_fn, known=(), open_ids=(), open_tests=(), recheck_fn=None, shards=SWEEP_SHARDS[1],
-        known_path=red_ratchet.DEFAULT_KNOWN, env_path=red_ratchet.DEFAULT_ENV, resume=None, on_run=None, drop_fn=None) -> dict:
+        known_path=red_ratchet.DEFAULT_KNOWN, env_path=red_ratchet.DEFAULT_ENV, resume=None, on_run=None, drop_fn=None, guard_rows=None) -> dict:
     """One full sweep of ``snapshot`` and its verdict.
     -> {"sha", "sweep": {"red", "new_red", "flaky", "run_id"}, "status", "reason", "debt_rows": [], "shards", "longest_s", "runs"}.
     status: baseline (first sweep: the reds are written as the baseline), green, new_red, sweep_incomplete (a shard did not end:
@@ -315,6 +324,34 @@ def run(*, sha, snapshot, state_dir, sweep_fn, known=(), open_ids=(), open_tests
         out["closed_rows"] += close_regressions(rel, last_red)
     except OSError:
         pass
+    out["closed_rows"] += close_green_guards(guard_rows, last_red, results, out["closed_rows"], root=snapshot)
+    return out
+
+
+def _guard_exists(root, guard) -> bool:
+    """The guard test is defined in its file of the snapshot (a renamed or deleted test is not 'green', it is gone)."""
+    try:
+        name = re.sub(r"\[.*$", "", str(guard).split("::")[-1])
+        text = (Path(root) / _file_of(guard)).read_text(encoding="utf-8", errors="replace")
+    except (OSError, TypeError, ValueError):
+        return False
+    return bool(name) and re.search(r"\bdef\s+%s\b" % re.escape(name), text) is not None
+
+
+def close_green_guards(guard_rows, pair, results, already=(), root=None) -> list:
+    """fac-64: any queued row ``{row: guard test}`` (to_slice, owner's or not) whose guard test ran in this full build and is red
+    in neither of the two last full builds is dead work: the same sign as the debt row's. 'Ran' = the guard names a test (``::``),
+    it is defined in the snapshot file, and the file's result has no collection error or missing shard (an errored file has no
+    proof either way).  -> the row ids (those not in ``already``)."""
+    out = []
+    for row, guard in (guard_rows or {}).items():
+        if not (row and guard and "::" in str(guard)) or row in already:
+            continue
+        rec = (results or {}).get(_file_of(guard))
+        if not isinstance(rec, dict) or rec.get("errors") or rec.get("missing") or not _guard_exists(root, guard):
+            continue
+        if _green_twice([guard], pair):
+            out.append(str(row))
     return out
 
 
@@ -392,6 +429,31 @@ def close_debt(state_dir, row_id) -> bool:
     return False
 
 
+def close_debt_ids(state_dir, ids) -> int:
+    """W-rig: a merged and accepted rig card takes many test ids out of the baseline debt at once (any file): the ids leave the
+    entry's ``tests``; an entry left without tests is closed. One read, one write. -> the number of ids taken out."""
+    want = {_key(i) for i in ids or () if i}
+    if not want:
+        return 0
+    path = release_dir(state_dir) / DEBT_FILE
+    book = _read_json(path, {})
+    taken = 0
+    for rec in book.values():
+        if not isinstance(rec, dict) or rec.get("closed"):
+            continue
+        tests = [t for t in rec.get("tests") or [] if isinstance(t, str)]
+        left = [t for t in tests if _key(t) not in want]
+        if len(left) == len(tests):
+            continue
+        taken += len(tests) - len(left)
+        rec["tests"] = left
+        if not left:
+            rec["closed"] = True
+    if taken:
+        _write_json(path, book)
+    return taken
+
+
 def _next_n(rel, book) -> int:
     seq = _read_json(rel / DEBT_SEQ, {})
     n = max(int(seq.get("next") or 1), 1 + max([int(r.get("n") or 0) for r in book.values() if isinstance(r, dict)] or [0]))
@@ -435,8 +497,8 @@ def _green_twice(tests, pair) -> bool:
 
 
 def close_regressions(rel, pair) -> list:
-    """The regression rows (rel-<sha>-<n>) whose tests are red in neither of the two last full builds leave regressions.json.
-    -> the row ids closed."""
+    """The regression tests that are red in neither of the two last full builds leave regressions.json.
+    -> the row ids closed: those with no test left (fac-67: a row of a culprit group stays while any member is red)."""
     rel = Path(rel)
     book = _read_json(rel / "regressions.json", {})
     out = []
@@ -446,7 +508,8 @@ def close_regressions(rel, pair) -> list:
             del book[name]
     if out:
         _write_json(rel / "regressions.json", book)
-    return [r for r in out if r]
+    still = {str((rec or {}).get("row") or "") for rec in book.values()}      # fac-67: a row of several tests closes with its last one
+    return list(dict.fromkeys(r for r in out if r and r not in still))
 
 
 def _debt_step(rel, names, baseline, results, known_path, env_path, known, open_ids, open_tests, *, green, closed_out=None) -> list:

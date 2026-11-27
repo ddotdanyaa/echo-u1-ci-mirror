@@ -21,6 +21,7 @@ import urllib.request
 URL = 'https://api.anthropic.com/v1/messages'
 API_VERSION = '2023-06-01'
 MODELS = ('claude-sonnet-5-5', 'claude-haiku-5-5')      # the first is asked, the second is the fallback
+PAIR = ('claude-haiku-5-5', 'claude-haiku-4-5')         # two voices of a finished agent card when no free reviewer answers (neither is its author)
 DEFAULT_ENV = r'C:\agent-factory\secrets\anthropic.env'
 DEFAULT_DIR = r'C:\agent-factory\echo'
 ALLOWANCE_FIRST_USD = 120.0
@@ -35,11 +36,13 @@ TIMEOUT_S = 90
 DIFF_LIMIT = 30000
 GOAL_LIMIT = 3000
 FAIL_LIMIT = 3000
+PART_LIMIT = 7000    # one hunk of the diff shown to the paid critic is cut here; the parts share DIFF_LIMIT
 LESSONS_MAX = 400
 LESSONS_COUNT = 3
 # USD per million tokens (input, output). Source: the claude-api skill's model table (cached 2026-11-03, Anthropic
 # first-party prices): Sonnet 5.5 $2 / $10; Haiku 5.5 $0.10 / $0.50 for prompts up to 100K tokens, $0.50 / $2.50 above.
-PRICES = {'claude-sonnet-5-5': (2.0, 10.0, 2.5, 0.2), 'claude-haiku-5-5': (0.10, 0.50, 0.125, 0.01)}
+PRICES = {'claude-sonnet-5-5': (2.0, 10.0, 2.5, 0.2), 'claude-haiku-5-5': (0.10, 0.50, 0.125, 0.01),
+          'claude-haiku-4-5': (1.0, 5.0, 1.25, 0.1)}
 HAIKU_LONG = (0.50, 2.50, 0.625, 0.05)
 HAIKU_LONG_FROM = 100_000
 
@@ -439,7 +442,54 @@ ASK = ('You are the control critic of an automated code factory. Free critics al
        'task tests pass. Find a defect they missed: hard-coding to the test, lost behaviour, a stub, scope creep, a '
        'wrong fix of the real cause. The task tests are the specification: never dispute what a test expects. Answer '
        'ONLY with JSON {"verdict":"approve"|"reject","reason":"the concrete defect or empty","class":"short-kebab-slug '
-       'naming the class of the defect or empty","symptom":"one sentence a weaker reviewer could check for"}.\n')
+       'naming the class of the defect or empty","symptom":"one sentence a weaker reviewer could check for",'
+       '"evidence":"the line of the candidate diff that shows the defect, copied character for character, or the name '
+       'of the failing test; a reject without it is only advice"}.\n')
+
+
+QUOTE_MIN = 6        # a quoted diff line shorter than this (without spaces) is too short to be a concrete quote
+FRAGMENT_MIN = 12    # a quoted piece of a longer diff line counts from this length (without spaces)
+TEST_NAME = re.compile(r'\btest_\w+')
+
+
+def grounded(answer: dict, diff: str, failure: str = '') -> bool:
+    """VARIANTS_1426 step 4 (c): a paid reject blocks only with a concrete quote of a line of the diff (its evidence,
+    or a `quoted` fragment of its reason, compared without whitespace and without the +/- mark) or the name of a red
+    test (one the failure text names). Anything else is advice."""
+    said = ' '.join(str(answer.get(k) or '') for k in ('evidence', 'reason', 'symptom'))
+    if set(TEST_NAME.findall(said)) & set(TEST_NAME.findall(failure or '')):
+        return True
+    lines = set()
+    for line in str(diff or '').splitlines():
+        if line.startswith(('+++', '---', '@@')):
+            continue
+        bare = re.sub(r'\s+', '', line[1:] if line[:1] in '+- ' else line)
+        if len(bare) >= QUOTE_MIN:
+            lines.add(bare)
+    quotes = [str(answer.get('evidence') or '')] + re.findall(r'`([^`\n]+)`', said)
+    for quote in quotes:
+        for piece in str(quote).splitlines():
+            bare = re.sub(r'\s+', '', piece.lstrip('+- '))
+            if len(bare) >= QUOTE_MIN and any(bare == line or (len(bare) >= FRAGMENT_MIN and bare in line)
+                                              for line in lines):
+                return True
+    return False
+
+
+def failure_text(text: str) -> str:
+    """The failure text shown to the paid critic, at most FAIL_LIMIT: its tail, preceded by the names of the red tests
+    of the whole text (a head cut away must not take the name a grounded reject cites, review fix 4)."""
+    text = str(text or '')
+    if len(text) <= FAIL_LIMIT:
+        return text
+    names = list(dict.fromkeys(TEST_NAME.findall(text)))
+    head = ('Red tests named: ' + ', '.join(names))[:FAIL_LIMIT // 4] + '\n' if names else ''
+    return head + text[len(text) - (FAIL_LIMIT - len(head)):]
+
+
+def blocks(result) -> bool:
+    """The paid verdict fails the candidate: a grounded reject (step 4 (c)); an ungrounded reject is advice."""
+    return isinstance(result, dict) and result.get('verdict') == 'reject' and result.get('blocking') is True
 
 
 ASK_TEST = ('You are the control critic of an automated code factory. This card writes ONLY a test: the fix is a later '
@@ -525,25 +575,53 @@ def available() -> bool:
         return False
 
 
-def control(task, diff: str, failure: str = '', exclude_model: str = '', *, baseline=None, workdir=None) -> dict | None:
+def agent_card(task) -> bool:
+    """The contract's code was written by the agent model (MODELS[0]): that model is excluded as its reviewer, the next one votes."""
+    try:
+        contract = json.loads(getattr(task, 'contract', '') or '{}')
+    except (ValueError, TypeError):
+        return False
+    return isinstance(contract, dict) and contract.get('author') == MODELS[0]
+
+
+def pair(task, diff: str, failure: str = '', exclude_model=(), *, baseline=None, workdir=None) -> dict | None:
+    """Both voices of PAIR on a card of the agent model, for a candidate no free reviewer answered about: the rule of two
+    models stays, the waiting for an overloaded free model does not. One reject decides; a missing voice is None (the free wait)."""
+    if not agent_card(task):
+        return None
+    barred = {str(m).rpartition('/')[2] for m in exclude_model}
+    if barred & set(PAIR):
+        return None
+    got = []
+    for model in PAIR:
+        one = control(task, diff, failure, [m for m in MODELS + PAIR if m != model], baseline=baseline, workdir=workdir, models=(model,))
+        if one is None:
+            return None
+        if one['verdict'] == 'reject':
+            return dict(one, voices=[g['model'] for g in got] + [model])
+        got.append(one)
+    return dict(got[-1], model='+'.join(PAIR), voices=list(PAIR), usd=round(sum(g['usd'] for g in got), 6))
+
+
+def control(task, diff: str, failure: str = '', exclude_model: str = '', *, baseline=None, workdir=None, models=None) -> dict | None:
     """One paid judgement of a candidate, or None (no key, no budget, a refused model, any fault). The free verdict
     stands when None. The dict never holds the key. ``exclude_model``: the coder's model never judges its own
     candidate (a paid coder's Sonnet is judged by Haiku or not at all)."""
     if os.environ.get('PYTEST_CURRENT_TEST') and not os.environ.get('FACTORY_PAID_ENV'):
         return None                                     # a test never spends the real key
     from tools import agent_factory as F
-    if F.is_base_debt(task):
+    if F.is_base_debt(task) and not agent_card(task):      # a finished card of the agent step needs one cent for its last vote, not a search
         return None                                     # W-base0: the old baseline debt never spends the paid money (the free panel stays)
     try:
         key = load_env(env_path()).get('ANTHROPIC_API_KEY', '')
         if not key or credit_dead():
             return None
-        return _control(task, diff, failure, exclude_model, baseline, workdir, key)
+        return _control(task, diff, failure, exclude_model, baseline, workdir, key, models or MODELS)
     except (ValueError, TypeError, OSError, TimeoutError):
         return None                                     # a broken state file or a busy lock: no paid voice, never a fault
 
 
-def _control(task, diff, failure, exclude_model, baseline, workdir, key):
+def _control(task, diff, failure, exclude_model, baseline, workdir, key, models):
     from tools import factory_cards as K
     spec = K.test_spec(task)
     prompt = (((ASK_TEST if spec or getattr(task, 'kind', '') == 'unit_test' else ASK)) + 'Task: %s\nTask text:\n%s\nGuard test failure text (what the tests failed on before the fix):\n%s\n'
@@ -551,24 +629,28 @@ def _control(task, diff, failure, exclude_model, baseline, workdir, key):
                                           failure[-FAIL_LIMIT:], diff[:DIFF_LIMIT])
     if spec:
         prompt += '\nContract of the new test:\n' + spec + '\n'
+    prompt = K.restate_note(task) + prompt
     prompt += '\nTests and source regions:\n' + _review_source(task, baseline, workdir)
     try:
         multifile = len(json.loads(getattr(task, 'contract', '') or '{}').get('parts', [])) > 1
     except (ValueError, TypeError, AttributeError):
         multifile = False
     approvals, total_usd, total_in, total_out = [], 0.0, 0, 0
-    for model in MODELS:
+    barred = {str(m).rpartition('/')[2] for m in (exclude_model if isinstance(exclude_model, (list, tuple, set, frozenset)) else [exclude_model])}
+    wanted = min(2, sum(m not in barred for m in models)) if multifile else 1      # an author among the two never made a second paid voice possible
+    for model in models:
         try:
             refuse_opus(model)
         except ValueError:
             continue
-        if model in ({str(m).rpartition('/')[2] for m in exclude_model} if isinstance(exclude_model, (list, tuple, set, frozenset))
-                     else {str(exclude_model).rpartition('/')[2]}):
+        if model in barred:
             continue
         body = dict(model=model, max_tokens=2000, output_config=dict(effort='medium'),
                     messages=[dict(role='user', content=prompt)])
+        if model.endswith('-4-5'):
+            body.pop('output_config')           # the older model knows no effort
         headers = {'content-type': 'application/json', 'anthropic-version': API_VERSION, 'x-api-key': key}
-        estimate = (len(prompt.encode('utf-8')) * 2 + 2000 * 10) / 1e6 * 1.3
+        estimate = usd_for(model, len(prompt.encode('utf-8')), 2000) * 1.3      # the price of THIS model: a Haiku vote booked as Sonnet was refused on money it does not need
         if not reserve(estimate, critic=True):
             return None
         usd = 0.0
@@ -595,10 +677,12 @@ def _control(task, diff, failure, exclude_model, baseline, workdir, key):
         total_out += tout
         if multifile and answer['verdict'] == 'approve':
             approvals.append(model)
-            if len(approvals) < 2:
+            if len(approvals) < wanted:
                 continue
         return dict(verdict=answer['verdict'], reason=str(answer.get('reason') or '')[:600],
                     **{'class': _slug(answer.get('class') or '')}, symptom=str(answer.get('symptom') or '')[:300],
+                    evidence=str(answer.get('evidence') or '')[:300],
+                    blocking=answer['verdict'] == 'reject' and grounded(answer, diff[:DIFF_LIMIT], failure),
                     model='+'.join(approvals) if len(approvals) > 1 else model, usd=round(total_usd, 6), tokens_in=total_in, tokens_out=total_out)
     return None
 

@@ -87,9 +87,14 @@ def _parse(root: Path, rel: str):
     """(defs, refs) of one file: defs = [(qualname, line, word-counter of name+docstring+comments)]."""
     p = root / rel
     try:
+        stat = p.stat()
+        stamp = (str(p), stat.st_mtime_ns, stat.st_size)
+        if stamp in _CACHE:
+            return _CACHE[stamp]
         src = p.read_text(encoding="utf-8", errors="replace")
         key = (rel, len(src), hash(src))        # W-feed2 4e: by content, not by path: every snapshot of one base shares one parse
         if key in _CACHE:
+            _CACHE[stamp] = _CACHE[key]
             return _CACHE[key]
         tree = ast.parse(src)
     except (OSError, SyntaxError, ValueError):

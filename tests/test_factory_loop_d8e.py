@@ -18,10 +18,12 @@ def test_pause_doubles_while_the_series_is_fresh_and_stops_at_the_cap(env):
         delays.append(_events(env, "deferred")[-1]["delay_s"])
         env.clock.t += 130
         env.set_row("T1", not_before=0)
-    expect = [60, 120, 240, 480, 960, 1800, 1800, 1800]
+    # fac-68 (replaces 60, 120 ... 1800): a transient (5xx) is a refusal of one request, not an overload: 5 s, doubling only
+    # for repeats in a row, 120 s at most
+    expect = [5, 5, 10, 20, 40, 80, 120, 120]
     for got, want in zip(delays, expect):
-        assert want * 0.9 - 0.01 <= got <= min(1800, want * 1.1) + 0.01
-    assert max(delays) <= 1800
+        assert want * 0.9 - 0.01 <= got <= want * 1.1 + 0.01
+    assert max(delays) <= 132
 
 
 def test_a_channel_fault_pauses_the_channel_not_the_task(env):

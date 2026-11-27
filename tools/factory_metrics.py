@@ -44,16 +44,16 @@ def _rows(state_dir):
     base = Path(state_dir) / "telemetry.jsonl"
     for p in (base.with_name(base.name + ".2"), base.with_name(base.name + ".1"), base):
         try:
-            lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
+            with p.open(encoding="utf-8", errors="replace") as fh:       # fac-58: line by line, not the whole journal
+                for line in fh:
+                    try:
+                        row = json.loads(line)
+                    except ValueError:
+                        continue
+                    if isinstance(row, dict) and row.get("span") and _t(row.get("ts")):
+                        yield row
         except OSError:
             continue
-        for line in lines:
-            try:
-                row = json.loads(line)
-            except ValueError:
-                continue
-            if isinstance(row, dict) and row.get("span") and _t(row.get("ts")):
-                yield row
 
 
 def _median(values):
@@ -220,11 +220,19 @@ def money_report(state_dir, now=None, spend=None, until="2026-11-30") -> dict:
     now_t = _t(now) or dt.datetime.now().astimezone()
     hour_ago, day_ago = now_t - dt.timedelta(hours=1), now_t - dt.timedelta(hours=24)
     accepted, calls_all, calls_day, passes = {}, 0, 0, {}
+    wire_all = wire_day = 0       # fac-farm 2 (11.2): network requests = calls + the ensemble's asked branches + review retries
     for row in _rows(state_dir):
         t, tid, span = _t(row["ts"]), row.get("task_id"), row["span"]
-        if (span in CALL_SPANS and row.get("role")) or span == "paid_critic" or is_slice_call(row):
+        counted = bool((span in CALL_SPANS and row.get("role")) or span == "paid_critic" or is_slice_call(row))
+        if counted:
             calls_all += 1
             calls_day += t >= day_ago
+        vgs = row.get("vgs") if isinstance(row.get("vgs"), dict) else {}
+        asked = vgs.get("asked") if type(vgs.get("asked")) is int and vgs["asked"] > 0 else 0
+        extra = (asked - 1 if counted and asked else asked) + sum(   # a counted call whose ensemble asked n branches = n requests, not n+1
+            1 for x in (row.get("events") or []) if str(x).startswith("review_503_retry"))
+        wire_all += extra
+        wire_day += extra if t >= day_ago else 0
         if not isinstance(tid, str) or not tid:
             continue
         if span == "accept" and row.get("status") == "accepted" and (tid not in accepted or t < accepted[tid]):
@@ -271,6 +279,11 @@ def money_report(state_dir, now=None, spend=None, until="2026-11-30") -> dict:
                 "day_calls": calls_day,
                 "total": round(1000 * len(accepted) / calls_all, 2) if calls_all else None,
                 "total_accepted": len(accepted), "total_calls": calls_all},
+            "accepted_per_1000_wire": {
+                "day": round(1000 * day_accepted / (calls_day + wire_day), 2) if calls_day + wire_day else None,
+                "day_wire": calls_day + wire_day,
+                "total": round(1000 * len(accepted) / (calls_all + wire_all), 2) if calls_all + wire_all else None,
+                "total_wire": calls_all + wire_all},
             "edit_first_try_pct": share(recent["model"]),       # the model's edit (kept under the old name)
             "first_try_model": share(recent["model"]), "first_try_code": share(recent["code"]),
             "allowance_left": left}
@@ -293,9 +306,10 @@ def render(report) -> str:
     out.append("paid critic: %s verdicts, telemetry usd %s, spend file %s" % (p["verdicts"], p["telemetry_usd"], p["spend_file"]))
     m = report.get("money")
     if m:
-        k, e = m["accepted_per_1000_calls"], m["edit_first_try_pct"]
-        out.append("money: accepted_hour %s, accepted per 1000 calls day %s total %s, edit first try %s%% (n=%s), by code %s%% (n=%s)" % (
-            m["accepted_hour"], k["day"], k["total"], e["pct"], e["n"],
+        k, e, w = m["accepted_per_1000_calls"], m["edit_first_try_pct"], m["accepted_per_1000_wire"]
+        out.append("money: accepted_hour %s, accepted per 1000 calls day %s total %s, per 1000 network requests day %s "
+                   "total %s, edit first try %s%% (n=%s), by code %s%% (n=%s)" % (
+            m["accepted_hour"], k["day"], k["total"], w["day"], w["total"], e["pct"], e["n"],
             m["first_try_code"]["pct"], m["first_try_code"]["n"]))
         out.append("allowance left: " + ", ".join("%s %s" % (d["day"][5:], d["left"]) for d in m["allowance_left"]))
     return "\n".join(out)

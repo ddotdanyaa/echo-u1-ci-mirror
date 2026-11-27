@@ -47,6 +47,7 @@ def _node_start(node) -> int:
 
 
 PART_CODE_MAX = 8000        # parts[].code of one part (W-hard 3)
+SOLVER_CODE_MAX = 60000      # parts[].code of the solver: SEARCH/REPLACE blocks of any place of the file (the green overlay as it is)
 
 
 def split_part_code(code, symbols) -> list:
@@ -329,6 +330,22 @@ def contract_of(task) -> dict:
     except ValueError:
         return {}
     return data if isinstance(data, dict) else {}
+
+
+def restate_note(task) -> str:
+    """W-restate 2: what the reviewers of a restate card are asked instead of the ordinary question, with the architect's evidence
+    (verbatim lines of the product or of another test, checked to be in the tree by factory_architect.validate); '' for any other card."""
+    from tools import factory_gate as G
+    if G.is_rig_task(task) != G.RESTATE:
+        return ''
+    contract = contract_of(task)
+    rows = ['- %s: %s' % (r.get('file'), str(r.get('quote'))[:400]) for r in contract.get('rule') or [] if isinstance(r, dict)]
+    return ('THIS IS A RESTATE CARD, judge it by these three questions only (they replace the ordinary rule that a test is never '
+            'changed; changing the expected value is the purpose of this card):\n'
+            '1. Does the evidence below really show that the product replaced the old rule ON PURPOSE (a rule stated in code or in another test), '
+            '(a quote from OWNER_DECISION is the product owner\'s own decision of the behaviour: it is such a rule), not that the product is broken?\n2. Is the new expectation exactly what that rule says?\n3. Are the checks no weaker otherwise (same scene, '
+            'no fewer asserts)?\nReject when the evidence does not show a deliberate rule.\nWhy: ' + str(contract.get('why') or '')[:600]
+            + '\nEvidence (verbatim, present in the tree):\n' + '\n'.join(rows) + '\n')
 
 
 def test_spec(task) -> str:

@@ -7,6 +7,7 @@ fenced with lease tokens and always require independent acceptance.
 from __future__ import annotations
 
 import contextlib
+import functools
 import logging
 from dataclasses import dataclass
 from hashlib import sha1, sha256
@@ -15,6 +16,7 @@ import json
 import os
 import re
 import tempfile
+import threading
 import time
 import uuid
 import unicodedata
@@ -93,13 +95,18 @@ def is_fresh_row(row) -> bool:
     return bool(rid) and not is_base_debt(rid) and (bool(_REGRESSION_ROW.match(rid)) or not rid.lower().startswith(("fac-", "rel-")))
 
 
+FRESH_REL: set = set()      # sha8 of the last full build while its verdict is new_red (the loop sets it each step); older rel- rows are debt
+
+
 def row_rank(row) -> int:
     """W-echo 3: the order of admission and of slicing: a fresh regression rel-<sha8>-<n> (0), then every other row, ECHO guard rows
     among them (1), the old baseline debt rel-base-<n> last (2)."""
     rid = _row_id(row)
     if is_base_debt(rid):
         return 2
-    return 0 if _REGRESSION_ROW.match(rid) else 1
+    if _REGRESSION_ROW.match(rid):
+        return 0 if rid.split("-")[1] in FRESH_REL else 2      # owner: ECHO before the old reds; only an open verdict is fresh
+    return 1
 
 
 def call_cap(parts: int = 1) -> int:
@@ -138,7 +145,9 @@ SECRET = re.compile(
 # source files, where e-mail addresses and user paths are legitimate content.
 REDACT_EXTRA = re.compile(
     # NAME_KEY=value, *_TOKEN=value, *_SECRET=value (value >= 8 chars), free text only
-    r"(?i:[A-Za-z][A-Za-z0-9_]{0,63}_(?:key|token|secret))\s*=\s*['\"]?[^\s'\"]{8,}['\"]?|"
+    # only a quoted literal or a high-entropy token (letters+digits, 8+) is a secret; `expected_key = sorted(r)` is code
+    r"(?i:[A-Za-z][A-Za-z0-9_]{0,63}_(?:key|token|secret))\s*=\s*"
+    r"(?:['\"][^\s'\"]{8,}['\"]?|(?=[A-Za-z0-9_.+/=-]*[0-9])(?=[A-Za-z0-9_.+/=-]*[A-Za-z])[A-Za-z0-9_.+/=-]{8,}(?![A-Za-z0-9_.+/=(\[-]))|"
     r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}|"
     r"[A-Za-z]:[\\/]+Users[\\/]+[^\\/\s\"'<>|:]+"
 )
@@ -159,7 +168,12 @@ PRIVATE_CLASS = re.compile(
 
 def is_private_text(text: str) -> bool:
     """The text names the owner's private class (PRIVATE_CLASS): such a task never goes to a free model."""
-    return bool(PRIVATE_CLASS.search(str(text or "")[:20_000]))
+    return _private_class(str(text or "")[:20_000])
+
+
+@functools.lru_cache(maxsize=8192)      # the same 1200 goals are asked on every read of the plan
+def _private_class(text: str) -> bool:
+    return bool(PRIVATE_CLASS.search(text))
 
 
 WINDOWS_DEVICE = re.compile(r"^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?$", re.I)
@@ -171,6 +185,7 @@ MODEL_ID = re.compile(r"^(?:(?!(?i:openrouter)/)|(?=.*:free$))(?!\.+/)[a-zA-Z0-9
 
 
 LOCK_EVENTS: list[dict] = []  # journal of lock housekeeping (stale lock removed, ...)
+LOCK_YIELD_FROM_S, LOCK_YIELD_S = 0.2, 0.15
 LOCK_STALE_S = 120.0
 LOCK_OWNER = "owner"   # <lock>.lockdir/owner = the holder's pid: a dead holder's lock is stale at once
 _log = logging.getLogger(__name__)
@@ -263,6 +278,15 @@ def _own_test_contract(row: dict) -> bool:
     return isinstance(contract, dict) and contract.get("own_test_edit") is True
 
 
+def _rig_contract(row: dict) -> bool:
+    """W-rig: True when the row's contract is a rig card (``rig: true``); the gate (is_forbidden rig, rig_weakens) decides the rest."""
+    try:
+        contract = json.loads(row.get("contract") or "")
+    except (ValueError, TypeError):
+        return False
+    return isinstance(contract, dict) and contract.get("rig") is True
+
+
 def read_plan(plan: object) -> dict[str, Task]:
     """Tasks require explicit scope, dependencies and privacy classification.
 
@@ -308,7 +332,8 @@ def read_plan(plan: object) -> dict[str, Task]:
         elif work_kind == "code":
             overlap = ({p.casefold() for p in files["touch_files"]} &
                        {p.casefold() for p in files["tests"]})
-            if overlap and not (_own_test_contract(row) and all(OWN_TEST_PATH.fullmatch(p) for p in overlap)):
+            if overlap and not (_own_test_contract(row) and all(OWN_TEST_PATH.fullmatch(p) for p in overlap)) \
+                    and not _rig_contract(row):         # W-rig: a rig card's stand files may meet the test files of its scope
                 raise InvalidPlan("code task must not edit its own tests")
         else:
             raise InvalidPlan("invalid kind")
@@ -917,10 +942,11 @@ DEFER_REASONS = frozenset((REASON_CLOUD_DOWN, REASON_CLOUD_BUSY, "rate_minute", 
 
 
 def defer(state: dict, tid: str, token: str, reason: str, seconds: float, *,
-          now: float | None = None) -> str:
+          now: float | None = None, key: str = "") -> str:
     """RUNNING -> READY without a strike and without spending the attempt; the task is
     postponed to now + seconds. For channel/provider/infrastructure faults and waits, never
-    for a candidate that failed a gate. ``reason`` must be whitelisted (no free text)."""
+    for a candidate that failed a gate. ``reason`` must be whitelisted (no free text).
+    W-a2: ``key`` (the fingerprint of the pass's input) is part of the streak: the same reason on another input starts at 1."""
     if reason not in DEFER_REASONS:
         raise InvalidPlan("unknown defer reason")
     fence(state, tid, token)
@@ -930,12 +956,13 @@ def defer(state: dict, tid: str, token: str, reason: str, seconds: float, *,
     streak = row.get("defer_streak")
     if not isinstance(streak, dict):
         streak = {}
+    same = streak.get("reason") == reason and str(streak.get("key") or "") == str(key or "")
     row.update(status="READY", lease=None, deadline=None,
                attempts=max(0, row["attempts"] - 1),
                not_before=now + max(0.0, float(seconds)), defer_reason=reason,
-               defer_streak={"reason": reason,
-                             "n": (streak["n"] if type(streak.get("n")) is int else 0) + 1
-                             if streak.get("reason") == reason else 1},
+               defer_streak=dict({"reason": reason,
+                                  "n": (streak["n"] if type(streak.get("n")) is int else 0) + 1 if same else 1},
+                                 **({"key": str(key)} if key else {})),
                evidence=sha256(reason.encode("utf-8")).hexdigest())
     row.pop("orphan_releases", None)
     if state.get("strikes", {}).get(_strike_key(row, tid), 0) >= MAX_STRIKES:
@@ -943,10 +970,10 @@ def defer(state: dict, tid: str, token: str, reason: str, seconds: float, *,
     return row["status"]
 
 
-def defer_streak(state: dict, tid: str, reason: str) -> int:
-    """How many deferrals for ``reason`` in a row this task already had (settle/unblock reset it)."""
+def defer_streak(state: dict, tid: str, reason: str, key: str = "") -> int:
+    """How many deferrals for ``reason`` (on the input ``key``, W-a2) in a row this task already had (settle/unblock reset it)."""
     streak = state["tasks"][tid].get("defer_streak")
-    if not isinstance(streak, dict) or streak.get("reason") != reason or type(streak.get("n")) is not int:
+    if not isinstance(streak, dict) or streak.get("reason") != reason or type(streak.get("n")) is not int             or str(streak.get("key") or "") != str(key or ""):
         return 0
     return streak["n"]
 
@@ -1283,6 +1310,7 @@ def _drop_lock(lock: Path) -> None:
 
 LOCK_HELD_NOTE_S = 0.5      # W-ask 4: a lock held longer than this is a lock_held event with the place of the call
 LOCK_EVENTS_MAX = 200
+_LOCK_LOCAL = threading.local()   # commit_s: seconds the running txn spent in its own validate+save (not counted as a slow hold)
 
 
 def _note_lock_held(lock: Path, held_s: float) -> None:
@@ -1339,10 +1367,12 @@ def _dir_lock(path: Path, timeout_s: float):
     with contextlib.suppress(OSError):
         (lock / LOCK_OWNER).write_text(str(os.getpid()), encoding="ascii")
     held_from = time.monotonic()
+    _LOCK_LOCAL.commit_s = 0.0
     try:
         yield
     finally:
-        held = time.monotonic() - held_from
+        held = time.monotonic() - held_from - getattr(_LOCK_LOCAL, "commit_s", 0.0)
+        _LOCK_LOCAL.commit_s = 0.0
         if held > LOCK_HELD_NOTE_S:
             _note_lock_held(lock, held)
         try:
@@ -1351,6 +1381,9 @@ def _dir_lock(path: Path, timeout_s: float):
             LOCK_EVENTS.append({"event": "lock_release_failed", "lock": str(lock),
                                 "reason": str(e)[:200]})
             _log.warning("lock %s not released: %s", lock, e)
+        if held > LOCK_YIELD_FROM_S:
+            time.sleep(LOCK_YIELD_S)        # the waiters poll every 50 ms: a writer of many commits in a row (a review that hops
+            # channels, 25.11 23:15) took the lock again at once and starved 19 workers and the loop for minutes
 
 
 PLAN_READS = [0]            # W-flow 4: how many times a plan file was really read and parsed (a test counts it)
@@ -1407,8 +1440,12 @@ def txn(checkpoint: Path, plan: Path, timeout_s: float = LOCK_STALE_S + 10):
         tasks = read_plan_file(plan)
         state = load_state(checkpoint, tasks)
         yield tasks, state
-        validate_state(tasks, state)
-        save_atomic(checkpoint, state)
+        t_commit = time.monotonic()
+        try:
+            validate_state(tasks, state)
+            save_atomic(checkpoint, state)
+        finally:   # the commit's own write (an fsync may stall for a second on a loaded disk) is not the holder's slow block
+            _LOCK_LOCAL.commit_s = time.monotonic() - t_commit
 
 
 def claim(checkpoint: Path, plan: Path, tid: str | None = None):
@@ -1694,7 +1731,7 @@ def save_atomic(path: Path, state: dict) -> None:
                                          dir=path.parent, prefix=".agent-state-",
                                          delete=False) as f:
             tmp = Path(f.name)
-            json.dump(state, f, ensure_ascii=False, sort_keys=True, indent=2)
+            f.write(json.dumps(state, ensure_ascii=False, sort_keys=True))      # one C call; json.dump with indent walked 3 MB in Python under the lock
             f.flush()
             os.fsync(f.fileno())
         replace_retry(tmp, path)

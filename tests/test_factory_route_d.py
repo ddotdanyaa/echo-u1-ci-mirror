@@ -55,17 +55,18 @@ def test_a_task_keeps_its_key_while_it_has_quota_even_when_the_other_key_has_mor
     assert C.choose([A1, A2], state, 100, ENV, now=NOW + 1)['id'] == 'a2'      # no affinity: balanced
 
 
-def test_tier_floor_gives_the_escalation_tier_first():
+def test_code_has_no_tier_floor_every_tier_is_a_candidate():
+    # fac-43: the tier floor (main first, escalation first on attempt 2) is gone; the router orders by the score table
     small, main, esc = ch('s', 'g1', 'google/s', tier='small'), ch('m', 'g1', 'google/m'), ch('e', 'g1', 'google/e', tier='escalation')
-    assert C.route_order([small, main, esc], 'code', 1, 100)[0]['id'] == 'm'
-    assert C.route_order([small, main, esc], 'code', 2, 100)[0]['id'] == 'e'
+    for attempt in (1, 2):
+        assert {c['id'] for c in C.route_order([small, main, esc], 'code', attempt, 100)} == {'s', 'm', 'e'}
 
 
-def test_small_follow_up_is_off_by_default_by_the_data():
-    assert inspect.signature(W._once).parameters['small_follow_up'].default is False
-    assert inspect.signature(W._pass_inner).parameters['small_follow_up'].default is False
-    src = inspect.getsource(W.main)
-    assert '"--small-follow-up", choices=("on", "off"), default="off"' in src
+def test_small_follow_up_is_gone():
+    # fac-43: the A/B arm small_follow_up is removed with its runner flag
+    assert 'small_follow_up' not in inspect.signature(W._once).parameters
+    assert 'small_follow_up' not in inspect.signature(W._pass_inner).parameters
+    assert '--small-follow-up' not in inspect.getsource(W.main)
 
 
 def test_an_empty_answer_does_not_cool_the_whole_model():
@@ -108,10 +109,10 @@ def test_a_shaky_model_does_not_come_first_just_because_it_is_preferred():
     good, shaky = ch('g', 'g1', 'google/good'), ch('s', 'g1', 'google/shaky')
     state = {'channel_stats': {'s': {'model': 'google/shaky', 'results': [1, 0, 0, 1, 0, 1, 1, 0, 1, 1]},   # 0.6
                                'g': {'model': 'google/good', 'results': [1] * 10}}}
-    order = C.route_order([shaky, good], 'code', 1, 100, preferred='google/shaky', state=state)
+    order = C.route_order([shaky, good], 'review', 1, 100, preferred='google/shaky', state=state)   # fac-43: code has no rating sort
     assert order[0]['id'] == 'g'
     state['channel_stats']['s']['results'] = [1] * 10
-    assert C.route_order([shaky, good], 'code', 1, 100, preferred='google/shaky', state=state)[0]['id'] == 's'
+    assert C.route_order([shaky, good], 'review', 1, 100, preferred='google/shaky', state=state)[0]['id'] == 's'
 
 
 def test_a_retry_after_header_of_a_quota_reaches_the_classifier():

@@ -24,7 +24,6 @@ import json
 import logging
 import math
 import logging
-import statistics
 import re
 import time
 
@@ -44,22 +43,23 @@ PROMPT_LIMIT_CHARS = 28000     # a longer prompt is never sent: the triage split
 REGION_COOL_S = 3600           # a proxy exit may change: probe again in an hour
 MODEL_MISSING_TTL_S = 6 * 3600
 BALANCE_COOL_S = 6 * 3600      # 402: negative balance does not fix itself within minutes
-TRANSIENT_RETRY_S = 20
+TRANSIENT_RETRY_S = 1       # fac-68b (was 20)
 DEFAULT_COOL_S = 60
 RATE_SUSPECT_COOL_S = 900      # Kilo slept inside the call (its own 429 retries): cool the channel, not the task
 OVERLOAD_STATUSES = (500, 502, 503, 504)   # the provider's model is overloaded or failing right now
-OVERLOAD_COOL_S = 120          # long enough for the retry and the next pass to take another channel
-OVERLOAD_COOL_MAX_S = 900      # a model that stays overloaded is tried 4 times an hour, not 30 (live 19.11: Gemma 4
+OVERLOAD_COOL_S = 5          # long enough for the retry and the next pass to take another channel
+OVERLOAD_COOL_MAX_S = 20      # a model that stays overloaded is tried 4 times an hour, not 30 (live 19.11: Gemma 4
                                # answered 503 to 11 of 17 reviews, each refusal took 0.6-43 s)
-OVERLOAD_FORGET_S = 1800       # no overload of the model for half an hour: the next one starts a new series
+OLD_OVERLOAD_COOL_MAX_S = 900  # fac-68b: the longest mark the old overload rule ever wrote: such marks on disk are cut when read
+OVERLOAD_FORGET_S = 1800      # no overload of the model for half an hour: the next one starts a new series
 # W-503 (live 23.11: 7 % of the calls of two healthy Gemini models answered 503, and every single one cooled the model on
 # BOTH keys for 120 s, doubling to 900 s: 24 channels were closed at 15:50 with 484 of 2000 requests spent). A 503 is
 # an overload only when it repeats: the series counts the model's 503s in a row with no success between them (a success
 # of ANY process ends it, model_ok in the shared quota section). The first one cools only that channel for 5 s (the
 # other key stays open), the second the model for 15 s, then 30, 60, 120 -- at most 120 s for a model with at least half
 # good calls among its recent ones; the others (Gemma now) keep the old 120..300 (900) rule.
-OVERLOAD_STEPS = (5, 15, 30, 60, 120)
-OVERLOAD_RETRY_S = (5, 15)     # a call with no free channel left asks the same channel again after these pauses
+OVERLOAD_STEPS = (1, 2, 5, 10, 20)     # fac-68b: a 503 rests a channel seconds (was 5..120)
+OVERLOAD_RETRY_S = (0, 1)     # a call with no free channel left asks the same channel again after these pauses
 OPEN_SOON_S = 30               # a channel that opens within this many seconds counts as free for the pool's headroom
 # A channel whose last STREAK_FAILS calls all failed (any kind, the hours between them do not matter) is cooled for
 # STREAK_COOL_S, doubled for every further failure of the series, at most STREAK_COOL_MAX_S; a successful call ends the
@@ -80,8 +80,7 @@ MISSING_STREAK = 3
 AFFINITY_TTL_S = 1800
 AFFINITY_MAX = 200
 SMALL_PROMPT_TOKENS = 6000
-DRY_SMALL_TOKENS = 12000       # W-gemma 3: with every main channel closed by the day's mark Gemma takes a card this big
-SMALL_FIRST_TIMEOUT_S = 30
+DRY_SMALL_TOKENS = 12000       # the biggest edit card the small tier (Gemma) is offered (its TPM is 15-16K)
 TIERS = ('small', 'main', 'escalation')
 # The day of a provider's daily quota (requests per day): Google AI Studio resets at midnight Pacific (the page
 # above), OpenRouter's free models at 00:00 UTC (live 19.11 20:03: its 429 free-models-per-day carries
@@ -104,7 +103,7 @@ DAY_PROBE_FORGET_S = 4 * 3600  # a series whose last mark ended this long ago st
 # most HIGH_RPD_COOL_MAX_S and the series does not count higher than that (live 23.11: Gemma, 14400 a day, made
 # 10 calls in 80 minutes).
 HIGH_RPD = 1000
-HIGH_RPD_COOL_MAX_S = 300
+HIGH_RPD_COOL_MAX_S = 20
 # W-gemma 3: a small-tier channel with a big daily allowance (Gemma) has no series of failures at all; its timeout closes
 # it BIG_TIMEOUT_CLOSE_S, and a mark of it that is longer than BIG_MARK_CAP_S (any old streak / suspect / overload mark)
 # is cut to that when read -- daily marks (day_probe), a dead key and a balance mark stay
@@ -113,15 +112,15 @@ BIG_MARK_CAP_S = 20
 # W-gemma 1: a 503 of a big-quota model (Gemma: 35 % of the calls succeed, a refusal comes in 1 s and costs no quota) cools
 # neither the model nor the key. The call hops to the next channel of the circle (BIG_HOP_PAUSE_S), up to BIG_SENDS_MAX
 # sends, then BIG_ROUNDS more rounds (one circle each) after BIG_ROUND_PAUSE_S; only then the last channel is closed
-# for BIG_CLOSE_S. The roles below only; the answer limit of a Gemma call is BIG_TIMEOUT_S when no main channel is free.
+# for BIG_CLOSE_S. The roles below only; the answer limit of a small-tier call is BIG_TIMEOUT_S (fac-43: one limit).
 # 'code' is intentional: repair and unit_test cards call the model under the role 'code', so it cannot be told apart from them;
-# it is wider than edit/repair/review/unit_test only while every main channel is closed (gemma_first needs main_dry).
+# which model takes a code or edit call is the router's (tools/factory_router.py), not a tier rule.
 BIG_ROLES = ('edit', 'review', 'repair', 'unit_test', 'code')
 BIG_SENDS_MAX = 8
 BIG_HOP_PAUSE_S = 2
 BIG_ROUNDS = 3
 BIG_ROUND_PAUSE_S = 15
-BIG_CLOSE_S = 20
+BIG_CLOSE_S = 5
 BIG_TIMEOUT_S = 90
 
 
@@ -267,43 +266,22 @@ def tier_of(channel) -> str:
     return channel.get('tier', 'main')
 
 
-_ROLE_TIERS = {   # candidate order of tiers for a call; a tier that is not listed is not used for that role
-    ('code', 1): ('main', 'small', 'escalation'),
-    ('code', 2): ('escalation', 'main'),
-    ('edit', 1): ('small', 'main'),
-    ('edit', 2): ('main', 'escalation'),
+# candidate order of tiers for the roles the router does not order yet (fac-43 step 1: code and edit have no tiers,
+# tools/factory_router.order decides by the score table); a tier that is not listed is not used for that role
+_ROLE_TIERS = {
     'architect': ('escalation', 'main'),   # the strong tier's quota is small: when it is spent the architect goes to the main tier
     'review': ('small', 'main', 'escalation'),
+    # fac-53: the loop's slicer / solver ('slice') and its keywords / links ('aux') route as a review (Gemma first, owner)
+    # but are told apart from a card's review in the head's priority and its head_call rows
+    'slice': ('small', 'main', 'escalation'),
+    # fac-60: aux has no deadline, so it takes only the tier whose limit is in tokens per minute (Gemma), never a tier whose limit is
+    # requests per day (live 27.11: aux took 40 % of Flash-Lite's calls and spent its day by 13:00); it waits when Gemma is busy
+    'aux': ('small',),
     'cross_review': ('main', 'small', 'escalation'),
 }
 
 
-def note_edit_outcome(state, tier, green, seconds, now=None):
-    """Keep a rolling experiment, evaluating every thirty cards or two hours."""
-    now = time.time() if now is None else now
-    experiment = state.setdefault('edit_experiment', {})
-    samples = experiment.setdefault('samples', {})
-    bucket = samples.setdefault(tier, [])
-    bucket.append([bool(green), max(0, seconds)])
-    del bucket[:-30]
-    experiment['pending'] = experiment.get('pending', 0) + 1
-    totals = experiment.setdefault('totals', {})
-    totals[tier] = totals.get(tier, 0) + 1                  # the window below is cut to 30; the count is not
-    state['edit_by_tier'] = {t: {'cards': totals.get(t, len(rows)), 'green': sum(r[0] for r in rows),
-                                'median_s': statistics.median(r[1] for r in rows), 'window': len(rows)}
-                             for t, rows in samples.items() if rows}
-    small, main = (state['edit_by_tier'].get(t, {}) for t in ('small', 'main'))
-    if small.get('window', 0) < 30 or not main.get('window'):
-        return None
-    if experiment['pending'] < 30 and now - experiment.get('checked_at', 0) < 7200:
-        return None
-    experiment.update(pending=0, checked_at=now)
-    worse = (small['green'] / small['window'] < .7 * main['green'] / main['window']
-             or small['median_s'] > 1.5 * main['median_s'])
-    route = 'small_second' if worse else 'small_first'
-    prior = state.get('edit_route', 'small_first')
-    state['edit_route'] = route
-    return dict(status=route, small=dict(small), main=dict(main)) if route != prior else None
+# W-path C: no fixed floor: a main channel takes an edit only while its unused share of the day is at least the share of the quota day that is left (day_left_share >= time_left_share): surplus is spent, nothing is left over at the end of the day
 
 
 def minute_steps(channel) -> int:
@@ -390,33 +368,27 @@ def missing_for_good(state, channel) -> bool:
 
 def route_order(channels, role, attempt, tokens, *, preferred=None, exclude_model=None, skip_tiers=(), state=None,
                 later=False, env=None, now=None):
-    """Channels in the order a call tries them. Coder, attempt 1: main, small (only when ``tokens`` fit its tpm),
-    escalation; attempt 2 and later: escalation, main. Reviewer: small first; cross-review: main first.
+    """The candidate channels of a call. Code and edit (fac-43): every tier, in the given order with ``preferred`` first;
+    the ORDER of a real call is the router's (tools/factory_router.order: a Thompson draw on the score table), not
+    a tier or a rating. Reviewer: small first; cross-review: main first.
     ``exclude_model`` (the coder's model) never reviews its own work; a collection of models excludes them all (the
     tournament's next candidate and the chain's next critic are other models). ``preferred`` breaks ties in a tier.
-    ``skip_tiers``: tiers this call may not use (<id> small_follow_up 'off': no small-tier model as a later
-    tournament candidate). ``state`` (the quota state): inside a tier the models that keep failing go last, the
+    ``skip_tiers``: tiers this call may not use (the ensemble's calls stay on the small tier). ``state`` (the quota state): inside a tier the models that keep failing go last, the
     rest follow the live reliability rating (``preferred`` first among equals), and a channel that answers 404 on
     every call is left out until its config changes. ``later``: a later candidate of one tournament (<id>): the
     earlier one already spent part of the same minute, so the small tier needs room for two runs.
-    Unknown roles fall back to the first code route and log a warning."""
-    key = (role, 1 if attempt <= 1 else 2) if role in ('code', 'edit') else role
-    if key not in _ROLE_TIERS:
-        logging.getLogger(__name__).warning('Unknown factory role %s; using code attempt 1', role)
-    ranks = _ROLE_TIERS.get(key, _ROLE_TIERS[('code', 1)])
-    if role == 'edit' and attempt <= 1 and state and state.get('edit_route') == 'small_second':
-        ranks = ('main', 'small')
-    # W-gemma 3: every main channel is closed by the day's mark: Gemma is the only free executor and goes FIRST for the
-    # edit, repair, review and unit_test calls, whatever its rating, and a card up to DRY_SMALL_TOKENS is let in (the
-    # runner cuts a longer one to the part's region)
-    gemma_first = (state is not None and role in ('edit', 'code', 'review') and main_dry(channels, state, env, now=now))
-    if gemma_first:
-        ranks = ('small',) + tuple(t for t in ranks if t != 'small')
-    small_cap = DRY_SMALL_TOKENS if gemma_first else SMALL_PROMPT_TOKENS
-    if (state is not None and not gemma_first and ranks and ranks[0] == 'small'
-            and (role == 'review' or (role == 'edit' and attempt <= 1))
+    Unknown roles take every tier and log a warning."""
+    routed = role in ('code', 'edit')
+    if routed:
+        ranks = TIERS
+    else:
+        if role not in _ROLE_TIERS:
+            logging.getLogger(__name__).warning('Unknown factory role %s; using every tier', role)
+        ranks = _ROLE_TIERS.get(role, TIERS)
+    small_cap = DRY_SMALL_TOKENS
+    if (state is not None and role in ('review', 'slice', 'aux') and ranks and ranks[0] == 'small'
             and (tokens > SMALL_PROMPT_TOKENS or tier_rating(state, channels, 'small') < RATING_BAD)):
-        # W-503: the small tier (Gemma) leads only a SHORT review or edit while at least half of its recent calls were
+        # W-503: the small tier (Gemma) leads only a SHORT review while at least half of its recent calls were
         # good (live 23.11: 10 ok of 45+17 failed calls); otherwise it comes after the main tier
         ranks = tuple(t for t in ranks if t != 'small')
         at = ranks.index('main') + 1 if 'main' in ranks else 0
@@ -430,11 +402,15 @@ def route_order(channels, role, attempt, tokens, *, preferred=None, exclude_mode
         if tier == 'small' and role == 'edit' and tokens > small_cap:
             continue
         if tier == 'small' and role != 'edit' and small_minute_need(tokens, channel) * (2 if later else 1) > channel['tpm']:    # Gemma only when a minute of it fits
-            if not (gemma_first and tokens <= small_cap):   # (a single light request waits for the window in choose())
-                continue
+            continue
         if state is not None and missing_for_good(state, channel):
             continue
+        if (state is not None and role == 'edit' and tier == 'main' and tokens <= SMALL_PROMPT_TOKENS
+                and day_left_share(state, channel, now=now) < time_left_share(channel, now=now)):
+            continue
         picked.append(channel)
+    if routed:
+        return sorted(picked, key=lambda c: c['model'] != preferred)
     if state is None:
         return sorted(picked, key=lambda c: (ranks.index(tier_of(c)), c['model'] != preferred))
     def live(c):
@@ -514,7 +490,7 @@ def _model_cool(state, channel, now=None) -> float:
             if isinstance(sources, dict) and sources.get(model) == 'overload':
                 return 0.0
             if (not (isinstance(sources, dict) and model in sources) and len(last) == 2
-                    and 0 <= value - last[1] <= OVERLOAD_COOL_MAX_S + 1):
+                    and 0 <= value - last[1] <= OLD_OVERLOAD_COOL_MAX_S + 1):
                 return 0.0
     if value > now + OVERLOAD_STEPS[-1]:
         # a mark made by the old overload rule (no source recorded, born from the model's last 503, up to 900 s) is cut
@@ -524,7 +500,7 @@ def _model_cool(state, channel, now=None) -> float:
         last = _numbers(runs.get(model)) if isinstance(runs, dict) else []
         probes = state.get('day_probe')
         if (not (isinstance(sources, dict) and model in sources) and len(last) == 2
-                and 0 <= value - last[1] <= OVERLOAD_COOL_MAX_S + 1
+                and 0 <= value - last[1] <= OLD_OVERLOAD_COOL_MAX_S + 1
                 and not (isinstance(probes, dict) and 'model:' + str(model) in probes)
                 and overload_healthy(state, model)):
             return float(now + OVERLOAD_STEPS[-1])
@@ -710,6 +686,15 @@ def choose(channels, state, tokens, env, *, now=None, requests=1, affinity=None,
     raise ChannelUnavailable('no channels currently available: ' + reason, reason, wait)
 
 
+def tpm_room(state, channel, tokens, *, now=None) -> int:
+    """fac-yield: how many calls of ``tokens`` each still fit the channel's minute window now (a real edit reserves
+    thousands of tokens, a 1-token probe always fits, so the probe cannot size an ensemble). Same window as choose()."""
+    now = time.time() if now is None else now
+    group = state.get(channel['group'], {})
+    used = sum(n for t, n in group.get('minute', []) if now - t < 60)
+    return max(0, int((channel['tpm'] - used) // max(1, tokens)))
+
+
 def next_wait(channel_list, state, tokens, env, *, now=None, requests=1):
     """Seconds until the SOONEST of ``channel_list`` can take the next call (0 when one can now);
     None when there are no channels at all."""
@@ -840,6 +825,13 @@ def note_sent(state, channel, *, now=None, count=1) -> float:
     return now
 
 
+def time_left_share(channel, *, now=None) -> float:
+    """W-path C: the share of the provider's quota day that is still ahead (1.0 at its start, 0.0 at its end)."""
+    now = time.time() if now is None else now
+    start, end = quota_day(channel['model'], now)
+    return max(0.0, min(1.0, (end - now) / (end - start)))
+
+
 def day_left_share(state, channel, *, now=None) -> float:
     """The share of the channel's daily allowance not yet used today (its quota group's count over the provider's day)."""
     now = time.time() if now is None else now
@@ -890,11 +882,7 @@ def _edit_live(channels, state, env, now) -> list:
     """The usable channels of the edit route of the main and escalation tiers (a prompt over the small tier's limit)."""
     if env is None:
         env = {c['key_env']: 'x' for c in channels if 'key_env' in c}
-    edit = {}
-    for attempt in (1, 2):
-        for channel in route_order(channels, 'edit', attempt, SMALL_PROMPT_TOKENS + 1):
-            edit[channel['id']] = channel
-    return usable(list(edit.values()), state, env, now=now)
+    return usable([c for c in channels if tier_of(c) in ('main', 'escalation')], state, env, now=now)
 
 
 def _open_soon(state, channel, now) -> bool:
@@ -956,6 +944,14 @@ def edit_dry(channels, state, env, *, now=None) -> bool:
 DAILY_CLOSED = ('daily_quota', 'rpd')
 
 
+def route_open_today(channels, state, env, *, now=None) -> bool:
+    """fac-68: some channel of the route can take a ticket today: it has a key, is not dead and is not closed by the
+    day (rpd reached / daily mark). A rest of seconds or minutes does not close it: the head's queue waits for it."""
+    now = time.time() if now is None else now
+    live = usable(channels, state, env, now=now)
+    return any(row['closed_by'] not in DAILY_CLOSED for row in channel_report(live, state, env, now=now))
+
+
 def cool(state, channel, *, now=None, seconds=DEFAULT_COOL_S):
     """Cool the whole quota group; never shortens a longer cooling."""
     now = time.time() if now is None else now
@@ -990,6 +986,7 @@ _PERDAY = re.compile(r'PerDay|per[ -]day|daily', re.I)
 _PERDAY_ID = re.compile(r'PerDay', re.I)      # the quotaId that confirms a daily refusal
 _PERMODEL = re.compile(r'PerModel', re.I)     # Google quotaId ...PerDayPerProjectPerModel-FreeTier: one model of the key
 _PERMIN = re.compile(r'PerMinute|per minute', re.I)
+_TOKEN_UNIT = re.compile(r'Token', re.I)      # GenerateContentInputTokensPerModelPerMinute: the input tokens of the window
 _RETRY = re.compile(r'retryDelay"?\s*[:=]\s*"?(\d+(?:\.\d+)?)s', re.I)
 _STATUS_TEXT = re.compile(r'\b(?:HTTP(?:/\d(?:\.\d)?)?|status(?:Code)?|code)\D{0,3}([45]\d\d)\b(?!:\d)', re.I)  # never bare numbers: stack lines are file.js:429:15
 
@@ -1097,6 +1094,35 @@ def _find(obj, key, depth=0):
     return None
 
 
+def quota_dim(quota) -> str:
+    """fac-farm 1 (11.5a): the dimension a 429 names by its quotaIds, '<unit>/<window>': unit 'input_token' (a quotaId about
+    tokens) or 'requests', window 'day' (PerDay) or 'minute' (PerMinute); '' when no quotaId names a window. A day id wins
+    over a minute id of the same answer (the longer limit holds the channel)."""
+    ids = [str(q) for q in (quota or ()) if q]
+    window = 'day' if any(_PERDAY_ID.search(q) for q in ids) else 'minute' if any(_PERMIN.search(q) for q in ids) else ''
+    if not window:
+        return ''
+    named = [q for q in ids if (_PERDAY_ID if window == 'day' else _PERMIN).search(q)]
+    return ('input_token' if any(_TOKEN_UNIT.search(q) for q in named) else 'requests') + '/' + window
+
+
+def quota_fields(info, fallback='') -> tuple:
+    """fac-farm 1: (quota_id, quota_dim) of a call record from the classified answer ``info``; ``fallback`` = the quota ids
+    (comma-joined) of the channel itself, used when the answer names none (the head path). ids only, never the text."""
+    quota = (info.get('quota') or None) if info.get('dim') else None
+    fallback = str(fallback or '')
+    return (quota or fallback or None,
+            info.get('dim') or quota_dim(fallback.split(',')) or None)
+
+
+def _minute_wait(retry, now) -> int:
+    """fac-farm 1: the wait of a PerMinute refusal is bounded by its window: the provider's retryDelay (never past 60 s), else
+    the end of the provider's current minute -- not a flat DEFAULT_COOL_S, which cooled a channel up to a whole extra minute."""
+    if retry:
+        return max(1, min(DEFAULT_COOL_S, math.ceil(retry)))
+    return max(1, math.ceil(60 - now % 60))
+
+
 def _info(kind, status=None, name='', message='', retry=None, quota=''):
     return {'kind': kind, 'status': status, 'name': str(name)[:80], 'message': str(message)[:300],
             'retry_after_s': retry, 'quota': quota[:120]}
@@ -1158,9 +1184,17 @@ def _classify_error_event(error: dict):
                 info['quota_value'] = value      # W-dry 3: the provider's own count of today (align_day)
             if _PERMODEL.search(quota_text):      # a per-model-per-project daily quota: only this model on this key
                 info['scope'] = 'channel'
+            if dim := quota_dim(quota):
+                info['dim'] = dim
             return info
-        wait = math.ceil(retry) if retry else DEFAULT_COOL_S
+        dim = quota_dim(quota)
+        if dim.endswith('/minute'):       # the quotaId names the minute window: the wait never outlives it (_minute_wait)
+            wait = _minute_wait(retry, now)
+        else:                             # no quotaId: the provider's hint, else the default cooling
+            wait = math.ceil(retry) if retry else DEFAULT_COOL_S
         info = _info('rate_minute', status, name, message, wait, quota_text)
+        if dim:
+            info['dim'] = dim
         if _find(body, 'provider_code') is not None:       # the UPSTREAM provider of one model, not the account
             info['scope'] = 'model'
         return info
@@ -1454,25 +1488,6 @@ def note_day_429(state, channel, *, now=None) -> dict | None:
     return None
 
 
-def main_free(channel_list, state, tokens, env, *, now=None) -> bool:
-    """Some main-tier channel can take a one-request call now (not cooled, not dead, day and minute windows have room)."""
-    mains = [c for c in channel_list if tier_of(c) == 'main']
-    if not mains:
-        return False
-    try:
-        choose(mains, state, tokens, env, now=now)
-    except ChannelUnavailable:
-        return False
-    return True
-
-
-def small_timeout(channel_list, state, tokens, env, *, now=None) -> int:
-    """W-gemma 2/4: how long a call of the small tier (Gemma, already chosen by the card) may wait for its answer:
-    BIG_TIMEOUT_S always, except SMALL_FIRST_TIMEOUT_S while a main-tier channel (not escalation) is free right now with
-    room in its minute window (a half-open channel after a 429 with rpm 5 is no reason to cut Gemma at 30 s)."""
-    return SMALL_FIRST_TIMEOUT_S if main_free(channel_list, state, tokens, env, now=now) else BIG_TIMEOUT_S
-
-
 def close_big(state, channel, *, now=None) -> dict:
     """After the rounds: this channel only is closed for BIG_CLOSE_S (a mark of our own, never cut when read)."""
     now = time.time() if now is None else now
@@ -1483,8 +1498,9 @@ def close_big(state, channel, *, now=None) -> dict:
     return out
 
 
-BREAKER_FAILS = 2          # W-flow 2: 503s in a row that put a big channel in probe mode
-BREAKER_PROBE_S = 45       # ... one send per channel per this many seconds from ALL cards (the mark is cool_channel's)
+BREAKER_FAILS = 12         # W-flow 2: 503s in a row that put a big channel in probe mode (25.11: a Gemma that answers every second call was
+# shut for 45 s by two refusals of one second each: about 5 sends a minute for the whole pool; a refusal costs nothing)
+BREAKER_PROBE_S = 10       # ... one send per channel per this many seconds from ALL cards (the mark is cool_channel's)
 BREAKER_FORGET_S = 600     # a run of 503s older than this says nothing (nobody probed: the mode ends)
 
 

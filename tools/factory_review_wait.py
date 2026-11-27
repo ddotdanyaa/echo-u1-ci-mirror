@@ -9,7 +9,7 @@ from __future__ import annotations
 import random
 import time
 
-RETRY_PAUSES_S = (2.0, 4.0, 8.0, 12.0)    # then 12 s again (the same series as factory_ensemble.RETRY_PAUSES_S)
+RETRY_PAUSES_S = (0.0, 0.0, 0.5, 1.0)     # fac-68b: then 1 s again (the same series as factory_ensemble.RETRY_PAUSES_S)
 RETRY_JITTER = 0.3
 RETRY_TOTAL_S = 120.0
 PASS_WAIT_S = 600.0                        # all 503 sleeps of one pass together (the lease lives 1800 s; the pass must not outlive it)

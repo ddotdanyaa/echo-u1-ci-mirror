@@ -296,3 +296,64 @@ def test_a_rejected_task_starts_again_with_no_red_attempts(tmp_path, monkeypatch
     loop._reject_answer("T1", "B1", state, "bad")
     row = e.state()["tasks"]["T1"]
     assert (row["status"], row["reds"], row["attempts"]) == ("READY", 0, 0)
+
+
+def test_finished_rows_keep_two_short_remarks_and_the_rest_goes_to_the_archive(tmp_path, monkeypatch):
+    e = Env(tmp_path, monkeypatch, tasks=[task_row(1), task_row(3)])
+    long = [{"source": "gate", "text": "x" * F.FEEDBACK_MAX_CHARS}] * 3
+    e.set_row("T1", status="FAILED", reason="superseded:reslice1", base_red={"result": {}}, feedback=long)
+    e.set_row("T3", status="FAILED", reason="reslice", base_red={"result": {}}, feedback=long)
+    loop = e.loop()
+    assert loop._slim_state() == 1 and loop._slim_state() == 0
+    st = e.state()["tasks"]
+    assert "base_red" not in st["T1"] and [len(x["text"]) for x in st["T1"]["feedback"]] == [min(800, F.FEEDBACK_MAX_CHARS)] * 2
+    assert st["T3"]["feedback"] == long and "base_red" in st["T3"]
+    kept = json.loads((e.state_dir / "state_archive.jsonl").read_text(encoding="utf-8"))
+    assert kept["feedback"] == long and kept["base_red"] == {"result": {}}
+
+
+def test_guard_traces_read_each_measurement_once(tmp_path, monkeypatch):
+    """fac-reslice: the parsed trace is kept per row under (file, at, key): a second call reads no file, a new measurement does."""
+    e = Env(tmp_path, monkeypatch, tasks=_row_pair())
+    loop = _loop(e, lambda *a, **k: None)
+    F.put_trace(e.state_dir, "T1", [("a.py", "f", 3)])
+    state = {"tasks": {"T1": {"backlog_id": "B1", "base_red": {"at": 1.0, "key": "k", "result": {"path_file": "T1.json"}}},
+                       "T3": {"backlog_id": "B2", "base_red": {}}}}
+    reads = []
+    real = F.load_trace
+    monkeypatch.setattr(F, "load_trace", lambda d, row: reads.append(1) or real(d, row))
+    first = loop._guard_traces(state)
+    assert first == {"B1": [("a.py", "f", 3)]}
+    n = len(reads)
+    assert loop._guard_traces(state) == first and len(reads) == n + 1      # only the row without a trace file is asked again
+    first["B1"].append("junk")                                             # a caller's edit does not poison the cache
+    assert loop._guard_traces(state)["B1"] == [("a.py", "f", 3)]
+    F.put_trace(e.state_dir, "T1", [("b.py", "g", 9)])
+    state["tasks"]["T1"]["base_red"]["at"] = 2.0                           # a new measurement of the base: read anew
+    assert loop._guard_traces(state) == {"B1": [("b.py", "g", 9)]}
+
+
+def test_guard_traces_keep_an_empty_trace_file_too(tmp_path, monkeypatch):
+    """fac-reslice: an empty trace of a real file is an answer: kept per measurement, not re-read each call; an unreadable file is asked again."""
+    e = Env(tmp_path, monkeypatch, tasks=_row_pair())
+    loop = _loop(e, lambda *a, **k: None)
+    F.put_trace(e.state_dir, "T1", [])
+    state = {"tasks": {"T1": {"backlog_id": "B1", "base_red": {"at": 1.0, "key": "k", "result": {"path_file": "T1.json"}}},
+                       "T3": {"backlog_id": "B2", "base_red": {"at": 1.0, "key": "k", "result": {"path_file": "gone.json"}}}}}
+    reads = []
+    real = F.load_trace
+    monkeypatch.setattr(F, "load_trace", lambda d, row: reads.append(1) or real(d, row))
+    assert loop._guard_traces(state) == {} and len(reads) == 2
+    assert loop._guard_traces(state) == {} and len(reads) == 3             # only the missing file is read again
+
+def test_the_tick_reads_the_ladder_once_for_all_quarantine_rows(tmp_path, monkeypatch):
+    e = Env(tmp_path, monkeypatch, tasks=_row_pair())
+    loop = _loop(e, lambda *a, **k: None)
+    calls = []
+    monkeypatch.setattr(loop, "_ladder_sig", lambda: calls.append(1) or "free,paid")
+    monkeypatch.setattr(loop.cfg, "architect_rungs", ("free", "paid"), raising=False)
+    ls = loop.ls()
+    ls["quarantine"] = {"R%d" % i: {"version": F.slicer_version(), "ladder": "free,paid"} for i in range(12)}
+    loop.save_ls(ls)
+    loop._reslice_tick(*loop.load(), loop.ls(), loop.clock())
+    assert len(calls) == 1
