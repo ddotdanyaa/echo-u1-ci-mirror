@@ -1,0 +1,6 @@
+tests/registry/test_fn_2_06.py
+tests/test_a2_same_question.py
+tests/test_a8_review.py
+tests/test_bad_network.py
+tests/test_context_followup.py
+tests/test_h5_live.py
