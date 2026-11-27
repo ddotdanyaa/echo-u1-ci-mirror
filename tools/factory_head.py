@@ -394,8 +394,8 @@ class Head:
                         break
                     if near[0] < best[0]:
                         best = near
-                    if near[2] == 'refused_503' or (near[0] + (now - t.born if at == 0 else 0.0) <= SPILL_S and near[2] in PACING):
-                        break        # only the even pace or the 10 s rest of a refusal holds this tier a moment: wait for it, never spill to the next tier
+                    if near[0] + (now - t.born if at == 0 else 0.0) <= SPILL_S and near[2] in PACING:
+                        break        # only the even pace holds this tier a moment: wait for it, never spill to the next tier (a rest after 503 does not hold)
                     # fac-51: on the FIRST tier the moment counts from the ticket's birth (a review the small tier cannot
                     # place within SPILL_S of its arrival leaves it for good, never back and forth); a later tier holds it
                     # whenever its own wait is within SPILL_S, whatever its age: an old review waits 5 s for main, it does
