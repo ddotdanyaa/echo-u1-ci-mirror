@@ -56,6 +56,7 @@ from tools import factory_closures, factory_metrics  # noqa: <id>  (<id> hourly 
 from tools import factory_process  # noqa: <id>
 from tools import factory_survive as SV  # noqa: <id>
 from tools import factory_quota as quota_ledger  # noqa: <id>
+from tools import factory_solver as _solver_budget  # noqa: <id>  (HYPO_STALE_S is computed from its step budgets)
 
 RUNNER_TIMEOUT_S = int(F.LEASE_LIFETIME_S)  # one runner pass = one lease; not a switch
 LOOP_HEAD_WAIT_S = 30       # W-bucket: an ask in the loop's own thread waits in the head at most this (then its call time)
@@ -5018,6 +5019,7 @@ class Loop:
 
         def heard(answer):      # fac-55: the collector lets a solve go when no model has answered it for SOLVE_SILENT_S
             me.heard = time.monotonic()
+            me.steps = getattr(me, "steps", 0) + 1      # fac-88: the answered steps, told by the drop of the solve
             budget["left"] = loop.SOLVE_SILENT_S    # the wait is of ONE silence (between two answers), not a sum over the solve
             return answer
         cancel = getattr(threading.current_thread(), "cancel", None)    # fac-choke: the Event of the Prefetch job (None off a job)
@@ -5061,7 +5063,22 @@ class Loop:
                 budget["left"] -= loop.SOLVER_RETRY_S
                 loop._sleep(loop.SOLVER_RETRY_S)
             raise SV.NoChannel(status)
-        return SV.Ctx(root=root, ask=ask, cloud=lambda r, ids, files: HY.cloud_batch(r, ids, files, tid="s" + str(packet.get("bid"))),
+        def cloud(r, ids, files):       # fac-88: a call in flight is a sign of life for as long as the batch itself may wait
+            try:
+                from tools import echo_cloud as ec
+                queued_max = ec.QUEUED_MAX_S
+            except ImportError:     # the module is not in the mirror tree: the cloud call itself then refuses, the bound only stays generous
+                queued_max = 900
+            # the gate is absent from the mirror tree too (module-level None): the same numbers as in the gate, written here
+            slot_queue_s = getattr(factory_cloud_gate, "SLOT_QUEUE_S", 900)
+            wait_s = getattr(factory_cloud_gate, "WAIT_S", 300)
+            me.cloud_until = time.monotonic() + slot_queue_s + queued_max + wait_s + 60.0     # the place, the queue, the wait (cloud_batch)
+            try:
+                return HY.cloud_batch(r, ids, files, tid="s" + str(packet.get("bid")))
+            finally:
+                me.cloud_until = None
+                me.heard = time.monotonic()     # the cloud came back (a result or its own refusal): the one mark, as at an answer
+        return SV.Ctx(root=root, ask=ask, cloud=cloud,
                       info=info, sleep=self._sleep, cancel=cancel)
 
     def _solver_suspects(self, root, packet, ids, failure) -> list:
@@ -5346,7 +5363,10 @@ class Loop:
 
     HYPO_SCAN_S = 5.0           # the candidates are looked through at most this often
     HYPO_RETRY_S = 600.0        # a row with nothing to search (no red id, cooled, no channel, cloud failure) is looked at again after this
-    HYPO_STALE_S = 3600.0       # a solve older than this is dropped (its result ignored; 16 steps with a cloud run each)
+    HYPO_STALE_S = max(_solver_budget.STEPS, _solver_budget.STEPS_TFIRST) * SOLVE_SILENT_S    # fac-88: the BACKSTOP only, computed: the steps of
+                                # the longest kind of solve, each at worst one whole silence long. A solve ends by its own budgets (steps,
+                                # SOLVE_SILENT_S, the cloud tries, cancel); its age alone is never a reason (live 25-28.11: the old 3600 s
+                                # dropped 100 of 157 solves that were still working, a finished solve took 21-120 minutes)
 
     def _hypo_candidates(self, tasks, state, ls, now, tfirst=False) -> list:
         """W-feed2 2: the rows that may be searched now, ECHO (guard) -> rel-<sha> -> rel-base: rows of the to_slice book (the wait
@@ -5581,16 +5601,20 @@ class Loop:
         """Apply the searches that have finished (loop thread). A green or a STALE of an older base is carried (_hypo_carry)."""
         for row, job in list(self._hypers.items()):
             if not job.done.is_set():
-                age = time.monotonic() - job.t0
-                silent = getattr(getattr(job, "thread", None), "heard", None) is None and age > self.SOLVE_SILENT_S
-                if age > self.HYPO_STALE_S or silent:       # fac-55: a solve no model answered lets its row go now, not in an hour
+                mono = time.monotonic()
+                age = mono - job.t0
+                thread = getattr(job, "thread", None)
+                in_flight = (getattr(thread, "cloud_until", None) or 0.0) > mono    # a cloud call inside its own timeout: working, not silent
+                silent = not in_flight and mono - (getattr(thread, "heard", None) or job.t0) > self.SOLVE_SILENT_S     # fac-88: since the last sign of life
+                if age > self.HYPO_STALE_S or silent:       # fac-55: a solve nothing came back to lets its row go now, not in an hour
                     del self._hypers[row]
                     if getattr(job, "cancel", None) is not None:
                         job.cancel.set()    # fac-choke: stopped, not abandoned: a dropped solve walking a pruned tree held the GIL (26.11)
                     self.__dict__.setdefault("_hypo_dropped", []).append(job)
                     self._hypo_skip[row] = (job.ctx["base"], now)
-                    self.event("solver", backlog_id=row, status="stale", why=("no model answer in %d s" % self.SOLVE_SILENT_S) if silent
-                               else "solve older than %d s dropped" % self.HYPO_STALE_S)
+                    lost = "%d steps answered, age %d s" % (getattr(thread, "steps", 0), age)    # what the drop threw away
+                    self.event("solver", backlog_id=row, status="stale", why=("silent %d s (%s)" % (self.SOLVE_SILENT_S, lost)) if silent
+                               else "backstop %d s (%s)" % (self.HYPO_STALE_S, lost))
                 continue
             del self._hypers[row]
             base = job.ctx["base"]
@@ -6189,6 +6213,8 @@ class Loop:
             outcome = contract["decision"]
             if result.get("repaired"):
                 extra["repaired"] = list(result["repaired"])      # W-free 1: what the machine mended in the contract
+            if result.get("author_try"):
+                extra["author_try"] = str(result["author_try"])      # fac-85: what the cloud run of the author's code did
             portion = dict(engine=engine, rung=job.ctx["rung"])
             if packet.get("must_code"):
                 portion["must_code"] = True        # the card is made under the strong step's own code: its death ends the row

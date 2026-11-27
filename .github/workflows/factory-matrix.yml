@@ -68,11 +68,11 @@ jobs:
           - shard: 27
             files: 'tests/test_factory_row_text.py tests/test_factory_search_literal.py tests/test_factory_selfgate_own_tests.py tests/test_factory_selfgate_sync.py'
           - shard: 28
-            files: 'tests/test_factory_test_card.py tests/test_factory_tfirst.py tests/test_factory_tick2.py tests/test_factory_triage_candidates.py'
+            files: 'tests/test_factory_solve_budget.py tests/test_factory_test_card.py tests/test_factory_tfirst.py tests/test_factory_tick2.py'
           - shard: 29
-            files: 'tests/test_factory_triage_state.py tests/test_factory_undefined_names.py tests/test_factory_unit_rules_async.py tests/test_factory_unit_test_rules.py'
+            files: 'tests/test_factory_triage_candidates.py tests/test_factory_triage_state.py tests/test_factory_undefined_names.py tests/test_factory_unit_rules_async.py'
           - shard: 30
-            files: 'tests/test_factory_vgs_stats.py tests/test_factory_view_fill.py'
+            files: 'tests/test_factory_unit_test_rules.py tests/test_factory_vgs_stats.py tests/test_factory_view_fill.py'
     name: shard ${{ matrix.shard }}
     runs-on: windows-latest
     timeout-minutes: 25

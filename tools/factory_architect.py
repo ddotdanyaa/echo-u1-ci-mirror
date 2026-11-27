@@ -12,6 +12,7 @@ import re
 import subprocess
 import threading
 import time
+import types
 
 from tools import agent_factory as F, factory_cards as K, factory_paid_critic as PK
 from tools import factory_process as PR
@@ -2114,27 +2115,118 @@ def applied_texts(contract, root):
 STAND_AGAIN = ('A stand repair keeps every check: if an expected value is out of date, %s.')
 
 
+def _all_ready(contract) -> bool:
+    """True when EVERY part of a fix carries ready text (code; for a rig card also file_text)."""
+    parts = contract.get('parts')
+    rig = contract.get('rig') is True
+    return isinstance(parts, list) and bool(parts) and all(
+        isinstance(p, dict) and (isinstance(p.get('code'), str) and p['code'].strip()
+                                 or rig and isinstance(p.get('file_text'), str) and p['file_text'].strip()) for p in parts)
+
+
+def _card_of(contract, engine) -> dict:
+    """The contract as to_tasks stamps its card: the restate mark counts for the agent step only."""
+    author = author_model(engine)
+    card = {k: v for k, v in contract.items() if k != 'author' and (k != 'restate' or author == AGENT_MODEL)}
+    card['author'] = author
+    return card
+
+
 def ready_faults(contract, engine, root):
     """fac-87: the faults a program finds in a fix whose EVERY part carries ready text, before a card is cut: the part that does
     not apply, and G.contract_rules (off_contract / test_touched / rig_weakens / anchor) asked as the executor asks it for a card
     of a ladder step (ready=False, by_files=False). A contract with a part that has no ready text is not checked here."""
     from tools import factory_gate as G
-    parts = contract.get('parts')
-    rig = contract.get('rig') is True
-    if not isinstance(parts, list) or not parts or not all(
-            isinstance(p, dict) and (isinstance(p.get('code'), str) and p['code'].strip()
-                                     or rig and isinstance(p.get('file_text'), str) and p['file_text'].strip()) for p in parts):
+    if not _all_ready(contract):
         return []
-    author = author_model(engine)
-    card = {k: v for k, v in contract.items() if k != 'author' and (k != 'restate' or author == AGENT_MODEL)}
-    card['author'] = author         # as to_tasks stamps the card: the restate mark counts for the agent step only
+    card = _card_of(contract, engine)
     texts, faults = applied_texts(card, root)
     if faults:
         return faults
     return G.contract_rules(root, card, texts, ready=False, by_files=False)
 
 
-def contract_for(packet, *, rung, root, asks, named_ok=False, red_given=None, skip=None, samples=None, yields=None, probe=False):
+AUTHOR_TRY_RUN_S = 240      # fac-85: the cloud run of the author's code may last this long, on top of RED_BEFORE_WAIT_S (the executor's wait for its red-base run)
+_TRY_FACT_IDS = 6
+
+
+def _try_wait() -> float:
+    from tools import agent_factory_runner as R
+    return float(R.RED_BEFORE_WAIT_S + AUTHOR_TRY_RUN_S)
+
+
+def _passes(test_id, passed) -> bool:
+    return test_id in passed or any(p.startswith(test_id + '[') for p in passed)
+
+
+def _bounded(call, wait_s):
+    """The result of ``call()`` or None: a fault or a run that does not end within ``wait_s`` is no verdict (the thread is left to end)."""
+    box = {}
+
+    def work():
+        try:
+            box['value'] = call()
+        except Exception:       # noqa: BLE001 - any trouble of the cloud is "no verdict"
+            pass
+    thread = threading.Thread(target=work, daemon=True)
+    thread.start()
+    thread.join(wait_s)
+    return None if thread.is_alive() else box.get('value')
+
+
+def author_try(contract, engine, packet, root, *, cloud=None, folder=None):
+    """fac-85: ONE cloud run of the row's red ids on the base (control) and with the ready code written over it, for a fix of a strong
+    author on a red row whose every part carries ready text. The solver's own call and verdict (factory_solver._verdict, factory_hypo.judge).
+    ``dict(kind=...)``: 'not_red' (the ids pass on the base: ``why``), 'proven' (``proof``, booked in <folder>/proofs.jsonl), 'red'
+    (``facts``: what the run showed), 'no_verdict' (the cloud gave none); None when the run does not apply. Never raises."""
+    spec = contract.get('test') if isinstance(contract.get('test'), dict) else {}
+    use = spec.get('use')
+    if not (isinstance(use, str) and use and author_code(engine) and _all_ready(contract)):
+        return None
+    from tools import factory_hypo as HY, factory_solver as SOL
+    try:
+        ids = [str(x) for x in (packet.get('guard_red') or []) if '::' in str(x)] or [use] + [str(x) for x in spec.get('also') or []]
+        ids = list(dict.fromkeys(ids))[:SOL.FINAL_IDS]
+        texts, faults = applied_texts(_card_of(contract, engine), root)
+        control = next((f for f in sorted(texts) if (Path(root) / f).is_file()), None)
+        if faults or not texts or control is None:
+            return dict(kind='no_verdict')
+        files = sorted({i.split('::', 1)[0] for i in ids})
+        run_ids = ids + [HY.FILE_RUN + f for f in files]
+        variants = {'1': texts, HY.CONTROL: {control: (Path(root) / control).read_bytes().decode('utf-8')}}
+        ctx = types.SimpleNamespace(cloud=cloud or HY.cloud_batch, root=root, sleep=lambda seconds: None)
+        got = _bounded(lambda: SOL._verdict(ctx, run_ids, variants, types.SimpleNamespace(tests=0)), _try_wait())
+    except Exception:       # noqa: BLE001
+        return dict(kind='no_verdict')
+    ctl, cand = (got or {}).get(HY.CONTROL), (got or {}).get('1')
+    if not (isinstance(ctl, dict) and isinstance(cand, dict)):
+        return dict(kind='no_verdict')
+    before, passed = set(ctl.get('passed') or ()), set(cand.get('passed') or ())
+    base = Path(root).name[:12]
+    if all(_passes(i, before) for i in ids):
+        return dict(kind='not_red', why='the run of the test on its own passed on the base %s without any change: %s' % (base, ', '.join(ids[:_TRY_FACT_IDS])))
+    new_red = HY.judge(cand, before, ids)[1]
+    still = [i for i in ids if not _passes(i, passed)]
+    if _passes(use, passed) and not new_red:
+        green = [i for i in ids if _passes(i, passed)]
+        run_id = time.strftime('%Y%m%dT%H%M%S') + '-' + hashlib.sha256(json.dumps([base, run_ids, sorted(texts)]).encode('utf-8')).hexdigest()[:8]
+        proof = dict(run_id=run_id, base_sha=base, green=green, new_red=[], digest=parts_digest(contract), checked=len(ids))
+        if folder:
+            try:
+                with open(Path(folder) / 'proofs.jsonl', 'a', encoding='utf-8') as ledger:     # the book the loop reads (_proof_ledger)
+                    ledger.write(json.dumps({k: proof[k] for k in ('run_id', 'base_sha', 'digest', 'new_red', 'checked')}, ensure_ascii=False) + chr(10))
+            except OSError:
+                pass
+        return dict(kind='proven', proof=proof)
+    facts = 'the cloud run of your code on base %s: ' % base
+    if still:
+        facts += 'still failing: %s. First failure:\n%s\n' % (', '.join(still[:_TRY_FACT_IDS]), str(cand.get('text') or '')[-SOL.FAIL_CAP:])
+    if new_red:
+        facts += 'these passed before your edit and fail now: %s.' % ', '.join(new_red[:_TRY_FACT_IDS])
+    return dict(kind='red', facts=facts.strip())
+
+
+def contract_for(packet, *, rung, root, asks, named_ok=False, red_given=None, skip=None, samples=None, yields=None, probe=False, cloud=None):
     """`skip` is the cache of the row's wait record ({engine: {'kind', 'fault', 'answer'}}): a step that already answered
     this row with a flaw on this version and sha is not asked again in the repeat (its answer counts as given when any
     other step answers now); a step that refused ('prompt oversize') is not asked at all."""
@@ -2164,7 +2256,8 @@ def contract_for(packet, *, rung, root, asks, named_ok=False, red_given=None, sk
         replied, raw = False, ''
         code_asked = False
         repaired = []
-        read_asked = reach_asked = False
+        read_asked = reach_asked = try_asked = False
+        try_note = None     # fac-85: what the cloud run of the author's code did, for the slice event
         free_packet, base_user = packet, initial
 
         def shown_text():
@@ -2270,6 +2363,21 @@ def contract_for(packet, *, rung, root, asks, named_ok=False, red_given=None, sk
                         continue
                 if contract['decision'] == 'fix':
                     _stamp_part_codes(contract, root)
+                if contract['decision'] == 'fix' and red and (tried := author_try(contract, engine, packet, root, cloud=cloud, folder=samples or _samples_dir)):
+                    # fac-85: the author's ready code was run in the cloud, on the base and over it, before a card is cut from it
+                    if tried['kind'] == 'not_red':
+                        return dict(contract=dict(row=contract.get('row'), decision='cannot_reproduce', why=tried['why']), engine=engine,
+                                    faults=faults, repaired=repaired, author_try='not_red')
+                    if tried['kind'] == 'red':
+                        if try_asked:
+                            raise ContractFault('author try: still red after the re-ask: ' + tried['facts'])
+                        try_asked = True        # its own flag: ONE re-ask of the same step with what the run showed
+                        try_note = 're_asked'
+                        user += '\n' + tried['facts'] + '\nReturn the full contract again.'
+                        continue
+                    if tried['kind'] == 'proven':
+                        contract['proof'] = tried['proof']
+                    try_note = ('re_asked:' if try_asked else '') + tried['kind']
                 if contract['decision'] not in ('fix', 'split') and engine in FREE_RUNGS:
                     decision = contract['decision']
                     if decision.split(':')[0] in NO_FIX_PROOF and not no_fix_proof(contract, root, packet):
@@ -2279,7 +2387,7 @@ def contract_for(packet, *, rung, root, asks, named_ok=False, red_given=None, sk
                         votes[decision] = engine
                         break
                     engine = votes[decision] + '+' + engine
-                return dict(contract=contract, engine=engine, faults=faults, repaired=repaired)
+                return dict(contract=contract, engine=engine, faults=faults, repaired=repaired, **(dict(author_try=try_note) if try_note else {}))
         except Exception as exc:
             # Do not include arbitrary provider exception text (it can contain credentials).
             message = str(exc) if isinstance(exc, ContractFault) else type(exc).__name__

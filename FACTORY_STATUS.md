@@ -1,11 +1,20 @@
 # Factory status (generated, structured data only)
 
-Generated: 2026-11-27T23:09:53Z
-Source commit: sha2bd2f6792abd
+Generated: 2026-11-27T23:37:09Z
+Source commit: sha21e4b2f37876
 
 ## Commits (sha, time)
+- sha21e4b2f3 2026-11-28T02:26:54+03:00
+- shad3e8e0b7 2026-11-28T02:16:16+03:00
+- sha93657e0c 2026-11-28T02:14:19+03:00
+- sha8d90d697 2026-11-28T02:12:21+03:00
+- sha7dd60ffe 2026-11-28T02:03:42+03:00
 - sha2bd2f679 2026-11-28T01:52:20+03:00
+- sha23d27912 2026-11-28T01:51:53+03:00
 - sha37d29c48 2026-11-28T01:47:14+03:00
+- shab43bc240 2026-11-28T01:40:09+03:00
+- sha052c49f9 2026-11-28T01:39:55+03:00
+- sha58d38383 2026-11-28T01:39:17+03:00
 - shaad5f8735 2026-11-28T01:34:47+03:00
 - shaff56324f 2026-11-28T01:33:33+03:00
 - shaa9f3a06b 2026-11-28T01:30:45+03:00
@@ -15,36 +24,27 @@ Source commit: sha2bd2f6792abd
 - shac805cc31 2026-11-28T00:57:28+03:00
 - sha13dce71e 2026-11-28T00:47:22+03:00
 - shadbd36578 2026-11-28T00:45:01+03:00
-- sha3aceab7a 2026-11-28T00:44:06+03:00
-- sha2b3810d3 2026-11-28T00:38:32+03:00
-- shae2e0e015 2026-11-28T00:35:41+03:00
-- shaae4956cb 2026-11-28T00:25:01+03:00
-- shaec9ebb76 2026-11-28T00:23:06+03:00
-- sha60368619 2026-11-28T00:22:35+03:00
-- shab6dd10b5 2026-11-28T00:21:42+03:00
-- shadf9a773e 2026-11-28T00:05:37+03:00
-- sha5299d91b 2026-11-28T00:04:34+03:00
 
 ## Funnel
 | step | count |
 |---|---|
 | accepted | 153 |
-| claimed | 1831 |
+| claimed | 1846 |
 | coded | 231 |
 | found_in_backlog | unknown |
-| gate_pass | 259 |
-| known_to_loop | 1074 |
-| promoted | 254 |
-| ready | 10 |
-| reviewed | 619 |
+| gate_pass | 261 |
+| known_to_loop | 1075 |
+| promoted | 255 |
+| ready | 11 |
+| reviewed | 628 |
 | triaged | 838 |
 
 Side counters: blocked=1, parked=0, requeued=17
-Tasks now: BLOCKED=1, DONE=68, FAILED=1810, PROMOTED=221, READY=10, RUNNING=9
+Tasks now: BLOCKED=1, DONE=68, FAILED=1822, PROMOTED=222, READY=11, REVIEW=1, RUNNING=6
 Accepted: 153
-Promoted: 254
-Free RAM, GB: 3.86
-Telemetry rows: 139392 recognised, 0 unrecognised
+Promoted: 255
+Free RAM, GB: 4.21
+Telemetry rows: 140223 recognised, 0 unrecognised
 
 ## Spend per model
 | model | calls | tokens_in | tokens_out | usage_unknown | http_429 | errors |
@@ -62,8 +62,8 @@ Telemetry rows: 139392 recognised, 0 unrecognised
 | google/gemini-3.8-flash | 69 | 21237 | 15 | 66 | 28 | 43 |
 | google/gemini-4-hydrogen | 77 | 27174 | 2032 | 68 | 18 | 28 |
 | google/gemini-robotics-er-2-preview | 86 | 58488 | 4068 | 69 | 27 | 29 |
-| google/gemma-4-26b-a4b-it | 15686 | 8192219 | 1274721 | 12479 | 212 | 4486 |
-| google/gemma-4-31b-it | 12984 | 4380024 | 422834 | 11320 | 193 | 4622 |
+| google/gemma-4-26b-a4b-it | 15861 | 8303656 | 1284803 | 12623 | 212 | 4487 |
+| google/gemma-4-31b-it | 13129 | 4450702 | 428923 | 11445 | 193 | 4624 |
 | openrouter/nvidia/nemotron-3-ultra-550b-a55b:free | 143 | 750953 | 158909 | 3 | 2 | 3 |
 | other | 65 | 1154192 | 66710 | 6 | 0 | 7 |
 
@@ -71,14 +71,14 @@ Telemetry rows: 139392 recognised, 0 unrecognised
 | span | rows | calls |
 |---|---|---|
 | answer | 552 | 0 |
-| gate | 14646 | 0 |
-| infra | 8105 | 0 |
-| loop | 18752 | 0 |
-| other | 57591 | 16996 |
-| promote | 281 | 0 |
-| review | 6555 | 3522 |
-| run | 32135 | 16037 |
-| triage | 775 | 0 |
+| gate | 14715 | 0 |
+| infra | 8138 | 0 |
+| loop | 18831 | 0 |
+| other | 58117 | 17262 |
+| promote | 282 | 0 |
+| review | 6585 | 3538 |
+| run | 32223 | 16075 |
+| triage | 780 | 0 |
 
 ## Channels (model ids)
 - 1db4ab-gemini-3-8-flash
@@ -128,8 +128,8 @@ Telemetry rows: 139392 recognised, 0 unrecognised
 
 ## Published files
 Modules: 38
-Tests in the cloud: 119
-Tests not in the cloud: 166
+Tests in the cloud: 120
+Tests not in the cloud: 167
 - tests/test_agent_factory.py (backlog-id, call-word, env-path, long-run, pid-port)
 - tests/test_factory_503.py (backlog-id, long-run)
 - tests/test_factory_architect.py (backlog-id, email, env-path, path)
@@ -137,6 +137,7 @@ Tests not in the cloud: 166
 - tests/test_factory_ask_lock.py (backlog-id)
 - tests/test_factory_asked_code.py (dependency)
 - tests/test_factory_asked_memory.py (backlog-id)
+- tests/test_factory_author_try.py (long-run)
 - tests/test_factory_autofeed.py (backlog-id)
 - tests/test_factory_base_cache.py (dependency)
 - tests/test_factory_base_near.py (email, short-name)
