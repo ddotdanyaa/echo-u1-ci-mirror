@@ -416,14 +416,15 @@ def _def_lines(region: str) -> str:
     return "\n".join(rows)
 
 
-def part_prompt(file, part, header, region, failing="", signatures="", limit=None, context="") -> str:
+def part_prompt(file, part, header, region, failing="", signatures="", limit=None, context="", previous="") -> str:
     """The card of one part: its own file only. The first line is ``FILE <path>``. With ``limit`` (characters) a
     card over it gives up, in this order: the signatures of other files, the context pack (``context``: the red test
     and what the code reads, by whole lines from the end), the head of the failing line, and (only for a
     part with no named symbols, a window of the file) the end of the window. The code of the named symbols, the
     instruction and the answer format stay whole; when they alone are over the limit: CardTooLarge."""
-    def build(sigs, fail, shown, ctx=None):
+    def build(sigs, fail, shown, ctx=None, prev=None):
         ctx = context if ctx is None else ctx
+        prev = previous if prev is None else prev
         out = [f"FILE {file}", "Instruction: " + str(part.get("instruction", "")).strip()]
         if part.get("keep"):
             out.append("Keep: " + str(part["keep"]).strip())
@@ -436,6 +437,8 @@ def part_prompt(file, part, header, region, failing="", signatures="", limit=Non
             out.append(ctx)
         if fail:
             out.append("The check fails with this exact line:\n" + fail.strip())
+        if prev:
+            out.append(prev.strip())
         out.append(EDITOR_RULES)
         return "\n\n".join(out) + "\n"
 
@@ -448,15 +451,18 @@ def part_prompt(file, part, header, region, failing="", signatures="", limit=Non
     ctx = context
     while ctx and len(build(sigs, failing, region, ctx)) > limit:      # the context pack: whole lines from the end
         ctx = ctx.rpartition("\n")[0]
-    card = build(sigs, failing, region, ctx)
+    prev = previous
+    while prev and len(build(sigs, failing, region, ctx, prev)) > limit:     # the previous attempt: the head stays (its failing ids)
+        prev = prev[:int(len(prev) * 0.8)] if len(prev) > 200 else ""
+    card = build(sigs, failing, region, ctx, prev)
     if len(card) > limit and failing:
-        room = limit - len(build(sigs, "x", region, ctx)) + 1
-        card = build(sigs, failing.strip()[-room:] if room > 40 else "", region, ctx)
+        room = limit - len(build(sigs, "x", region, ctx, prev)) + 1
+        card = build(sigs, failing.strip()[-room:] if room > 40 else "", region, ctx, prev)
     if len(card) > limit and not part.get("symbols"):
         over = len(card) - limit
         keep = len(region) - over - len(CUT_NOTE)
         if keep > 0:
-            card = build(sigs, "", region[:keep] + CUT_NOTE, ctx)
+            card = build(sigs, "", region[:keep] + CUT_NOTE, ctx, prev)
     if len(card) > limit:
         raise CardTooLarge("the card of %s is %d characters, the limit is %d" % (file, len(card), limit))
     return card

@@ -1,9 +1,18 @@
 # Factory status (generated, structured data only)
 
-Generated: 2026-11-27T17:30:19Z
-Source commit: sha1f6bb4dd7a43
+Generated: 2026-11-27T20:26:56Z
+Source commit: sha19b8775d5ebe
 
 ## Commits (sha, time)
+- sha19b8775d 2026-11-27T23:16:14+03:00
+- sha37e687d4 2026-11-27T23:13:38+03:00
+- shabbbb709f 2026-11-27T23:00:15+03:00
+- shaf967f954 2026-11-27T22:59:10+03:00
+- sha1adc1177 2026-11-27T22:34:01+03:00
+- shaeb994916 2026-11-27T22:29:16+03:00
+- sha90109910 2026-11-27T22:19:29+03:00
+- sha974b269e 2026-11-27T22:14:10+03:00
+- sha7a72b355 2026-11-27T21:58:11+03:00
 - sha1f6bb4dd 2026-11-27T20:19:00+03:00
 - shada2b391e 2026-11-27T20:10:59+03:00
 - sha763feab3 2026-11-27T20:03:32+03:00
@@ -15,36 +24,27 @@ Source commit: sha1f6bb4dd7a43
 - shac326ae6c 2026-11-27T19:35:09+03:00
 - sha266ee521 2026-11-27T19:32:56+03:00
 - shabc090d9c 2026-11-27T18:04:16+03:00
-- sha58f59b39 2026-11-27T17:58:27+03:00
-- sha709a3d9f 2026-11-27T17:53:27+03:00
-- sha4c8d2a48 2026-11-27T17:17:16+03:00
-- sha829c2373 2026-11-27T17:14:48+03:00
-- shac01269d1 2026-11-27T17:13:22+03:00
-- sha9b4f578a 2026-11-27T17:03:04+03:00
-- shafaa59f99 2026-11-27T16:59:21+03:00
-- sha79baf411 2026-11-27T16:54:50+03:00
-- sha22721931 2026-11-27T16:38:03+03:00
 
 ## Funnel
 | step | count |
 |---|---|
-| accepted | 144 |
-| claimed | 1733 |
+| accepted | 145 |
+| claimed | 1754 |
 | coded | 229 |
 | found_in_backlog | unknown |
-| gate_pass | 239 |
-| known_to_loop | 1064 |
-| promoted | 236 |
-| ready | 11 |
-| reviewed | 583 |
+| gate_pass | 248 |
+| known_to_loop | 1069 |
+| promoted | 245 |
+| ready | 15 |
+| reviewed | 592 |
 | triaged | 838 |
 
 Side counters: blocked=0, parked=0, requeued=15
-Tasks now: DONE=68, FAILED=1732, PROMOTED=203, READY=11, RUNNING=2
-Accepted: 144
-Promoted: 236
-Free RAM, GB: 2.99
-Telemetry rows: 129598 recognised, 0 unrecognised
+Tasks now: DONE=68, FAILED=1745, PROMOTED=212, READY=15, RUNNING=1
+Accepted: 145
+Promoted: 245
+Free RAM, GB: 5.67
+Telemetry rows: 133977 recognised, 0 unrecognised
 
 ## Spend per model
 | model | calls | tokens_in | tokens_out | usage_unknown | http_429 | errors |
@@ -62,8 +62,8 @@ Telemetry rows: 129598 recognised, 0 unrecognised
 | google/gemini-3.8-flash | 69 | 21237 | 15 | 66 | 28 | 43 |
 | google/gemini-4-hydrogen | 77 | 27174 | 2032 | 68 | 18 | 28 |
 | google/gemini-robotics-er-2-preview | 86 | 58488 | 4068 | 69 | 27 | 29 |
-| google/gemma-4-26b-a4b-it | 13146 | 7531947 | 1189330 | 10155 | 212 | 4482 |
-| google/gemma-4-31b-it | 10008 | 3936227 | 388060 | 8485 | 193 | 4610 |
+| google/gemma-4-26b-a4b-it | 14464 | 7689513 | 1209821 | 11417 | 212 | 4483 |
+| google/gemma-4-31b-it | 11585 | 4022521 | 396303 | 10024 | 193 | 4611 |
 | openrouter/nvidia/nemotron-3-ultra-550b-a55b:free | 143 | 750953 | 158909 | 3 | 2 | 3 |
 | other | 65 | 1154192 | 66710 | 6 | 0 | 7 |
 
@@ -71,14 +71,14 @@ Telemetry rows: 129598 recognised, 0 unrecognised
 | span | rows | calls |
 |---|---|---|
 | answer | 552 | 0 |
-| gate | 14129 | 0 |
-| infra | 7787 | 0 |
-| loop | 17929 | 0 |
-| other | 50304 | 11853 |
-| promote | 261 | 0 |
-| review | 6398 | 3436 |
-| run | 31502 | 15750 |
-| triage | 736 | 0 |
+| gate | 14273 | 0 |
+| infra | 7904 | 0 |
+| loop | 18298 | 0 |
+| other | 53812 | 14652 |
+| promote | 270 | 0 |
+| review | 6449 | 3461 |
+| run | 31666 | 15821 |
+| triage | 753 | 0 |
 
 ## Channels (model ids)
 - 1db4ab-gemini-3-8-flash
@@ -129,10 +129,11 @@ Telemetry rows: 129598 recognised, 0 unrecognised
 ## Published files
 Modules: 38
 Tests in the cloud: 118
-Tests not in the cloud: 160
+Tests not in the cloud: 162
 - tests/test_agent_factory.py (backlog-id, call-word, env-path, long-run, pid-port)
 - tests/test_factory_503.py (backlog-id, long-run)
 - tests/test_factory_architect.py (backlog-id, email, env-path, path)
+- tests/test_factory_architect_sub_rung.py (long-run)
 - tests/test_factory_ask_lock.py (backlog-id)
 - tests/test_factory_asked_code.py (dependency)
 - tests/test_factory_asked_memory.py (backlog-id)
@@ -195,6 +196,7 @@ Tests not in the cloud: 160
 - tests/test_factory_hypo3.py (dependency)
 - tests/test_factory_intake.py (call-word, pid-port)
 - tests/test_factory_intake_merge.py (dependency)
+- tests/test_factory_j4_cards.py (dependency)
 - tests/test_factory_keep.py (dependency)
 - tests/test_factory_keep_cards.py (backlog-id)
 - tests/test_factory_kilo_rpm.py (dependency)

@@ -1041,6 +1041,8 @@ def no_money():
             gone |= {'paid', 'agent'}
         elif PK.agent_credit_dead():
             gone.add('agent')
+        if 'agent' in gone and sub_available():
+            gone.discard('agent')       # the key cannot pay, the subscription rung of the same ladder can
     except Exception:       # an aid: on any doubt the ladder stands as it was
         return set()
     return gone
@@ -2384,14 +2386,185 @@ def price_per_merged(by_engine) -> dict:
     return out
 
 
+SUB_LIMIT_PCT = 99                  # the owner's stop for the subscription: the weekly percent from which the rung is closed
+SUB_FIVE_HOUR_PCT = 90              # the reserve of the five-hour window: keeps the coordinator's and the owner's own chat alive
+SUB_PAUSE_S = 3600
+AGENT_SUB_FAULT = 'agent sub login'
+_SUB_LOGIN_WORDS = re.compile(r'not logged in|please run /login|/login|login required|invalid api key|authentication[_ ]error|oauth', re.I)
+_SUB_LIMIT_WORDS = re.compile(r'usage limit|limit reached|hit your limit|rate[_ ]limit|credit balance', re.I)
+_agent_source = {'value': ''}       # one cell for the process: the slicing job runs in a worker, the event is written by the loop
+
+
+def last_agent_source():
+    """'sub' or 'key': which way the latest agent call went (telemetry of the slice event)."""
+    return _agent_source['value']
+
+
+def _builders_dir() -> Path:
+    """The builders' folder: the parent of the path the launcher already exports in FACTORY_BUILDERS_WAITING."""
+    waiting = os.environ.get('FACTORY_BUILDERS_WAITING')
+    if waiting:
+        return Path(waiting).parent
+    return PK.state_dir().parent / 'builders'
+
+
+def _sub_usage_file() -> Path:
+    return Path(os.environ.get('FACTORY_SUB_USAGE') or (_builders_dir() / 'sub_usage.json'))
+
+
+def _sub_settings_file() -> Path:
+    return Path(os.environ.get('FACTORY_SUB_SETTINGS') or (_builders_dir() / 'settings_sub.json'))
+
+
+def _sub_pause_file() -> Path:
+    return PK.state_dir() / 'agent_sub_dead_until'
+
+
+def _sub_usage_row() -> dict:
+    try:
+        row = json.loads(_sub_usage_file().read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return {}
+    return row if isinstance(row, dict) else {}
+
+
+def _num(value):
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return None
+    return out if out == out else None
+
+
+def sub_weekly_pct():
+    """The weekly percent of the subscription from the builders' usage file; None when the file is missing or unreadable."""
+    row = _sub_usage_row()
+    return _num(row.get('weekly', row.get('weekly_all')))
+
+
+def _window_closed(row, pct_key, status_key, resets_key, limit, now, needs_reset=False) -> bool:
+    """One window of the subscription: closed by its percent or by a rejected status, only until its own reset
+    (a record older than its reset closes nothing)."""
+    resets = _num(row.get(resets_key))
+    if resets is not None and resets <= now:
+        return False
+    if needs_reset and resets is None:
+        return False
+    if str(row.get(status_key) or '').lower() == 'rejected' and resets is not None:
+        return True
+    pct = _num(row.get(pct_key, row.get('weekly_all') if pct_key == 'weekly' else None))
+    return pct is not None and pct >= limit
+
+
+def sub_available(now=None) -> bool:
+    """The subscription rung of the ladder (the same one the builders climb): closed without the settings file, while the
+    weekly percent is at the stop or the five-hour window at its reserve (each until its own reset), or while a window is
+    rejected; a missing or stale usage file does not forbid; a refused login pauses it for an hour."""
+    now = time.time() if now is None else now
+    if not _sub_settings_file().is_file():
+        return False
+    try:
+        if float(_sub_pause_file().read_text(encoding='utf-8').strip()) > now:
+            return False
+    except (OSError, ValueError):
+        pass
+    row = _sub_usage_row()
+    if _window_closed(row, 'weekly', 'weekly_status', 'weekly_resets', SUB_LIMIT_PCT, now):
+        return False
+    if _window_closed(row, 'five_hour', 'five_hour_status', 'five_hour_resets', SUB_FIVE_HOUR_PCT, now, needs_reset=True):
+        return False
+    return True
+
+
+def _record_sub_limits(raw: str, now=None) -> bool:
+    """Read the rate_limit_event lines of a subscription call and write the freshest numbers into the usage file (keeps
+    `weekly` and `at` for the builders' reader). Returns True when an event was found."""
+    found = {}
+    for line in raw.splitlines():
+        try:
+            item = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(item, dict) or item.get('type') != 'rate_limit_event':
+            continue
+        info = item.get('rate_limit_info')
+        if not isinstance(info, dict):
+            continue
+        windows = dict(info.get('unifiedWindows') or {}) if isinstance(info.get('unifiedWindows'), dict) else {}
+        kind = info.get('rateLimitType')
+        if kind in ('five_hour', 'seven_day') and kind not in windows:
+            windows[kind] = {'resetsAt': info.get('resetsAt'), 'status': info.get('status'),
+                             'utilization': info.get('utilization')}
+        for name, win in windows.items():
+            if name in ('five_hour', 'seven_day') and isinstance(win, dict):
+                found[name] = win
+    if not found:
+        return False
+    row = _sub_usage_row()
+    for name, pct_key, resets_key, status_key in (('seven_day', 'weekly', 'weekly_resets', 'weekly_status'),
+                                                  ('five_hour', 'five_hour', 'five_hour_resets', 'five_hour_status')):
+        win = found.get(name)
+        if not win:
+            continue
+        util = _num(win.get('utilization'))
+        if util is not None:
+            row[pct_key] = round(util * 100, 2)
+        resets = _num(win.get('resetsAt'))
+        if resets is not None:
+            row[resets_key] = resets
+        if win.get('status'):
+            row[status_key] = str(win['status'])
+    row['at'] = time.time() if now is None else now
+    path = _sub_usage_file()
+    tmp = path.with_name(path.name + '.tmp%d' % os.getpid())
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp.write_text(json.dumps(row), encoding='utf-8')
+        os.replace(tmp, path)
+    except OSError:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+    return True
+
+
+def _mark_sub_paused(now=None):
+    try:
+        path = _sub_pause_file()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(str((time.time() if now is None else now) + SUB_PAUSE_S), encoding='utf-8')
+    except OSError:
+        pass
+
+
+def key_can_pay() -> bool:
+    """The one expression for "the key can pay" (ask_agent and the loop's ask ladder)."""
+    return PK.key_available() and not PK.agent_credit_dead()
+
+
+def _agent_sub_argv(argv_fn, cwd=None):
+    """The same read-only task on the Claude Max login: no --bare, no budget flag, model sonnet, the builders' settings file."""
+    blocked_reads = ['Read(**/.' + 'env)', 'Read(**/.' + 'env.*)', 'Read(**/SECRETS_LOCAL/**)', 'Read(**/.claude/**)']
+    return argv_fn() + ['-p', 'The task is in standard input; return one JSON contract.',
+                        '--permission-mode', 'dontAsk', '--settings', str(_sub_settings_file()), '--model', 'sonnet',
+                        '--strict-mcp-config', '--setting-sources', 'project,local',
+                        '--output-format', 'stream-json', '--verbose',
+                        '--allowedTools', 'Read,Grep,Glob', '--disallowedTools',
+                        ','.join(['Bash', 'Edit', 'Write', 'NotebookEdit', 'WebFetch', 'WebSearch'] + blocked_reads)]
+
+
 def ask_agent(system, user, *, cwd: Path, run=stream_run, argv_fn=PR.claude_argv, idle_s=AGENT_IDLE_S):
     from tools import factory_gate as G
     global _agent_count
     PK.refuse_opus(AGENT_MODEL)
-    if PK.credit_dead():
-        raise ContractFault('agent budget')
-    if PK.agent_credit_dead():
-        raise ContractFault('agent credit')
+    use_sub = False
+    if not key_can_pay():
+        if not sub_available():
+            if PK.credit_dead():
+                raise ContractFault('agent budget')
+            raise ContractFault('agent credit')
+        use_sub = True
     with _agent_lock:
         free = G._free_ram()
         if free is None or free - _agent_count * EST_AGENT_BYTES < G.MIN_FREE_RAM + EST_AGENT_BYTES:
@@ -2399,43 +2572,70 @@ def ask_agent(system, user, *, cwd: Path, run=stream_run, argv_fn=PR.claude_argv
         _agent_count += 1
     reserved, actual, settings = False, 0.0, None
     try:
-        booking = agent_booking()
-        if not PK.reserve(booking, architect=True):
-            # busy only when live reservations hold money and some is left; a remainder below the booking with
-            # no live reservation will never grow today: that is the budget, not a turn to wait for
-            live = float(PK._spend_row().get('reserved_usd', 0)) + PK._external('FACTORY_BUILDERS_SPEND', ('reserved_usd',))
-            raise ContractFault(AGENT_BUSY if live > 0 and PK.left(PK._today()) > 0 else 'agent budget')
-        reserved = True
-        limit = round(max(booking, min(AGENT_BUDGET_USD, PK.left(PK._today()) + booking)), 6)
-        settings = _agent_settings(cwd)
-        argv = argv_fn() + ['-p', 'The task is in standard input; return one JSON contract.', '--bare',
-                           '--settings', str(settings), '--model', AGENT_MODEL,
-                           '--max-budget-usd', str(limit), '--output-format', 'stream-json', '--verbose',
-                           '--allowedTools', 'Read,Grep,Glob', '--disallowedTools',
-                           'Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch']
-        allowed = {'PATH', 'SYSTEMROOT', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'TEMP', 'TMP'}
-        env = {k: v for k, v in os.environ.items() if k.upper() in allowed}
-        # Once the CLI starts, an unreported cost must not refund the full reservation.
-        actual = booking
+        if not use_sub:
+            booking = agent_booking()
+            if not PK.reserve(booking, architect=True):
+                # busy only when live reservations hold money and some is left; a remainder below the booking with
+                # no live reservation will never grow today: that is the budget, not a turn to wait for
+                live = float(PK._spend_row().get('reserved_usd', 0)) + PK._external('FACTORY_BUILDERS_SPEND', ('reserved_usd',))
+                if live > 0 and PK.left(PK._today()) > 0:
+                    raise ContractFault(AGENT_BUSY)
+                if not sub_available():
+                    raise ContractFault('agent budget')
+                use_sub = True                  # no allowance left today: the subscription rung answers instead
+            else:
+                reserved = True
+        if use_sub:
+            argv = _agent_sub_argv(argv_fn)
+            env = {k: v for k, v in os.environ.items() if k.upper() in {'PATH', 'SYSTEMROOT', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'TEMP', 'TMP', 'HOME', 'HOMEDRIVE', 'HOMEPATH'}}
+            _agent_source['value'] = 'sub'
+            limit = 0.0
+        else:
+            _agent_source['value'] = 'key'
+            limit = round(max(booking, min(AGENT_BUDGET_USD, PK.left(PK._today()) + booking)), 6)
+            settings = _agent_settings(cwd)
+            argv = argv_fn() + ['-p', 'The task is in standard input; return one JSON contract.', '--bare',
+                               '--settings', str(settings), '--model', AGENT_MODEL,
+                               '--max-budget-usd', str(limit), '--output-format', 'stream-json', '--verbose',
+                               '--allowedTools', 'Read,Grep,Glob', '--disallowedTools',
+                               'Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch']
+            allowed = {'PATH', 'SYSTEMROOT', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'TEMP', 'TMP'}
+            env = {k: v for k, v in os.environ.items() if k.upper() in allowed}
+            # Once the CLI starts, an unreported cost must not refund the full reservation.
+            actual = booking
         result = run(argv, cwd=cwd, env=env, input=(system + '\n\n' + user).encode('utf-8'), idle_s=idle_s)
         raw = result.stdout.decode('utf-8') if isinstance(result.stdout, bytes) else result.stdout
         err = result.stderr.decode('utf-8', 'replace') if isinstance(result.stderr, bytes) else str(result.stderr or '')
-        if (result.returncode or '"is_error":true' in raw.replace(' ', '')) and _NO_FUNDS.search(raw + '\n' + err):
-            actual = 0.0                        # the refusal cost nothing; only the agent stage waits, never paid or the critic
-            PK.mark_agent_credit_dead()
-            raise ContractFault('agent credit')
-        envelope = None
+        # the verdict is read from the final `result` envelope, the returncode and stderr, never from the transcript
+        envelope, plain = None, []
         for line in raw.splitlines():
             try:
                 item = json.loads(line)
             except ValueError:
+                plain.append(line)
                 continue
             if isinstance(item, dict) and item.get('type') == 'result':
                 envelope = item
+        seen_limits = _record_sub_limits(raw) if use_sub else False
+        failed = bool(result.returncode or envelope is None or envelope.get('is_error'))
+        text = '\n'.join([str(envelope.get('result') or '') if envelope and isinstance(envelope.get('result'), str) else '',
+                          err] + plain)
+        if use_sub:
+            if failed and _SUB_LOGIN_WORDS.search(text):
+                _mark_sub_paused()
+                raise ContractFault(AGENT_SUB_FAULT)
+            if failed and _SUB_LIMIT_WORDS.search(text):
+                if not seen_limits:             # the stream named no window to close: do not hammer the limit
+                    _mark_sub_paused()
+                raise ContractFault('agent sub limit')
+        elif failed and _NO_FUNDS.search(text):
+            actual = 0.0                        # the refusal cost nothing; only the agent stage waits, never paid or the critic
+            PK.mark_agent_credit_dead()
+            raise ContractFault('agent credit')
         if envelope is None:
             raise ContractFault('non-json')
         cost = envelope.get('total_cost_usd')
-        if isinstance(cost, (int, float)) and 0 <= cost <= limit:
+        if not use_sub and isinstance(cost, (int, float)) and 0 <= cost <= limit:
             actual = cost
             try:
                 record_agent_fact(cost)

@@ -4501,7 +4501,7 @@ class Loop:
                 if PK.key_available():              # read now, on every slicing: a revived key brings the stage back
                     asks[engine] = A.ask_paid
             elif engine == "agent" and callable(getattr(A, "ask_agent", None)) and shutil.which("claude"):
-                if PK.key_available() and not PK.agent_credit_dead():
+                if A.key_can_pay() or A.sub_available():     # the key pays, or the subscription rung of the same ladder
                     asks[engine] = lambda system, user, _root=root: A.ask_agent(system, user, cwd=_root)
         return asks
 
@@ -6051,6 +6051,8 @@ class Loop:
                                 if k in vgs}
                 extra["vgs"]["refused"] = {k[len("refused_"):]: int(v or 0) for k, v in vgs.items()      # W-prio3 2: by kind
                                            if k.startswith("refused_") and type(v) is int}
+            if engine == "agent" and callable(getattr(A, "last_agent_source", None)) and A.last_agent_source():
+                extra.setdefault("source", A.last_agent_source())     # 'sub' or 'key': which way the agent step was paid
             self.event("slice", backlog_id=row, engine=engine, status=outcome, rung=job.ctx["rung"],
                        ladder=job.ctx.get("ladder", ""), **extra)
 

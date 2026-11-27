@@ -1166,6 +1166,79 @@ OFF_BODIES_NOTE = ('\nCode the failing test runs outside the files you may chang
 
 OFF_PATH_WAIT_S = 30
 NO_EFFECT_BLOCK_AFTER = 4   # 21.11 (was 2)
+
+# J4-cards (live 26-27.11, owner cards: 68 of 212 failed cards were a red gate and in 52 of them the second attempt failed with
+# the SAME tests as the first): the card of a contract (edit_parts) carried only the red BASE's failure, so a repeat was the
+# very same prompt as the first try. A repeat now also carries what the previous attempt did and why it was rejected.
+RETRY_FEEDBACK_CHARS = 1500    # the head of the previous rejection (failing ids, first asserts / the critic's reason)
+RETRY_HEAD = 'Your previous attempt on this task was applied and rejected. Do not repeat it. Why:\n'
+RETRY_WHERE = '\nThe previous attempt changed %s of %s (%d lines); that was not enough.\n'
+_HUNK = re.compile(r'^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@')
+_FAILING_ID = re.compile(r'failure (\S+?):(?=\s|$)')
+
+
+def file_diff(diff: str, file: str) -> str:
+    """The part of a unified ``diff`` that belongs to ``file`` ('' when it has none)."""
+    out, keep = [], False
+    for line in str(diff or '').splitlines(keepends=True):
+        if line.startswith('--- '):
+            keep = line[4:].strip() == 'a/' + file
+        if keep:
+            out.append(line)
+    return ''.join(out)
+
+
+def changed_ranges(diff: str) -> tuple:
+    """(``lines 3-5 and 9``, number of changed lines) of the new file from the hunks of a unified ``diff`` of one file;
+    ('', 0) when it has no hunk. A removal marks the place where the line was."""
+    marked, number, count = [], 0, 0
+    for line in str(diff or '').splitlines():
+        head = _HUNK.match(line)
+        if head:
+            number = int(head.group(1))
+        elif line.startswith('+') and not line.startswith('+++'):
+            marked.append(number)
+            number += 1
+            count += 1
+        elif line.startswith('-') and not line.startswith('---'):
+            marked.append(number)
+            count += 1
+        elif number and not line.startswith('\\'):
+            number += 1
+    runs = []
+    for value in sorted(set(marked)):
+        if runs and value <= runs[-1][1] + 1:
+            runs[-1][1] = value
+        else:
+            runs.append([value, value])
+    if not runs:
+        return '', 0
+    spans = ['%d' % a if a == b else '%d-%d' % (a, b) for a, b in runs]
+    return ('lines ' if len(spans) > 1 or runs[0][0] != runs[0][1] else 'line ') + ' and '.join(spans), count
+
+
+def retry_evidence(feedback, prev_diff, file: str) -> str:
+    """The note of a repeated attempt for the card of ``file``: the previous rejection (``feedback`` as fresh_feedback
+    gives it; a change with no effect says so and where to look) and WHERE that attempt changed the file: the line
+    ranges of the new file and the number of changed lines, never a line of its code (a model shown a failed answer
+    repeats it, and the voices of the ensemble must stay different)."""
+    feedback = str(feedback or '').strip()
+    if not feedback:
+        return ''
+    out = RETRY_HEAD + feedback[:RETRY_FEEDBACK_CHARS]
+    if '[no effect]' in feedback:
+        out += NO_EFFECT_NOTE
+    where, count = changed_ranges(file_diff(prev_diff, file))
+    if where:
+        out += RETRY_WHERE % (where, file, count)
+    return out
+
+
+def progressed(prior, now) -> bool:
+    """True when the failing tests of ``now`` are a strict, non-empty subset of those of ``prior``: the last change
+    got closer (fewer tests red), so that red does not count toward the row's reslice (settle's ``reslice_after``)."""
+    before, after = set(_FAILING_ID.findall(str(prior or ''))), set(_FAILING_ID.findall(str(now or '')))
+    return bool(before) and bool(after) and after < before
 _ADDRESS = re.compile(r'0x[0-9A-Fa-f]{4,}')
 _WORKDIR = re.compile(r'task-[\w.-]+')
 _SECONDS = re.compile(r'\b\d+(?:\.\d+)?s\b')
@@ -2960,7 +3033,7 @@ def vgs_alternates(per_part: dict) -> list:
 
 def edit_parts(task: Task, parts: list, workdir: Path, call, failing: str = '', use_code: bool = False,
                trace=(), fail_ids=(), info=None, on_event=None,
-               who=None, vgs: VgsPlan | None = None, root=None) -> tuple[int, str, str]:
+               who=None, vgs: VgsPlan | None = None, root=None, previous=None) -> tuple[int, str, str]:
     """Edit the parts of the contract in ``workdir``: one call per part (``call(part_task, directory, prompt)`` ->
     ``(rc, stdout, stderr)``), the parts of one stage at once (one thread and one HTTP call per part), the next stage
     when all parts of the previous one are applied. Each part works in its own copy ``<workdir>-p<i>-<try>``; its
@@ -2973,7 +3046,8 @@ def edit_parts(task: Task, parts: list, workdir: Path, call, failing: str = '', 
     (it changes something, only what the contract names); a part whose code cannot be applied goes to the model with
     the exact reason. W-see: every card also carries a context pack (K.context_pack: the red test and what the code
     reads; ``trace`` = the failing path, ``fail_ids`` = the red test ids); ``info`` (a dict) gets ``context_chars`` and
-    ``context_sections``; ``on_event(name)`` hears the re-ask for a new undefined name."""
+    ``context_sections``; ``on_event(name)`` hears the re-ask for a new undefined name. J4-cards: ``previous`` =
+    (feedback, diff) of the attempt rejected before this one; every card of a repeat carries it (retry_evidence)."""
     workdir = Path(workdir)
     answers: list[str] = []
     lock = threading.Lock()
@@ -2981,6 +3055,10 @@ def edit_parts(task: Task, parts: list, workdir: Path, call, failing: str = '', 
     test_ids = [str((contract.get('test') or {}).get('use') or '')] + [str(i) for i in fail_ids or ()] + list(task.tests or ())
     test_ids = [t for t in test_ids if t]
     notify = on_event or (lambda name: None)
+
+    def again(file):
+        """The previous attempt's rejection and its diff of ``file`` (a repeat only)."""
+        return retry_evidence(previous[0], previous[1], file) if previous else ''
 
     def with_context(file, part, header, region, sigs, base):
         """``base`` (the card with no pack) and the card with the pack of this part: the pack fills what is left up to
@@ -3002,7 +3080,8 @@ def edit_parts(task: Task, parts: list, workdir: Path, call, failing: str = '', 
                                   clean=lambda text: redact(text))
             if not pack:
                 return base, ''
-            card = K.part_prompt(file, part, header, region, failing=failing, signatures=sigs, limit=limit, context=pack)
+            card = K.part_prompt(file, part, header, region, failing=failing, signatures=sigs, limit=limit, context=pack,
+                                 previous=again(file))
             if tokens(len(base), base) >= channels.SMALL_PROMPT_TOKENS or \
                     tokens(len(card), card) <= channels.SMALL_PROMPT_TOKENS:
                 return card, pack
@@ -3158,7 +3237,8 @@ def edit_parts(task: Task, parts: list, workdir: Path, call, failing: str = '', 
         part_task = replace(task, touch_files=(file,), read_files=tuple(
             n for n in task.read_files if n != file) + tuple(n for n in task.touch_files if n != file))
         prompt_limit = channels.PROMPT_LIMIT_CHARS - len(PART_RETRY_NOTE % ('x' * 300))
-        base = K.part_prompt(file, part, header, region, failing=failing, signatures=sigs, limit=prompt_limit)
+        base = K.part_prompt(file, part, header, region, failing=failing, signatures=sigs, limit=prompt_limit,
+                             previous=again(file))
         try:
             base, pack = with_context(file, part, header, region, sigs, base)
         except Exception:       # noqa: BLE001 - an addition to the card: without it the card is as before
@@ -3653,6 +3733,7 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
         asked_now = (asked_names(text) | frozenset(ctx.get('asked') or ())) & defined_names(task, ctx['workdir'])
 
         def apply(state, row):
+            closer = source == 'gate' and progressed(fresh_feedback(state, tid), text)   # fewer tests red than last time
             add_feedback(state, tid, source, '[attempt %d] %s' % (attempt, text))
             if asked_now:                          # the next attempts show these whole first, whatever fails in between
                 remember_asked(row, asked_now)
@@ -3662,7 +3743,8 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                       + ([ctx['coder_model']] if ctx.get('coder_model') else [])
                       + sorted(ctx['coder_models']))   # every model this pass tried
             status = settle(state, tid, token, tests_ok=False, evidence=_digest(reason, text),
-                            max_attempts=max_attempts, unsafe=is_unsafe_reject(reason), failed_models=failed, reslice_after=reslice_after)
+                            max_attempts=max_attempts, unsafe=is_unsafe_reject(reason), failed_models=failed,
+                            reslice_after=reslice_after + 1 if closer and reslice_after >= 2 else reslice_after)
             row.pop('pending_review', None)
             return status, None
         return end(apply, reason=reason, reason_detail=redact(text)[:400])
@@ -5190,7 +5272,8 @@ def _pass_inner(task: Task, ck: Lease, *, checkpoint: Path, root: Path, staging:
                                                       trace=part_trace, fail_ids=part_fail_ids, info=see,
                                                       on_event=events.append,
                                                       who=lambda f, k=k: last_model.get((k, f)),
-                                                      vgs=vgs if not k else None, root=root)
+                                                      vgs=vgs if not k else None, root=root,
+                                                      previous=(feedback, prev_diff) if feedback else None)
                         if vgs is not None and vgs.winners and not k:
                             models[0] = set(vgs.winners)    # only the models whose text stands are the authors
                     finally:
