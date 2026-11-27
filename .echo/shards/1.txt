@@ -1,0 +1,7 @@
+tests/test_cm_kind.py
+tests/test_dispute_routing.py
+tests/test_extension_slots.py
+tests/test_factory_u15_91f681.py
+tests/test_kind_mixin_refusal.py
+tests/test_question_one_cut.py
+tests/test_stumble_kinds.py
