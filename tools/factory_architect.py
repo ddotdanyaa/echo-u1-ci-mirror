@@ -2247,23 +2247,20 @@ def _red_ids(contract, packet):
     return list(dict.fromkeys(ids))[:SOL.FINAL_IDS]
 
 
-def _control_verdict(ids, root, cloud):
-    """The ONE cloud call of a control run (the ids alone and the whole file of each) on the base: the control's answer, or None when there is
-    no verdict (a dead cloud, no place, a timeout, no readable file). Shared by author_try's control and the pre-check. Never raises."""
+def _cloud_run(ids, root, cloud, texts=None):
+    """The ONE home of the cloud call of a control run: the ids alone and the whole file of each, on the base (control) and, when ``texts`` is
+    given, with those texts written over it (variant '1'; without ``texts`` '1' is the unchanged file). Returns (answer, run_ids); the answer
+    is None when there is no verdict. Raises when there is no file to run. Used by author_try and by the red pre-check."""
     from tools import factory_hypo as HY, factory_solver as SOL
-    try:
-        files = sorted({i.split('::', 1)[0] for i in ids})
-        control = next((f for f in files if (Path(root) / f).is_file()), None)
-        if not ids or control is None:
-            return None
-        text = (Path(root) / control).read_bytes().decode('utf-8')
-        variants = {'1': {control: text}, HY.CONTROL: {control: text}}      # the cloud answers '1' always: it is the unchanged file too
-        ctx = types.SimpleNamespace(cloud=cloud or HY.cloud_batch, root=root, sleep=lambda seconds: None)
-        got = _bounded(lambda: SOL._verdict(ctx, ids + [HY.FILE_RUN + f for f in files], variants, types.SimpleNamespace(tests=0)), _try_wait())
-    except Exception:       # noqa: BLE001
-        return None
-    ctl = (got or {}).get(HY.CONTROL)
-    return ctl if isinstance(ctl, dict) else None
+    files = sorted({i.split('::', 1)[0] for i in ids})
+    control = next((f for f in sorted(texts or files) if (Path(root) / f).is_file()), None)
+    if not ids or control is None:
+        raise ValueError('nothing to run')
+    base = (Path(root) / control).read_bytes().decode('utf-8')
+    variants = {'1': texts or {control: base}, HY.CONTROL: {control: base}}
+    run_ids = ids + [HY.FILE_RUN + f for f in files]
+    ctx = types.SimpleNamespace(cloud=cloud or HY.cloud_batch, root=root, sleep=lambda seconds: None)
+    return _bounded(lambda: SOL._verdict(ctx, run_ids, variants, types.SimpleNamespace(tests=0)), _try_wait()), run_ids
 
 
 def red_precheck(packet, engine, root, *, cloud=None):
@@ -2274,10 +2271,18 @@ def red_precheck(packet, engine, root, *, cloud=None):
     ids = _red_ids({}, packet) if packet.get('guard_red') else []
     if not ids:
         return None
-    ctl = _control_verdict(ids, root, cloud)
-    if ctl is None or any(_did_not_run(ctl, i) for i in ids):
+    from tools import factory_hypo as HY
+    try:
+        got, run_ids = _cloud_run(ids, root, cloud)
+    except Exception:       # noqa: BLE001
         return None
-    if not all(_passes(i, set(ctl.get('passed') or ())) for i in ids):
+    ctl = (got or {}).get(HY.CONTROL)
+    if not isinstance(ctl, dict) or any(_did_not_run(ctl, i) for i in ids):
+        return None
+    passed = set(ctl.get('passed') or ())
+    files = {r[len(HY.FILE_RUN):] for r in run_ids if r.startswith(HY.FILE_RUN)}
+    # every id alone AND the whole-file run of each: the file run answers with plain test ids, so no failed test of those files may stand
+    if not all(_passes(i, passed) for i in ids) or any(str(t).split('::', 1)[0] in files for t in ctl.get('failed') or ()):
         return None
     return 'the run of the test on its own passed on the base %s without any change: %s' % (Path(root).name[:12], ', '.join(ids[:_TRY_FACT_IDS]))
 
@@ -2293,17 +2298,11 @@ def author_try(contract, engine, packet, root, *, cloud=None, folder=None):
         return None
     from tools import factory_hypo as HY, factory_solver as SOL
     try:
-        ids = [str(x) for x in (packet.get('guard_red') or []) if '::' in str(x)] or [use] + [str(x) for x in spec.get('also') or []]
-        ids = list(dict.fromkeys(ids))[:SOL.FINAL_IDS]
+        ids = _red_ids(contract, packet)
         texts, faults = applied_texts(_card_of(contract, engine), root)
-        control = next((f for f in sorted(texts) if (Path(root) / f).is_file()), None)
-        if faults or not texts or control is None:
+        if faults or not texts:
             return dict(kind='no_verdict')
-        files = sorted({i.split('::', 1)[0] for i in ids})
-        run_ids = ids + [HY.FILE_RUN + f for f in files]
-        variants = {'1': texts, HY.CONTROL: {control: (Path(root) / control).read_bytes().decode('utf-8')}}
-        ctx = types.SimpleNamespace(cloud=cloud or HY.cloud_batch, root=root, sleep=lambda seconds: None)
-        got = _bounded(lambda: SOL._verdict(ctx, run_ids, variants, types.SimpleNamespace(tests=0)), _try_wait())
+        got, run_ids = _cloud_run(ids, root, cloud, texts)
     except Exception:       # noqa: BLE001
         return dict(kind='no_verdict')
     ctl, cand = (got or {}).get(HY.CONTROL), (got or {}).get('1')
