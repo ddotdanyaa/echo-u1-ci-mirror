@@ -39,8 +39,11 @@ AGENT_BUSY_POLL_S = 5            # fac-90: a follow-up of a conversation waits f
 # fac-93: measured on the live loop 28.11 04:19: two agent runs (claude -p, the station's argv) held 239 MB (0.7 min old) and 253 MB (6 min old);
 # 350 MB keeps a margin for a resumed conversation (600 MB refused a third run with 4.1 GB of 16 GB free)
 EST_AGENT_BYTES = 350 * 2**20
+# fac-95: a running author is already missing from the free memory; its estimate is booked only until its process has grown
+# (a claude -p reaches its working set within its first minute), later the free memory shows it and booking it again counted it twice
+AGENT_YOUNG_S = 60
 _agent_lock = threading.Lock()
-_agent_count = 0
+_agent_runs = []                 # the start time (_now) of every agent run in flight
 _now, _sleep = time.monotonic, time.sleep
 DECISIONS = ('fix', 'not_code', 'cannot_reproduce', 'already_fixed', 'hold', 'split')   # hold: only paid/agent at rung >= 2 (W-hard 4)
 PART_CODE_FAULT = 'part code: '
@@ -2556,7 +2559,7 @@ _NO_FUNDS = re.compile(r'credit balance is too low|insufficient[ _]credit|billin
 
 def agent_live():
     with _agent_lock:
-        return _agent_count
+        return len(_agent_runs)
 
 
 def stream_run(argv, *, cwd, env, input, idle_s, max_s=None):
@@ -2888,7 +2891,6 @@ def ask_agent(system, user, *, cwd: Path, run=stream_run, argv_fn=PR.claude_argv
     a resumed call that fails (not a limit, login or budget fault) is made once more as a new session with the whole text."""
     from tools import factory_gate as G
     import uuid
-    global _agent_count
     PK.refuse_opus(AGENT_MODEL)
     use_sub = False
     if not key_can_pay():
@@ -2902,8 +2904,10 @@ def ask_agent(system, user, *, cwd: Path, run=stream_run, argv_fn=PR.claude_argv
     while True:
         with _agent_lock:
             free = G._free_ram()
-            if not (free is None or free - _agent_count * EST_AGENT_BYTES < G.MIN_FREE_RAM + EST_AGENT_BYTES):
-                _agent_count += 1
+            young = sum(1 for t in _agent_runs if _now() - t < AGENT_YOUNG_S)
+            if not (free is None or free - young * EST_AGENT_BYTES < G.MIN_FREE_RAM + EST_AGENT_BYTES):
+                started = _now()
+                _agent_runs.append(started)
                 break
         if not follow or _now() >= waited_until:      # a follow-up of an answered step waits for memory; a first ask does not
             raise ContractFault('busy')
@@ -3027,4 +3031,4 @@ def ask_agent(system, user, *, cwd: Path, run=stream_run, argv_fn=PR.claude_argv
                 PK.settle(booking, actual, architect=True, agent=True)
         finally:
             with _agent_lock:
-                _agent_count -= 1
+                _agent_runs.remove(started)

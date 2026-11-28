@@ -58,9 +58,9 @@ def _drive(tmp_path):
 
 def test_ram_gate_uses_the_measured_estimate(env_paid, tmp_path, monkeypatch):
     assert A.EST_AGENT_BYTES == 350 * 2**20
-    monkeypatch.setattr(A, "_agent_count", 1)
+    monkeypatch.setattr(A, "_agent_runs", [A._now()])      # fac-95: a young run is booked; an old one is already inside the free memory
     monkeypatch.setattr(G, "_free_ram", lambda: G.MIN_FREE_RAM + 2 * A.EST_AGENT_BYTES)
     assert "busy" not in _drive(tmp_path)
-    monkeypatch.setattr(A, "_agent_count", 0)
+    monkeypatch.setattr(A, "_agent_runs", [])
     monkeypatch.setattr(G, "_free_ram", lambda: G.MIN_FREE_RAM + A.EST_AGENT_BYTES - 1)
     assert "busy" in _drive(tmp_path)
