@@ -817,8 +817,7 @@ STATE_LOCKED_SLEEP_S = 3    # W-gemma5 3: a busy state lock lives milliseconds: 
 DRY_CACHE_S = 5            # the edit_dry reading is kept this long
 DAY_LEFT_FOR_CARDS = 0.35   # fac-63 (was W-dry 3 KW_DAY_LEFT_MIN 0.2): the loop's own calls (links / keywords, architect, slice) take a main-tier channel only while this share of its day is left; the rest is the cards' (edit + code + repair + review need ~600 of ~1700 requests a day)
 CARD_BUDGET_ROLES = ("architect", "slice")    # fac-63: the loop's roles held to DAY_LEFT_FOR_CARDS on the main tier (thrifty does the same for every non-small tier)
-HARD_FAILED_GENS = 6        # W-hard 1: generations that reached a red fix: from here the row sits until CONTRACT_REV changes
-HARD_REOPEN_S = 86400       # ... and opens by a new CONTRACT_REV no more than once a day
+HARD_FAILED_GENS = 6        # W-hard 1: generations that reached a red fix: from here the row sits until CONTRACT_REV changes; then one new attempt per revision (fac-93: the record's rev is the lock, no age wait)
 RED_EDITS_BAR = 2           # W-hard 1: a rung whose contract gave this many red fixes is not called for the row again
 A_NO_FIX = ("cannot_reproduce", "already_fixed", "hold")    # with duplicate_of:<ID>: the architect's no-fix holds (kept by text, 7 days)
 
@@ -6631,12 +6630,11 @@ class Loop:
         return ls.get("quarantine", {}).get(bid, {}).get("kind") == "failed_gens"
 
     def _hard_reopen(self, ls, now) -> set:
-        """A failed_gens quarantine opens only by a new CONTRACT_REV, and not more than once a day."""
+        """A failed_gens quarantine opens when its rev differs from the current CONTRACT_REV, at any age: one new attempt per revision."""
         from tools import factory_architect as A
         out = set()
         for bid, rec in list(ls.get("quarantine", {}).items()):
-            if rec.get("kind") == "failed_gens" and rec.get("rev") != str(A.CONTRACT_REV) \
-                    and now - float(rec.get("at", 0)) >= HARD_REOPEN_S:
+            if rec.get("kind") == "failed_gens" and rec.get("rev") != str(A.CONTRACT_REV):
                 ls["quarantine"].pop(bid)
                 ls.setdefault("row_hist", {}).setdefault(bid, {})["failed_gens"] = HARD_FAILED_GENS - 1
                 out.add(bid)
@@ -7506,6 +7504,45 @@ class Loop:
         entry.update(extra)
         return entry
 
+    @staticmethod
+    def _red_name(name) -> str:
+        """fac-92: one form of a test name for the comparison: no FAILED/ERROR prefix, no `` - message``, a Russian parameter
+        written as a backslash-u escape read as the letter (the two forms are the same test)."""
+        text = re.sub(r"^(?:FAILED|ERROR)\s+", "", str(name).strip())
+        text = re.sub(r"\\u([0-9a-fA-F]{4})|\\x([0-9a-fA-F]{2})", lambda m: chr(int(m.group(1) or m.group(2), 16)), text)
+        return text.split("] - ", 1)[0] + "]" if "[" in text and "] - " in text else text.split(" - ", 1)[0] if "[" not in text else text
+
+    def _rel_red_rows(self) -> dict:
+        """fac-92: {row: reason} of the rows of the build's own books that are still red in the last full build: a debt row
+        (``queued``, not ``closed``; its file has a red test) and a regression row (its test is red).  {} when red_last is
+        unknown or empty: no ``rel-`` row is given back then."""
+        from tools import factory_release as REL
+        try:
+            red = REL.red_last(self.cfg.state_dir).get("red")
+            names = {self._red_name(n) for n in red} if isinstance(red, list) else set()
+            if not names:
+                return {}
+            files = {n.split("::", 1)[0] for n in names}
+            out = {}
+            for file, rec in REL.debt(self.cfg.state_dir).items():
+                if not rec.get("queued") or rec.get("closed") or not rec.get("n"):
+                    continue
+                mine = {self._red_name(t) for t in rec.get("tests") or ()} & names
+                count = len(mine) if mine else (1 if self._red_name(file) in files else 0)
+                if count:
+                    out["rel-base-%d" % int(rec["n"])] = "debt book: %d red id(s) of %s, no live task and no place: back to the slicer" % (count, file)
+            per = {}
+            for name, rec in REL.regressions(self.cfg.state_dir).items():
+                row = str((rec or {}).get("row") or "")
+                if row and self._red_name(name) in names:
+                    per[row] = per.get(row, 0) + 1
+            for row, count in per.items():
+                out[row] = "regressions book: %d red id(s), no live task and no place: back to the slicer" % count
+            return out
+        except Exception as e:                       # the books are unreadable: no rel row is given back
+            self.err("rel red rows", e)
+            return {}
+
     def _lost_rows(self, tasks, state, now):
         """W-lost 1/3/4, one pass: (1) an open ECHO row with no live task and no place in any book goes to to_slice (event
         supply status=lost_row, counter ``lost_count`` -> stats.json lost); (3) holds of the old triage (no slicer-version label
@@ -7518,14 +7555,15 @@ class Loop:
             return None
         open_rows = {r["backlog_id"]: r for r in rows4 if r.get("open", True)
                      and not str(r["backlog_id"]).lower().startswith(("rel-", "fac-", "cl-"))}
-        if not open_rows:
+        rel_rows = self._rel_red_rows()                  # fac-92: the rows of the build's own books that are still red
+        if not (open_rows or rel_rows):
             return None
         version = F.slicer_version()
         by_row, live, last_gen, private = {}, set(), {}, set()
         for tid, row in state["tasks"].items():
             t = tasks.get(tid)
             bid = F.row_of(row.get("backlog_id") or (t.backlog_id if t else "") or "")
-            if bid not in open_rows or not isinstance(row.get("status"), str):
+            if (bid not in open_rows and bid not in rel_rows) or not isinstance(row.get("status"), str):
                 continue
             by_row.setdefault(bid, []).append((tid, row, t))
             if t is not None and (t.only_opus or not t.privacy_safe or F.is_private_text(t.title)):
@@ -7562,18 +7600,24 @@ class Loop:
                 placed.add(F.row_of(bid))
         mem = cur.setdefault("lost_rows", {})
         events, changed = [], False
-        for bid in sorted(by_row):                                                      # (1) the lost rows
+        for bid in sorted(set(by_row) | set(rel_rows)):                                 # (1) the lost rows (backlog + the build's books)
             if bid in placed or bid in disp or bid in live or bid in private:
                 continue
             rec = mem.get(bid) or {}
             if rec.get("ver") == version and now - float(rec.get("at") or 0) < self.LOST_AGAIN_S:
                 continue
-            cur.setdefault("to_slice", {})[bid] = self._lost_entry(bid, by_row[bid], cur, now, self.SLICE_LANES["lost"], open_rows)
+            entry = self._lost_entry(bid, by_row.get(bid, []), cur, now, self.SLICE_LANES["lost"], open_rows)
+            if bid in rel_rows:                          # fac-92: the entry of the books (text, guard, priority); no entry - no row
+                back = self._rel_entry_back(cur, bid)
+                if not back:
+                    continue
+                entry = {**back, "at": now, "hints": entry["hints"], "lane": self.SLICE_LANES["guard"] if back.get("guard") else entry["lane"]}
+            cur.setdefault("to_slice", {})[bid] = entry
             cur.get("slice_wait", {}).pop(bid, None)
             cur.get("reslices", {}).pop(bid, None)                                      # a fresh first pass, not a spent budget
             mem[bid] = {"ver": version, "at": now}
             cur["lost_count"] = int(cur.get("lost_count") or 0) + 1
-            events.append(("lost_row", bid, "no live task and no place in the books: back to the slicer"))
+            events.append(("lost_row", bid, rel_rows.get(bid) or "no live task and no place in the books: back to the slicer"))
             changed = True
         if cur.get("holds_lift_ver") != version:                                        # (3) the holds of the old triage, once per version
             cur["holds_lift_ver"] = version

@@ -62,17 +62,17 @@ jobs:
           - shard: 24
             files: 'tests/test_factory_providers.py tests/test_factory_quota.py tests/test_factory_ram_fac58.py tests/test_factory_red_by_assert.py'
           - shard: 25
-            files: 'tests/test_factory_reject_cli.py tests/test_factory_reject_promote.py tests/test_factory_requeue.py tests/test_factory_reslice.py'
+            files: 'tests/test_factory_reject_cli.py tests/test_factory_reject_promote.py tests/test_factory_reopen_ram.py tests/test_factory_requeue.py'
           - shard: 26
-            files: 'tests/test_factory_revive.py tests/test_factory_rig.py tests/test_factory_route_d.py tests/test_factory_router.py'
+            files: 'tests/test_factory_reslice.py tests/test_factory_revive.py tests/test_factory_rig.py tests/test_factory_route_d.py'
           - shard: 27
-            files: 'tests/test_factory_row_text.py tests/test_factory_search_literal.py tests/test_factory_selfgate_own_tests.py tests/test_factory_selfgate_sync.py'
+            files: 'tests/test_factory_router.py tests/test_factory_row_text.py tests/test_factory_search_literal.py tests/test_factory_selfgate_own_tests.py'
           - shard: 28
-            files: 'tests/test_factory_solve_budget.py tests/test_factory_test_card.py tests/test_factory_tfirst.py tests/test_factory_tick2.py'
+            files: 'tests/test_factory_selfgate_sync.py tests/test_factory_solve_budget.py tests/test_factory_test_card.py tests/test_factory_tfirst.py'
           - shard: 29
-            files: 'tests/test_factory_triage_candidates.py tests/test_factory_triage_state.py tests/test_factory_undefined_names.py tests/test_factory_unit_rules_async.py'
+            files: 'tests/test_factory_tick2.py tests/test_factory_triage_candidates.py tests/test_factory_triage_state.py tests/test_factory_undefined_names.py'
           - shard: 30
-            files: 'tests/test_factory_unit_test_rules.py tests/test_factory_vgs_stats.py tests/test_factory_view_fill.py'
+            files: 'tests/test_factory_unit_rules_async.py tests/test_factory_unit_test_rules.py tests/test_factory_vgs_stats.py tests/test_factory_view_fill.py'
     name: shard ${{ matrix.shard }}
     runs-on: windows-latest
     timeout-minutes: 25

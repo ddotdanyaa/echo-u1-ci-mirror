@@ -96,14 +96,14 @@ def _queued_work(name, open_ids, open_tests) -> bool:
 
 
 def regressions(state_dir) -> dict:
-    """{test name: {"row": "rel-...", "at": ...}} - confirmed new reds whose ``rel-`` row is still open."""
-    return _read_json(release_dir(state_dir) / "regressions.json", {})
+    """{test name: {"row": "rel-...", "at": ...}} - confirmed new reds whose ``rel-`` row is still open (names in the readable form)."""
+    return {red_ratchet.readable(k): v for k, v in _read_json(release_dir(state_dir) / "regressions.json", {}).items()}
 
 
 def record_regressions(state_dir, names, row_of, at) -> None:
     book = regressions(state_dir)
     for name in names:
-        book.setdefault(name, {"row": row_of.get(name, ""), "at": at})
+        book.setdefault(red_ratchet.readable(name), {"row": row_of.get(name, ""), "at": at})
     _write_json(release_dir(state_dir) / "regressions.json", book)
 
 
@@ -111,6 +111,7 @@ def reassign_regressions(state_dir, row_of) -> None:
     """fac-67: tests of regressions.json move to another open row: ``row_of`` = {test name: row}."""
     book = regressions(state_dir)
     for name, row in row_of.items():
+        name = red_ratchet.readable(name)
         if name in book:
             book[name] = dict(book[name], row=row)
     _write_json(release_dir(state_dir) / "regressions.json", book)
@@ -466,7 +467,7 @@ RED_PREV = "red_prev.json"      # the same of the full verdict before it
 
 
 def _key(name) -> str:
-    return red_ratchet.cut(red_ratchet.norm(name))
+    return red_ratchet.cut(red_ratchet.norm(red_ratchet.readable(name)))
 
 
 def keep_red_last(rel, sha, names) -> dict:
@@ -476,7 +477,7 @@ def keep_red_last(rel, sha, names) -> dict:
     old = _read_json(rel / RED_LAST, {})
     if old and str(old.get("sha")) != str(sha):
         _write_json(rel / RED_PREV, old)
-    _write_json(rel / RED_LAST, {"sha": str(sha), "at": time.time(), "red": sorted(str(n) for n in names)})
+    _write_json(rel / RED_LAST, {"sha": str(sha), "at": time.time(), "red": sorted(red_ratchet.readable(str(n)) for n in names)})
     return red_pair(rel)
 
 
@@ -489,7 +490,10 @@ def red_pair(rel) -> dict:
 
 def red_last(state_dir) -> dict:
     """The last full verdict's record ``{"sha", "at", "red"}`` ({} when none)."""
-    return _read_json(release_dir(state_dir) / RED_LAST, {})
+    rec = _read_json(release_dir(state_dir) / RED_LAST, {})
+    if isinstance(rec.get("red"), list):      # fac-91: a record written in the escaped form is read in the readable one
+        rec = dict(rec, red=[red_ratchet.readable(str(n)) for n in rec["red"]])
+    return rec
 
 
 def _green_twice(tests, pair) -> bool:

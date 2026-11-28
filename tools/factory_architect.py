@@ -36,7 +36,9 @@ AGENT_BUDGET_USD = 3.0
 AGENT_MODEL = 'claude-sonnet-5-5'
 AGENT_BUSY = 'agent busy'
 AGENT_BUSY_POLL_S = 5            # fac-90: a follow-up of a conversation waits for memory, looking this often, for AGENT_IDLE_S at most
-EST_AGENT_BYTES = 600 * 2**20
+# fac-93: measured on the live loop 28.11 04:19: two agent runs (claude -p, the station's argv) held 239 MB (0.7 min old) and 253 MB (6 min old);
+# 350 MB keeps a margin for a resumed conversation (600 MB refused a third run with 4.1 GB of 16 GB free)
+EST_AGENT_BYTES = 350 * 2**20
 _agent_lock = threading.Lock()
 _agent_count = 0
 _now, _sleep = time.monotonic, time.sleep
@@ -2553,7 +2555,7 @@ def agent_live():
         return _agent_count
 
 
-def stream_run(argv, *, cwd, env, input, idle_s):
+def stream_run(argv, *, cwd, env, input, idle_s, max_s=None):
     """Read stdout events while draining stderr and feeding stdin independently."""
     owned = PR.start_owned(argv, cwd=cwd, env=env, input=input)
     events, stderr, threads = queue.Queue(), [], []
@@ -2586,7 +2588,8 @@ def stream_run(argv, *, cwd, env, input, idle_s):
         thread.start()
         threads.append(thread)
     output = []
-    end = _now() + AGENT_ASK_MAX_S
+    cap = AGENT_ASK_MAX_S if max_s is None else max_s     # the fallback call of one ask gets only what is left of the ask's cap
+    end = _now() + cap
     try:
         while True:
             try:
@@ -2594,7 +2597,7 @@ def stream_run(argv, *, cwd, env, input, idle_s):
             except queue.Empty:
                 raise subprocess.TimeoutExpired(argv, idle_s, output=b''.join(output)) from None
             if line is not None and _now() >= end:
-                raise subprocess.TimeoutExpired(argv, AGENT_ASK_MAX_S, output=b''.join(output))
+                raise subprocess.TimeoutExpired(argv, cap, output=b''.join(output))
             if line is None:
                 try:
                     owned.wait(timeout=max(0.001, min(idle_s, end - _now())))
@@ -2929,6 +2932,7 @@ def ask_agent(system, user, *, cwd: Path, run=stream_run, argv_fn=PR.claude_argv
             # Once the CLI starts, an unreported cost must not refund the full reservation.
             actual = booking
         spent = 0.0
+        asked_at, remain = _now(), None         # one cap for both CLI calls of this ask
         resume = bool(talk is not None and talk.session and talk.sent and len(user) > len(talk.sent) and user.startswith(talk.sent))
         while True:
             session = talk.session if resume else (str(uuid.uuid4()) if talk is not None else '')
@@ -2943,7 +2947,8 @@ def ask_agent(system, user, *, cwd: Path, run=stream_run, argv_fn=PR.claude_argv
                                    '--tools', 'Read,Grep,Glob'] + flags + [
                                    '--allowedTools', 'Read,Grep,Glob', '--disallowedTools',
                                    'Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch']
-            result = run(argv, cwd=cwd, env=env, input=text_in.encode('utf-8'), idle_s=idle_s)
+            extra = {} if remain is None else {'max_s': remain}
+            result = run(argv, cwd=cwd, env=env, input=text_in.encode('utf-8'), idle_s=idle_s, **extra)
             raw = result.stdout.decode('utf-8') if isinstance(result.stdout, bytes) else result.stdout
             err = result.stderr.decode('utf-8', 'replace') if isinstance(result.stderr, bytes) else str(result.stderr or '')
             # the verdict is read from the final `result` envelope, the returncode and stderr, never from the transcript
@@ -2992,6 +2997,9 @@ def ask_agent(system, user, *, cwd: Path, run=stream_run, argv_fn=PR.claude_argv
             if fault:
                 if resume and fault != 'error_max_budget_usd':
                     talk.session, talk.sent, resume = '', '', False      # the resumed call failed: ONCE the old way, a new session with the whole text
+                    remain = AGENT_ASK_MAX_S - (_now() - asked_at)
+                    if remain <= 0:
+                        raise ContractFault(fault)      # nothing is left of the ask's cap: no second call
                     if not use_sub:
                         limit = round(limit - spent, 6)     # one booking, one limit for both calls: the new session gets what is left of it
                         if limit <= 0:
