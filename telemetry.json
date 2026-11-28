@@ -1,17 +1,17 @@
 {
- "accepted": 167,
- "free_ram_gb": 3.06,
+ "accepted": 169,
+ "free_ram_gb": 2.78,
  "funnel": {
-  "accepted": 167,
-  "claimed": 1922,
+  "accepted": 169,
+  "claimed": 1936,
   "coded": 231,
   "found_in_backlog": "unknown",
-  "gate_pass": 278,
-  "known_to_loop": 1101,
-  "promoted": 273,
-  "ready": 13,
-  "reviewed": 654,
-  "triaged": 852
+  "gate_pass": 281,
+  "known_to_loop": 1105,
+  "promoted": 276,
+  "ready": 12,
+  "reviewed": 658,
+  "triaged": 856
  },
  "model": {
   "cohere/command-a-03-2025": {
@@ -166,20 +166,20 @@
    "tokens_out": 4068
   },
   "google/gemma-4-26b-a4b-it": {
-   "calls": 17984,
-   "calls_usage_unknown": 14552,
+   "calls": 18278,
+   "calls_usage_unknown": 14815,
    "errors": {
     "rate_minute": 236,
     "timeout": 270,
     "transient": 3987
    },
    "http_429": 212,
-   "tokens_in": 8813754,
-   "tokens_out": 1346177
+   "tokens_in": 8890979,
+   "tokens_out": 1353934
   },
   "google/gemma-4-31b-it": {
-   "calls": 15109,
-   "calls_usage_unknown": 13306,
+   "calls": 15367,
+   "calls_usage_unknown": 13546,
    "errors": {
     "other": 1,
     "rate_minute": 228,
@@ -187,8 +187,8 @@
     "transient": 4027
    },
    "http_429": 193,
-   "tokens_in": 4818951,
-   "tokens_out": 452482
+   "tokens_in": 4868274,
+   "tokens_out": 456338
   },
   "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free": {
    "calls": 173,
@@ -213,8 +213,8 @@
    "tokens_out": 66710
   }
  },
- "promoted": 273,
- "rows_recognized": 148662,
+ "promoted": 276,
+ "rows_recognized": 149827,
  "schema": 3,
  "side": {
   "blocked": 0,
@@ -243,10 +243,10 @@
    "calls_usage_unknown": 0,
    "errors": {},
    "http_429": 0,
-   "rows": 15152,
+   "rows": 15225,
    "status": {
-    "ok": 10851,
-    "other": 4301
+    "ok": 10899,
+    "other": 4326
    },
    "tokens_in": 0,
    "tokens_out": 0
@@ -256,17 +256,17 @@
    "calls_usage_unknown": 0,
    "errors": {},
    "http_429": 0,
-   "rows": 8302,
+   "rows": 8340,
    "status": {
     "brake": 8,
     "brake_cleared": 1,
     "cleared": 198,
-    "deferred": 2738,
-    "error": 1197,
-    "other": 4012,
+    "deferred": 2744,
+    "error": 1198,
+    "other": 4039,
     "parked": 18,
-    "released": 73,
-    "run_failed": 57
+    "released": 75,
+    "run_failed": 59
    },
    "tokens_in": 0,
    "tokens_out": 0
@@ -276,20 +276,20 @@
    "calls_usage_unknown": 0,
    "errors": {},
    "http_429": 0,
-   "rows": 19645,
+   "rows": 19739,
    "status": {
-    "BLOCKED": 662,
-    "FAILED": 1269,
-    "READY": 3404,
-    "REVIEW": 278,
+    "BLOCKED": 663,
+    "FAILED": 1282,
+    "READY": 3407,
+    "REVIEW": 281,
     "WAITING_CHANNEL": 1001,
     "added": 16,
     "brake": 15,
-    "deferred": 2566,
+    "deferred": 2572,
     "empty": 125,
-    "infra": 61,
-    "ok": 7284,
-    "other": 2784,
+    "infra": 63,
+    "ok": 7320,
+    "other": 2814,
     "refused": 2,
     "requeued": 17,
     "stop": 161
@@ -298,18 +298,18 @@
    "tokens_out": 0
   },
   "other": {
-   "calls": 21042,
-   "calls_usage_unknown": 21042,
+   "calls": 21545,
+   "calls_usage_unknown": 21545,
    "errors": {},
    "http_429": 0,
-   "rows": 64373,
+   "rows": 65218,
    "status": {
-    "added": 101,
-    "applied": 2936,
+    "added": 103,
+    "applied": 2977,
     "error": 143,
     "failed": 61,
-    "ok": 509,
-    "other": 39283,
+    "ok": 513,
+    "other": 39576,
     "rejected": 27,
     "requeued": 43
    },
@@ -321,9 +321,9 @@
    "calls_usage_unknown": 0,
    "errors": {},
    "http_429": 0,
-   "rows": 300,
+   "rows": 303,
    "status": {
-    "other": 281,
+    "other": 284,
     "refused": 2,
     "requeued": 17
    },
@@ -331,7 +331,7 @@
    "tokens_out": 0
   },
   "review": {
-   "calls": 3607,
+   "calls": 3616,
    "calls_usage_unknown": 1662,
    "errors": {
     "model_missing": 1,
@@ -341,17 +341,17 @@
     "transient": 1234
    },
    "http_429": 372,
-   "rows": 6712,
+   "rows": 6730,
    "status": {
-    "approved": 294,
+    "approved": 297,
     "error": 1662,
-    "ok": 4756
+    "ok": 4771
    },
-   "tokens_in": 8344701,
-   "tokens_out": 221723
+   "tokens_in": 8380316,
+   "tokens_out": 222202
   },
   "run": {
-   "calls": 16359,
+   "calls": 16399,
    "calls_usage_unknown": 8166,
    "errors": {
     "model_missing": 3,
@@ -362,29 +362,29 @@
     "transient": 7147
    },
    "http_429": 313,
-   "rows": 32813,
+   "rows": 32903,
    "status": {
-    "BLOCKED": 739,
-    "FAILED": 1395,
-    "READY": 6428,
-    "REVIEW": 294,
+    "BLOCKED": 740,
+    "FAILED": 1408,
+    "READY": 6437,
+    "REVIEW": 297,
     "WAITING_CHANNEL": 1064,
     "error": 8167,
-    "ok": 14677,
-    "other": 49
+    "ok": 14739,
+    "other": 51
    },
-   "tokens_in": 30707115,
-   "tokens_out": 3452760
+   "tokens_in": 30798048,
+   "tokens_out": 3463894
   },
   "triage": {
    "calls": 0,
    "calls_usage_unknown": 0,
    "errors": {},
    "http_429": 0,
-   "rows": 811,
+   "rows": 815,
    "status": {
     "added": 112,
-    "empty": 691,
+    "empty": 695,
     "hold_dropped": 3,
     "other": 5
    },
@@ -393,40 +393,40 @@
   }
  },
  "status": {
-  "BLOCKED": 1401,
-  "FAILED": 2664,
-  "READY": 9832,
-  "REVIEW": 572,
+  "BLOCKED": 1403,
+  "FAILED": 2690,
+  "READY": 9844,
+  "REVIEW": 578,
   "WAITING_CHANNEL": 2065,
-  "added": 229,
-  "applied": 3470,
-  "approved": 294,
+  "added": 231,
+  "applied": 3511,
+  "approved": 297,
   "brake": 23,
   "brake_cleared": 1,
   "cleared": 198,
-  "deferred": 5306,
-  "empty": 816,
-  "error": 11169,
+  "deferred": 5318,
+  "empty": 820,
+  "error": 11170,
   "failed": 61,
   "hold_dropped": 3,
-  "infra": 61,
-  "ok": 38077,
-  "other": 50715,
+  "infra": 63,
+  "ok": 38242,
+  "other": 51095,
   "parked": 18,
   "refused": 4,
   "rejected": 45,
-  "released": 73,
+  "released": 75,
   "requeued": 77,
-  "run_failed": 57,
+  "run_failed": 59,
   "stop": 161
  },
  "summary": "ok",
  "tasks_now": {
   "DONE": 68,
-  "FAILED": 1878,
-  "PROMOTED": 239,
-  "READY": 13,
-  "RUNNING": 8
+  "FAILED": 1892,
+  "PROMOTED": 242,
+  "READY": 12,
+  "RUNNING": 13
  },
  "unrecognized_rows": 0
 }
