@@ -4675,7 +4675,7 @@ class Loop:
                     asks[engine] = A.ask_paid
             elif engine == "agent" and callable(getattr(A, "ask_agent", None)) and shutil.which("claude"):
                 if A.key_can_pay() or A.sub_available():     # the key pays, or the subscription rung of the same ladder
-                    asks[engine] = lambda system, user, _root=root: A.ask_agent(system, user, cwd=_root)
+                    asks[engine] = lambda system, user, talk=None, _root=root: A.ask_agent(system, user, cwd=_root, talk=talk)
         return asks
 
     SMALL_SLICE_MAX = 6        # W-gslice 3 / W-prio 1: slicing ensembles of the small tier at one time (was 3)
@@ -6185,9 +6185,12 @@ class Loop:
             if job.error is not None:
                 if isinstance(job.error, A.Exhausted):
                     engine = ",".join(str(f.get("engine", "")) for f in job.error.faults)
-                    faults = [{"engine": str(f.get("engine", "")), "fault": F.redact(str(f.get("fault", "")))[:300]}
+                    faults = [{"engine": str(f.get("engine", "")), "fault": F.redact(str(f.get("fault", "")))[:300],
+                               **{k: f[k] for k in ("asks", "author_try") if f.get(k)}}
                               for f in job.error.faults]
                     extra["faults"] = faults
+                    if any(f.get("author_try") for f in faults):
+                        extra["author_try"] = next(f["author_try"] for f in faults if f.get("author_try"))  # fac-90: the run the step ended on (red:N)
                     if getattr(job.error, "prompt_chars", None) is not None:
                         extra["prompt_chars"] = job.error.prompt_chars
                     if faults:
@@ -6213,7 +6216,9 @@ class Loop:
             if result.get("repaired"):
                 extra["repaired"] = list(result["repaired"])      # W-free 1: what the machine mended in the contract
             if result.get("author_try"):
-                extra["author_try"] = str(result["author_try"])      # fac-85: what the cloud run of the author's code did
+                extra["author_try"] = str(result["author_try"])      # fac-85/90: what the cloud run of the author's code did
+            if result.get("asks"):
+                extra["asks"] = int(result["asks"])  # fac-90: the calls of the agent step that made this contract
             portion = dict(engine=engine, rung=job.ctx["rung"])
             if packet.get("must_code"):
                 portion["must_code"] = True        # the card is made under the strong step's own code: its death ends the row

@@ -1,50 +1,50 @@
 # Factory status (generated, structured data only)
 
-Generated: 2026-11-28T02:35:00Z
-Source commit: shac655b337113a
+Generated: 2026-11-28T03:48:58Z
+Source commit: shac3b28a0078d1
 
 ## Commits (sha, time)
+- shac3b28a00 2026-11-28T06:36:19+03:00
+- shac4af5957 2026-11-28T06:22:22+03:00
+- sha8789615c 2026-11-28T06:01:26+03:00
+- shab8dc9db0 2026-11-28T05:39:13+03:00
+- shaa9a46d8b 2026-11-28T05:38:56+03:00
+- shad536b71d 2026-11-28T05:38:24+03:00
+- shaab06357f 2026-11-28T05:21:03+03:00
+- shaf78c905f 2026-11-28T05:00:43+03:00
 - shac655b337 2026-11-28T04:58:41+03:00
 - sha81260e73 2026-11-28T04:55:05+03:00
 - shacdba1989 2026-11-28T04:45:35+03:00
 - shaa3086cfe 2026-11-28T04:44:44+03:00
 - sha531b1251 2026-11-28T04:43:16+03:00
+- shad5151111 2026-11-28T04:39:37+03:00
 - shae928afbb 2026-11-28T04:33:16+03:00
 - shafd9e6c4a 2026-11-28T04:30:50+03:00
+- shadc7538f4 2026-11-28T04:28:02+03:00
 - sha0414b87a 2026-11-28T04:24:56+03:00
 - sha5e685688 2026-11-28T04:24:10+03:00
 - shac9d349ee 2026-11-28T04:23:51+03:00
-- sha2242a70b 2026-11-28T04:23:44+03:00
-- sha231b5db3 2026-11-28T04:21:06+03:00
-- shaf00472b4 2026-11-28T04:19:35+03:00
-- sha6a584760 2026-11-28T03:16:37+03:00
-- shaa681b68d 2026-11-28T03:03:20+03:00
-- sha4bd7e985 2026-11-28T02:44:55+03:00
-- sha21e4b2f3 2026-11-28T02:26:54+03:00
-- shad3e8e0b7 2026-11-28T02:16:16+03:00
-- sha93657e0c 2026-11-28T02:14:19+03:00
-- sha8d90d697 2026-11-28T02:12:21+03:00
 
 ## Funnel
 | step | count |
 |---|---|
-| accepted | 164 |
-| claimed | 1878 |
+| accepted | 165 |
+| claimed | 1910 |
 | coded | 231 |
 | found_in_backlog | unknown |
-| gate_pass | 268 |
-| known_to_loop | 1095 |
-| promoted | 263 |
-| ready | 12 |
-| reviewed | 639 |
-| triaged | 850 |
+| gate_pass | 275 |
+| known_to_loop | 1088 |
+| promoted | 270 |
+| ready | 10 |
+| reviewed | 649 |
+| triaged | 851 |
 
-Side counters: blocked=0, parked=0, requeued=17
-Tasks now: DONE=68, FAILED=1854, PROMOTED=229, READY=12
-Accepted: 164
-Promoted: 263
-Free RAM, GB: 5.27
-Telemetry rows: 144632 recognised, 0 unrecognised
+Side counters: blocked=1, parked=0, requeued=17
+Tasks now: BLOCKED=1, DONE=68, FAILED=1866, PROMOTED=236, READY=10, RUNNING=19
+Accepted: 165
+Promoted: 270
+Free RAM, GB: 2.65
+Telemetry rows: 146986 recognised, 0 unrecognised
 
 ## Spend per model
 | model | calls | tokens_in | tokens_out | usage_unknown | http_429 | errors |
@@ -62,23 +62,23 @@ Telemetry rows: 144632 recognised, 0 unrecognised
 | google/gemini-3.8-flash | 69 | 21237 | 15 | 66 | 28 | 43 |
 | google/gemini-4-hydrogen | 77 | 27174 | 2032 | 68 | 18 | 28 |
 | google/gemini-robotics-er-2-preview | 86 | 58488 | 4068 | 69 | 27 | 29 |
-| google/gemma-4-26b-a4b-it | 17023 | 8557735 | 1315505 | 13689 | 212 | 4487 |
-| google/gemma-4-31b-it | 14208 | 4647092 | 442614 | 12467 | 193 | 4628 |
-| openrouter/nvidia/nemotron-3-ultra-550b-a55b:free | 169 | 827871 | 169040 | 3 | 2 | 3 |
+| google/gemma-4-26b-a4b-it | 17535 | 8714512 | 1329230 | 14145 | 212 | 4489 |
+| google/gemma-4-31b-it | 14723 | 4771592 | 448572 | 12942 | 193 | 4628 |
+| openrouter/nvidia/nemotron-3-ultra-550b-a55b:free | 173 | 846691 | 170279 | 3 | 2 | 3 |
 | other | 65 | 1154192 | 66710 | 6 | 0 | 7 |
 
 ## Spans
 | span | rows | calls |
 |---|---|---|
 | answer | 554 | 0 |
-| gate | 14908 | 0 |
-| infra | 8208 | 0 |
-| loop | 19285 | 0 |
-| other | 61439 | 19346 |
-| promote | 290 | 0 |
-| review | 6642 | 3571 |
-| run | 32506 | 16225 |
-| triage | 800 | 0 |
+| gate | 15039 | 0 |
+| infra | 8259 | 0 |
+| loop | 19499 | 0 |
+| other | 63157 | 20275 |
+| promote | 297 | 0 |
+| review | 6688 | 3595 |
+| run | 32686 | 16303 |
+| triage | 807 | 0 |
 
 ## Channels (model ids)
 - 1db4ab-gemini-3-8-flash
@@ -129,7 +129,7 @@ Telemetry rows: 144632 recognised, 0 unrecognised
 ## Published files
 Modules: 38
 Tests in the cloud: 121
-Tests not in the cloud: 169
+Tests not in the cloud: 170
 - tests/test_agent_factory.py (backlog-id, call-word, env-path, long-run, pid-port)
 - tests/test_factory_503.py (backlog-id, long-run)
 - tests/test_factory_architect.py (backlog-id, email, env-path, path)
@@ -137,6 +137,7 @@ Tests not in the cloud: 169
 - tests/test_factory_ask_lock.py (backlog-id)
 - tests/test_factory_asked_code.py (dependency)
 - tests/test_factory_asked_memory.py (backlog-id)
+- tests/test_factory_author_talk.py (long-run)
 - tests/test_factory_author_try.py (long-run)
 - tests/test_factory_autofeed.py (backlog-id)
 - tests/test_factory_base_cache.py (dependency)
