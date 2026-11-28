@@ -1,0 +1,432 @@
+{
+ "accepted": 184,
+ "free_ram_gb": 3.54,
+ "funnel": {
+  "accepted": 184,
+  "claimed": 2061,
+  "coded": 231,
+  "found_in_backlog": "unknown",
+  "gate_pass": 312,
+  "known_to_loop": 1117,
+  "promoted": 307,
+  "ready": 2,
+  "reviewed": 709,
+  "triaged": 868
+ },
+ "model": {
+  "cohere/command-a-03-2025": {
+   "calls": 56,
+   "calls_usage_unknown": 0,
+   "errors": {},
+   "http_429": 0,
+   "tokens_in": 125549,
+   "tokens_out": 14605
+  },
+  "cohere/command-a-plus-05-2026": {
+   "calls": 20,
+   "calls_usage_unknown": 14,
+   "errors": {
+    "other": 1,
+    "transient": 13
+   },
+   "http_429": 0,
+   "tokens_in": 9624,
+   "tokens_out": 659
+  },
+  "cohere/north-mini-code-1.0": {
+   "calls": 17,
+   "calls_usage_unknown": 9,
+   "errors": {
+    "transient": 9
+   },
+   "http_429": 0,
+   "tokens_in": 18302,
+   "tokens_out": 3543
+  },
+  "google/gemini-3-flash-preview": {
+   "calls": 151,
+   "calls_usage_unknown": 111,
+   "errors": {
+    "rate_day": 45,
+    "transient": 1
+   },
+   "http_429": 45,
+   "tokens_in": 129344,
+   "tokens_out": 12774
+  },
+  "google/gemini-3.1-flash-lite": {
+   "calls": 2768,
+   "calls_usage_unknown": 997,
+   "errors": {
+    "rate_day": 12,
+    "rate_minute": 10,
+    "timeout": 5,
+    "transient": 135
+   },
+   "http_429": 12,
+   "tokens_in": 9505789,
+   "tokens_out": 668113
+  },
+  "google/gemini-3.1-flash-lite-preview": {
+   "calls": 1553,
+   "calls_usage_unknown": 881,
+   "errors": {
+    "rate_day": 22,
+    "rate_minute": 10,
+    "timeout": 10,
+    "transient": 106
+   },
+   "http_429": 25,
+   "tokens_in": 1914537,
+   "tokens_out": 230980
+  },
+  "google/gemini-3.5-flash": {
+   "calls": 114,
+   "calls_usage_unknown": 96,
+   "errors": {
+    "rate_day": 46,
+    "rate_minute": 2,
+    "transient": 3
+   },
+   "http_429": 46,
+   "tokens_in": 60502,
+   "tokens_out": 5115
+  },
+  "google/gemini-3.5-flash-lite": {
+   "calls": 3637,
+   "calls_usage_unknown": 1475,
+   "errors": {
+    "rate_day": 13,
+    "transient": 36
+   },
+   "http_429": 13,
+   "tokens_in": 11779631,
+   "tokens_out": 706151
+  },
+  "google/gemini-3.6-flash": {
+   "calls": 212,
+   "calls_usage_unknown": 126,
+   "errors": {
+    "rate_day": 29,
+    "rate_minute": 13,
+    "transient": 35
+   },
+   "http_429": 29,
+   "tokens_in": 451033,
+   "tokens_out": 22019
+  },
+  "google/gemini-3.7-flash": {
+   "calls": 93,
+   "calls_usage_unknown": 92,
+   "errors": {
+    "rate_day": 35,
+    "rate_minute": 3,
+    "timeout": 5,
+    "transient": 9
+   },
+   "http_429": 35,
+   "tokens_in": 9121,
+   "tokens_out": 14
+  },
+  "google/gemini-3.8-flash": {
+   "calls": 88,
+   "calls_usage_unknown": 85,
+   "errors": {
+    "rate_day": 28,
+    "rate_minute": 2,
+    "timeout": 3,
+    "transient": 11
+   },
+   "http_429": 28,
+   "tokens_in": 21237,
+   "tokens_out": 15
+  },
+  "google/gemini-4-hydrogen": {
+   "calls": 120,
+   "calls_usage_unknown": 109,
+   "errors": {
+    "rate_day": 18,
+    "timeout": 3,
+    "transient": 7
+   },
+   "http_429": 18,
+   "tokens_in": 34543,
+   "tokens_out": 2187
+  },
+  "google/gemini-robotics-er-2-preview": {
+   "calls": 131,
+   "calls_usage_unknown": 111,
+   "errors": {
+    "rate_day": 27,
+    "rate_minute": 1,
+    "transient": 1
+   },
+   "http_429": 27,
+   "tokens_in": 76020,
+   "tokens_out": 4474
+  },
+  "google/gemma-4-26b-a4b-it": {
+   "calls": 20318,
+   "calls_usage_unknown": 16588,
+   "errors": {
+    "rate_minute": 236,
+    "timeout": 270,
+    "transient": 3995
+   },
+   "http_429": 212,
+   "tokens_in": 9541010,
+   "tokens_out": 1452881
+  },
+  "google/gemma-4-31b-it": {
+   "calls": 17170,
+   "calls_usage_unknown": 15245,
+   "errors": {
+    "other": 1,
+    "rate_minute": 228,
+    "timeout": 376,
+    "transient": 4027
+   },
+   "http_429": 193,
+   "tokens_in": 5141673,
+   "tokens_out": 479072
+  },
+  "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free": {
+   "calls": 173,
+   "calls_usage_unknown": 3,
+   "errors": {
+    "rate_day": 2,
+    "rate_minute": 1
+   },
+   "http_429": 2,
+   "tokens_in": 846691,
+   "tokens_out": 170279
+  },
+  "other": {
+   "calls": 65,
+   "calls_usage_unknown": 6,
+   "errors": {
+    "model_missing": 4,
+    "transient": 3
+   },
+   "http_429": 0,
+   "tokens_in": 1154192,
+   "tokens_out": 66710
+  }
+ },
+ "promoted": 307,
+ "rows_recognized": 159436,
+ "schema": 3,
+ "side": {
+  "blocked": 0,
+  "parked": 0,
+  "requeued": 18
+ },
+ "skipped_files": 0,
+ "source_sha": "shae54b96f27f1e",
+ "span": {
+  "answer": {
+   "calls": 0,
+   "calls_usage_unknown": 0,
+   "errors": {},
+   "http_429": 0,
+   "rows": 554,
+   "status": {
+    "applied": 534,
+    "deferred": 2,
+    "rejected": 18
+   },
+   "tokens_in": 0,
+   "tokens_out": 0
+  },
+  "gate": {
+   "calls": 0,
+   "calls_usage_unknown": 0,
+   "errors": {},
+   "http_429": 0,
+   "rows": 15817,
+   "status": {
+    "ok": 11290,
+    "other": 4527
+   },
+   "tokens_in": 0,
+   "tokens_out": 0
+  },
+  "infra": {
+   "calls": 0,
+   "calls_usage_unknown": 0,
+   "errors": {},
+   "http_429": 0,
+   "rows": 8531,
+   "status": {
+    "brake": 8,
+    "brake_cleared": 1,
+    "cleared": 204,
+    "deferred": 2764,
+    "error": 1204,
+    "other": 4193,
+    "parked": 18,
+    "released": 79,
+    "run_failed": 60
+   },
+   "tokens_in": 0,
+   "tokens_out": 0
+  },
+  "loop": {
+   "calls": 0,
+   "calls_usage_unknown": 0,
+   "errors": {},
+   "http_429": 0,
+   "rows": 20434,
+   "status": {
+    "BLOCKED": 682,
+    "FAILED": 1363,
+    "READY": 3465,
+    "REVIEW": 313,
+    "WAITING_CHANNEL": 1001,
+    "added": 16,
+    "brake": 15,
+    "deferred": 2591,
+    "empty": 125,
+    "infra": 63,
+    "ok": 7610,
+    "other": 3008,
+    "refused": 2,
+    "requeued": 18,
+    "stop": 162
+   },
+   "tokens_in": 0,
+   "tokens_out": 0
+  },
+  "other": {
+   "calls": 26097,
+   "calls_usage_unknown": 26097,
+   "errors": {},
+   "http_429": 0,
+   "rows": 72213,
+   "status": {
+    "added": 121,
+    "applied": 3181,
+    "error": 143,
+    "failed": 61,
+    "ok": 551,
+    "other": 41744,
+    "rejected": 27,
+    "requeued": 43
+   },
+   "tokens_in": 0,
+   "tokens_out": 0
+  },
+  "promote": {
+   "calls": 0,
+   "calls_usage_unknown": 0,
+   "errors": {},
+   "http_429": 0,
+   "rows": 335,
+   "status": {
+    "other": 315,
+    "refused": 2,
+    "requeued": 18
+   },
+   "tokens_in": 0,
+   "tokens_out": 0
+  },
+  "review": {
+   "calls": 3798,
+   "calls_usage_unknown": 1667,
+   "errors": {
+    "model_missing": 1,
+    "rate_day": 159,
+    "rate_minute": 229,
+    "timeout": 44,
+    "transient": 1234
+   },
+   "http_429": 372,
+   "rows": 7025,
+   "status": {
+    "approved": 329,
+    "error": 1667,
+    "ok": 5029
+   },
+   "tokens_in": 9143315,
+   "tokens_out": 236554
+  },
+  "run": {
+   "calls": 16791,
+   "calls_usage_unknown": 8184,
+   "errors": {
+    "model_missing": 3,
+    "other": 2,
+    "rate_day": 118,
+    "rate_minute": 277,
+    "timeout": 628,
+    "transient": 7157
+   },
+   "http_429": 313,
+   "rows": 33684,
+   "status": {
+    "BLOCKED": 761,
+    "FAILED": 1493,
+    "READY": 6519,
+    "REVIEW": 329,
+    "WAITING_CHANNEL": 1064,
+    "error": 8185,
+    "ok": 15281,
+    "other": 52
+   },
+   "tokens_in": 31675483,
+   "tokens_out": 3603037
+  },
+  "triage": {
+   "calls": 0,
+   "calls_usage_unknown": 0,
+   "errors": {},
+   "http_429": 0,
+   "rows": 843,
+   "status": {
+    "added": 112,
+    "empty": 723,
+    "hold_dropped": 3,
+    "other": 5
+   },
+   "tokens_in": 0,
+   "tokens_out": 0
+  }
+ },
+ "status": {
+  "BLOCKED": 1443,
+  "FAILED": 2856,
+  "READY": 9984,
+  "REVIEW": 642,
+  "WAITING_CHANNEL": 2065,
+  "added": 249,
+  "applied": 3715,
+  "approved": 329,
+  "brake": 23,
+  "brake_cleared": 1,
+  "cleared": 204,
+  "deferred": 5357,
+  "empty": 848,
+  "error": 11199,
+  "failed": 61,
+  "hold_dropped": 3,
+  "infra": 63,
+  "ok": 39761,
+  "other": 53844,
+  "parked": 18,
+  "refused": 4,
+  "rejected": 45,
+  "released": 79,
+  "requeued": 79,
+  "run_failed": 60,
+  "stop": 162
+ },
+ "summary": "ok",
+ "tasks_now": {
+  "DONE": 68,
+  "FAILED": 2001,
+  "PROMOTED": 273,
+  "READY": 2,
+  "RUNNING": 5
+ },
+ "unrecognized_rows": 0
+}
