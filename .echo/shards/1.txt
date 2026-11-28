@@ -1,0 +1,2 @@
+@tests/verify/answer/test_v_U152.py
+tests/verify/answer/test_v_U152.py::test_the_article_is_said_verbatim_in_portions_and_the_first_portion_is_quick
