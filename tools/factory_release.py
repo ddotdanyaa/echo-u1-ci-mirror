@@ -537,7 +537,15 @@ def closed_books(state_dir, red=None):
     if regr is None:
         return None
     debt_book = _read_json(rel / DEBT_FILE, {})
-    names = red if red is not None else (_read_json(rel / RED_LAST, {}).get("red") or ())
+    names = red
+    if names is None:
+        if (rel / RED_LAST).exists():       # a record that is there but unreadable is no empty list: the row stays open
+            rec = _strict_json(rel / RED_LAST)
+            if rec is None:
+                return None
+            names = rec.get("red") or ()
+        else:
+            names = ()
     return {"regr": {str((r or {}).get("row") or "") for r in regr.values() if isinstance(r, dict)},
             "debt": {int(r["n"]): bool(r.get("closed")) for r in debt_book.values() if isinstance(r, dict) and r.get("n")},
             "red": {_key(n) for n in names}}
