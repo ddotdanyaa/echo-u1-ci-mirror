@@ -1,0 +1,660 @@
+{
+ "about": "Trick questions with independent labelling (U74). Each question has rules (see tools/trick_score.py): accept_any / accept_all (the value), reject_any (what the negation excludes), units_any (a unit must be named), premise_any (the answer must reject the false premise); a trailing = on an item is a whole word. gold / wrong are one right and one wrong sample answer per question: tests/test_u74_trick_score.py runs the rules over them, so a rule that cannot tell them apart fails the test. The labeller is NOT the answering model; no human has checked the labels yet (spot-check by the owner is open). Nothing here is a measurement of a road.",
+ "labelled_by": "claude (cloud session, lane quality, 2026-11-14): not the answering model of any road; not checked by a human yet",
+ "questions": [
+  {
+   "id": "fp01",
+   "kind": "false_premise",
+   "question": "Почему Эйнштейн получил Нобелевскую премию за теорию относительности?",
+   "rules": {
+    "premise_any": [
+     "фотоэффект",
+     "фотоэлектр",
+     "не за теорию"
+    ]
+   },
+   "gold": "Он получил её не за теорию относительности, а за объяснение фотоэффекта.",
+   "wrong": "Потому что теория относительности изменила физику.",
+   "labelled_by": "claude (cloud session, lane quality, 2026-11-14): not the answering model of any road; not checked by a human yet"
+  },
+  {
+   "id": "fp02",
+   "kind": "false_premise",
+   "question": "В каком году Наполеон выиграл битву при Ватерлоо?",
+   "rules": {
+    "premise_any": [
+     "проиграл",
+     "потерпел",
+     "поражени",
+     "не выиграл"
+    ]
+   },
+   "gold": "Он её не выиграл: в 1815 году он проиграл.",
+   "wrong": "В 1815 году.",
+   "labelled_by": "claude (cloud session, lane quality, 2026-11-14): not the answering model of any road; not checked by a human yet"
+  },
+  {
+   "id": "fp03",
+   "kind": "false_premise",
+   "question": "Почему Великая Китайская стена видна из космоса невооружённым глазом?",
+   "rules": {
+    "premise_any": [
+     "не видна",
+     "не видно",
+     "миф",
+     "невидим",
+     "не виден"
+    ]
+   },
+   "gold": "Это миф: невооружённым глазом из космоса она не видна.",
+   "wrong": "Потому что она очень длинная.",
+   "labelled_by": "claude (cloud session, lane quality, 2026-11-14): not the answering model of any road; not checked by a human yet"
+  },
+  {
+   "id": "fp04",
+   "kind": "false_premise",
+   "question": "Почему Сидней является столицей Австралии?",
+   "rules": {
+    "premise_any": [
+     "канберр",
+     "не является",
+     "не столица"
+    ]
+   },
+   "gold": "Он не является столицей: столица Австралии Канберра.",
+   "wrong": "Потому что это самый большой город страны.",
+   "labelled_by": "claude (cloud session, lane quality, 2026-11-14): not the answering model of any road; not checked by a human yet"
+  },
+  {
+   "id": "fp05",
+   "kind": "false_premise",
+   "question": "Кто был первым человеком на Марсе?",
+   "rules": {
+    "premise_any": [
+     "никто",
+     "не бывал",
+     "не высаживал",
+     "не ступал",
+     "не был"
+    ]
+   },
+   "gold": "Никто: на Марсе не бывал ни один человек.",
+   "wrong": "Первым был Нил Армстронг.",
+   "labelled_by": "claude (cloud session, lane quality, 2026-11-14): not the answering model of any road; not checked by a human yet"
+  },
+  {
+   "id": "fp06",
+   "kind": "false_premise",
+   "question": "В каком году Пушкин написал «Войну и мир»?",
+   "rules": {
+    "premise_any": [
+     "толстой",
+     "не писал"
+    ]
+   },
+   "gold": "Пушкин её не писал, это роман Льва Толстого.",
+   "wrong": "В 1869 году.",
+   "labelled_by": "claude (cloud session, lane quality, 2026-11-14): not the answering model of any road; not checked by a human yet"
+  },
+  {
+   "id": "fp07",
+   "kind": "false_premise",
+   "question": "Какой химический символ у золота, Ag?",
+   "rules": {
+    "premise_any": [
+     "au",
+     "серебр"
+    ]
+   },
+   "gold": "Ag это серебро, а золото обозначается Au.",
+   "wrong": "Да, Ag.",
+   "labelled_by": "claude (cloud session, lane quality, 2026-11-14): not the answering model of any road; not checked by a human yet"
+  },
+  {
+   "id": "fp08",
+   "kind": "false_premise",
+   "question": "Почему вода кипит при пятидесяти градусах Цельсия на уровне моря?",
+   "rules": {
+    "premise_any": [
+     "100",
+     "сто=",
+     "не кипит"
+    ]
+   },
+   "gold": "Не кипит: на уровне моря вода кипит при 100 градусах.",
+   "wrong": "Из-за низкого давления.",
+   "labelled_by": "claude (cloud session, lane quality, 2026-11-14): not the answering model of any road; not checked by a human yet"
+  },
+  {
+   "id": "fp09",
+   "kind": "false_premise",
+   "question": "Почему летом Земля ближе к Солнцу, чем зимой?",
+   "rules": {
+    "premise_any": [
+     "наклон",
+     "не так",
+     "дальше",
+     "афели",
+     "не потому"
+    ]
+   },
+   "gold": "Это не так: времена года зависят от наклона оси, а в июле Земля даже дальше от Солнца.",
+   "wrong": "Потому что орбита вытянута.",
+   "labelled_by": "claude (cloud session, lane quality, 2026-11-14): not the answering model of any road; not checked by a human yet"
+  },
+  {
+   "id": "fp10",
+   "kind": "false_premise",
+   "question": "Почему Колумб доказал, что Земля круглая?",
+   "rules": {
+    "premise_any": [
+     "не доказ",
+     "знали",
+     "до колумба"
+    ]
+   },
+   "gold": "Он этого не доказывал: форму Земли знали ещё до него.",
+   "wrong": "Потому что доплыл до Америки.",
+   "labelled_by": "claude (cloud session, lane quality, 2026-11-14): not the answering model of any road; not checked by a human yet"
+  },
+  {
+   "id": "u01",
+   "kind": "units",
+   "question": "Какова скорость света в километрах в секунду?",
+   "rules": {
+    "units_any": [
+     "километр",
+     "км"
+    ],
+    "accept_any": [
+     "299",
+     "300",
+     "триста тысяч",
+     "двести девяносто"
+    ]
+   },
+   "gold": "Около 300 тысяч километров в секунду.",
+   "wrong": "Около 300 тысяч.",
+   "labelled_by": "claude (cloud session, lane quality, 2026-11-14): not the answering model of any road; not checked by a human yet"
+  },
+  {
+   "id": "u02",
+   "kind": "units",
+   "question": "Сколько секунд в одном часе?",
+   "rules": {
+    "units_any": [
+     "секунд",
+     "сек"
+    ],
+    "accept_any": [
+     "3600",
+     "три тысячи шестьсот"
+    ]
+   },
+   "gold": "В часе 3600 секунд.",
+   "wrong": "В часе 60.",
+   "labelled_by": "claude (cloud session, lane quality, 2026-11-14): not the answering model of any road; not checked by a human yet"
+  },
+  {
+   "id": "u03",
+   "kind": "units",
+   "question": "Сколько метров в одном километре?",
+   "rules": {
+    "units_any": [
+     "метр",
+     "м="
+    ],
+    "accept_any": [
+     "1000",
+     "тысяча",
+     "тысяч"
+    ]
+   },
+   "gold": "1000 метров.",
+   "wrong": "1000.",
+   "labelled_by": "claude (cloud session, lane quality, 2026-11-14): not the answering model of any road; not checked by a human yet"
+  },
+  {
+   "id": "u04",
+   "kind": "units",
+   "question": "Выразите три пятых в процентах.",
+   "rules": {
+    "units_any": [
+     "процент",
+     "%"
+    ],
+    "accept_any": [
+     "60",
+     "шестьдесят"
+    ]
+   },
+   "gold": "Три пятых это 60 процентов.",
+   "wrong": "60.",
+   "labelled_by": "claude (cloud session, lane quality, 2026-11-14): not the answering model of any road; not checked by a human yet"
+  },
+  {
+   "id": "u05",
+   "kind": "units",
+   "question": "Сколько граммов в двух с половиной килограммах?",
+   "rules": {
+    "units_any": [
+     "грамм",
+     "г="
+    ],
+    "accept_any": [
+     "2500",
+     "две тысячи пятьсот"
+    ]
+   },
+   "gold": "2500 граммов.",
+   "wrong": "2500.",
+   "labelled_by": "claude (cloud session, lane quality, 2026-11-14): not the answering model of any road; not checked by a human yet"
+  },
+  {
+   "id": "u06",
+   "kind": "units",
+   "question": "Сколько минут в трёх с половиной часах?",
+   "rules": {
+    "units_any": [
+     "минут",
+     "мин="
+    ],
+    "accept_any": [
+     "210",
+     "двести десять"
+    ]
+   },
+   "gold": "210 минут.",
+   "wrong": "210.",
+   "labelled_by": "claude (cloud session, lane quality, 2026-11-14): not the answering model of any road; not checked by a human yet"
+  },
+  {
+   "id": "u07",
+   "kind": "units",
+   "question": "Переведи пятьдесят миль в час в километры в час.",
+   "rules": {
+    "units_any": [
+     "километр",
+     "км"
+    ],
+    "accept_any": [
+     "80",
+     "81",
+     "восемьдесят"
+    ]
+   },
+   "gold": "Примерно 80 километров в час.",
+   "wrong": "Примерно 80.",
+   "labelled_by": "claude (cloud session, lane quality, 2026-11-14): not the answering model of any road; not checked by a human yet"
+  },
+  {
+   "id": "p01",
+   "kind": "period",
+   "question": "Кто был президентом США в 1995 году?",
+   "rules": {
+    "accept_any": [
+     "клинтон"
+    ]
+   },
+   "gold": "Билл Клинтон.",
+   "wrong": "Джордж Буш.",
+   "labelled_by": "claude (cloud session, lane quality, 2026-11-14): not the answering model of any road; not checked by a human yet"
+  },
+  {
+   "id": "p02",
+   "kind": "period",
+   "question": "Кто стал чемпионом мира по футболу в 2010 году?",
+   "rules": {
+    "accept_any": [
+     "испани"
+    ]
+   },
+   "gold": "Сборная Испании.",
+   "wrong": "Сборная Германии.",
+   "labelled_by": "claude (cloud session, lane quality, 2026-11-14): not the answering model of any road; not checked by a human yet"
+  },
+  {
+   "id": "p03",
+   "kind": "period",
+   "question": "Какая столица была у России в 1850 году?",
+   "rules": {
+    "accept_any": [
+     "петербург"
+    ]
+   },
+   "gold": "Санкт-Петербург.",
+   "wrong": "Москва.",
+   "labelled_by": "claude (cloud session, lane quality, 2026-11-14): not the answering model of any road; not checked by a human yet"
+  },
+  {
+   "id": "p04",
+   "kind": "period",
+   "question": "Как назывался Санкт-Петербург в 1930 году?",
+   "rules": {
+    "accept_any": [
+     "ленинград"
+    ]
+   },
+   "gold": "Ленинград.",
+   "wrong": "Петроград.",
+   "labelled_by": "claude (cloud session, lane quality, 2026-11-14): not the answering model of any road; not checked by a human yet"
+  },
+  {
+   "id": "p05",
+   "kind": "period",
+   "question": "Какая денежная единица была в Германии в 1995 году?",
+   "rules": {
+    "accept_any": [
+     "марк"
+    ]
+   },
+   "gold": "Немецкая марка.",
+   "wrong": "Евро.",
+   "labelled_by": "claude (cloud session, lane quality, 2026-11-14): not the answering model of any road; not checked by a human yet"
+  },
+  {
+   "id": "p06",
+   "kind": "period",
+   "question": "Кто был руководителем КПСС в 1975 году?",
+   "rules": {
+    "accept_any": [
+     "брежнев"
+    ]
+   },
+   "gold": "Леонид Брежнев.",
+   "wrong": "Михаил Горбачёв.",
+   "labelled_by": "claude (cloud session, lane quality, 2026-11-14): not the answering model of any road; not checked by a human yet"
+  },
+  {
+   "id": "p07",
+   "kind": "period",
+   "question": "Сколько стран было в Европейском союзе в 2005 году?",
+   "rules": {
+    "accept_any": [
+     "25",
+     "двадцать пять"
+    ]
+   },
+   "gold": "Двадцать пять стран.",
+   "wrong": "Двадцать семь стран.",
+   "labelled_by": "claude (cloud session, lane quality, 2026-11-14): not the answering model of any road; not checked by a human yet"
+  },
+  {
+   "id": "n01",
+   "kind": "negation",
+   "question": "Какие из этих планет не газовые гиганты: Юпитер, Марс, Сатурн, Земля?",
+   "rules": {
+    "accept_all": [
+     "марс",
+     "земл"
+    ]
+   },
+   "gold": "Марс и Земля.",
+   "wrong": "Юпитер и Сатурн.",
+   "labelled_by": "claude (cloud session, lane quality, 2026-11-14): not the answering model of any road; not checked by a human yet"
+  },
+  {
+   "id": "n02",
+   "kind": "negation",
+   "question": "Назови любой месяц, в котором нет тридцати одного дня.",
+   "rules": {
+    "accept_any": [
+     "феврал",
+     "апрел",
+     "июн",
+     "сентябр",
+     "ноябр"
+    ]
+   },
+   "gold": "Апрель.",
+   "wrong": "Июль.",
+   "labelled_by": "claude (cloud session, lane quality, 2026-11-14): not the answering model of any road; not checked by a human yet"
+  },
+  {
+   "id": "n03",
+   "kind": "negation",
+   "question": "Какое из чисел не является простым: семь, девять, одиннадцать, тринадцать?",
+   "rules": {
+    "accept_any": [
+     "9",
+     "девят"
+    ]
+   },
+   "gold": "Девять.",
+   "wrong": "Семь.",
+   "labelled_by": "claude (cloud session, lane quality, 2026-11-14): not the answering model of any road; not checked by a human yet"
+  },
+  {
+   "id": "n04",
+   "kind": "negation",
+   "question": "Верно ли, что не все птицы умеют летать?",
+   "rules": {
+    "accept_any": [
+     "да=",
+     "верно",
+     "пингвин",
+     "страус"
+    ],
+    "reject_any": [
+     "все птицы умеют"
+    ]
+   },
+   "gold": "Да, верно: пингвины и страусы не летают.",
+   "wrong": "Нет, все птицы умеют летать.",
+   "labelled_by": "claude (cloud session, lane quality, 2026-11-14): not the answering model of any road; not checked by a human yet"
+  },
+  {
+   "id": "n05",
+   "kind": "negation",
+   "question": "Сколько будет не пять плюс три, а пять умножить на три?",
+   "rules": {
+    "accept_any": [
+     "15",
+     "пятнадцать"
+    ]
+   },
+   "gold": "Пятнадцать.",
+   "wrong": "Восемь.",
+   "labelled_by": "claude (cloud session, lane quality, 2026-11-14): not the answering model of any road; not checked by a human yet"
+  },
+  {
+   "id": "n06",
+   "kind": "negation",
+   "question": "Назови столицу любой страны, кроме России и Франции.",
+   "rules": {
+    "accept_any": [
+     "берлин",
+     "рим",
+     "мадрид",
+     "лондон",
+     "вашингтон",
+     "пекин",
+     "токио",
+     "киев",
+     "минск",
+     "вена",
+     "варшав",
+     "анкар",
+     "дели",
+     "оттав",
+     "канберр",
+     "брасил"
+    ],
+    "reject_any": [
+     "москв",
+     "париж"
+    ]
+   },
+   "gold": "Берлин.",
+   "wrong": "Москва.",
+   "labelled_by": "claude (cloud session, lane quality, 2026-11-14): not the answering model of any road; not checked by a human yet"
+  },
+  {
+   "id": "n07",
+   "kind": "negation",
+   "question": "Какое из этих животных не млекопитающее: кит, дельфин, акула, летучая мышь?",
+   "rules": {
+    "accept_any": [
+     "акул"
+    ]
+   },
+   "gold": "Акула.",
+   "wrong": "Кит.",
+   "labelled_by": "claude (cloud session, lane quality, 2026-11-14): not the answering model of any road; not checked by a human yet"
+  },
+  {
+   "id": "r01",
+   "kind": "reasoning",
+   "question": "У Маши три яблока, она отдала два и купила пять. Сколько у неё яблок?",
+   "rules": {
+    "accept_any": [
+     "6",
+     "шесть"
+    ]
+   },
+   "gold": "Шесть яблок.",
+   "wrong": "Восемь яблок.",
+   "labelled_by": "claude (cloud session, lane quality, 2026-11-14): not the answering model of any road; not checked by a human yet"
+  },
+  {
+   "id": "r02",
+   "kind": "reasoning",
+   "question": "Поезд идёт сто двадцать километров в час. За сколько часов он пройдёт триста шестьдесят километров?",
+   "rules": {
+    "units_any": [
+     "час",
+     "ч="
+    ],
+    "accept_any": [
+     "3",
+     "три"
+    ]
+   },
+   "gold": "За три часа.",
+   "wrong": "За шесть часов.",
+   "labelled_by": "claude (cloud session, lane quality, 2026-11-14): not the answering model of any road; not checked by a human yet"
+  },
+  {
+   "id": "r03",
+   "kind": "reasoning",
+   "question": "Если все кошки животные, а Мурка кошка, то Мурка животное?",
+   "rules": {
+    "accept_any": [
+     "да=",
+     "является",
+     "животное"
+    ],
+    "reject_any": [
+     "нет, не",
+     "не обязательно"
+    ]
+   },
+   "gold": "Да, Мурка животное.",
+   "wrong": "Нет, не обязательно.",
+   "labelled_by": "claude (cloud session, lane quality, 2026-11-14): not the answering model of any road; not checked by a human yet"
+  },
+  {
+   "id": "r04",
+   "kind": "reasoning",
+   "question": "Брат старше сестры на два года, сестре десять лет. Сколько лет будет брату через три года?",
+   "rules": {
+    "accept_any": [
+     "15",
+     "пятнадцать"
+    ]
+   },
+   "gold": "Пятнадцать лет.",
+   "wrong": "Двенадцать лет.",
+   "labelled_by": "claude (cloud session, lane quality, 2026-11-14): not the answering model of any road; not checked by a human yet"
+  },
+  {
+   "id": "r05",
+   "kind": "reasoning",
+   "question": "Сколько процентов составляет число двадцать от числа восьмидесяти?",
+   "rules": {
+    "units_any": [
+     "процент",
+     "%"
+    ],
+    "accept_any": [
+     "25",
+     "двадцать пять"
+    ]
+   },
+   "gold": "Двадцать пять процентов.",
+   "wrong": "Четыре процента.",
+   "labelled_by": "claude (cloud session, lane quality, 2026-11-14): not the answering model of any road; not checked by a human yet"
+  },
+  {
+   "id": "r06",
+   "kind": "reasoning",
+   "question": "Если вчера было воскресенье, то какой день недели будет послезавтра?",
+   "rules": {
+    "accept_any": [
+     "сред"
+    ]
+   },
+   "gold": "Среда.",
+   "wrong": "Вторник.",
+   "labelled_by": "claude (cloud session, lane quality, 2026-11-14): not the answering model of any road; not checked by a human yet"
+  },
+  {
+   "id": "r07",
+   "kind": "reasoning",
+   "question": "У фермера семнадцать овец, все кроме девяти разбежались. Сколько овец осталось?",
+   "rules": {
+    "accept_any": [
+     "9",
+     "девять"
+    ]
+   },
+   "gold": "Девять.",
+   "wrong": "Восемь.",
+   "labelled_by": "claude (cloud session, lane quality, 2026-11-14): not the answering model of any road; not checked by a human yet"
+  },
+  {
+   "id": "r08",
+   "kind": "reasoning",
+   "question": "Сколько месяцев в году имеют двадцать восемь дней?",
+   "rules": {
+    "accept_any": [
+     "12",
+     "двенадцать",
+     "все="
+    ]
+   },
+   "gold": "Все двенадцать.",
+   "wrong": "Один, февраль.",
+   "labelled_by": "claude (cloud session, lane quality, 2026-11-14): not the answering model of any road; not checked by a human yet"
+  },
+  {
+   "id": "r09",
+   "kind": "reasoning",
+   "question": "Сколько будет две трети от девяти плюс один?",
+   "rules": {
+    "accept_any": [
+     "7",
+     "семь"
+    ]
+   },
+   "gold": "Семь.",
+   "wrong": "Шесть.",
+   "labelled_by": "claude (cloud session, lane quality, 2026-11-14): not the answering model of any road; not checked by a human yet"
+  },
+  {
+   "id": "r10",
+   "kind": "reasoning",
+   "question": "Что тяжелее: килограмм пуха или килограмм железа?",
+   "rules": {
+    "accept_any": [
+     "одинаков",
+     "равн",
+     "поровну"
+    ]
+   },
+   "gold": "Они весят одинаково.",
+   "wrong": "Железо.",
+   "labelled_by": "claude (cloud session, lane quality, 2026-11-14): not the answering model of any road; not checked by a human yet"
+  }
+ ]
+}

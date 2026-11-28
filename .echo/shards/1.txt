@@ -1,0 +1,7 @@
+tests/test_cm_kind.py
+tests/test_dispute_routing.py
+tests/test_extension_slots.py
+tests/test_factory_u15_91f681.py
+tests/test_g3_matrix.py
+tests/test_half_portion_meaning_preservation.py
+tests/test_kind_mixin_refusal.py
