@@ -1,0 +1,6 @@
+tests/registry/test_fn_4_07.py
+tests/test_always_answer_host.py
+tests/test_answer_watchdog.py
+tests/test_boot_order.py
+tests/test_c22_reviewfix_local.py
+tests/test_c22_voice.py
