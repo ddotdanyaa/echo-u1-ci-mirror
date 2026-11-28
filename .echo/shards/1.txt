@@ -1,0 +1,6 @@
+tests/test_g3_matrix.py
+tests/test_m5_tick.py
+tests/test_t_timer_holds.py
+tests/verify/kind_b/test_v_E78.py
+tests/verify/question/test_v_E44.py
+tests/verify/question/test_v_E73_1.py
