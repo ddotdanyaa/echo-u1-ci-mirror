@@ -26,6 +26,7 @@ from pathlib import Path
 
 from .agent_factory import redact
 from . import factory_tree
+from . import red_ratchet      # fac-91: readable / runnable test ids
 from .factory_process import run_owned
 try:                                       # the public mirror does not carry the cloud gate: its own number there
     from .factory_cloud_gate import SLOT_QUEUE_S
@@ -261,9 +262,9 @@ def _covered(cases, test: str) -> bool:
     """True when ``test`` (file, dir or file::node) produced at least one testcase."""
     dotted = _dotted(test)
     segments = test.split('::')[1:]
-    node = segments[-1] if segments else None
+    node = red_ratchet.readable(segments[-1]) if segments else None
     for case in cases:
-        cn, name = case.get('classname', ''), case.get('name', '')
+        cn, name = case.get('classname', ''), red_ratchet.readable(case.get('name', ''))
         in_file = cn == dotted or cn.startswith(dotted + '.')
         error = case.find('error')
         if (error is not None and (error.get('message') or '').startswith('collection failure')
@@ -509,7 +510,8 @@ def _run_once_raw(root, tests, timeout_s, workdir, wait_s, progress, deselect, w
                 pass  # no trace: the verdict as without it
         args = [sys.executable, '-m', 'pytest', '-q', '--tb=short', '-p', 'no:cacheprovider', *plugin,
                 '--rootdir=' + str(root), '--basetemp=' + str(Path(d) / 'bt'),
-                '--junitxml=' + str(xml), *['--deselect=' + _node(t) for t in deselect], *tests]
+                '--junitxml=' + str(xml), *['--deselect=' + red_ratchet.runnable(_node(t)) for t in deselect],
+                *[red_ratchet.runnable(t) for t in tests]]
         try:
             with pytest_slot(wait_s) as why:
                 waits.append(float(getattr(why, 'waited', 0.0) or 0.0))
@@ -867,7 +869,7 @@ def _judge(cases, tests, rc, tail, root, path=()) -> GateResult:
             msg = fail.get('message') or ''
             if not (msg.startswith('assert') or msg.startswith('AssertionError')
                     or (msg.startswith('Failed:') and re.search(r'\.py:\d+: in \w', fail.text or ''))):
-                crashed.append('%s::%s: %s' % (case.get('classname', ''), case.get('name', ''),
+                crashed.append('%s::%s: %s' % (case.get('classname', ''), red_ratchet.readable(case.get('name', '')),
                                                (msg.splitlines() or [''])[0][:120]))   # an empty message too
             notes.append('failure %s::%s: %s' % (case.get('classname', ''), case.get('name', ''), msg[:300]))
         err = case.find('error')
@@ -893,7 +895,7 @@ def _judge(cases, tests, rc, tail, root, path=()) -> GateResult:
         whys = [_env_reason(_exception_text(child), root, notes) for child in case if child.tag in ('failure', 'error')]
         reasons += whys
         if whys and all(whys):
-            env_ids.add('%s::%s' % (case.get('classname', ''), case.get('name', '')))
+            env_ids.add('%s::%s' % (case.get('classname', ''), red_ratchet.readable(case.get('name', ''))))
     # the environment is to blame only when EVERY red case is environmental
     env_reason = reasons[0] if reasons and all(reasons) else ''
     if not cases:
@@ -901,7 +903,7 @@ def _judge(cases, tests, rc, tail, root, path=()) -> GateResult:
     return GateResult(rc, len(cases), passed, failed, errors, skipped, junit_ok,
                       redact('\n'.join(notes[:6]))[:DIAG_LIMIT], env_reason,
                       tuple(missing),
-                      tuple(sorted('%s::%s' % (c.get('classname', ''), c.get('name', '')) for c in cases
+                      tuple(sorted('%s::%s' % (c.get('classname', ''), red_ratchet.readable(c.get('name', ''))) for c in cases
                                    if c.find('failure') is not None or c.find('error') is not None)),
                       tuple(sorted(crashed)), (), tuple(sorted(env_ids)), path=path)
 

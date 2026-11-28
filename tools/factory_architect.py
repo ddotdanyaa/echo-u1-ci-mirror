@@ -33,7 +33,9 @@ AGENT_IDLE_S = 300
 AGENT_BUDGET_USD = 3.0
 AGENT_MODEL = 'claude-sonnet-5-5'
 AGENT_BUSY = 'agent busy'
-EST_AGENT_BYTES = 600 * 2**20
+# fac-93: measured on the live loop 28.11 04:19: two agent runs (claude -p, the station's argv) held 239 MB (0.7 min old) and 253 MB (6 min old);
+# 350 MB keeps a margin for a resumed conversation (600 MB refused a third run with 4.1 GB of 16 GB free)
+EST_AGENT_BYTES = 350 * 2**20
 _agent_lock = threading.Lock()
 _agent_count = 0
 _now, _sleep = time.monotonic, time.sleep

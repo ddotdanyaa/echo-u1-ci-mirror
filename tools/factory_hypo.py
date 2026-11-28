@@ -243,7 +243,8 @@ def judge(res, ctl_pass, ids):
     if not isinstance(res, dict):
         return [], []
     passed, failed = set(res.get("passed") or ()), set(res.get("failed") or ())
-    return [i for i in ids if i in passed and i not in ctl_pass], sorted(i for i in ctl_pass if i not in passed)
+    missing = set(res.get("missing") or ())      # fac-91: an id whose own run ran no test is no verdict: not green, not newly red
+    return [i for i in ids if i in passed and i not in ctl_pass], sorted(i for i in ctl_pass if i not in passed and i not in missing)
 
 
 def cloud_batch(root, ids, files, *, runner=None, clock=time.monotonic, sleep=time.sleep, tid="hypo"):
