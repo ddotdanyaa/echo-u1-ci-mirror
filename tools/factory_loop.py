@@ -6191,7 +6191,7 @@ class Loop:
                               for f in job.error.faults]
                     extra["faults"] = faults
                     if any(f.get("author_try") for f in faults):
-                        extra["author_try"] = next(f["author_try"] for f in faults if f.get("author_try"))      # fac-90: the run the step ended on (red:N)
+                        extra["author_try"] = next(f["author_try"] for f in faults if f.get("author_try"))  # fac-90: the run the step ended on (red:N)
                     if getattr(job.error, "prompt_chars", None) is not None:
                         extra["prompt_chars"] = job.error.prompt_chars
                     if faults:
@@ -6219,7 +6219,7 @@ class Loop:
             if result.get("author_try"):
                 extra["author_try"] = str(result["author_try"])      # fac-85/90: what the cloud run of the author's code did
             if result.get("asks"):
-                extra["asks"] = int(result["asks"])      # fac-90: the calls of the agent step that made this contract
+                extra["asks"] = int(result["asks"])  # fac-90: the calls of the agent step that made this contract
             portion = dict(engine=engine, rung=job.ctx["rung"])
             if packet.get("must_code"):
                 portion["must_code"] = True        # the card is made under the strong step's own code: its death ends the row

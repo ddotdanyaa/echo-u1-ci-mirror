@@ -225,8 +225,7 @@ STAND_REPAIR = ('REPAIR: the scene cannot RUN because the stand is broken (a fix
 STAND_RESTATE = ('RESTATE: the scene runs and the product answers differently ON PURPOSE. Add "restate": true and "rule": 1-5 '
                  'objects {"file": "path, or OWNER_DECISION", "quote": "verbatim, 20 characters or more"} quoting the rule the '
                  'product follows now - from product code, from another test or from the owner decisions, never from a file of '
-                 'this card. '
-                 'The new expected value is exactly what the rule says; the scene and the number of checks stay. '
+                 'this card. The new expected value is exactly what the rule says; the scene and the number of checks stay. '
                  'The reviewers reject a restate whose quotes do not show a deliberate rule.')
 STAND_PRODUCT = 'Otherwise the product is the defect: fix the product, never the test.'
 STAND_STALE = ' A test that is out of date with no rule to quote is cannot_reproduce, with the reason.'
@@ -2335,6 +2334,10 @@ def contract_for(packet, *, rung, root, asks, named_ok=False, red_given=None, sk
         refused = []        # files of this engine's requests that could not be shown: the slice event keeps their names
         try:
             while True:
+                if counted and asks_n and _now() - begun >= TALK_DEADLINE_S:
+                    # fac-90: no new question after the talk deadline, whatever sent the step back (a defect, a reminder, a red run):
+                    # the worst case of the step is TALK_DEADLINE_S + the last ask + the cloud run, which fits SLICE_STALE_S
+                    raise ContractFault('talk deadline')
                 if engine == 'free_small':
                     # W-gslice 1-2: the packet squeezed into the small tier's window, then k voices of one ensemble
                     free_packet, system, base_user, user = fit_small(free_packet, rung, engine, base_user, user)
@@ -2447,6 +2450,8 @@ def contract_for(packet, *, rung, root, asks, named_ok=False, red_given=None, sk
                             fail_try = 'red:%d' % runs
                             raise ContractFault('author try: still red after %d runs: %s' % (runs, tried['facts']))
                         user += '\n' + tried['facts'] + '\nRuns left: %d.\nReturn the full contract again.' % (AUTHOR_TRY_RUNS - runs)
+                        # on purpose: the next answer goes the whole way again, so its one re-ask of each kind is given anew
+                        fixed = code_asked = reach_asked = dry_asked = False
                         continue        # fac-90: the next answer goes the whole way again, in the same conversation
                     if tried['kind'] == 'proven':
                         contract['proof'] = tried['proof']
@@ -2988,6 +2993,9 @@ def ask_agent(system, user, *, cwd: Path, run=stream_run, argv_fn=PR.claude_argv
                 if resume and fault != 'error_max_budget_usd':
                     talk.session, talk.sent, resume = '', '', False      # the resumed call failed: ONCE the old way, a new session with the whole text
                     if not use_sub:
+                        limit = round(limit - spent, 6)     # one booking, one limit for both calls: the new session gets what is left of it
+                        if limit <= 0:
+                            raise ContractFault(fault)
                         actual = spent + booking
                     continue
                 raise ContractFault(fault)
