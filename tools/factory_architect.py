@@ -263,10 +263,11 @@ _TEST_PATH = re.compile(r'(?:^|/)(?:tests?/|test_[^/]*\.py$)|_test\.py$')
 
 
 def author_code(engine) -> bool:
-    """The strong authors (paid, agent) have read the code when they answer: the code of every part of a fix is part of
-    their contract at any rung, from the first one (ready code is applied without a model and passes the cloud gate far
-    more often than an instruction re-typed by a free editor). The free steps never give it."""
-    return str(engine or '') in ('paid', 'agent')
+    """The steps whose prompt window holds the code they read (paid, agent, free, free_main) give the code of every part of a
+    fix as part of their contract at any rung, from the first one (ready code is applied without a model and passes the cloud
+    gate far more often than an instruction re-typed by a free editor), and get the cloud proof loop (author_try). Only
+    free_small (the small window) gives none: its card stays an instruction."""
+    return str(engine or '') in ('paid', 'agent', 'free', 'free_main')
 
 
 DRY_RULE = ('The editors cannot write this change (the free edit channels are out for the day, or they already failed on an '
@@ -287,7 +288,7 @@ SEARCH_NOTE = ('\nSEARCH (exact lines of the base file: copy them unchanged as t
 def search_literal_on(packet, engine) -> bool:
     """<id>: the light rows ask a free slicer for the literal SEARCH: a free step, rung < 2 (the row has not escalated), the edit
     channels open (a dry day wants ready code instead)."""
-    return (str(engine or '') in FREE_RUNGS and isinstance(packet, dict) and (packet.get('rung') or 0) < 2
+    return (str(engine or '') in FREE_RUNGS and not author_code(engine) and isinstance(packet, dict) and (packet.get('rung') or 0) < 2
             and not packet.get('edit_dry') and not packet.get('must_code'))
 
 
@@ -408,10 +409,10 @@ def build_prompt(packet, engine=''):
               (FREE_PROOF_RULE + '\n' if engine in FREE_RUNGS else '') + (GREEN_PROOF_RULE + '\n' if packet.get('green_proof') else '') +
               (VAGUE_RULE + '\n' if engine else '') +
               (DECISION_EXAMPLE + '\n' if engine in FREE_RUNGS else '') +
-              ((PART_CODE_RULE + '\n' + REVIEW_RULE + '\n') if author_code(engine) else '') +
+              ((PART_CODE_RULE + '\n' + (REVIEW_RULE + '\n' if engine in ('paid', 'agent') else '')) if author_code(engine) else '') +
               (SEARCH_LITERAL_RULE + '\n' if literal else '') +
               ((HOLD_RULE + (HOLD_AGENT if engine == 'agent' else '') + '\n') if hold_allowed(engine, packet.get('rung')) else '') +
-              (DRY_RULE + '\n' if engine in ('paid', 'agent') and (packet.get('edit_dry') or packet.get('must_code')) else '') +
+              (DRY_RULE + '\n' if author_code(engine) and (packet.get('edit_dry') or packet.get('must_code')) else '') +
               'Schema: ' + json.dumps(schema, ensure_ascii=False) + '\nExamples:\n' +
               '\n'.join(str(e) for e in packet.get('examples', [])))
     user = '\n'.join(f'{k}: {v}' for k, v in packet.items() if k not in ('examples', 'known_ids', 'rung', 'red_given', 'edit_dry', 'must_code', 'base_debt', 'trace_path', 'bisect_key', 'guard_red', 'guard_green'))
@@ -2434,7 +2435,7 @@ def contract_for(packet, *, rung, root, asks, named_ok=False, red_given=None, sk
                     rounds += 1
                     continue
                 if not author_code(engine):
-                    _drop_part_codes(contract)      # parts[].code is the strong authors' (paid, agent) at any rung
+                    _drop_part_codes(contract)      # parts[].code is the code writers' (author_code) at any rung
                 if not hold_allowed(engine, rung) and contract.get('decision') == 'hold':
                     raise ContractFault('hold is the answer of paid/agent at rung >= 2 only')
                 if contract.get('decision') == 'hold' and len(str(contract.get('why', '')).strip()) < HOLD_WHY_MIN:

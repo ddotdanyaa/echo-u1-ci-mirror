@@ -64,9 +64,9 @@ def test_a_search_twice_in_the_file_or_beside_ready_code_is_dropped(root):
 def test_the_rule_is_asked_of_free_slicers_on_light_rows_only():
     light = {"bid": "B1", "title": "t", "text": "row", "rung": 0}
     assert A.SEARCH_LITERAL_RULE in A.build_prompt(light, "free_small")[0]
-    assert A.SEARCH_LITERAL_RULE in A.build_prompt(light, "free")[0]
+    assert A.SEARCH_LITERAL_RULE not in A.build_prompt(light, "free")[0]       # fac-101: free / free_main give ready code, the literal SEARCH rule says "no code"
     assert A.SEARCH_LITERAL_RULE not in A.build_prompt(dict(light, rung=2), "paid")[0]
-    assert A.SEARCH_LITERAL_RULE not in A.build_prompt(dict(light, edit_dry=True), "free")[0]
+    assert A.SEARCH_LITERAL_RULE not in A.build_prompt(dict(light, edit_dry=True), "free_small")[0]
 
 
 def test_first_try_of_search_literal_cards_is_counted_on_their_own(tmp_path):
