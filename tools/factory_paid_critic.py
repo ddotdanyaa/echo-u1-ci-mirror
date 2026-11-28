@@ -660,7 +660,13 @@ def _control(task, diff, failure, exclude_model, baseline, workdir, key, models,
         context += '\nContract of the new test:\n' + spec + '\n'
     context += '\nTests and source regions:\n' + _review_source(task, baseline, workdir)
     note = K.stand_note(task)
-    prompt = note + (ASK_TEST if spec or getattr(task, 'kind', '') == 'unit_test' else ASK) + context
+    facts = K.author_facts(task)                # fac-84 <id>: the author's reasoning (a stand card's note already holds it)
+    if facts:
+        from tools import agent_factory as F
+        context += '\n' + F.redact(facts)
+    test_only = bool(spec) or getattr(task, 'kind', '') == 'unit_test'
+    # the rules belong to ASK only: a test-only card is expected to FAIL now, GATE_PASSED would contradict ASK_TEST
+    prompt = note + (ASK_TEST if test_only else ASK + K.GATE_PASSED.strip() + ' ' + K.NOT_SHOWN) + '\n' + context
     try:
         multifile = len(json.loads(getattr(task, 'contract', '') or '{}').get('parts', [])) > 1
     except (ValueError, TypeError, AttributeError):
@@ -745,7 +751,10 @@ def _call(model, prompt, key, verdicts=('approve', 'reject')):
 CONFIRM = ('A critic of an automated code factory rejected the candidate below with the claim you will read. You do not '
            'judge the candidate as a whole, only the claim. Is the claim TRUE of the code shown (check it against the diff '
            'and the source regions, not against the critic\'s wording), and does it make the product or its test worse '
-           'than before the change? Answer ONLY with JSON {"verdict":"confirm"|"refute","reason":"...","evidence":"the line '
+           'than before the change? Confirm ONLY when the diff or the code SHOWN proves the claim, and copy the proving line. A '
+           'claim that rests on code that is not shown, or on a guess ("if", "might", "either ... or"), is refuted with the '
+           'reason "not verifiable from the code shown"; the author\'s reasoning, when given, states facts about code that is not shown. '
+           'Answer ONLY with JSON {"verdict":"confirm"|"refute","reason":"...","evidence":"the line '
            'that proves it, copied character for character"}.\n')
 
 

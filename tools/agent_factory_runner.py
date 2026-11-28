@@ -1055,8 +1055,7 @@ def review_focus(baseline: dict, workdir: Path, names, files: dict, test_names=f
     return redact(''.join(out))
 
 
-GATE_PASSED = (' The candidate already compiles and passes the task tests (the gate ran them before you): never reject '
-               'it for syntax, imports or the cut of the diff; judge what the change does.')
+GATE_PASSED = K.GATE_PASSED
 
 
 REVIEW_CHECKS = (
@@ -1433,8 +1432,7 @@ def review_candidate(task: Task, workdir: Path, model: str, invoke, *,
         head = ('Review this patch task: ' + redact(task.title) + '.\n' + said_goal + ('' if restate else checks) + GATE_PASSED + '\n' + told +
                 (lessons + '\n' if lessons else '') +
                 (' The task files are below: small files whole, a large file as its outline and the parts that '
-                 'matter. Judge the candidate by its diff and the code shown; never reject it only because some '
-                 'code is not shown.\n' if light else
+                 'matter. Judge the candidate by its diff and the code shown; ' + K.NOT_SHOWN.replace('Never', 'never', 1) + '\n' if light else
                  ' Read only the explicitly supplied files (relative paths in your working directory: '
                  + ', '.join(sorted(files_for_hint)) + '); grep inside it is allowed, nothing outside it.\n') +
                 earlier + (execution if rubric else '') +

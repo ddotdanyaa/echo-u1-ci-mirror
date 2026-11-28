@@ -332,6 +332,23 @@ def contract_of(task) -> dict:
     return data if isinstance(data, dict) else {}
 
 
+GATE_PASSED = (' The candidate already compiles and passes the task tests (the gate ran them before you): never reject '
+               'it for syntax, imports, a name that "may not exist" or the cut of the diff; judge what the change does.')
+NOT_SHOWN = 'Never reject it only because some code is not shown.'     # fac-84 <id>: the one home of the two rules of every panel
+AUTHOR_FACTS = ('The author of the change READ the repository (Read, Grep) and wrote this reasoning. A FACT it states about code '
+                'that is not shown here (a method that does not exist, a function defined in another file, what a caller '
+                'passes) stands, unless the diff or the code shown contradicts it:\n')
+
+
+def author_facts(task) -> str:
+    """fac-84 <id>: the contract's ``why`` (at most 1500 characters) under the header that says what it is; '' when the card has
+    none or when it is a stand card (its note already carries ``why``). The caller redacts."""
+    why = str(contract_of(task).get('why') or '').strip()
+    if not why or stand_note(task):
+        return ''
+    return AUTHOR_FACTS + why[:1500] + '\n'
+
+
 def restate_note(task) -> str:
     """W-restate 2: what the reviewers of a restate card are asked instead of the ordinary question, with the architect's evidence
     (verbatim lines of the product or of another test, checked to be in the tree by factory_architect.validate); '' for any other card."""
