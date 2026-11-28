@@ -1,0 +1,94 @@
+{
+ "source": "03_TESTS/gpt_live_webrtc/streaming_profit_turn_fenced.json (REAL_GPT_LIVE_ASR_CONTENT_EXISTING_ECHO_ENGINE_SERVER_TTS_HOST_SHADOW_NOT_IPHONE, 2026-10-25)",
+ "what": "The provider events of ONE user turn exactly as the controller receives them, with the wall-clock ms the probe stamped on each, and the probe clock of the start/end of its audio feed. turn.created carries start_ms/end_ms of the first fragment: the real start of the speech on the provider input-audio clock (200 ms grid).",
+ "input_start_ms": 8318,
+ "input_end_ms": 12963,
+ "events": [
+  {
+   "wall_ms": 9837,
+   "event": {
+    "type": "turn.created",
+    "turn": {
+     "id": "turn_EcsTSIpfiVevDz8CvPA7B",
+     "end_ms": 1400,
+     "role": "user",
+     "start_ms": 1200,
+     "transcript": "Теперь"
+    }
+   }
+  },
+  {
+   "wall_ms": 10644,
+   "event": {
+    "type": "turn.delta",
+    "turn_id": "turn_EcsTSIpfiVevDz8CvPA7B",
+    "delta": " экономика",
+    "start_ms": 2000,
+    "end_ms": 2200
+   }
+  },
+  {
+   "wall_ms": 11842,
+   "event": {
+    "type": "turn.delta",
+    "turn_id": "turn_EcsTSIpfiVevDz8CvPA7B",
+    "delta": ". Чем",
+    "start_ms": 3200,
+    "end_ms": 3400
+   }
+  },
+  {
+   "wall_ms": 12236,
+   "event": {
+    "type": "turn.delta",
+    "turn_id": "turn_EcsTSIpfiVevDz8CvPA7B",
+    "delta": " доход",
+    "start_ms": 3600,
+    "end_ms": 3800
+   }
+  },
+  {
+   "wall_ms": 13084,
+   "event": {
+    "type": "turn.delta",
+    "turn_id": "turn_EcsTSIpfiVevDz8CvPA7B",
+    "delta": " отличается",
+    "start_ms": 4400,
+    "end_ms": 4600
+   }
+  },
+  {
+   "wall_ms": 13219,
+   "event": {
+    "type": "turn.delta",
+    "turn_id": "turn_EcsTSIpfiVevDz8CvPA7B",
+    "delta": " от",
+    "start_ms": 4600,
+    "end_ms": 4800
+   }
+  },
+  {
+   "wall_ms": 14002,
+   "event": {
+    "type": "turn.delta",
+    "turn_id": "turn_EcsTSIpfiVevDz8CvPA7B",
+    "delta": " прибыли",
+    "start_ms": 5200,
+    "end_ms": 5400
+   }
+  },
+  {
+   "wall_ms": 14844,
+   "event": {
+    "type": "turn.done",
+    "turn": {
+     "id": "turn_EcsTSIpfiVevDz8CvPA7B",
+     "end_ms": 6200,
+     "role": "user",
+     "start_ms": 1200,
+     "transcript": "Теперь экономика. Чем доход отличается от прибыли"
+    }
+   }
+  }
+ ]
+}
