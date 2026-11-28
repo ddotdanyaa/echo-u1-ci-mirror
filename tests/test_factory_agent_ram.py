@@ -62,3 +62,20 @@ def test_a_finished_run_leaves_the_record_once(gate, monkeypatch):
     monkeypatch.setattr(A, "_agent_runs", [NOW - 300])
     _drive(gate)                                    # any exception on the way out of the call
     assert A.agent_live() == 1 and len(A._agent_runs) == 1
+
+
+def test_a_normal_return_leaves_the_record_once(gate, monkeypatch):
+    import subprocess
+    monkeypatch.setattr(G, "_free_ram", lambda: 10 ** 12)
+    monkeypatch.setattr(A, "_agent_runs", [])
+    seen = []
+
+    def run(argv, **k):
+        seen.append(len(A._agent_runs))             # booked while the run is in flight
+        out = b'{"type":"result","subtype":"success","result":"x"}\n'
+        return subprocess.CompletedProcess(argv, 0, out, b"")
+    work = gate.parent / (gate.name + "_work")      # outside the state dir: settings must not sit inside the cwd
+    work.mkdir()
+    got = A.ask_agent("sys", "user", cwd=work, run=run, argv_fn=lambda: ["claude"])
+    assert got == "x"
+    assert seen == [1] and len(A._agent_runs) == 0
