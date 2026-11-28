@@ -1,0 +1,5 @@
+@tests/test_h7.py
+tests/test_h7.py::test_a_refusal_says_which_rule_and_the_log_has_no_word_of_it
+tests/test_h7.py::test_the_answer_in_play_was_not_the_suspect[finished-ear_tempo]
+tests/test_h7.py::test_the_answer_in_play_was_not_the_suspect[first_portion-ear_tempo]
+tests/test_h7.py::test_the_answer_in_play_was_not_the_suspect[second_portion-ear_tempo]
