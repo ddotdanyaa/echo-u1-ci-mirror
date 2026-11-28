@@ -1,0 +1,2 @@
+@tests/test_g1_admit.py
+tests/test_g1_admit.py::test_a_retelling_of_the_portion_with_the_model_going_on_keeps_the_cursor
