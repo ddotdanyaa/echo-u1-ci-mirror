@@ -409,7 +409,7 @@ def build_prompt(packet, engine=''):
               (FREE_PROOF_RULE + '\n' if engine in FREE_RUNGS else '') + (GREEN_PROOF_RULE + '\n' if packet.get('green_proof') else '') +
               (VAGUE_RULE + '\n' if engine else '') +
               (DECISION_EXAMPLE + '\n' if engine in FREE_RUNGS else '') +
-              ((PART_CODE_RULE + '\n' + REVIEW_RULE + '\n') if author_code(engine) else '') +
+              ((PART_CODE_RULE + '\n' + (REVIEW_RULE + '\n' if engine in ('paid', 'agent') else '')) if author_code(engine) else '') +
               (SEARCH_LITERAL_RULE + '\n' if literal else '') +
               ((HOLD_RULE + (HOLD_AGENT if engine == 'agent' else '') + '\n') if hold_allowed(engine, packet.get('rung')) else '') +
               (DRY_RULE + '\n' if author_code(engine) and (packet.get('edit_dry') or packet.get('must_code')) else '') +
