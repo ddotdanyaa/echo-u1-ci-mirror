@@ -1,0 +1,4 @@
+@tests/test_night_memory_stand.py
+tests/test_night_memory_stand.py::test_4_the_owners_said_back_words_are_never_told_as_said_in_the_room
+tests/test_night_memory_stand.py::test_5_the_time_in_the_hook_does_not_grow_with_the_call
+tests/test_night_memory_stand.py::test_7_the_journal_counts_what_went_to_the_model_in_numbers_only
