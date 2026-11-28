@@ -205,8 +205,10 @@ AUTHOR_TRY_RUNS = 4     # fac-90: cloud runs of the agent's own code for a row, 
 #                         measure on which run the rows turn green, and this number is tuned by them
 # fac-90: a step that has spent this long (by its own clock) starts no further ask after a red run. SLICE_STALE_S (factory_loop) is 3600; what one more
 # ask can still spend: the wait for memory AGENT_IDLE_S (300) + the question AGENT_ASK_MAX_S (600, stream_run's ceiling) + the cloud run _try_wait() (120 + 240 = 360)
-# = 1260 s, so the last run ends by 2340 + 1260 = 3600 at the latest.
-TALK_DEADLINE_S = 3600 - AGENT_IDLE_S - AGENT_ASK_MAX_S - 360
+# = 1260 s. The step's clock starts at contract_for, so the engines before the agent are inside it; PREP_S is the room for what comes before
+# contract_for in the age of a slice (the packet is gathered). The last run ends by 2040 + PREP_S + 1260 = 3600 at the latest.
+PREP_S = 300
+TALK_DEADLINE_S = 3600 - PREP_S - AGENT_IDLE_S - AGENT_ASK_MAX_S - 360
 AGENT_TALK_RULE = ('You work inside the repository at the base commit (your working directory) with the tools Read, Grep and Glob. Read '
                    'the red test, the functions of its trace and their callers yourself before you answer. Never answer need: no source '
                    'is sent to you. Your last message is ONE JSON object and nothing else: no prose before or after it, no code fence; '
@@ -2297,6 +2299,7 @@ def contract_for(packet, *, rung, root, asks, named_ok=False, red_given=None, sk
     this row with a flaw on this version and sha is not asked again in the repeat (its answer counts as given when any
     other step answers now); a step that refused ('prompt oversize') is not asked at all."""
     global _samples_dir
+    started = _now()
     if samples:
         _samples_dir = samples
     red = is_red(packet, red_given)
@@ -2323,7 +2326,7 @@ def contract_for(packet, *, rung, root, asks, named_ok=False, red_given=None, sk
         code_asked = False
         repaired = []
         read_asked = reach_asked = need_asked = False
-        runs, asks_n, begun = 0, 0, _now()      # fac-90: the cloud runs and the calls of this step, its own clock
+        runs, asks_n, begun = 0, 0, started     # fac-90: the cloud runs and the calls of this step; the clock runs from the start of contract_for (the engines before the agent count)
         counted = engine == 'agent'
         talk = Talk() if counted and _takes_talk(asks[engine]) else None
         try_note = fail_try = None     # fac-85: what the cloud run of the author's code did, for the slice event
@@ -3005,7 +3008,6 @@ def ask_agent(system, user, *, cwd: Path, run=stream_run, argv_fn=PR.claude_argv
                         limit = round(limit - spent, 6)     # one booking, one limit for both calls: the new session gets what is left of it
                         if limit <= 0:
                             raise ContractFault(fault)
-                        actual = spent + booking
                     continue
                 raise ContractFault(fault)
             if talk is not None:
