@@ -1,0 +1,6 @@
+tests/break/portion_speech/test_b_memory.py
+tests/test_age_table.py
+tests/test_c22_repeat_rule.py
+tests/test_cl2_resume.py
+tests/test_cl2_settings.py
+tests/test_cm_overtaken_one_place.py
