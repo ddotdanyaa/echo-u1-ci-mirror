@@ -6217,7 +6217,7 @@ class Loop:
                 extra["repaired"] = list(result["repaired"])      # W-free 1: what the machine mended in the contract
             if result.get("author_try"):
                 extra["author_try"] = str(result["author_try"])      # fac-85/90: what the cloud run of the author's code did
-            if result.get("asks"):
+            if result.get("asks") is not None:
                 extra["asks"] = int(result["asks"])  # fac-90: the calls of the agent step that made this contract
             portion = dict(engine=engine, rung=job.ctx["rung"])
             if packet.get("must_code"):
