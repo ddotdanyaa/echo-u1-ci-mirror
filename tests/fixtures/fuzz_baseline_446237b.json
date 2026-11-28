@@ -1,0 +1,167 @@
+{
+ "passport": {
+  "set": "tools.replay.fuzz --seeds 0:2000 (n=2000 of N=2000 seeds), length 90 s, cloud 0.5,5, faults on",
+  "profile": "the stand profile of each seed (profile_of(seed)), no working profile",
+  "checker": "tools/replay/stand.py check() of claude/one 446237be (before the P14 scoring fixes: the A2e window of a lost final is the infinite one there)",
+  "load": "laptop N95, 2 jobs, 7469 s wall while other sessions ran; the clock of the stand is virtual, so no number depends on that load; the cloud was not available (billing refused 15.11)",
+  "sha": "446237be",
+  "crashes": []
+ },
+ "seeds": 2000,
+ "utterances": 28358,
+ "cues": 11324,
+ "seeds_with": {
+  "A1": 3,
+  "A2": 107,
+  "A2e": 173,
+  "A3": 3,
+  "A5": 5,
+  "A6o": 13,
+  "A9": 48
+ },
+ "reference": {
+  "227f594": {
+   "A0": 0,
+   "A1": 10,
+   "A2": 218,
+   "A2-after-stop": 25,
+   "A2e": 1141,
+   "A3": 101,
+   "A5": 4,
+   "A6": 55,
+   "A6o": 28,
+   "A7": 5,
+   "A8": 8,
+   "A9": 345
+  }
+ },
+ "groups": [
+  {
+   "invariant": "A2",
+   "signature": "A2 cue «…» of plan «…» answers the older question N «…», after question N «…» (known at N)",
+   "seeds": 102,
+   "min_seed": 39,
+   "first_seeds": [
+    39,
+    45,
+    54,
+    109,
+    117,
+    182
+   ]
+  },
+  {
+   "invariant": "A2e",
+   "signature": "A2e cue «…» of another question begun after the ear heard question N «…» at N (its final at N)",
+   "seeds": 100,
+   "min_seed": 0,
+   "first_seeds": [
+    0,
+    94,
+    141,
+    151,
+    180,
+    200
+   ]
+  },
+  {
+   "invariant": "A2e",
+   "signature": "A2e cue «…» of another question begun after the ear heard question N «…» at N (its final at None)",
+   "seeds": 75,
+   "min_seed": 45,
+   "first_seeds": [
+    45,
+    47,
+    48,
+    54,
+    85,
+    106
+   ]
+  },
+  {
+   "invariant": "A9",
+   "signature": "A9 one request, two utterances: «…»",
+   "seeds": 48,
+   "min_seed": 17,
+   "first_seeds": [
+    17,
+    112,
+    150,
+    236,
+    238,
+    271
+   ]
+  },
+  {
+   "invariant": "A6o",
+   "signature": "A6o cue «…» began at N inside utterance N «…» (N-N)",
+   "seeds": 13,
+   "min_seed": 28,
+   "first_seeds": [
+    28,
+    334,
+    393,
+    402,
+    416,
+    553
+   ]
+  },
+  {
+   "invariant": "A2",
+   "signature": "A2 cue «…» after «стоп» (utterance N, had at N)",
+   "seeds": 7,
+   "min_seed": 277,
+   "first_seeds": [
+    277,
+    288,
+    414,
+    421,
+    1173,
+    1504
+   ]
+  },
+  {
+   "invariant": "A5",
+   "signature": "A5 question N «…» known at N: no cue and no report in N s",
+   "seeds": 4,
+   "min_seed": 616,
+   "first_seeds": [
+    616,
+    980,
+    1621,
+    1865
+   ]
+  },
+  {
+   "invariant": "A1",
+   "signature": "A1 N answers to utterance N «…»: [«…», «…»]",
+   "seeds": 3,
+   "min_seed": 1482,
+   "first_seeds": [
+    1482,
+    1822,
+    1869
+   ]
+  },
+  {
+   "invariant": "A3",
+   "signature": "A3 revision N: advance N -> N with no utterance of its own since the portion was said at N",
+   "seeds": 3,
+   "min_seed": 670,
+   "first_seeds": [
+    670,
+    1108,
+    1234
+   ]
+  },
+  {
+   "invariant": "A5",
+   "signature": "A5 portion «…» said N times in a row with nobody speaking",
+   "seeds": 1,
+   "min_seed": 1956,
+   "first_seeds": [
+    1956
+   ]
+  }
+ ]
+}
