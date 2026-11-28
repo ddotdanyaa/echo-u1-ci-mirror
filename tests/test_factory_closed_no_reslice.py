@@ -80,10 +80,12 @@ def test_a_running_card_of_a_closed_row_is_untouched(tmp_path, monkeypatch):
     assert not [s for s in seen if s[0] == SHUT]
 
 
-def test_lost_rows_does_not_give_a_closed_row_back(tmp_path, monkeypatch):
-    import time
-    e, loop, seen = _setup(tmp_path, monkeypatch, SHUT)
-    _tick(loop, e)
-    tasks, state = loop.load()
-    loop._lost_rows(tasks, state, time.time())
-    assert SHUT not in loop.ls().get("to_slice", {})
+def test_rel_entry_back_gives_a_closed_row_nothing(tmp_path, monkeypatch):
+    # the books hold only OPEN: SHUT is closed there, so _lost_rows (which asks _rel_entry_back) cannot give it back
+    e, loop, seen = _setup(tmp_path, monkeypatch, SHUT, regr={G_OPEN: {"row": OPEN, "at": 1}}, red=[G_OPEN])
+    ls = loop.ls()
+    assert loop._rel_entry_back(ls, SHUT) is None
+    ls["rel_entry"] = {SHUT: {"guard": G_SHUT, "text": "t", "priority": 0}}
+    assert loop._rel_entry_back(ls, SHUT) is None
+    back = loop._rel_entry_back(ls, OPEN)               # control: an open row of the books is given back
+    assert back and back["guard"] == G_OPEN
