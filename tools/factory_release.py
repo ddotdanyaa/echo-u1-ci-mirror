@@ -530,13 +530,15 @@ def _strict_json(path):
 
 def closed_books(state_dir, red=None):
     """fac-94: the three books that say a ``rel-`` row is closed, read once for a sweep: ``{"regr": {rows with a test left},
-    "debt": {n: closed}, "red": {keys of the last full build's red tests}}``; None when regressions.json is unreadable.
+    "debt": {n: closed}, "red": {keys of the last full build's red tests}}``; None when regressions.json or the debt book is unreadable.
     ``red``: names to use instead of red_last.json."""
     rel = release_dir(state_dir)
     regr = _strict_json(rel / "regressions.json")
     if regr is None:
         return None
-    debt_book = _read_json(rel / DEBT_FILE, {})
+    debt_book = _strict_json(rel / DEBT_FILE)       # fac-98: a missing or unreadable debt book is a fault, not an empty book
+    if debt_book is None:
+        return None
     names = red
     if names is None:
         if (rel / RED_LAST).exists():       # a record that is there but unreadable is no empty list: the row stays open
@@ -554,7 +556,7 @@ def closed_books(state_dir, red=None):
 def rel_row_closed(state_dir, row, red=None, guard=None, books=None) -> bool:
     """fac-94: the one notion of «the build's books closed this row».  ``rel-<sha8>-<n>``: no test of it is left in
     regressions.json and its guard (when known) is not red in the last full build.  ``rel-base-<n>``: the debt book has the
-    number and its record is closed.  Anything else, or an unreadable book: False.  ``books``: the result of closed_books."""
+    number and its record is closed, or the book no longer has the number and the guard is not red.  Anything else, or an unreadable book: False.  ``books``: the result of closed_books."""
     row = str(row or "")
     try:
         found = DEBT_ROW.match(row)
@@ -564,7 +566,10 @@ def rel_row_closed(state_dir, row, red=None, guard=None, books=None) -> bool:
         if books is None:
             return False
         if found:
-            return books["debt"].get(int(found.group(1))) is True
+            n = int(found.group(1))
+            if n in books["debt"]:
+                return books["debt"][n] is True
+            return not (guard and _key(guard) in books["red"])      # fac-98: the number left the book (file green or renumbered)
         return row not in books["regr"] and not (guard and _key(guard) in books["red"])
     except (OSError, ValueError, TypeError, KeyError):
         return False

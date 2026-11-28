@@ -3774,8 +3774,10 @@ class Loop:
 
         def supersede_green(st):
             for tid, row in st["tasks"].items():
-                if F.row_of(row.get("backlog_id") or tid) in rows and row.get("status") == "READY":
-                    row.update(status="FAILED", reason="superseded:already_green")
+                if F.row_of(row.get("backlog_id") or tid) not in rows:
+                    continue
+                if row.get("status") == "READY" or (row.get("status") == "FAILED" and not F.is_terminal(row.get("reason"))):
+                    row.update(status="FAILED", reason="superseded:already_green")      # fac-99: a failed card no longer makes the row stuck
         try:
             self._tx(supersede_green)
         except Exception as e:      # noqa: BLE001 - a busy plan: the READY card meets the guard check later
@@ -3804,7 +3806,8 @@ class Loop:
             v = ((ls.get("to_slice") or {}).get(row), (ls.get("rel_entry") or {}).get(row))
             guard = next((str(x["guard"]) for x in v if isinstance(x, dict) and x.get("guard")), None)
             if REL.rel_row_closed(self.cfg.state_dir, row, guard=guard, books=books):
-                closed[row] = "regressions book: no test left, guard not red" if REL.REL_ROW.match(row) else "debt book: row closed"
+                closed[row] = "regressions book: no test left, guard not red" if REL.REL_ROW.match(row) else (
+                    "debt book: record closed" if int(row.rsplit("-", 1)[1]) in books["debt"] else "debt book: number gone (file green or renumbered), guard not red")
         if closed:
             self._close_rel_rows(ls, closed)
             self.save_ls(ls)
@@ -7028,6 +7031,20 @@ class Loop:
             if changed:
                 self.save_ls(ls)
         eligible = self._resliceable(tasks, state, ls, now)
+        if any(b.startswith("rel-") for b in eligible):          # fac-99: a row the build's books closed is not sliced because an old card failed
+            from tools import factory_release as REL
+            books = REL.closed_books(self.cfg.state_dir)
+            closed = {}
+            for b in [b for b in eligible if b.startswith("rel-")] if books is not None else ():
+                v = ((ls.get("to_slice") or {}).get(b), (ls.get("rel_entry") or {}).get(b))
+                guard = next((str(x["guard"]) for x in v if isinstance(x, dict) and x.get("guard")), None)
+                if REL.rel_row_closed(self.cfg.state_dir, b, guard=guard, books=books):
+                    closed[b] = "release books: closed, its old card failed"
+                    eligible.pop(b)
+            if closed:
+                self._close_rel_rows(ls, closed)
+                self.save_ls(ls)
+                tasks, state = self.load()
         boxed = self._box_rows()
         prios = {}          # <id>: the priorities of every row in one pass over the plan (was one pass per row: 1.2 s a tick)
         for t in tasks.values():
