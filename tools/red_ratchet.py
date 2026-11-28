@@ -30,7 +30,6 @@ ENV_MODULES = ('razdel', 'rapidfuzz', 'numpy', 'sherpa_onnx', 'onnxruntime')
 AUTO_MODULES = ('rapidfuzz', 'razdel', 'pymorphy3', 'snowballstemmer', 'hypothesis', 'httpx', 'numpy', 'sherpa_onnx', 'onnxruntime', 'diskcache', 'websockets', 'jsonschema', 'referencing')
 NO_MODULE = re.compile(r"No module named ['\"]([A-Za-z0-9_]+)")
 NO_DATA = re.compile(r"FileNotFoundError.*?((?:cloud_context|harvest_scenes)[/\\][^\s'\"]+|real_questions_ru\.json)")
-ESCAPE = re.compile(r'\\u([0-9a-fA-F]{4})|\\x([0-9a-fA-F]{2})')
 
 
 _BRACKET_ESCAPE = re.compile(r'\\U([0-9a-fA-F]{8})|\\u([0-9a-fA-F]{4})|\\x([0-9a-fA-F]{2})')
@@ -62,9 +61,8 @@ def runnable(test_id):
 
 
 def norm(line):
-    """One name in one form: no FAILED/ERROR prefix, no \\uXXXX escapes (pytest prints a Russian id either way)."""
-    line = re.sub(r'^(?:FAILED|ERROR)\s+', '', line.strip())
-    return ESCAPE.sub(lambda m: chr(int(m.group(1) or m.group(2), 16)), line)
+    """One name in one form: no FAILED/ERROR prefix, then the readable form (pytest prints a Russian id either way)."""
+    return readable(re.sub(r'^(?:FAILED|ERROR)\s+', '', line.strip()))
 
 
 def cut(name):
@@ -90,7 +88,7 @@ def parse_junit(text):
     for case in ET.fromstring(text).iter('testcase'):
         if case.find('failure') is None and case.find('error') is None:
             continue
-        parts, name = [p for p in case.get('classname', '').split('.') if p], case.get('name', '')
+        parts, name = [p for p in case.get('classname', '').split('.') if p], readable(case.get('name', ''))
         if not parts:
             out.append(name.replace('.', '/') + '.py')
             continue
@@ -108,7 +106,7 @@ def messages(text):
             bad = case.find('failure') if case.find('failure') is not None else case.find('error')
             if bad is None:
                 continue
-            parts, name = [p for p in case.get('classname', '').split('.') if p], case.get('name', '')
+            parts, name = [p for p in case.get('classname', '').split('.') if p], readable(case.get('name', ''))
             modules = [i for i, p in enumerate(parts) if p.startswith('test_')]
             at = modules[-1] if modules else len(parts) - 1
             key = '::'.join(['/'.join(parts[:at + 1]) + '.py', *parts[at + 1:], name]) if parts else name.replace('.', '/') + '.py'
