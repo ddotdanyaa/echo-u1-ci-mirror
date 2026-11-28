@@ -7507,7 +7507,7 @@ class Loop:
         written as a backslash-u escape read as the letter (the two forms are the same test)."""
         text = re.sub(r"^(?:FAILED|ERROR)\s+", "", str(name).strip())
         text = re.sub(r"\\u([0-9a-fA-F]{4})|\\x([0-9a-fA-F]{2})", lambda m: chr(int(m.group(1) or m.group(2), 16)), text)
-        return text.split(" - ", 1)[0] if "[" not in text else text
+        return text.split("] - ", 1)[0] + "]" if "[" in text and "] - " in text else text.split(" - ", 1)[0] if "[" not in text else text
 
     def _rel_red_rows(self) -> dict:
         """fac-92: {row: reason} of the rows of the build's own books that are still red in the last full build: a debt row
