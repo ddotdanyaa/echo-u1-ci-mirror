@@ -31,6 +31,7 @@ SMALL_TOTAL_S = 240.0           # W-prio3: the common term of a slicing ensemble
 SMALL_TEMPERATURES = (0.2, 0.5, 0.8, 0.35)
 KEYWORDS_MAX = 12
 AGENT_IDLE_S = 300
+AGENT_ASK_MAX_S = 600            # fac-90: one question of the agent ends by this wall clock even while it keeps talking (idle alone did not bound it)
 AGENT_BUDGET_USD = 3.0
 AGENT_MODEL = 'claude-sonnet-5-5'
 AGENT_BUSY = 'agent busy'
@@ -199,7 +200,10 @@ RED_NEVER = ' Never answer not_code: the red test is the proof that this is code
 RED_RULE = RED_FACT + ' The decision is only fix (test.use = the red test) or need.' + RED_NEVER
 AUTHOR_TRY_RUNS = 4     # fac-90: cloud runs of the agent's own code for a row, inside its one conversation; the `slice` events (author_try: proven:N / red:N)
 #                         measure on which run the rows turn green, and this number is tuned by them
-TALK_DEADLINE_S = 2400  # fac-90: a step that has spent this long (by its own clock) starts no further ask after a red run: SLICE_STALE_S is 3600
+# fac-90: a step that has spent this long (by its own clock) starts no further ask after a red run. SLICE_STALE_S (factory_loop) is 3600; what one more
+# ask can still spend: the wait for memory AGENT_IDLE_S (300) + the question AGENT_ASK_MAX_S (600, stream_run's ceiling) + the cloud run _try_wait() (120 + 240 = 360)
+# = 1260 s, so the last run ends by 2340 + 1260 = 3600 at the latest.
+TALK_DEADLINE_S = 3600 - AGENT_IDLE_S - AGENT_ASK_MAX_S - 360
 AGENT_TALK_RULE = ('You work inside the repository at the base commit (your working directory) with the tools Read, Grep and Glob. Read '
                    'the red test, the functions of its trace and their callers yourself before you answer. Never answer need: no source '
                    'is sent to you. Your last message is ONE JSON object and nothing else: no prose before or after it, no code fence; '
@@ -221,13 +225,11 @@ STAND_REPAIR = ('REPAIR: the scene cannot RUN because the stand is broken (a fix
 STAND_RESTATE = ('RESTATE: the scene runs and the product answers differently ON PURPOSE. Add "restate": true and "rule": 1-5 '
                  'objects {"file": "path, or OWNER_DECISION", "quote": "verbatim, 20 characters or more"} quoting the rule the '
                  'product follows now - from product code, from another test or from the owner decisions, never from a file of '
-                 'this card. The lines of product code that implement the deliberate behaviour ARE a rule to quote: when you can name '
-                 'them, answer a RESTATE with the new test text as ready code (the station runs it like any fix). '
+                 'this card. '
                  'The new expected value is exactly what the rule says; the scene and the number of checks stay. '
                  'The reviewers reject a restate whose quotes do not show a deliberate rule.')
 STAND_PRODUCT = 'Otherwise the product is the defect: fix the product, never the test.'
-STAND_STALE = (' cannot_reproduce is for a test that is wrong when nothing in the product code, in another test or in the owner '
-               'decisions can be quoted, with the reason; when you can quote the lines that do it on purpose, answer the RESTATE of (b).')
+STAND_STALE = ' A test that is out of date with no rule to quote is cannot_reproduce, with the reason.'
 REVIEW_RULE = ('Independent reviewers judge your code after the tests pass and reject: code fitted to the data of the test (its inputs '
                'special-cased, its expected values copied); behaviour that worked before and is lost (a guard made wider or '
                'narrower than the defect needs); a stub, a comment or an undefined name in place of the change; a try/except or '
@@ -2579,15 +2581,18 @@ def stream_run(argv, *, cwd, env, input, idle_s):
         thread.start()
         threads.append(thread)
     output = []
+    end = _now() + AGENT_ASK_MAX_S
     try:
         while True:
             try:
-                line = events.get(timeout=idle_s)
+                line = events.get(timeout=max(0.001, min(idle_s, end - _now())))
             except queue.Empty:
                 raise subprocess.TimeoutExpired(argv, idle_s, output=b''.join(output)) from None
+            if line is not None and _now() >= end:
+                raise subprocess.TimeoutExpired(argv, AGENT_ASK_MAX_S, output=b''.join(output))
             if line is None:
                 try:
-                    owned.wait(timeout=idle_s)
+                    owned.wait(timeout=max(0.001, min(idle_s, end - _now())))
                 except subprocess.TimeoutExpired:
                     raise subprocess.TimeoutExpired(argv, idle_s, output=b''.join(output)) from None
                 break

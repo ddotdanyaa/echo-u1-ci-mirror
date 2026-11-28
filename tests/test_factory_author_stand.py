@@ -58,11 +58,9 @@ def test_the_agent_on_a_red_row_gets_repair_restate_and_what_its_code_is_judged_
     assert "character for character" in system and '"restate": true' in system and '"rule"' in system
     assert SENTENCE in system and "alone may answer cannot_reproduce" in system
     assert "do not write a fix with a test part" not in system and "RESTATE" in system and "REPAIR" in system
-    # fac-90: cannot_reproduce is named only for a test that is wrong when nothing can be quoted (28.11: 14 of 32 parked rows named the product lines
-    # that do it on purpose and none answered a restate)
+    # cannot_reproduce is named only for a test out of date with no rule to quote
     stand = system[system.index("(a)"):]
-    assert "cannot_reproduce" not in stand[:stand.index("(c)")]
-    assert "when nothing in the product code, in another test or in the owner decisions can be quoted" in stand.split("(c)")[1]
+    assert "cannot_reproduce" not in stand[:stand.index("(c)")] and "no rule to quote" in stand.split("(c)")[1]
     assert system.index("(a)") < system.index("(b)") < system.index("(c)")
 
 
