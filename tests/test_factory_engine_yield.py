@@ -93,8 +93,8 @@ def test_yfloor_weak_step_waits_when_the_strong_ones_are_gone():
     prior = {e: dict(made=m, merged=g) for e, (m, g) in TABLE.items()}
     yields = A.engine_yield({}, NOW, prior)
     assert round(yields["free_small"]["yield"], 4) == 0.0031 and round(yields["agent"]["yield"], 3) == 0.129
-    assert A.weak_steps(("free", "free_main", "free_small"), yields) == {"free", "free_main", "free_small"}      # agent (gone) sets the bar: half of 0.129
-    assert A.weak_steps(("free_small",), yields) == {"free_small"}
+    assert A.weak_steps(("free", "free_main", "free_small"), yields) == {"free_small"}      # fac-100: the bar is the best step OF the order (free_main 0.0479), not agent (not asked now)
+    assert A.weak_steps(("free_small",), yields) == set()      # fac-100: one measured step alone is never weak
     assert A.weak_steps(("agent", "free_small"), yields) == {"free_small"}
     assert A.weak_steps(("free", "paid"), yields) == {"free"}      # the floor is half of the best writer
     assert A.weak_steps(("free_small",), {}) == set()

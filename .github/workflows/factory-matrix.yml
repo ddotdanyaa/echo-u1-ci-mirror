@@ -74,7 +74,7 @@ jobs:
           - shard: 30
             files: 'tests/test_factory_triage_candidates.py tests/test_factory_triage_state.py tests/test_factory_undefined_names.py tests/test_factory_unit_rules_async.py'
           - shard: 31
-            files: 'tests/test_factory_unit_test_rules.py tests/test_factory_vgs_stats.py tests/test_factory_view_fill.py'
+            files: 'tests/test_factory_unit_test_rules.py tests/test_factory_vgs_stats.py tests/test_factory_view_fill.py tests/test_factory_yield_floor_order.py'
     name: shard ${{ matrix.shard }}
     runs-on: windows-latest
     timeout-minutes: 25

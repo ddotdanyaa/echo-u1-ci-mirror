@@ -1189,18 +1189,19 @@ def by_yield(order, yields, probe=False):
     return [worst, best] + rest if probe else [best] + rest + [worst]
 
 
-YIELD_FLOOR = 0.5           # a step whose confirmed yield is below this share of the best MEASURED step's yield (even one unavailable now) does not write contracts while a better writer exists
+YIELD_FLOOR = 0.5           # a step whose confirmed yield is below this share of the best confirmed yield AMONG THE STEPS ASKED NOW does not write contracts while a better one of them exists
 
 
 def weak_steps(order, yields):
-    """W-yfloor: the steps of ``order`` whose confirmed yield (rows >= YIELD_MIN_ROWS) is under YIELD_FLOOR of the best measured step's yield;
-    the best is taken over every measured step of ``yields``, available now or not. A step without data is never weak. -> set of steps."""
-    known = {e: float(v['yield']) for e, v in (yields or {}).items()
-             if isinstance(v, dict) and int(v.get('rows') or 0) >= YIELD_MIN_ROWS}
-    if not known:
+    """W-yfloor (fac-100): the steps of ``order`` whose confirmed yield (rows >= YIELD_MIN_ROWS) is under YIELD_FLOOR of the best confirmed
+    yield among the steps of ``order`` only: an entry of ``yields`` that is not asked now (solver, guard, a step set aside) never sets the bar.
+    Fewer than two confirmed steps in ``order``: nothing is weak. A step without data is never weak. -> set of steps."""
+    known = {e: float(yields[e]['yield']) for e in order
+             if isinstance((yields or {}).get(e), dict) and int(yields[e].get('rows') or 0) >= YIELD_MIN_ROWS}
+    if len(known) < 2:
         return set()
     top = max(known.values())
-    return {e for e in order if e in known and known[e] < YIELD_FLOOR * top}
+    return {e for e in known if known[e] < YIELD_FLOOR * top}
 
 
 def debt_agent_ok() -> bool:
