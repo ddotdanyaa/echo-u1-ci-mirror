@@ -1,0 +1,1 @@
+tests/verify/kind_a/test_v_E08.py::test_two_others_say_the_words_of_a_question_and_nothing_new_sounds_while_the_job_answers
