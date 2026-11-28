@@ -47,7 +47,8 @@ PART_CODE_FAULT = 'part code: '
 # Bump when the contract changes in a way the prompt/schema texts do not show; with the sha1 of those texts it is the
 # slicer version (agent_factory.slicer_version), so a quarantine opens only by a change of the contract.
 # 1.7 (fac-90): the agent step is one conversation and makes its own code green in AUTHOR_TRY_RUNS cloud runs: the rows that a failed_gens quarantine
-# ("the strong step's own code did not pass") holds get ONE new attempt (the loop's _hard_reopen: once a day per row, one failed generation re-parks it).
+# ("the strong step's own code did not pass") holds get ONE new attempt per revision (the loop's _hard_reopen opens the quarantine
+# at once when the revision changes, at any age, with no wait; the once-a-day limit belongs to another pass of the loop).
 CONTRACT_REV = '1.7'
 P2 = 'decide forks yourself: what is most convenient for the user and how the neighbouring mechanism already works; no questions to the owner'
 
