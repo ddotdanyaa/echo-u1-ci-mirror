@@ -1,0 +1,7 @@
+tests/test_b_ruling_lock.py
+tests/test_cm_answer_routing.py
+tests/test_factory_e68_r7.py
+tests/test_factory_u94_s1_close_all.py
+tests/test_g3_matrix.py
+tests/test_m2_open.py
+tests/test_n02_topic_in_play.py
