@@ -1,0 +1,6 @@
+tests/test_a2_same_question.py
+tests/test_audit_g10.py
+tests/test_bad_network.py
+tests/test_brain_text.py
+tests/test_c16_ear_job.py
+tests/test_c22_repeat_rule.py
