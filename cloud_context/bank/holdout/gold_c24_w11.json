@@ -1,0 +1,2629 @@
+[
+ {
+  "id": "w.0",
+  "round": 0,
+  "q": "Тема «Инвестиции и их эффективность» — это когда была, двадцать третьего?",
+  "gold": [],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.1",
+  "round": 0,
+  "q": "Что нам Федорова задала на следующую неделю?",
+  "gold": [],
+  "kind": "what",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.2",
+  "round": 0,
+  "q": "Какие бывают организационно-правовые формы юридических лиц?",
+  "gold": [
+   "b00945"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev",
+  "note": "bank_7 answers it (relabelled after reading the hit)"
+ },
+ {
+  "id": "w.3",
+  "round": 0,
+  "q": "Не помню, какие источники финансирования инвестиций бывают.",
+  "gold": [
+   "b00896"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.4",
+  "round": 0,
+  "q": "Как сделать ссылку абсолютной? Я не помню, это с долларом, что ли?",
+  "gold": [
+   "b01007",
+   "b01012"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.5",
+  "round": 0,
+  "q": "Если в кассе денег больше лимита, что с ними делать? Не оставлять же так.",
+  "gold": [
+   "b00125"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.6",
+  "round": 0,
+  "q": "А в Google Таблицах сводную таблицу как сделать?",
+  "gold": [],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.7",
+  "round": 0,
+  "q": "Какая сейчас ключевая ставка ЦБ?",
+  "gold": [],
+  "kind": "what",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.8",
+  "round": 0,
+  "q": "Слушай, какие проводки по НДФЛ с зарплаты?",
+  "gold": [
+   "b00715"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.9",
+  "round": 0,
+  "q": "Ну а ошибку прошлого года как исправлять, если отчётность уже сдали?",
+  "gold": [
+   "b00237"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test",
+  "note": "bank_7 answers it (relabelled after reading the hit)"
+ },
+ {
+  "id": "w.10",
+  "round": 0,
+  "q": "Что было в Excel двадцать восьмого октября?",
+  "gold": [
+   "b01106"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev",
+  "note": "bank_7 answers it (relabelled after reading the hit)"
+ },
+ {
+  "id": "w.11",
+  "round": 0,
+  "q": "Баланс — это отчёт на дату или за период? Я постоянно путаюсь.",
+  "gold": [
+   "b00094"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.12",
+  "round": 0,
+  "q": "Какое значение у Газпрома в строке 1600 баланса за 2023 год?",
+  "gold": [],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.13",
+  "round": 0,
+  "q": "Из чего по ФСБУ 4/2023 состоит бухгалтерская отчётность? Я не запомнил.",
+  "gold": [
+   "b00091"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.14",
+  "round": 0,
+  "q": "Трудоёмкость — это обратный показатель, да?",
+  "gold": [
+   "b00851",
+   "b00855"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.15",
+  "round": 0,
+  "q": "Учебник Дмитриевой можно где-нибудь найти в электронном виде?",
+  "gold": [
+   "b00221"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.16",
+  "round": 0,
+  "q": "Ну а налоговый агент чем отличается от налогоплательщика? Я вечно путаю.",
+  "gold": [
+   "b00536"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.17",
+  "round": 0,
+  "q": "Слушай, а как платят НДФЛ в Беларуси?",
+  "gold": [],
+  "kind": "what",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.18",
+  "round": 0,
+  "q": "Я не понимаю, зачем разделять оборотные фонды и основные. Объясни по-простому.",
+  "gold": [
+   "b00868"
+  ],
+  "kind": "why",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.19",
+  "round": 0,
+  "q": "Как исправить ошибку в первичном документе, если его уже подписали? Не замазывать же.",
+  "gold": [
+   "b00030",
+   "b00031"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.20",
+  "round": 0,
+  "q": "Не помню, что такое единый тариф страховых взносов. Это одна ставка на всех?",
+  "gold": [
+   "b00721"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.21",
+  "round": 0,
+  "q": "Чем коэффициент закрепления отличается от коэффициента оборачиваемости?",
+  "gold": [
+   "b00881"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.22",
+  "round": 0,
+  "q": "Как ускорить оборачиваемость оборотных средств? Какие пути?",
+  "gold": [
+   "b00883"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.23",
+  "round": 0,
+  "q": "Как использовать ИИ, чтобы сделать первичный образ презентации?",
+  "gold": [
+   "b01096"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.24",
+  "round": 0,
+  "q": "Что такое РСВ?",
+  "gold": [
+   "b00725"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.25",
+  "round": 0,
+  "q": "Из каких уровней состоит налоговая система: федеральные, региональные, местные?",
+  "gold": [
+   "b00481"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.26",
+  "round": 0,
+  "q": "Слушай, я вчера пытался сделать презентацию про финансы и застрял: сколько слайдов, что обязательно и что в конце. Подскажешь по гайду, коротко?",
+  "gold": [
+   "b01069"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.27",
+  "round": 0,
+  "q": "Как оценить экономическую эффективность реальных инвестиций?",
+  "gold": [
+   "b00901"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.28",
+  "round": 0,
+  "q": "На каких страницах в учебнике кассовые операции? Мне к 10 числу надо прочитать.",
+  "gold": [
+   "b00220",
+   "b00222"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.29",
+  "round": 0,
+  "q": "Как настроить показ, чтобы слайды сами переключались?",
+  "gold": [
+   "b01092"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.30",
+  "round": 0,
+  "q": "Как на VBA написать макрос, чтобы таблица сама обновлялась?",
+  "gold": [],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.31",
+  "round": 0,
+  "q": "Сводные диаграммы мы когда делали, не двадцать третьего?",
+  "gold": [
+   "b01107"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test",
+  "note": "bank_7 answers it (relabelled after reading the hit)"
+ },
+ {
+  "id": "w.32",
+  "round": 0,
+  "q": "Взносы на травматизм — они отдельно от единого тарифа?",
+  "gold": [
+   "b00772"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.33",
+  "round": 0,
+  "q": "ФСБУ 4/2023 — это про что вообще?",
+  "gold": [
+   "b00104"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.34",
+  "round": 0,
+  "q": "Ну что такое оборотные средства, и чем они отличаются от основных?",
+  "gold": [
+   "b00864"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.35",
+  "round": 0,
+  "q": "Нейросеть может написать заметки к слайдам?",
+  "gold": [
+   "b01096"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.36",
+  "round": 0,
+  "q": "Ну а какая ответственность бывает у организаций?",
+  "gold": [
+   "b00946"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev",
+  "note": "bank_7 answers it (relabelled after reading the hit)"
+ },
+ {
+  "id": "w.37",
+  "round": 0,
+  "q": "Слушай, а ты какую тему по финансам выбрал для презентации?",
+  "gold": [],
+  "kind": "what",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.38",
+  "round": 0,
+  "q": "Можно менять учётную политику посреди года, или только с 1 января?",
+  "gold": [
+   "b00025"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.39",
+  "round": 0,
+  "q": "Практика номер один — это про что была?",
+  "gold": [
+   "b00238"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test",
+  "note": "bank_7 answers it (relabelled after reading the hit)"
+ },
+ {
+  "id": "w.40",
+  "round": 0,
+  "q": "Ну а расходный ордер должен подписывать тот, кто получает деньги, или не обязательно?",
+  "gold": [
+   "b00131",
+   "b00230"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.41",
+  "round": 0,
+  "q": "Активный и пассивный счёт — в чём разница, на пальцах?",
+  "gold": [
+   "b00049"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.42",
+  "round": 0,
+  "q": "Как вставить таблицу на слайд, чтобы она читалась?",
+  "gold": [
+   "b01112"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev",
+  "note": "bank_7 answers it (relabelled after reading the hit)"
+ },
+ {
+  "id": "w.43",
+  "round": 0,
+  "q": "Я не уверен, что понимаю, что такое инвестиции. Какие они бывают и чем отличаются?",
+  "gold": [
+   "b00891"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.44",
+  "round": 0,
+  "q": "Что значит налоговый период по НДФЛ?",
+  "gold": [
+   "b00697"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.45",
+  "round": 0,
+  "q": "Слушай, что такое нематериальные активы? Приведи примеры.",
+  "gold": [
+   "b00915"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.46",
+  "round": 0,
+  "q": "Как заполняется 6-НДФЛ, по разделам?",
+  "gold": [],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.47",
+  "round": 0,
+  "q": "Слушай, что такое организация с точки зрения экономики?",
+  "gold": [
+   "b00793"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.48",
+  "round": 0,
+  "q": "Какие элементы налога у НДФЛ: база, период, ставка?",
+  "gold": [
+   "b00776"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev",
+  "note": "bank_7 answers it (relabelled after reading the hit)"
+ },
+ {
+  "id": "w.49",
+  "round": 0,
+  "q": "ФСБУ 6/2020 — это про основные средства, я правильно помню?",
+  "gold": [
+   "b00239"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test",
+  "note": "bank_7 answers it (relabelled after reading the hit)"
+ },
+ {
+  "id": "w.50",
+  "round": 0,
+  "q": "Как оформлять курсовую? Мне казалось, он что-то присылал про титул и оглавление.",
+  "gold": [],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.51",
+  "round": 0,
+  "q": "Проверочная по Excel была четвёртого ноября, да?",
+  "gold": [
+   "b01108"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test",
+  "note": "bank_7 answers it (relabelled after reading the hit)"
+ },
+ {
+  "id": "w.52",
+  "round": 0,
+  "q": "Какой коэффициент оборачиваемости оборотных средств у Магнита за прошлый год?",
+  "gold": [],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.53",
+  "round": 0,
+  "q": "К какому разделу курса относятся персонал и оплата труда?",
+  "gold": [],
+  "kind": "what",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.54",
+  "round": 0,
+  "q": "Чем относительная адресация отличается от абсолютной?",
+  "gold": [
+   "b01005"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.55",
+  "round": 0,
+  "q": "Какая сейчас последняя версия ChatGPT и сколько она стоит?",
+  "gold": [],
+  "kind": "what",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.56",
+  "round": 0,
+  "q": "Не понимаю связь: если оборотные средства оборачиваются быстрее, то прибыли становится больше? Откуда она берётся?",
+  "gold": [
+   "b00884"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.57",
+  "round": 0,
+  "q": "РСВ — квартальный или годовой?",
+  "gold": [
+   "b00723"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.58",
+  "round": 0,
+  "q": "Что такое SmartArt и когда его использовать?",
+  "gold": [
+   "b01089"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.59",
+  "round": 0,
+  "q": "Что Жуков написал в письме тридцатого октября?",
+  "gold": [],
+  "kind": "what",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.60",
+  "round": 0,
+  "q": "Что такое НДФЛ и кто его платит, работник или работодатель?",
+  "gold": [
+   "b00692"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.61",
+  "round": 0,
+  "q": "Из каких источников формируются оборотные средства, собственные и заёмные?",
+  "gold": [
+   "b00870"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.62",
+  "round": 0,
+  "q": "Как заполнить 3-НДФЛ на вычет за лечение?",
+  "gold": [],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.63",
+  "round": 0,
+  "q": "Слушай, а чем налог отличается от сбора? Я не вижу разницы.",
+  "gold": [
+   "b00479"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.64",
+  "round": 0,
+  "q": "Страховые взносы в какой главе НК?",
+  "gold": [
+   "b00777"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev",
+  "note": "bank_7 answers it (relabelled after reading the hit)"
+ },
+ {
+  "id": "w.65",
+  "round": 0,
+  "q": "А пятьдесят второй — это же валютный счёт?",
+  "gold": [
+   "b00172",
+   "b00173"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.66",
+  "round": 0,
+  "q": "Когда у нас пересдача по налогам?",
+  "gold": [],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.67",
+  "round": 0,
+  "q": "Практика 7 и 8 — про что они были?",
+  "gold": [
+   "b00779"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test",
+  "note": "bank_7 answers it (relabelled after reading the hit)"
+ },
+ {
+  "id": "w.68",
+  "round": 0,
+  "q": "Я вчера полвечера сидел над кассовой книгой за март и так и не понял, откуда берётся остаток на начало дня. Откуда он берётся?",
+  "gold": [],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.69",
+  "round": 0,
+  "q": "Когда у нас была защита презентаций, двадцать первого?",
+  "gold": [
+   "b01105"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test",
+  "note": "bank_7 answers it (relabelled after reading the hit)"
+ },
+ {
+  "id": "w.70",
+  "round": 0,
+  "q": "Я вот не понимаю: НДС платит продавец или покупатель на самом деле? И вообще, что это такое?",
+  "gold": [
+   "b00662",
+   "b00663"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.71",
+  "round": 0,
+  "q": "Ну вот $A$1 и A1 — какая разница?",
+  "gold": [
+   "b01005"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.72",
+  "round": 0,
+  "q": "Слушай, как защитить таблицу в Excel от изменений?",
+  "gold": [
+   "b01046"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.73",
+  "round": 0,
+  "q": "Какой сегодня курс юаня, мне для 52 счёта надо?",
+  "gold": [],
+  "kind": "what",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.74",
+  "round": 0,
+  "q": "Двойная запись — как она работает? Что такое дебет и кредит?",
+  "gold": [
+   "b00056"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.75",
+  "round": 0,
+  "q": "Поднимут ли НДС в следующем году?",
+  "gold": [],
+  "kind": "what",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.76",
+  "round": 0,
+  "q": "Что такое активно-пассивные счета, можно пример?",
+  "gold": [
+   "b00052"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.77",
+  "round": 0,
+  "q": "Ты вчера кассовую книгу успел заполнить?",
+  "gold": [],
+  "kind": "what",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.78",
+  "round": 0,
+  "q": "Из чего состоят оборотные фонды? Какая у них структура?",
+  "gold": [
+   "b00865",
+   "b00866"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.79",
+  "round": 0,
+  "q": "Слушай, какие сроки представления сведений по страховым взносам? Я их вечно не помню.",
+  "gold": [
+   "b00725",
+   "b00771"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.80",
+  "round": 0,
+  "q": "Слушай, а на первых парах четвёртого и пятого сентября про что говорили?",
+  "gold": [
+   "b00948"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev",
+  "note": "bank_7 answers it (relabelled after reading the hit)"
+ },
+ {
+  "id": "w.81",
+  "round": 0,
+  "q": "Учебник по налогам есть, или мы только по кодексу?",
+  "gold": [
+   "b00780"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test",
+  "note": "bank_7 answers it (relabelled after reading the hit)"
+ },
+ {
+  "id": "w.82",
+  "round": 0,
+  "q": "Как защищать презентацию перед группой? С чего начинать?",
+  "gold": [
+   "b01097"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.83",
+  "round": 0,
+  "q": "Я вчера полвечера сидел над оборотными средствами и не понял разницу между оборотными фондами и фондами обращения. Объясни, пожалуйста.",
+  "gold": [
+   "b00865"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.84",
+  "round": 0,
+  "q": "Слушай, а чем юридическое лицо отличается от организации? Мне кажется, это одно и то же.",
+  "gold": [
+   "b00792"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.85",
+  "round": 0,
+  "q": "Что было с оборотным капиталом девятого и десятого октября?",
+  "gold": [
+   "b00949"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test",
+  "note": "bank_7 answers it (relabelled after reading the hit)"
+ },
+ {
+  "id": "w.86",
+  "round": 0,
+  "q": "Я ни разу не строил диаграммы в Excel. Как построить диаграмму по данным?",
+  "gold": [
+   "b01037"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.87",
+  "round": 0,
+  "q": "Что написано в статье 81 НК РФ?",
+  "gold": [
+   "b00606"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.88",
+  "round": 0,
+  "q": "Какие пути повышения производительности труда есть?",
+  "gold": [
+   "b00858"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.89",
+  "round": 0,
+  "q": "Какие нейросети можно взять для презентации? Жуков присылал список.",
+  "gold": [
+   "b01081"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.90",
+  "round": 0,
+  "q": "Какие реквизиты обязательны в первичном документе?",
+  "gold": [
+   "b00028"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.91",
+  "round": 0,
+  "q": "С чего начать обработку данных в Excel, если их много?",
+  "gold": [],
+  "kind": "what",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.92",
+  "round": 0,
+  "q": "До какого числа сдают декларацию по НДС?",
+  "gold": [
+   "b00657"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.93",
+  "round": 0,
+  "q": "Что значит амортизация нематериальных активов, простыми словами?",
+  "gold": [
+   "b00918"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.94",
+  "round": 0,
+  "q": "Синицина сколько лет уже преподаёт?",
+  "gold": [],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.95",
+  "round": 0,
+  "q": "Как считают производительность труда в Китае?",
+  "gold": [],
+  "kind": "what",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.96",
+  "round": 0,
+  "q": "Сколько сейчас стоит подписка на Microsoft 365?",
+  "gold": [],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.97",
+  "round": 0,
+  "q": "Практика номер 4 — что там было, декларация?",
+  "gold": [
+   "b00781"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test",
+  "note": "bank_7 answers it (relabelled after reading the hit)"
+ },
+ {
+  "id": "w.98",
+  "round": 0,
+  "q": "Ну а тема по какой специальности должна быть, у нас же «Финансы»?",
+  "gold": [
+   "b01072"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.99",
+  "round": 0,
+  "q": "Что за журнал учёта фактов хозяйственной жизни, который прислали тринадцатого?",
+  "gold": [
+   "b00782"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test",
+  "note": "bank_7 answers it (relabelled after reading the hit)"
+ },
+ {
+  "id": "w.100",
+  "round": 0,
+  "q": "Какую оценку мне поставили за проверочную по Excel четвёртого?",
+  "gold": [],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.101",
+  "round": 0,
+  "q": "На что смотреть в образце платёжки по ЕНП, который прислали 18 октября?",
+  "gold": [
+   "b00783"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test",
+  "note": "bank_7 answers it (relabelled after reading the hit)"
+ },
+ {
+  "id": "w.102",
+  "round": 0,
+  "q": "Как подобрать информацию для презентации по теме своей профессии?",
+  "gold": [
+   "b01078"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.103",
+  "round": 0,
+  "q": "Как классифицируют персонал организации?",
+  "gold": [
+   "b00828"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.104",
+  "round": 0,
+  "q": "Слушай, а сколько слайдов максимум можно в презентации?",
+  "gold": [
+   "b01069"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.105",
+  "round": 0,
+  "q": "Ну а что такое высвобождение оборотных средств при ускорении оборота?",
+  "gold": [
+   "b00885"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.106",
+  "round": 0,
+  "q": "Чем 90 счёт отличается от 91?",
+  "gold": [
+   "b00242"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev",
+  "note": "bank_7 answers it (relabelled after reading the hit)"
+ },
+ {
+  "id": "w.107",
+  "round": 0,
+  "q": "Что такое производительность труда?",
+  "gold": [
+   "b00849"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.108",
+  "round": 0,
+  "q": "Как вставить звук в презентацию?",
+  "gold": [
+   "b01111"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev",
+  "note": "bank_7 answers it (relabelled after reading the hit)"
+ },
+ {
+  "id": "w.109",
+  "round": 0,
+  "q": "Подожди, ПКО — это приход или расход? Я вечно путаю.",
+  "gold": [
+   "b00107",
+   "b00109"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.110",
+  "round": 0,
+  "q": "Не помню, 51 счёт — это расчётный?",
+  "gold": [
+   "b00164"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.111",
+  "round": 0,
+  "q": "Какого года у нас учебник Дмитриевой и какое издательство?",
+  "gold": [
+   "b00221"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.112",
+  "round": 0,
+  "q": "Почему сумма по дебету всегда равна сумме по кредиту?",
+  "gold": [
+   "b00056"
+  ],
+  "kind": "why",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.113",
+  "round": 0,
+  "q": "Что изменилось в заполнении платёжек по ЕНП с 1 апреля 2026 года?",
+  "gold": [
+   "b00784"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test",
+  "note": "bank_7 answers it (relabelled after reading the hit)"
+ },
+ {
+  "id": "w.114",
+  "round": 0,
+  "q": "Сколько стоит акция Газпрома сегодня?",
+  "gold": [],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.115",
+  "round": 0,
+  "q": "Что за таблица ПАО Газпром, которую Жуков прислал двадцать третьего?",
+  "gold": [
+   "b01061"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.116",
+  "round": 0,
+  "q": "Я не понимаю, чем 50 счёт отличается от 51. Оба же про деньги.",
+  "gold": [
+   "b00165"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.117",
+  "round": 0,
+  "q": "Не понимаю, зачем нужен 55 счёт, если есть 51.",
+  "gold": [
+   "b00179"
+  ],
+  "kind": "why",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.118",
+  "round": 0,
+  "q": "Что такое логические функции в Excel?",
+  "gold": [
+   "b01113"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev",
+  "note": "bank_7 answers it (relabelled after reading the hit)"
+ },
+ {
+  "id": "w.119",
+  "round": 0,
+  "q": "Практика 9 — это оборачиваемость? Что там считали?",
+  "gold": [
+   "b00950"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test",
+  "note": "bank_7 answers it (relabelled after reading the hit)"
+ },
+ {
+  "id": "w.120",
+  "round": 0,
+  "q": "Что такое инфографика с расчётами? Это просто диаграмма или что-то ещё?",
+  "gold": [
+   "b01076",
+   "b01077"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.121",
+  "round": 0,
+  "q": "Итоговые функции — это СУММ, СРЗНАЧ, или ещё что-то?",
+  "gold": [
+   "b01114"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test",
+  "note": "bank_7 answers it (relabelled after reading the hit)"
+ },
+ {
+  "id": "w.122",
+  "round": 0,
+  "q": "Бурмистрова на экзамене какие вопросы даёт?",
+  "gold": [],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.123",
+  "round": 0,
+  "q": "Кассовую книгу что, каждый день распечатывают?",
+  "gold": [
+   "b00243"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test",
+  "note": "bank_7 answers it (relabelled after reading the hit)"
+ },
+ {
+  "id": "w.124",
+  "round": 0,
+  "q": "Сколько сейчас стоит 1С:Бухгалтерия на год?",
+  "gold": [],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.125",
+  "round": 0,
+  "q": "Слушай, я вообще не понимаю, как платёжка по ЕНП устроена. Зачем там столько полей?",
+  "gold": [
+   "b00783"
+  ],
+  "kind": "why",
+  "long": false,
+  "split": "test",
+  "note": "bank_7 answers it (relabelled after reading the hit)"
+ },
+ {
+  "id": "w.126",
+  "round": 0,
+  "q": "Кто такой налогоплательщик, а кто налоговый агент?",
+  "gold": [
+   "b00524",
+   "b00536"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.127",
+  "round": 0,
+  "q": "Как рассчитать длительность одного оборота?",
+  "gold": [
+   "b00879"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.128",
+  "round": 0,
+  "q": "Чем инвестиционный процесс отличается от инвестиционного цикла?",
+  "gold": [
+   "b00951"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev",
+  "note": "bank_7 answers it (relabelled after reading the hit)"
+ },
+ {
+  "id": "w.129",
+  "round": 0,
+  "q": "Слушай, у меня в голове каша: НДС, НДФЛ и страховые взносы. Расскажи в двух словах, что чем отличается.",
+  "gold": [],
+  "kind": "what",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.130",
+  "round": 0,
+  "q": "Не пойму, при чём тут норматив и метод нормирования, это как вообще?",
+  "gold": [
+   "b00872",
+   "b00873"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.131",
+  "round": 0,
+  "q": "Слушай, для чего нужна функция ЕСЛИ?",
+  "gold": [
+   "b00987"
+  ],
+  "kind": "why",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.132",
+  "round": 0,
+  "q": "Что написано в ФСБУ 5/2019 про запасы?",
+  "gold": [],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.133",
+  "round": 0,
+  "q": "Исправительная запись и сторно — это одно и то же?",
+  "gold": [
+   "b00032"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.134",
+  "round": 0,
+  "q": "Слушай, мне сейчас отвечать по кассе, а я ничего не помню. Расскажи в двух словах про кассовые операции, чтобы не опозориться.",
+  "gold": [],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.135",
+  "round": 0,
+  "q": "Декларацию по НДС сдают только электронно?",
+  "gold": [
+   "b00786"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test",
+  "note": "bank_7 answers it (relabelled after reading the hit)"
+ },
+ {
+  "id": "w.136",
+  "round": 0,
+  "q": "Какая сейчас средняя зарплата в Москве?",
+  "gold": [],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.137",
+  "round": 0,
+  "q": "Какие признаки юридического лица? Их вроде четыре.",
+  "gold": [
+   "b00952"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test",
+  "note": "bank_7 answers it (relabelled after reading the hit)"
+ },
+ {
+  "id": "w.138",
+  "round": 0,
+  "q": "Про что статья 80 НК? Её на паре разбирали.",
+  "gold": [
+   "b00605"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.139",
+  "round": 0,
+  "q": "Слушай, что такое коэффициент оборачиваемости оборотных средств? Я не помню формулу.",
+  "gold": [
+   "b00876",
+   "b00877"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.140",
+  "round": 0,
+  "q": "Что за раздатка «Декларации по НДС на 2026»?",
+  "gold": [
+   "b00787"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev",
+  "note": "bank_7 answers it (relabelled after reading the hit)"
+ },
+ {
+  "id": "w.141",
+  "round": 0,
+  "q": "«Microsoft Excel: от данных к решениям» — что это за файл?",
+  "gold": [
+   "b01109"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test",
+  "note": "bank_7 answers it (relabelled after reading the hit)"
+ },
+ {
+  "id": "w.142",
+  "round": 0,
+  "q": "Графические объекты в презентации — это картинки и фигуры?",
+  "gold": [
+   "b01115"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev",
+  "note": "bank_7 answers it (relabelled after reading the hit)"
+ },
+ {
+  "id": "w.143",
+  "round": 0,
+  "q": "Как в Германии платят НДС при импорте?",
+  "gold": [],
+  "kind": "what",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.144",
+  "round": 0,
+  "q": "Ну и какую оценку мне Бурмистрова поставит за практику?",
+  "gold": [],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.145",
+  "round": 0,
+  "q": "Для чего нужен АРНУ по НДФЛ?",
+  "gold": [
+   "b00709"
+  ],
+  "kind": "why",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.146",
+  "round": 0,
+  "q": "ПКО и РКО — это что?",
+  "gold": [
+   "b00106",
+   "b00109",
+   "b00235"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.147",
+  "round": 0,
+  "q": "Как в Keynote на Маке сделать анимацию перехода?",
+  "gold": [],
+  "kind": "what",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.148",
+  "round": 0,
+  "q": "На каком слайде по гайду должно быть видео?",
+  "gold": [
+   "b01070",
+   "b01086"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.149",
+  "round": 0,
+  "q": "Что такое АРНУ?",
+  "gold": [
+   "b00709"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.150",
+  "round": 0,
+  "q": "Приходный кассовый ордер подписывает главбух или кассир?",
+  "gold": [
+   "b00112",
+   "b00229"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.151",
+  "round": 0,
+  "q": "Сотрудник в отпуске — он в списочном или в явочном? Не могу понять.",
+  "gold": [
+   "b00831",
+   "b00833"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.152",
+  "round": 0,
+  "q": "Сколько стоит госпошлина за регистрацию ООО сегодня?",
+  "gold": [],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.153",
+  "round": 0,
+  "q": "Слушай, а что такое ЕНП? Единый налоговый платёж — это когда всё одним платежом, что ли?",
+  "gold": [
+   "b00624",
+   "b00637"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.154",
+  "round": 0,
+  "q": "Что мы 21 октября проходили?",
+  "gold": [
+   "b01104"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev",
+  "note": "bank_7 answers it (relabelled after reading the hit)"
+ },
+ {
+  "id": "w.155",
+  "round": 0,
+  "q": "Что значит «раскрытие учётной политики»? Раскрывать — это кому и куда?",
+  "gold": [
+   "b00245"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test",
+  "note": "bank_7 answers it (relabelled after reading the hit)"
+ },
+ {
+  "id": "w.156",
+  "round": 0,
+  "q": "Слушай, 55 счёт — это про что? Там вроде какие-то специальные счета.",
+  "gold": [
+   "b00178"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.157",
+  "round": 0,
+  "q": "Какие обязательные элементы налога? Объект, база, ставка, что ещё?",
+  "gold": [
+   "b00503"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.158",
+  "round": 0,
+  "q": "Мы вчера с девчонками поспорили: кассовую книгу обязаны вести все организации или не все?",
+  "gold": [],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.159",
+  "round": 0,
+  "q": "Какие проводки по начислению и уплате страховых взносов?",
+  "gold": [
+   "b00730"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.160",
+  "round": 0,
+  "q": "Как разбить реферат на тезисы для презентации?",
+  "gold": [
+   "b01117"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev",
+  "note": "bank_7 answers it (relabelled after reading the hit)"
+ },
+ {
+  "id": "w.161",
+  "round": 0,
+  "q": "Сводные диаграммы — это то же, что обычные диаграммы, или нет?",
+  "gold": [
+   "b01040"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.162",
+  "round": 0,
+  "q": "Налоговый агент по НДФЛ — он удерживает и перечисляет, да?",
+  "gold": [
+   "b00529",
+   "b00530",
+   "b00536",
+   "b00758"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.163",
+  "round": 0,
+  "q": "Не пойму, чем регистр учёта отличается от первичного документа.",
+  "gold": [
+   "b00037"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.164",
+  "round": 0,
+  "q": "Как считается НДС к уплате? Из чего что вычитается?",
+  "gold": [
+   "b00678"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.165",
+  "round": 0,
+  "q": "Кругооборот оборотных средств — это какие стадии?",
+  "gold": [
+   "b00804",
+   "b00871"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.166",
+  "round": 0,
+  "q": "Какого числа прислали гайд по презентациям, тринадцатого?",
+  "gold": [
+   "b01080"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.167",
+  "round": 0,
+  "q": "Если превысить лимит кассы, штраф правда будет?",
+  "gold": [
+   "b00247"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test",
+  "note": "bank_7 answers it (relabelled after reading the hit)"
+ },
+ {
+  "id": "w.168",
+  "round": 0,
+  "q": "Какая в Казахстане ставка НДС?",
+  "gold": [],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.169",
+  "round": 0,
+  "q": "Чем реальные инвестиции отличаются от финансовых?",
+  "gold": [
+   "b00892"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.170",
+  "round": 0,
+  "q": "Слушай, срок окупаемости — как он считается?",
+  "gold": [
+   "b00902"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.171",
+  "round": 0,
+  "q": "Как считается норма запаса в днях? Мы на практике номер 8 это делали.",
+  "gold": [
+   "b00873"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.172",
+  "round": 0,
+  "q": "ООО «Радуга» — что за пример, что там считали?",
+  "gold": [
+   "b00782"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev",
+  "note": "bank_7 answers it (relabelled after reading the hit)"
+ },
+ {
+  "id": "w.173",
+  "round": 0,
+  "q": "Я пропустил практику шестнадцатого. Что на ней было?",
+  "gold": [
+   "b00953"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test",
+  "note": "bank_7 answers it (relabelled after reading the hit)"
+ },
+ {
+  "id": "w.174",
+  "round": 0,
+  "q": "Деньги в кассе — это 50 счёт, да?",
+  "gold": [
+   "b00141",
+   "b00165"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.175",
+  "round": 0,
+  "q": "Жуков присылал какой-то гайд по презентациям. Что в нём от нас вообще требуется?",
+  "gold": [
+   "b01078"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.176",
+  "round": 0,
+  "q": "Расскажи пример про кассовую книгу ООО «Сатурн» за март. Как там всё считали?",
+  "gold": [
+   "b00155"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.177",
+  "round": 0,
+  "q": "Как добавить анимацию, чтобы не выглядело как в детском саду?",
+  "gold": [],
+  "kind": "what",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.178",
+  "round": 0,
+  "q": "Слушай, а в Казахстане кассовую книгу тоже ведут, и какой там лимит кассы?",
+  "gold": [],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.179",
+  "round": 0,
+  "q": "Ну и как заполнить платёжное поручение на уплату налога? Кому, куда, что писать?",
+  "gold": [
+   "b00788"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test",
+  "note": "bank_7 answers it (relabelled after reading the hit)"
+ },
+ {
+  "id": "w.180",
+  "round": 0,
+  "q": "Я не помню, что нужно в презентации по гайду. Тезисы, инфографика, что ещё?",
+  "gold": [
+   "b01075",
+   "b01078"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.181",
+  "round": 0,
+  "q": "Что такое 19 счёт?",
+  "gold": [
+   "b00284"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test",
+  "note": "bank_7 answers it (relabelled after reading the hit)"
+ },
+ {
+  "id": "w.182",
+  "round": 0,
+  "q": "Слушай, какие вообще бывают налоги и сборы по Налоговому кодексу?",
+  "gold": [
+   "b00481",
+   "b00562"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.183",
+  "round": 0,
+  "q": "Списочный состав и явочный — в чём разница?",
+  "gold": [
+   "b00833"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.184",
+  "round": 0,
+  "q": "А тринадцатого что будет, практика с ордерами? Что там делать?",
+  "gold": [
+   "b00220"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.185",
+  "round": 0,
+  "q": "Ну а что такое сводная таблица и зачем она?",
+  "gold": [
+   "b01047",
+   "b01048"
+  ],
+  "kind": "why",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.186",
+  "round": 0,
+  "q": "НДС — это какая глава кодекса?",
+  "gold": [
+   "b00778"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev",
+  "note": "bank_7 answers it (relabelled after reading the hit)"
+ },
+ {
+  "id": "w.187",
+  "round": 0,
+  "q": "Чем лизинг отличается от аренды?",
+  "gold": [],
+  "kind": "what",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.188",
+  "round": 0,
+  "q": "Ну объясни, ускорение оборачиваемости — это хорошо или плохо?",
+  "gold": [
+   "b00805",
+   "b00884"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.189",
+  "round": 0,
+  "q": "А ФСБУ 26/2020 про что? Там капитальные вложения?",
+  "gold": [
+   "b00240"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test",
+  "note": "bank_7 answers it (relabelled after reading the hit)"
+ },
+ {
+  "id": "w.190",
+  "round": 0,
+  "q": "А по МСФО отчёт о движении денежных средств как делается?",
+  "gold": [],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.191",
+  "round": 0,
+  "q": "Что мы проходили 31 октября?",
+  "gold": [
+   "b00954"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test",
+  "note": "bank_7 answers it (relabelled after reading the hit)"
+ },
+ {
+  "id": "w.192",
+  "round": 0,
+  "q": "Ну какие проводки по НДС? Начисление и вычет.",
+  "gold": [
+   "b00689",
+   "b00690"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.193",
+  "round": 0,
+  "q": "Ну а кто обязан подавать налоговую декларацию, не все же?",
+  "gold": [
+   "b00789"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test",
+  "note": "bank_7 answers it (relabelled after reading the hit)"
+ },
+ {
+  "id": "w.194",
+  "round": 0,
+  "q": "Представитель налогоплательщика — это кто? Бухгалтер, что ли?",
+  "gold": [
+   "b00540",
+   "b00543",
+   "b00546"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.195",
+  "round": 0,
+  "q": "Ну а как считается выработка на одного работника?",
+  "gold": [
+   "b00852",
+   "b00853"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.196",
+  "round": 0,
+  "q": "Кто авторы гайда по созданию презентации?",
+  "gold": [
+   "b01080"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.197",
+  "round": 0,
+  "q": "Учётная политика — это что за документ?",
+  "gold": [
+   "b00018"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.198",
+  "round": 0,
+  "q": "Видео в презентации какой длины должно быть?",
+  "gold": [
+   "b01070"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.199",
+  "round": 0,
+  "q": "Какая сегодня ставка по вкладам в Сбере, чтобы я на 58 счёт отнёс?",
+  "gold": [],
+  "kind": "what",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.200",
+  "round": 0,
+  "q": "Итог и вывод — это отдельный слайд?",
+  "gold": [],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.201",
+  "round": 0,
+  "q": "Взносы на травматизм платят в налоговую или в Соцфонд?",
+  "gold": [
+   "b00790"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test",
+  "note": "bank_7 answers it (relabelled after reading the hit)"
+ },
+ {
+  "id": "w.202",
+  "round": 0,
+  "q": "Ну а уведомление об исчисленных суммах когда подают?",
+  "gold": [
+   "b00633"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.203",
+  "round": 0,
+  "q": "Что у нас было тридцатого октября по экономике?",
+  "gold": [
+   "b00955"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test",
+  "note": "bank_7 answers it (relabelled after reading the hit)"
+ },
+ {
+  "id": "w.204",
+  "round": 0,
+  "q": "Страховые взносы — это налог или нет?",
+  "gold": [
+   "b00480"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.205",
+  "round": 0,
+  "q": "А НДФЛ в какой главе, не в двадцать третьей?",
+  "gold": [
+   "b00692"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.206",
+  "round": 0,
+  "q": "Слушай, а учётную политику кто утверждает, директор или бухгалтер?",
+  "gold": [
+   "b00019"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.207",
+  "round": 0,
+  "q": "Сколько у тебя людей в списочном составе в отделе?",
+  "gold": [],
+  "kind": "what",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.208",
+  "round": 0,
+  "q": "Какие виды страховых взносов платит работодатель?",
+  "gold": [
+   "b00772"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.209",
+  "round": 0,
+  "q": "Что такое трудовые ресурсы?",
+  "gold": [
+   "b00825"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.210",
+  "round": 0,
+  "q": "Как рассказать про персонал организации за минуту, если спросят? Я подготовился плохо, вчера весь вечер сидел над оборотными средствами.",
+  "gold": [
+   "b00826",
+   "b00828"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.211",
+  "round": 0,
+  "q": "Мне сегодня отвечать по производительности труда, а я путаюсь между прямыми и обратными показателями. Помоги разобраться.",
+  "gold": [
+   "b00851",
+   "b00855"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.212",
+  "round": 0,
+  "q": "Что должно быть в Excel для показа: данные, формулы, диаграмма и вывод, так?",
+  "gold": [],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.213",
+  "round": 0,
+  "q": "Слушай, а рабочий план счетов — это вообще что такое?",
+  "gold": [
+   "b00064"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.214",
+  "round": 0,
+  "q": "Как амортизируются нематериальные активы?",
+  "gold": [
+   "b00918"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.215",
+  "round": 0,
+  "q": "Что учитывать при оформлении слайдов: шрифты, цвета, сколько текста?",
+  "gold": [
+   "b01093"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.216",
+  "round": 0,
+  "q": "Как рассчитать точку безубыточности?",
+  "gold": [
+   "b00935"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.217",
+  "round": 0,
+  "q": "Я пропустил пару и не знаю, что мы проходили шестого октября. Расскажешь?",
+  "gold": [
+   "b00781"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test",
+  "note": "bank_7 answers it (relabelled after reading the hit)"
+ },
+ {
+  "id": "w.218",
+  "round": 0,
+  "q": "Где в PowerPoint писать заметки к слайдам?",
+  "gold": [
+   "b01090"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.219",
+  "round": 0,
+  "q": "Какая у нас тема по бухучёту десятого ноября?",
+  "gold": [
+   "b00220",
+   "b00222"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.220",
+  "round": 0,
+  "q": "Как считаются финансовые результаты? Там вроде 99 счёт и ещё какие-то.",
+  "gold": [
+   "b00200",
+   "b00202"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.221",
+  "round": 0,
+  "q": "Как поставить защиту на лист, чтобы формулы никто не трогал?",
+  "gold": [
+   "b01046"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.222",
+  "round": 0,
+  "q": "Из какого списка брать тему презентации?",
+  "gold": [
+   "b01072"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.223",
+  "round": 0,
+  "q": "Слушай, а зачем нужны регистры, если есть первичка?",
+  "gold": [
+   "b00037",
+   "b00236"
+  ],
+  "kind": "why",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.224",
+  "round": 0,
+  "q": "Лимит остатка кассы — это сколько и кто его ставит?",
+  "gold": [
+   "b00121"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.225",
+  "round": 0,
+  "q": "Ты по экономике на пятёрку идёшь, не на двойку?",
+  "gold": [],
+  "kind": "what",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.226",
+  "round": 0,
+  "q": "Короче, не понимаю, чем рабочий план счетов отличается от типового. Объясни по-человечески.",
+  "gold": [
+   "b00066"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.227",
+  "round": 0,
+  "q": "Инвестиционный цикл — это какие стадии?",
+  "gold": [
+   "b00898"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.228",
+  "round": 0,
+  "q": "Какая ставка налога для самозанятых?",
+  "gold": [],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.229",
+  "round": 0,
+  "q": "Какую диаграмму выбрать, чтобы сравнить показатели по годам?",
+  "gold": [
+   "b01030"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.230",
+  "round": 0,
+  "q": "Ну а налоговая база — это что простыми словами?",
+  "gold": [
+   "b00507"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.231",
+  "round": 0,
+  "q": "Что такое автономный показ презентации?",
+  "gold": [
+   "b01092"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.232",
+  "round": 0,
+  "q": "Сколько стоит Midjourney в месяц?",
+  "gold": [],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.233",
+  "round": 0,
+  "q": "Что значит планировать потребность в оборотных средствах методом нормирования?",
+  "gold": [
+   "b00872"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.234",
+  "round": 0,
+  "q": "Ну вот план счетов, откуда он берётся? Кто его придумывает?",
+  "gold": [
+   "b00062"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.235",
+  "round": 0,
+  "q": "А если защита — это показ расчётов в Excel, что надо показать?",
+  "gold": [],
+  "kind": "what",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.236",
+  "round": 0,
+  "q": "Объясни, что такое актив и пассив баланса, чтобы я мог своими словами рассказать.",
+  "gold": [
+   "b00079",
+   "b00799"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev"
+ },
+ {
+  "id": "w.237",
+  "round": 0,
+  "q": "Мы тридцатого числа проходили виды ошибок в учёте, а я не записал. Какие они вообще бывают?",
+  "gold": [],
+  "kind": "what",
+  "long": false,
+  "split": "test"
+ },
+ {
+  "id": "w.238",
+  "round": 0,
+  "q": "Что на 58 счёте учитывают?",
+  "gold": [
+   "b00184",
+   "b00344"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "dev",
+  "note": "b00344 answers it as well (read)"
+ },
+ {
+  "id": "w.239",
+  "round": 0,
+  "q": "Как оценить эффективность использования материальных ресурсов? Материалоотдача, материалоёмкость?",
+  "gold": [
+   "b00889"
+  ],
+  "kind": "what",
+  "long": false,
+  "split": "test"
+ }
+]
