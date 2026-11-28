@@ -1,0 +1,54 @@
+{
+  "voice": "Microsoft Irina Desktop",
+  "format": {
+    "sample_rate": 24000,
+    "channels": 1,
+    "sample_width": 2
+  },
+  "generated_by": "tools/make_diag_audio.py through echo_sync/sapi_worker.ps1 (SAPI rate 0)",
+  "generated_on": "2026-11-02",
+  "trim": {
+    "threshold": 100,
+    "head_pad_s": 0.04,
+    "tail_pad_s": 0.12
+  },
+  "target_seconds": 1.5,
+  "phrases": {
+    "lookup_degraded": {
+      "text": "Поиск не ответил.",
+      "seconds": 1.43,
+      "raw_seconds": 2.26,
+      "sha256": "c2be2d8dedad496b53112ed3b16aeb56bdf8af9b846c613831c56f371d7e9d90"
+    },
+    "lookup_empty": {
+      "text": "Не нашёл. Повторите вопрос.",
+      "seconds": 3.13,
+      "raw_seconds": 3.86,
+      "sha256": "6932fe67f16968b001014c488e3d3a42c99f0680dcc912d9d74df0c1b8b34779"
+    },
+    "synthesis": {
+      "text": "Ошибка звука. Повторите.",
+      "seconds": 3.07,
+      "raw_seconds": 3.78,
+      "sha256": "ce528ef5e4f8d70e10ff58aae84d7a71d212ca6d06bd207adc3c66d054f4b26e"
+    },
+    "channel": {
+      "text": "Связь прервалась. Повторите вопрос.",
+      "seconds": 3.76,
+      "raw_seconds": 4.5,
+      "sha256": "f266626e4a6c95fc19c520d4abd261f288c4f21970e0f2a69b7b74d90211d808"
+    },
+    "other": {
+      "text": "Ошибка. Повторите вопрос.",
+      "seconds": 3.14,
+      "raw_seconds": 3.87,
+      "sha256": "e6fec08071086514aaa1c07841ed2341c4ea6dd922d8641b65af7c4dbc74e99a"
+    },
+    "answer": {
+      "text": "Нет ответа. Повторите вопрос.",
+      "seconds": 3.36,
+      "raw_seconds": 4.09,
+      "sha256": "3b77d1816a569a85e558dcd00e792959fd6c6f8a7aa692b0d4ce11412a3b71be"
+    }
+  }
+}
