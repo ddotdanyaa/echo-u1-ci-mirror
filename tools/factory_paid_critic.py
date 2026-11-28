@@ -660,12 +660,13 @@ def _control(task, diff, failure, exclude_model, baseline, workdir, key, models,
         context += '\nContract of the new test:\n' + spec + '\n'
     context += '\nTests and source regions:\n' + _review_source(task, baseline, workdir)
     note = K.stand_note(task)
-    from tools import agent_factory as F
     facts = K.author_facts(task)                # fac-84 <id>: the author's reasoning (a stand card's note already holds it)
     if facts:
+        from tools import agent_factory as F
         context += '\n' + F.redact(facts)
-    ask = ASK_TEST if spec or getattr(task, 'kind', '') == 'unit_test' else ASK
-    prompt = note + ask + K.GATE_PASSED.strip() + ' ' + K.NOT_SHOWN + '\n' + context
+    test_only = bool(spec) or getattr(task, 'kind', '') == 'unit_test'
+    # the rules belong to ASK only: a test-only card is expected to FAIL now, GATE_PASSED would contradict ASK_TEST
+    prompt = note + (ASK_TEST if test_only else ASK + K.GATE_PASSED.strip() + ' ' + K.NOT_SHOWN) + '\n' + context
     try:
         multifile = len(json.loads(getattr(task, 'contract', '') or '{}').get('parts', [])) > 1
     except (ValueError, TypeError, AttributeError):
