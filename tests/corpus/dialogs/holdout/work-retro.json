@@ -1,0 +1,28 @@
+{
+ "id": "work-retro",
+ "split": "holdout",
+ "area": "work",
+ "kind": "qa",
+ "source": {
+  "name": "authored for ECHO (this repository), general knowledge, no external text copied",
+  "license": "CC0-1.0",
+  "kind": "authored",
+  "url": null
+ },
+ "turns": [
+  {
+   "user": "Что такое ретроспектива в проекте?",
+   "expected": "встреча команды, где разбирают, что получилось и что улучшить",
+   "length": "short",
+   "kind": "question",
+   "gap_s": 6.0
+  },
+  {
+   "user": "Как часто её проводят?",
+   "expected": "обычно после каждого этапа или спринта",
+   "length": "short",
+   "kind": "question",
+   "gap_s": 8
+  }
+ ]
+}
