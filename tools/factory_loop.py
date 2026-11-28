@@ -2824,7 +2824,7 @@ class Loop:
         internal = private or unclean
         if ans.get("goal"):
             # 21.11: the manual release is for a row private BY CONTENT (the narrowed class: keys, passwords, tokens,
-            # .env, SECRETS_LOCAL, call recordings and logs); an unknown id carries none: Opus' goal is checked below
+            # secret files, phones, e-mail, profile folders); an unknown id carries none: Opus' goal is checked below
             if private and known and not ans.get("release_private"):
                 raise F.InvalidPlan("row %s is private: a public --goal needs "
                                     "--release-private" % bid)
@@ -4369,7 +4369,7 @@ class Loop:
 
     @classmethod
     def _privacy_hit(cls, text: str) -> str:
-        """Keys, secrets, phones, e-mail, profile paths, call recordings, personal data: the import's
+        """Keys, secrets, phones, e-mail, profile paths, personal identifiers: the import's
         PRIVATE detector plus what redact() knows. '' when nothing matched."""
         from tools import agent_factory_import as imp
         # the phone first: PRIVATE carries PHONE.pattern too (19.11 17:47), and it would name a phone "private

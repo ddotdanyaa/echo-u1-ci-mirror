@@ -1,50 +1,50 @@
 # Factory status (generated, structured data only)
 
-Generated: 2026-11-28T06:00:34Z
-Source commit: shaf13f272ec600
+Generated: 2026-11-28T06:29:23Z
+Source commit: shaa78e7d1a03b2
 
 ## Commits (sha, time)
+- shaa78e7d1a 2026-11-28T09:18:48+03:00
+- sha3936ada8 2026-11-28T09:04:57+03:00
+- sha552c4b4b 2026-11-28T08:55:43+03:00
 - shaf13f272e 2026-11-28T08:49:45+03:00
 - sha775c56eb 2026-11-28T08:46:58+03:00
 - sha540ccf25 2026-11-28T08:36:47+03:00
+- shac937bb58 2026-11-28T08:31:45+03:00
 - sha7dcfbcf7 2026-11-28T08:18:29+03:00
 - sha41fa1f90 2026-11-28T08:11:24+03:00
 - shab78a5d29 2026-11-28T07:51:27+03:00
 - sha49050432 2026-11-28T07:50:56+03:00
 - sha58390b21 2026-11-28T07:46:14+03:00
 - sha33df1576 2026-11-28T07:45:09+03:00
+- sha1190bb88 2026-11-28T07:37:59+03:00
 - sha156283ae 2026-11-28T07:27:45+03:00
 - sha730a4f33 2026-11-28T07:27:17+03:00
 - shaf4d9bd30 2026-11-28T07:26:26+03:00
 - sha1f70d67e 2026-11-28T07:25:23+03:00
 - shac3b28a00 2026-11-28T06:36:19+03:00
 - shac4af5957 2026-11-28T06:22:22+03:00
-- sha8789615c 2026-11-28T06:01:26+03:00
-- shab8dc9db0 2026-11-28T05:39:13+03:00
-- shaa9a46d8b 2026-11-28T05:38:56+03:00
-- shad536b71d 2026-11-28T05:38:24+03:00
-- shaab06357f 2026-11-28T05:21:03+03:00
 
 ## Funnel
 | step | count |
 |---|---|
-| accepted | 170 |
-| claimed | 1952 |
+| accepted | 172 |
+| claimed | 1961 |
 | coded | 231 |
 | found_in_backlog | unknown |
-| gate_pass | 281 |
-| known_to_loop | 1104 |
-| promoted | 276 |
-| ready | 7 |
-| reviewed | 658 |
+| gate_pass | 286 |
+| known_to_loop | 1103 |
+| promoted | 281 |
+| ready | 8 |
+| reviewed | 664 |
 | triaged | 856 |
 
-Side counters: blocked=0, parked=0, requeued=17
-Tasks now: DONE=68, FAILED=1913, PROMOTED=242, READY=7, RUNNING=9
-Accepted: 170
-Promoted: 276
-Free RAM, GB: 3.63
-Telemetry rows: 150928 recognised, 0 unrecognised
+Side counters: blocked=0, parked=0, requeued=18
+Tasks now: DONE=68, FAILED=1921, PROMOTED=247, READY=8, RUNNING=2
+Accepted: 172
+Promoted: 281
+Free RAM, GB: 5.69
+Telemetry rows: 151748 recognised, 0 unrecognised
 
 ## Spend per model
 | model | calls | tokens_in | tokens_out | usage_unknown | http_429 | errors |
@@ -62,8 +62,8 @@ Telemetry rows: 150928 recognised, 0 unrecognised
 | google/gemini-3.8-flash | 69 | 21237 | 15 | 66 | 28 | 43 |
 | google/gemini-4-hydrogen | 77 | 27174 | 2032 | 68 | 18 | 28 |
 | google/gemini-robotics-er-2-preview | 86 | 58488 | 4068 | 69 | 27 | 29 |
-| google/gemma-4-26b-a4b-it | 18519 | 8952806 | 1359707 | 15031 | 212 | 4498 |
-| google/gemma-4-31b-it | 15584 | 4927615 | 461027 | 13742 | 193 | 4628 |
+| google/gemma-4-26b-a4b-it | 18683 | 8998161 | 1363018 | 15184 | 212 | 4499 |
+| google/gemma-4-31b-it | 15748 | 4971384 | 462507 | 13894 | 193 | 4628 |
 | openrouter/nvidia/nemotron-3-ultra-550b-a55b:free | 173 | 846691 | 170279 | 3 | 2 | 3 |
 | other | 65 | 1154192 | 66710 | 6 | 0 | 7 |
 
@@ -71,14 +71,14 @@ Telemetry rows: 150928 recognised, 0 unrecognised
 | span | rows | calls |
 |---|---|---|
 | answer | 554 | 0 |
-| gate | 15275 | 0 |
-| infra | 8378 | 0 |
-| loop | 19814 | 0 |
-| other | 66057 | 21952 |
-| promote | 303 | 0 |
-| review | 6733 | 3617 |
-| run | 32996 | 16449 |
-| triage | 818 | 0 |
+| gate | 15325 | 0 |
+| infra | 8386 | 0 |
+| loop | 19895 | 0 |
+| other | 66659 | 22256 |
+| promote | 309 | 0 |
+| review | 6758 | 3629 |
+| run | 33042 | 16461 |
+| triage | 820 | 0 |
 
 ## Channels (model ids)
 - 1db4ab-gemini-3-8-flash
@@ -129,7 +129,7 @@ Telemetry rows: 150928 recognised, 0 unrecognised
 ## Published files
 Modules: 38
 Tests in the cloud: 122
-Tests not in the cloud: 172
+Tests not in the cloud: 173
 - tests/test_agent_factory.py (backlog-id, call-word, env-path, long-run, pid-port)
 - tests/test_factory_503.py (backlog-id, long-run)
 - tests/test_factory_architect.py (backlog-id, email, env-path, path)
@@ -197,6 +197,7 @@ Tests not in the cloud: 172
 - tests/test_factory_hypo.py (dependency)
 - tests/test_factory_hypo2.py (dependency)
 - tests/test_factory_hypo3.py (dependency)
+- tests/test_factory_import_private_secrets_only.py (backlog-id, call-word, env-path, phone)
 - tests/test_factory_intake.py (call-word, pid-port)
 - tests/test_factory_intake_merge.py (dependency)
 - tests/test_factory_j4_cards.py (dependency)

@@ -151,7 +151,7 @@ REDACT_EXTRA = re.compile(
     r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}|"
     r"[A-Za-z]:[\\/]+Users[\\/]+[^\\/\s\"'<>|:]+"
 )
-# Owner: the ONLY private class is secrets: passwords, API keys, tokens, the env file, the local secrets folder.
+# The private class is secrets: passwords, API keys, tokens, the env file, the local secrets folder.
 # A task whose title/goal names one is never sent to a free model (privacy_safe False); everything else is
 # sendable, a row about calls or personal matters goes through the factory like any other (recording and log FILES
 # are still never published: the mirror scanner is separate). The importer

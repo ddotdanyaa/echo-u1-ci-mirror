@@ -8,7 +8,7 @@ from test_factory_loop import Env, git, task_row, env, empty_env, BRANCH, PY  # 
 # The parent rig needs a public row, a private row and an unrelated row, without
 # importing the answer command's private fixture corpus into this cloud suite.
 REL_MD = ("## 4. Очередь\n### 4.1 P0\n| ID | Приоритет | Состояние | Формулировка |\n"
-          "|---|---|---|---|\n| B3 | P1 | новая | parse the call recordings for tools/e.py |\n"
+          "|---|---|---|---|\n| B3 | P1 | новая | parse the api keys for tools/e.py |\n"
           "| B4 | P1 | новая | tools/e.py: он велел делать сразу, потому что так проще |\n"
           "| B1 | P1 | новая | строка про tools/x1.py |\n"
           "| BX | P1 | новая | строка про tools/x1.py |\n## 5. Конец\n")

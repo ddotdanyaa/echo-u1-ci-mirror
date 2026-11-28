@@ -115,16 +115,12 @@ CLASS_LABEL = re.compile(r"^\W*(?:обязательство|улучшение|
 # with 80 are a size in bytes, not a number.
 PHONE = re.compile(r"(?<![\w.])(?:(?:\+7|[78])[\s(-]*[3489]\d{2}[\s)-]*\d{3}[\s-]*\d{2}[\s-]*\d{2}"
                    r"|\(\s*[3489]\d{2,3}\s*\)[\s.-]*\d{3}[\s-]*\d{2}[\s-]*\d{2})(?!\d)")
-# 21.11 order: only passwords, keys, tokens, .env, SECRETS_LOCAL, call recordings and call logs/transcripts are private.  A row that
-# merely mentions a call, the owner, the phone, proxy or the call logic is an ordinary code row (the owner's <private-marker>/<private-marker> markers, "the
-# owner said", "personal data" are gone from this list); a literal phone number, e-mail and profile folder stay (identifiers).
+# Private rows: secrets and literal identifiers only: passwords, API keys, tokens, the env file, the local secrets folder, a
+# person's home / profile folder, a literal phone number, an e-mail address.  A row about a call recording, a call log, a transcript,
+# a voice recording or a personal dialogue is an ordinary code row (the FILES stay unreadable to models and unpublished: the
+# architect's private-file guard and the mirror scanner own that), as is any row that merely mentions a call, the owner or proxy.
 PRIVATE = re.compile(_B % (
-    r"запис\w*\s+(?:\w+\s+)?(?:звонк|разговор|аудио|голос)\w*"                    # recordings of calls and talks
-    r"|(?:журнал\w*|лог(?:и|ов|ами)?)\s+(?:\w+\s+)?звонк\w*|call[- ]?(?:logs?|recordings?)|(?:voice|audio)[- ]?recordings?"   # call logs ("логика звонка" is code)
-    r"|голос\w*\s+запис\w*"                                                       # a voice recording
-    r"|транскрипт\w*\s+(?:\w+\s+)?(?:звонк|разговор|запис)\w*|расшифровк\w*\s+(?:\w+\s+)?(?:звонк|разговор|диалог)\w*|аудиозапис\w*"
-    r"|личн\w*\s+(?:\w+\s+)?(?:аудио|запис|диалог|разговор|голос)\w*"             # personal audio and dialogue
-    r"|SECRETS_LOCAL|evidence[\\/][\w./\\-]*\.(?:wav|mp3|m4a|ogg)"                # the secrets folder, evidence audio
+    r"SECRETS_LOCAL"                                                              # the secrets folder
     r"|/home/[\w.-]+|[A-Za-z]:[\\/]Users[\\/][\w.-]+"                                      # a person's home folder
     r"|" + PHONE.pattern + r"|[\w.+-]+@[\w-]+\.[\w.-]+"                                  # phone numbers (the one owner: PHONE), e-mail
     r"|api[- ]?keys?|(?:private|secret|access)[- ]keys?|api[- ]?ключ\w*|ключ\w*\s+(?:api|доступа|канал\w*|провайдер\w*)|секрет(?:ы|ов|а|у|ом|е|ами)?|парол\w*|\.env"   # keys, tokens, passwords
