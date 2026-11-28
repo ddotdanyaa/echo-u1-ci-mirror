@@ -1,0 +1,6 @@
+tests/break/answer_route/test_night_r04_late_cloud.py
+tests/registry/test_fn_4_07.py
+tests/test_always_answer_host.py
+tests/test_bad_network.py
+tests/test_codex_quota_retry.py
+tests/test_e41_vocative_gate.py
