@@ -1,0 +1,28 @@
+{
+ "id": "work-refuse",
+ "split": "dev",
+ "area": "work",
+ "kind": "qa",
+ "source": {
+  "name": "authored for ECHO (this repository), general knowledge, no external text copied",
+  "license": "CC0-1.0",
+  "kind": "authored",
+  "url": null
+ },
+ "turns": [
+  {
+   "user": "Как вежливо отказать коллеге, если нет времени?",
+   "expected": "назвать причину и предложить другой срок",
+   "length": "short",
+   "kind": "question",
+   "gap_s": 6.0
+  },
+  {
+   "user": "Мне нужно коротко, можно одной фразой?",
+   "expected": "сейчас не успею, давай вернёмся к этому завтра",
+   "length": "short",
+   "kind": "question",
+   "gap_s": 6.0
+  }
+ ]
+}
