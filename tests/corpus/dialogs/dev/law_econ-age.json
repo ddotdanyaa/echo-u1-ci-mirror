@@ -1,0 +1,28 @@
+{
+ "id": "law_econ-age",
+ "split": "dev",
+ "area": "law_econ",
+ "kind": "qa",
+ "source": {
+  "name": "authored for ECHO (this repository), general knowledge, no external text copied",
+  "license": "CC0-1.0",
+  "kind": "authored",
+  "url": null
+ },
+ "turns": [
+  {
+   "user": "С какого возраста человек полностью дееспособен по Гражданскому кодексу?",
+   "expected": "с восемнадцати лет",
+   "length": "short",
+   "kind": "question",
+   "gap_s": 6.0
+  },
+  {
+   "user": "А что такое конституция?",
+   "expected": "основной закон государства",
+   "length": "short",
+   "kind": "question",
+   "gap_s": 6.0
+  }
+ ]
+}
