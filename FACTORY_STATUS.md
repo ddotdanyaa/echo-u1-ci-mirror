@@ -1,6 +1,6 @@
 # Factory status (generated, structured data only)
 
-Generated: 2026-11-28T04:39:54Z
+Generated: 2026-11-28T05:08:18Z
 Source commit: sha1190bb886b65
 
 ## Commits (sha, time)
@@ -28,23 +28,23 @@ Source commit: sha1190bb886b65
 ## Funnel
 | step | count |
 |---|---|
-| accepted | 167 |
-| claimed | 1922 |
+| accepted | 169 |
+| claimed | 1925 |
 | coded | 231 |
 | found_in_backlog | unknown |
-| gate_pass | 278 |
-| known_to_loop | 1098 |
-| promoted | 273 |
-| ready | 10 |
-| reviewed | 654 |
-| triaged | 852 |
+| gate_pass | 279 |
+| known_to_loop | 1103 |
+| promoted | 274 |
+| ready | 14 |
+| reviewed | 655 |
+| triaged | 854 |
 
 Side counters: blocked=0, parked=0, requeued=17
-Tasks now: DONE=68, FAILED=1874, PROMOTED=239, READY=10, RUNNING=15
-Accepted: 167
-Promoted: 273
-Free RAM, GB: 2.26
-Telemetry rows: 148219 recognised, 0 unrecognised
+Tasks now: DONE=68, FAILED=1886, PROMOTED=240, READY=14, RUNNING=8
+Accepted: 169
+Promoted: 274
+Free RAM, GB: 3.43
+Telemetry rows: 149178 recognised, 0 unrecognised
 
 ## Spend per model
 | model | calls | tokens_in | tokens_out | usage_unknown | http_429 | errors |
@@ -62,8 +62,8 @@ Telemetry rows: 148219 recognised, 0 unrecognised
 | google/gemini-3.8-flash | 69 | 21237 | 15 | 66 | 28 | 43 |
 | google/gemini-4-hydrogen | 77 | 27174 | 2032 | 68 | 18 | 28 |
 | google/gemini-robotics-er-2-preview | 86 | 58488 | 4068 | 69 | 27 | 29 |
-| google/gemma-4-26b-a4b-it | 17866 | 8781693 | 1338089 | 14448 | 212 | 4493 |
-| google/gemma-4-31b-it | 15017 | 4804680 | 451630 | 13220 | 193 | 4628 |
+| google/gemma-4-26b-a4b-it | 18116 | 8859973 | 1351706 | 14665 | 212 | 4493 |
+| google/gemma-4-31b-it | 15225 | 4837983 | 454570 | 13415 | 193 | 4628 |
 | openrouter/nvidia/nemotron-3-ultra-550b-a55b:free | 173 | 846691 | 170279 | 3 | 2 | 3 |
 | other | 65 | 1154192 | 66710 | 6 | 0 | 7 |
 
@@ -71,14 +71,14 @@ Telemetry rows: 148219 recognised, 0 unrecognised
 | span | rows | calls |
 |---|---|---|
 | answer | 554 | 0 |
-| gate | 15125 | 0 |
-| infra | 8296 | 0 |
-| loop | 19611 | 0 |
-| other | 64036 | 20852 |
-| promote | 300 | 0 |
-| review | 6709 | 3606 |
-| run | 32778 | 16340 |
-| triage | 810 | 0 |
+| gate | 15179 | 0 |
+| infra | 8318 | 0 |
+| loop | 19690 | 0 |
+| other | 64749 | 21264 |
+| promote | 301 | 0 |
+| review | 6716 | 3609 |
+| run | 32858 | 16383 |
+| triage | 813 | 0 |
 
 ## Channels (model ids)
 - 1db4ab-gemini-3-8-flash
