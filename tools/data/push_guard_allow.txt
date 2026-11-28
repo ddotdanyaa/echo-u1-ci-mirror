@@ -1,0 +1,6 @@
+# tools/push_guard.py allowlist: one path glob per line, then why it is a verified false positive. A new line needs a reason.
+evidence/installed_sapi_cold/*.wav   # SAPI synthesis smoke: 3 byte-identical files (one md5) of one synthesized phrase, no call, no caller's voice
+evidence/warm_sapi_smoke/*.wav       # the same: 5 byte-identical synthesized phrases (md5 equal), timings in timings.json
+tests/test_h1_fast_text.py           # a canary string tok-SECRET-... assigned to SECRET: the test feeds in to prove it is never logged
+tests/test_t1_transport.py           # the same canary 'tok-SECRET-0123456789'
+tests/test_w9_safe_review.py         # canaries ('tok-SECRET-...', 'do-not-copy-0123456789') that test the safe-review rules themselves
