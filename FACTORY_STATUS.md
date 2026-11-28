@@ -1,13 +1,22 @@
 # Factory status (generated, structured data only)
 
-Generated: 2026-11-28T05:41:21Z
-Source commit: sha7dcfbcf75b72
+Generated: 2026-11-28T06:00:34Z
+Source commit: shaf13f272ec600
 
 ## Commits (sha, time)
+- shaf13f272e 2026-11-28T08:49:45+03:00
+- sha775c56eb 2026-11-28T08:46:58+03:00
+- sha540ccf25 2026-11-28T08:36:47+03:00
 - sha7dcfbcf7 2026-11-28T08:18:29+03:00
+- sha41fa1f90 2026-11-28T08:11:24+03:00
 - shab78a5d29 2026-11-28T07:51:27+03:00
+- sha49050432 2026-11-28T07:50:56+03:00
+- sha58390b21 2026-11-28T07:46:14+03:00
+- sha33df1576 2026-11-28T07:45:09+03:00
 - sha156283ae 2026-11-28T07:27:45+03:00
 - sha730a4f33 2026-11-28T07:27:17+03:00
+- shaf4d9bd30 2026-11-28T07:26:26+03:00
+- sha1f70d67e 2026-11-28T07:25:23+03:00
 - shac3b28a00 2026-11-28T06:36:19+03:00
 - shac4af5957 2026-11-28T06:22:22+03:00
 - sha8789615c 2026-11-28T06:01:26+03:00
@@ -15,36 +24,27 @@ Source commit: sha7dcfbcf75b72
 - shaa9a46d8b 2026-11-28T05:38:56+03:00
 - shad536b71d 2026-11-28T05:38:24+03:00
 - shaab06357f 2026-11-28T05:21:03+03:00
-- shaf78c905f 2026-11-28T05:00:43+03:00
-- shac655b337 2026-11-28T04:58:41+03:00
-- sha81260e73 2026-11-28T04:55:05+03:00
-- shacdba1989 2026-11-28T04:45:35+03:00
-- shaa3086cfe 2026-11-28T04:44:44+03:00
-- sha531b1251 2026-11-28T04:43:16+03:00
-- shad5151111 2026-11-28T04:39:37+03:00
-- shae928afbb 2026-11-28T04:33:16+03:00
-- shafd9e6c4a 2026-11-28T04:30:50+03:00
 
 ## Funnel
 | step | count |
 |---|---|
-| accepted | 169 |
-| claimed | 1941 |
+| accepted | 170 |
+| claimed | 1952 |
 | coded | 231 |
 | found_in_backlog | unknown |
 | gate_pass | 281 |
-| known_to_loop | 1105 |
+| known_to_loop | 1104 |
 | promoted | 276 |
-| ready | 11 |
+| ready | 7 |
 | reviewed | 658 |
 | triaged | 856 |
 
-Side counters: blocked=3, parked=0, requeued=17
-Tasks now: BLOCKED=3, DONE=68, FAILED=1897, PROMOTED=242, READY=11, RUNNING=11
-Accepted: 169
+Side counters: blocked=0, parked=0, requeued=17
+Tasks now: DONE=68, FAILED=1913, PROMOTED=242, READY=7, RUNNING=9
+Accepted: 170
 Promoted: 276
-Free RAM, GB: 3.48
-Telemetry rows: 150152 recognised, 0 unrecognised
+Free RAM, GB: 3.63
+Telemetry rows: 150928 recognised, 0 unrecognised
 
 ## Spend per model
 | model | calls | tokens_in | tokens_out | usage_unknown | http_429 | errors |
@@ -62,8 +62,8 @@ Telemetry rows: 150152 recognised, 0 unrecognised
 | google/gemini-3.8-flash | 69 | 21237 | 15 | 66 | 28 | 43 |
 | google/gemini-4-hydrogen | 77 | 27174 | 2032 | 68 | 18 | 28 |
 | google/gemini-robotics-er-2-preview | 86 | 58488 | 4068 | 69 | 27 | 29 |
-| google/gemma-4-26b-a4b-it | 18370 | 8920198 | 1357691 | 14893 | 212 | 4493 |
-| google/gemma-4-31b-it | 15447 | 4891804 | 459212 | 13617 | 193 | 4628 |
+| google/gemma-4-26b-a4b-it | 18519 | 8952806 | 1359707 | 15031 | 212 | 4498 |
+| google/gemma-4-31b-it | 15584 | 4927615 | 461027 | 13742 | 193 | 4628 |
 | openrouter/nvidia/nemotron-3-ultra-550b-a55b:free | 173 | 846691 | 170279 | 3 | 2 | 3 |
 | other | 65 | 1154192 | 66710 | 6 | 0 | 7 |
 
@@ -71,14 +71,14 @@ Telemetry rows: 150152 recognised, 0 unrecognised
 | span | rows | calls |
 |---|---|---|
 | answer | 554 | 0 |
-| gate | 15247 | 0 |
-| infra | 8354 | 0 |
-| loop | 19762 | 0 |
-| other | 65444 | 21694 |
+| gate | 15275 | 0 |
+| infra | 8378 | 0 |
+| loop | 19814 | 0 |
+| other | 66057 | 21952 |
 | promote | 303 | 0 |
-| review | 6730 | 3616 |
-| run | 32942 | 16422 |
-| triage | 816 | 0 |
+| review | 6733 | 3617 |
+| run | 32996 | 16449 |
+| triage | 818 | 0 |
 
 ## Channels (model ids)
 - 1db4ab-gemini-3-8-flash
@@ -129,7 +129,7 @@ Telemetry rows: 150152 recognised, 0 unrecognised
 ## Published files
 Modules: 38
 Tests in the cloud: 122
-Tests not in the cloud: 170
+Tests not in the cloud: 172
 - tests/test_agent_factory.py (backlog-id, call-word, env-path, long-run, pid-port)
 - tests/test_factory_503.py (backlog-id, long-run)
 - tests/test_factory_architect.py (backlog-id, email, env-path, path)
@@ -247,11 +247,13 @@ Tests not in the cloud: 170
 - tests/test_factory_prio3.py (dependency)
 - <redacted-name> (backlog-id, long-run)
 - tests/test_factory_quota_wire.py (dependency)
+- tests/test_factory_red_precheck.py (long-run)
 - tests/test_factory_redrow.py (key, long-run)
 - tests/test_factory_regex_lock.py (call-word, key)
 - tests/test_factory_registry.py (backlog-id, owner-words)
 - tests/test_factory_reject_apply.py (dependency)
 - tests/test_factory_reject_note.py (dependency)
+- tests/test_factory_rel_closed.py (backlog-id)
 - tests/test_factory_rel_lost.py (dependency)
 - tests/test_factory_release.py (backlog-id)
 - tests/test_factory_release_run.py (dependency)

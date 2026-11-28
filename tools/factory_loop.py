@@ -3727,7 +3727,7 @@ class Loop:
             ls.pop("release_skip", None)
             self.save_ls(ls)
         fn, state_dir = self.release_fn, self.cfg.state_dir
-        guard_rows = {str(k): str(v["guard"]) for k, v in (ls.get("to_slice") or {}).items() if isinstance(v, dict) and v.get("guard") and not v.get("also")}   # fac-64; fac-67: a culprit group closes with its last member (close_regressions)
+        guard_rows = self._release_guard_rows(ls)       # fac-64; fac-67: a culprit group closes with its last member (close_regressions)
         self._rel_snap = snap
         with self._rel_lock:
             self._rel_note = None
@@ -3740,6 +3740,75 @@ class Loop:
         self._rel.thread.start()
         self.event("release", status="started", base_sha=sha, release_run=(resume or {}).get("run_id"),
                    reason=("final build: picks up run %s" % resume["run_id"]) if resume else "final build: %d rows to accept" % len(tids))
+
+    def _release_guard_rows(self, ls) -> dict:
+        """fac-64 / fac-94: {row: guard test} the build asks close_green_guards about: the to_slice rows, and the rel rows parked in
+        holds / slice_wait / quarantine (their guard from the to_slice entry, else from rel_entry).  A culprit group (``also``) is left out."""
+        def entry(row):
+            for key in ("to_slice", "rel_entry"):
+                v = (ls.get(key) or {}).get(row)
+                if isinstance(v, dict) and v.get("guard"):
+                    return v
+            return None
+        out = {str(k): str(v["guard"]) for k, v in (ls.get("to_slice") or {}).items() if isinstance(v, dict) and v.get("guard") and not v.get("also")}
+        for key in ("holds", "slice_wait", "quarantine"):
+            for bid in list(ls.get(key) or ()):
+                row = F.row_of(str(bid))
+                v = entry(row) if row.startswith("rel-") and row not in out else None
+                if v and not v.get("also"):
+                    out[row] = str(v["guard"])
+        return out
+
+    REL_BOOKS = ("to_slice", "slice_wait", "reslices", "quarantine", "holds", "hold_ver", "hold_hash", "rel_entry", "green_proof", "arch_decision")
+
+    def _close_rel_rows(self, ls, rows) -> None:
+        """fac-94: the ONE place that takes a row the build's books closed out of the loop: every book of the loop, its READY cards
+        (FAILED superseded:already_green) and one ``debt_closed`` event per row.  ``rows``: {row: the book that closed it}."""
+        if not rows:
+            return
+        for key in self.REL_BOOKS:
+            book = ls.get(key)
+            if isinstance(book, dict):
+                for k in [k for k in book if F.row_of(str(k)) in rows]:
+                    book.pop(k, None)
+
+        def supersede_green(st):
+            for tid, row in st["tasks"].items():
+                if F.row_of(row.get("backlog_id") or tid) in rows and row.get("status") == "READY":
+                    row.update(status="FAILED", reason="superseded:already_green")
+        try:
+            self._tx(supersede_green)
+        except Exception as e:      # noqa: BLE001 - a busy plan: the READY card meets the guard check later
+            self.err("release: supersede already_green", e)
+        for bid, why in rows.items():
+            self.event("release", status="debt_closed", backlog_id=bid, reason="superseded:already_green (%s)" % why)
+
+    def _sweep_closed_rel(self, now) -> int:
+        """fac-94: every rel row in a book of the loop that the build's books call closed leaves them all (one read of the books per
+        sweep).  -> the number of rows taken out."""
+        from tools import factory_release as REL
+        ls = self.ls()
+        rows = {}
+        for key in self.REL_BOOKS:
+            for k in list(ls.get(key) or ()):
+                row = F.row_of(str(k))
+                if row.startswith("rel-"):
+                    rows.setdefault(row, None)
+        if not rows:
+            return 0
+        books = REL.closed_books(self.cfg.state_dir)
+        if books is None:
+            return 0
+        closed = {}
+        for row in rows:
+            v = ((ls.get("to_slice") or {}).get(row), (ls.get("rel_entry") or {}).get(row))
+            guard = next((str(x["guard"]) for x in v if isinstance(x, dict) and x.get("guard")), None)
+            if REL.rel_row_closed(self.cfg.state_dir, row, guard=guard, books=books):
+                closed[row] = "regressions book: no test left, guard not red" if REL.REL_ROW.match(row) else "debt book: row closed"
+        if closed:
+            self._close_rel_rows(ls, closed)
+            self.save_ls(ls)
+        return len(closed)
 
     def _release_places(self) -> int:
         """Cloud job places the task cards leave free: the free plan's jobs minus the places the account really holds now
@@ -3894,11 +3963,13 @@ class Loop:
         closed_rows = [str(r) for r in (res.get("closed_rows") or ()) if r]
         owner_rows = [b for b in closed_rows if not b.startswith("rel-")]      # fac-64: the owner's rows leave the slicer only, no "done" claim
         for bid in closed_rows:                          # W-part 1: green in the two last full builds: out of the queues
-            for key in (("to_slice", "slice_wait") if bid in owner_rows else ("to_slice", "slice_wait", "reslices", "quarantine")):
-                if isinstance(ls.get(key), dict):
-                    ls[key].pop(bid, None)
+            if bid in owner_rows:
+                for key in ("to_slice", "slice_wait"):
+                    if isinstance(ls.get(key), dict):
+                        ls[key].pop(bid, None)
             if bid in owner_rows and isinstance(ls.get("seen"), dict):     # the row stays open in the backlog: remember it, so the lost-rows pass does not hand it back
                 ls["seen"][bid] = {"kind": "already_green", "reason": "guard green in two full builds", "until": now + self.LOST_AGAIN_S}
+        self._close_rel_rows(ls, {b: "green in two full builds" for b in closed_rows if b not in owner_rows})      # fac-94: out of every book
         ls["release"] = {"sha": sha, "at": now, "promoted_total": int(run.get("promoted_total") or 0),
                          "status": status, "new_red": new_red, "tree": run.get("tree") or ""}
         if isinstance(ls.get("release_run"), dict):
@@ -3922,18 +3993,6 @@ class Loop:
         for bid in owner_rows:
             self.event("release", status="slice_dropped", backlog_id=bid, reason="already_green (guard green in two full builds; "
                        "the guard may cover less than the row: the row stays open in the backlog)")
-        closed_rows = [b for b in closed_rows if b not in owner_rows]
-        if closed_rows:
-            def supersede_green(st):
-                for tid, row in st["tasks"].items():
-                    if F.row_of(row.get("backlog_id") or tid) in closed_rows and row.get("status") == "READY":
-                        row.update(status="FAILED", reason="superseded:already_green")
-            try:
-                self._tx(supersede_green)
-            except Exception as e:      # noqa: BLE001 - a busy plan: the READY card meets the guard check later
-                self.err("release: supersede already_green", e)
-            for bid in closed_rows:
-                self.event("release", status="debt_closed", backlog_id=bid, reason="superseded:already_green (green in two full builds)")
         try:        # fac-43 step 0: the models of each accepted card by role, from its call rows
             by_role = RT.models_by_role(RT.telemetry_rows(self.dir), taken) if taken else {}   # .jsonl, .1 and .2
         except Exception as e:  # noqa: BLE001 - the span goes without models; build() still finds the calls
@@ -6217,7 +6276,7 @@ class Loop:
                 extra["repaired"] = list(result["repaired"])      # W-free 1: what the machine mended in the contract
             if result.get("author_try"):
                 extra["author_try"] = str(result["author_try"])      # fac-85/90: what the cloud run of the author's code did
-            if result.get("asks"):
+            if result.get("asks") is not None:
                 extra["asks"] = int(result["asks"])  # fac-90: the calls of the agent step that made this contract
             portion = dict(engine=engine, rung=job.ctx["rung"])
             if packet.get("must_code"):
@@ -6460,6 +6519,8 @@ class Loop:
         books (the baseline debt for rel-base-<n>, the regressions for rel-<sha>-<n>); None when neither knows the row."""
         from tools import factory_release as REL
         kept = (ls.get("rel_entry") or {}).get(bid)
+        if REL.rel_row_closed(self.cfg.state_dir, bid, guard=(kept or {}).get("guard") if isinstance(kept, dict) else None):
+            return None                                  # fac-94: the build's books closed it: no entry, no row
         if isinstance(kept, dict) and kept.get("guard"):
             return {"at": self.clock(), "hints": [], **kept}
         found = REL.DEBT_ROW.match(bid)
@@ -7483,6 +7544,8 @@ class Loop:
             return ls
         self._lost_at = now
         try:
+            if self._sweep_closed_rel(now):             # fac-94: a closed rel row never reaches the slicer again
+                ls = self.ls()
             return self._lost_rows(tasks, state, now) or ls
         except Exception as e:                       # the feed invariant never stops the loop
             self.err("lost rows", e)

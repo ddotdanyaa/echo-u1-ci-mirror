@@ -516,6 +516,60 @@ def close_regressions(rel, pair) -> list:
     return list(dict.fromkeys(r for r in out if r and r not in still))
 
 
+REL_ROW = re.compile(r"^rel-[0-9a-f]{8}-\d+$")
+
+
+def _strict_json(path):
+    """The parsed book, or None when it is missing or unreadable (a fault is not an empty book)."""
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def closed_books(state_dir, red=None):
+    """fac-94: the three books that say a ``rel-`` row is closed, read once for a sweep: ``{"regr": {rows with a test left},
+    "debt": {n: closed}, "red": {keys of the last full build's red tests}}``; None when regressions.json is unreadable.
+    ``red``: names to use instead of red_last.json."""
+    rel = release_dir(state_dir)
+    regr = _strict_json(rel / "regressions.json")
+    if regr is None:
+        return None
+    debt_book = _read_json(rel / DEBT_FILE, {})
+    names = red
+    if names is None:
+        if (rel / RED_LAST).exists():       # a record that is there but unreadable is no empty list: the row stays open
+            rec = _strict_json(rel / RED_LAST)
+            if rec is None:
+                return None
+            names = rec.get("red") or ()
+        else:
+            names = ()
+    return {"regr": {str((r or {}).get("row") or "") for r in regr.values() if isinstance(r, dict)},
+            "debt": {int(r["n"]): bool(r.get("closed")) for r in debt_book.values() if isinstance(r, dict) and r.get("n")},
+            "red": {_key(n) for n in names}}
+
+
+def rel_row_closed(state_dir, row, red=None, guard=None, books=None) -> bool:
+    """fac-94: the one notion of «the build's books closed this row».  ``rel-<sha8>-<n>``: no test of it is left in
+    regressions.json and its guard (when known) is not red in the last full build.  ``rel-base-<n>``: the debt book has the
+    number and its record is closed.  Anything else, or an unreadable book: False.  ``books``: the result of closed_books."""
+    row = str(row or "")
+    try:
+        found = DEBT_ROW.match(row)
+        if not (found or REL_ROW.match(row)):
+            return False
+        books = books or closed_books(state_dir, red)
+        if books is None:
+            return False
+        if found:
+            return books["debt"].get(int(found.group(1))) is True
+        return row not in books["regr"] and not (guard and _key(guard) in books["red"])
+    except (OSError, ValueError, TypeError, KeyError):
+        return False
+
+
 def _debt_step(rel, names, baseline, results, known_path, env_path, known, open_ids, open_tests, *, green, closed_out=None) -> list:
     """Builds the debt of the red baseline from this full sweep and hands out the files not yet queued (once each).
     A debt test is red NOW (a test green on the last full run is no debt), in the baseline, on no known / cloud-env list (nor

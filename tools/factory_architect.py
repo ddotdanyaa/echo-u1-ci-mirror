@@ -2241,6 +2241,55 @@ def _did_not_run(variant, test_id) -> bool:
     return bool(_NOT_RAN.search(str(variant.get('text') or '')))
 
 
+def _red_ids(contract, packet):
+    """The ids of the row's red test the cloud runs: the packet's guard_red (or the contract's own test), capped like author_try."""
+    from tools import factory_solver as SOL
+    spec = contract.get('test') if isinstance(contract.get('test'), dict) else {}
+    own = [spec['use']] + [str(x) for x in spec.get('also') or []] if isinstance(spec.get('use'), str) and spec.get('use') else []
+    ids = [str(x) for x in (packet.get('guard_red') or []) if '::' in str(x)] or own
+    return list(dict.fromkeys(ids))[:SOL.FINAL_IDS]
+
+
+def _cloud_run(ids, root, cloud, texts=None):
+    """The ONE home of the cloud call of a control run: the ids alone and the whole file of each, on the base (control) and, when ``texts`` is
+    given, with those texts written over it (variant '1'; without ``texts`` '1' is the unchanged file). Returns (answer, run_ids); the answer
+    is None when there is no verdict. Raises when there is no file to run. Used by author_try and by the red pre-check."""
+    from tools import factory_hypo as HY, factory_solver as SOL
+    files = sorted({i.split('::', 1)[0] for i in ids})
+    control = next((f for f in sorted(texts or files) if (Path(root) / f).is_file()), None)
+    if not ids or control is None:
+        raise ValueError('nothing to run')
+    base = (Path(root) / control).read_bytes().decode('utf-8')
+    variants = {'1': texts or {control: base}, HY.CONTROL: {control: base}}
+    run_ids = ids + [HY.FILE_RUN + f for f in files]
+    ctx = types.SimpleNamespace(cloud=cloud or HY.cloud_batch, root=root, sleep=lambda seconds: None)
+    return _bounded(lambda: SOL._verdict(ctx, run_ids, variants, types.SimpleNamespace(tests=0)), _try_wait()), run_ids
+
+
+def red_precheck(packet, engine, root, *, cloud=None):
+    """fac-97: before a strong author is asked, ONE cloud control run of the row's red ids on the base. The ``why`` of a not_red when every id
+    (alone, and in its whole-file run) passes there and none did not run; None otherwise (an id is red, no verdict, or no ids: the ladder goes on)."""
+    if not author_code(engine):
+        return None
+    ids = _red_ids({}, packet) if packet.get('guard_red') else []
+    if not ids:
+        return None
+    from tools import factory_hypo as HY
+    try:
+        got, run_ids = _cloud_run(ids, root, cloud)
+    except Exception:       # noqa: BLE001
+        return None
+    ctl = (got or {}).get(HY.CONTROL)
+    if not isinstance(ctl, dict) or any(_did_not_run(ctl, i) for i in ids):
+        return None
+    passed = set(ctl.get('passed') or ())
+    files = {r[len(HY.FILE_RUN):] for r in run_ids if r.startswith(HY.FILE_RUN)}
+    # every id alone AND the whole-file run of each: the file run answers with plain test ids, so no failed test of those files may stand
+    if not all(_passes(i, passed) for i in ids) or any(str(t).split('::', 1)[0] in files for t in ctl.get('failed') or ()):
+        return None
+    return 'the run of the test on its own passed on the base %s without any change: %s' % (Path(root).name[:12], ', '.join(ids[:_TRY_FACT_IDS]))
+
+
 def author_try(contract, engine, packet, root, *, cloud=None, folder=None):
     """fac-85: ONE cloud run of the row's red ids on the base (control) and with the ready code written over it, for a fix of a strong
     author on a red row whose every part carries ready text. The solver's own call and verdict (factory_solver._verdict, factory_hypo.judge).
@@ -2252,17 +2301,11 @@ def author_try(contract, engine, packet, root, *, cloud=None, folder=None):
         return None
     from tools import factory_hypo as HY, factory_solver as SOL
     try:
-        ids = [str(x) for x in (packet.get('guard_red') or []) if '::' in str(x)] or [use] + [str(x) for x in spec.get('also') or []]
-        ids = list(dict.fromkeys(ids))[:SOL.FINAL_IDS]
+        ids = _red_ids(contract, packet)
         texts, faults = applied_texts(_card_of(contract, engine), root)
-        control = next((f for f in sorted(texts) if (Path(root) / f).is_file()), None)
-        if faults or not texts or control is None:
+        if faults or not texts:
             return dict(kind='no_verdict')
-        files = sorted({i.split('::', 1)[0] for i in ids})
-        run_ids = ids + [HY.FILE_RUN + f for f in files]
-        variants = {'1': texts, HY.CONTROL: {control: (Path(root) / control).read_bytes().decode('utf-8')}}
-        ctx = types.SimpleNamespace(cloud=cloud or HY.cloud_batch, root=root, sleep=lambda seconds: None)
-        got = _bounded(lambda: SOL._verdict(ctx, run_ids, variants, types.SimpleNamespace(tests=0)), _try_wait())
+        got, run_ids = _cloud_run(ids, root, cloud, texts)
     except Exception:       # noqa: BLE001
         return dict(kind='no_verdict')
     ctl, cand = (got or {}).get(HY.CONTROL), (got or {}).get('1')
@@ -2317,6 +2360,7 @@ def contract_for(packet, *, rung, root, asks, named_ok=False, red_given=None, sk
             again[e] = str(v.get('fault') or '')[:300]
             del skip[e]
     cache = dict(skip)
+    pre_done = False
     dry = bool(packet.get('edit_dry') or packet.get('must_code'))
     base_debt = bool(packet.get('base_debt')) or F.is_base_debt(str(packet.get('bid', '')))
     for engine in [e for e in ladder(rung, rungs=tuple(asks), red=red, dry=dry, base_debt=base_debt, gone=no_money(), yields=yields, probe=probe,
@@ -2342,6 +2386,11 @@ def contract_for(packet, *, rung, root, asks, named_ok=False, red_given=None, sk
         system = build_prompt(dict(packet, rung=rung), engine)[0]
         refused = []        # files of this engine's requests that could not be shown: the slice event keeps their names
         try:
+            if red and not pre_done and author_code(engine):
+                pre_done = True     # fac-97: ONE control run of the red ids on the base per call, before the first ask of a step that writes code
+                if why := red_precheck(packet, engine, root, cloud=cloud):
+                    return dict(contract=dict(row=packet.get('bid'), decision='cannot_reproduce', why=why), engine=engine, faults=faults,
+                                repaired=[], author_try='not_red:pre', **(dict(asks=0) if counted else {}))
             while True:
                 if counted and asks_n and _now() - begun >= TALK_DEADLINE_S:
                     # fac-90: no new question after the talk deadline, whatever sent the step back (a defect, a reminder, a red run):
