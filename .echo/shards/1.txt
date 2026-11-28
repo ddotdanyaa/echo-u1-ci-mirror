@@ -1,0 +1,2 @@
+@tests/test_h7.py
+tests/test_h7.py::test_a_new_question_cancels_both
